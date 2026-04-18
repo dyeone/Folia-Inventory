@@ -26,7 +26,7 @@ const PRICE_BUCKETS = [
 ];
 
 // Simple hash — not cryptographically strong but obscures passwords from casual browsing
-const hashPassword = async (password, salt = 'plant-inv-2026') => {
+const hashPassword = async (password, salt = 'folia-inv-2026') => {
   const encoder = new TextEncoder();
   const data = encoder.encode(password + salt);
   const hashBuffer = await crypto.subtle.digest('SHA-256', data);
@@ -197,7 +197,7 @@ function AuthScreen({ onLogin }) {
             <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center backdrop-blur">
               <Sprout className="w-5 h-5" />
             </div>
-            <h1 className="text-lg font-semibold">Plant Inventory</h1>
+            <h1 className="text-lg font-semibold">Folia Inventory</h1>
           </div>
           <p className="text-emerald-50 text-sm">
             {mode === 'register'
@@ -567,7 +567,7 @@ function InventorySystem() {
             <div className="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center">
               <Sprout className="w-5 h-5 text-white" />
             </div>
-            <h1 className="text-lg font-semibold text-gray-900">Inventory</h1>
+            <h1 className="text-lg font-semibold text-gray-900">Folia Inventory</h1>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowBulkModal(true)} className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition">

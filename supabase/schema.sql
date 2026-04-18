@@ -1,4 +1,4 @@
--- Plant Inventory — Supabase Schema
+-- Folia Inventory — Supabase Schema
 -- Run this in the Supabase SQL editor (Dashboard → SQL Editor → New Query)
 --
 -- Column names use double-quoted camelCase to match the JavaScript object keys
