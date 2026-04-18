@@ -66,6 +66,14 @@ create table if not exists sales (
   "createdBy" text
 );
 
+-- ─── Constraints ──────────────────────────────────────────────────────────────
+-- Enforce SKU uniqueness across all inventory items. Using a unique index
+-- with IF NOT EXISTS so this is safe to re-run. If existing rows already
+-- contain duplicate SKUs, this statement will fail — resolve the duplicates
+-- first, then re-run.
+create unique index if not exists inventory_items_sku_unique
+  on inventory_items (sku);
+
 -- ─── Row-Level Security ───────────────────────────────────────────────────────
 -- All data access goes through the server-side API routes (under /api),
 -- which use the service_role key that bypasses RLS. The anon key is no
