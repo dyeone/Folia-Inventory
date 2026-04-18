@@ -1,19 +1,7 @@
 import React, { useState, useEffect, useMemo, createContext, useContext } from 'react';
 import { Package, Sprout, Plus, Search, Download, Upload, Trash2, Edit2, ArrowRightLeft, X, Check, TrendingUp, DollarSign, Archive, Calendar, Filter, AlertCircle, Layers, Tag, ListOrdered, FileCheck, Users, LogOut, Lock, UserPlus, Shield, User, Eye, EyeOff, Key } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { supabase } from './supabase.js';
-
-// Translates a Supabase error into a human-readable message.
-const dbErrMsg = (err) => {
-  const msg = err?.message ?? String(err);
-  if (msg.includes('Load failed') || msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-    return 'Cannot reach the database. Check that your Supabase URL and anon key are correct in .env.local and that your Supabase project is active.';
-  }
-  if (msg.includes('relation') && msg.includes('does not exist')) {
-    return 'Database tables are missing. Open the Supabase SQL Editor and run supabase/schema.sql.';
-  }
-  return `Database error: ${msg}`;
-};
+import { api } from './api.js';
 
 const PRICE_BUCKETS = [
   { label: '$0 – 25', min: 0, max: 25 },
@@ -24,15 +12,6 @@ const PRICE_BUCKETS = [
   { label: '$500+', min: 500, max: Infinity },
   { label: 'No price set', min: null, max: null },
 ];
-
-// Simple hash — not cryptographically strong but obscures passwords from casual browsing
-const hashPassword = async (password, salt = 'folia-inv-2026') => {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + salt);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-};
 
 const AuthContext = createContext(null);
 
@@ -46,13 +25,12 @@ export default function InventoryApp() {
         const stored = localStorage.getItem('session-current-user');
         if (stored) {
           const { id } = JSON.parse(stored);
-          const { data: users } = await supabase.from('users').select('*');
-          if (users) {
-            const found = users.find(u => u.id === id && u.active);
-            if (found) setCurrentUser(found);
-          }
+          const user = await api.session(id);
+          if (user) setCurrentUser(user);
         }
-      } catch (e) {}
+      } catch (e) {
+        localStorage.removeItem('session-current-user');
+      }
       setLoadingSession(false);
     })();
   }, []);
@@ -100,10 +78,7 @@ function AuthScreen({ onLogin }) {
   useEffect(() => {
     (async () => {
       try {
-        const { count } = await supabase
-          .from('users')
-          .select('*', { count: 'exact', head: true });
-        const hasUsers = (count ?? 0) > 0;
+        const hasUsers = await api.hasAnyUsers();
         setHasAnyUsers(hasUsers);
         if (!hasUsers) setMode('register');
       } catch (e) {
@@ -120,15 +95,6 @@ function AuthScreen({ onLogin }) {
 
     setLoading(true);
     try {
-      const { data: usersData, error: loadErr } = await supabase.from('users').select('*');
-      if (loadErr) {
-        setErr(dbErrMsg(loadErr));
-        setLoading(false);
-        return;
-      }
-      const users = usersData || [];
-      const normalizedUsername = username.trim().toLowerCase();
-
       if (mode === 'register') {
         if (password.length < 6) {
           setErr('Password must be at least 6 characters');
@@ -140,51 +106,18 @@ function AuthScreen({ onLogin }) {
           setLoading(false);
           return;
         }
-        if (users.find(u => u.username === normalizedUsername)) {
-          setErr('Username already taken');
-          setLoading(false);
-          return;
-        }
-        const hash = await hashPassword(password);
-        const isFirstUser = users.length === 0;
-        const newUser = {
-          id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
-          username: normalizedUsername,
+        const user = await api.register({
+          username: username.trim(),
+          password,
           displayName: displayName.trim() || username.trim(),
-          passwordHash: hash,
-          role: isFirstUser ? 'admin' : 'staff',
-          createdAt: new Date().toISOString(),
-          active: true,
-        };
-        const { error: insertError } = await supabase.from('users').insert(newUser);
-        if (insertError) {
-          setErr(dbErrMsg(insertError));
-          setLoading(false);
-          return;
-        }
-        onLogin(newUser);
+        });
+        onLogin(user);
       } else {
-        const user = users.find(u => u.username === normalizedUsername);
-        if (!user) {
-          setErr('Invalid username or password');
-          setLoading(false);
-          return;
-        }
-        if (!user.active) {
-          setErr('This account has been deactivated');
-          setLoading(false);
-          return;
-        }
-        const hash = await hashPassword(password);
-        if (hash !== user.passwordHash) {
-          setErr('Invalid username or password');
-          setLoading(false);
-          return;
-        }
+        const user = await api.login({ username: username.trim(), password });
         onLogin(user);
       }
     } catch (e) {
-      setErr(`Unexpected error: ${e.message}. Try refreshing the page.`);
+      setErr(e.message || 'Sign-in failed. Please try again.');
     }
     setLoading(false);
   };
@@ -328,23 +261,26 @@ function InventorySystem() {
 
   useEffect(() => {
     (async () => {
-      const [{ data: itemsData }, { data: salesData }] = await Promise.all([
-        supabase.from('inventory_items').select('*'),
-        supabase.from('sales').select('*'),
-      ]);
-      if (itemsData) {
-        setItems([...itemsData].sort((a, b) =>
-          new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
-        ));
-      }
-      if (salesData) {
-        setSales([...salesData].sort((a, b) =>
-          new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
-        ));
+      try {
+        const [itemsData, salesData] = await Promise.all([api.getItems(), api.getSales()]);
+        const sortByCreated = (arr) =>
+          [...arr].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+        setItems(sortByCreated(itemsData));
+        setSales(sortByCreated(salesData));
+      } catch (e) {
+        showToast(e.message || 'Failed to load data', 'error');
       }
       setLoading(false);
     })();
   }, []);
+
+  // Diff two item arrays and return only the rows that were added or changed.
+  // A shallow JSON compare is good enough here because item objects have
+  // stable shapes coming from the DB.
+  const diffChanged = (newArr, oldArr) => {
+    const oldMap = new Map(oldArr.map(x => [x.id, JSON.stringify(x)]));
+    return newArr.filter(x => oldMap.get(x.id) !== JSON.stringify(x));
+  };
 
   const saveItems = async (newItems) => {
     const oldItems = items;
@@ -352,15 +288,13 @@ function InventorySystem() {
     try {
       const newIds = new Set(newItems.map(i => i.id));
       const deletedIds = oldItems.filter(i => !newIds.has(i.id)).map(i => i.id);
+      const toUpsert = diffChanged(newItems, oldItems);
       const ops = [];
-      if (newItems.length > 0) ops.push(supabase.from('inventory_items').upsert(newItems));
-      if (deletedIds.length > 0) ops.push(supabase.from('inventory_items').delete().in('id', deletedIds));
-      if (ops.length > 0) {
-        const results = await Promise.all(ops);
-        if (results.some(r => r.error)) showToast('Save failed', 'error');
-      }
+      if (toUpsert.length) ops.push(api.upsertItems(toUpsert));
+      if (deletedIds.length) ops.push(api.deleteItems(deletedIds));
+      if (ops.length) await Promise.all(ops);
     } catch (e) {
-      showToast('Save failed', 'error');
+      showToast(e.message || 'Save failed', 'error');
     }
   };
 
@@ -370,15 +304,13 @@ function InventorySystem() {
     try {
       const newIds = new Set(newSales.map(s => s.id));
       const deletedIds = oldSales.filter(s => !newIds.has(s.id)).map(s => s.id);
+      const toUpsert = diffChanged(newSales, oldSales);
       const ops = [];
-      if (newSales.length > 0) ops.push(supabase.from('sales').upsert(newSales));
-      if (deletedIds.length > 0) ops.push(supabase.from('sales').delete().in('id', deletedIds));
-      if (ops.length > 0) {
-        const results = await Promise.all(ops);
-        if (results.some(r => r.error)) showToast('Save failed', 'error');
-      }
+      if (toUpsert.length) ops.push(api.upsertSales(toUpsert));
+      if (deletedIds.length) ops.push(api.deleteSales(deletedIds));
+      if (ops.length) await Promise.all(ops);
     } catch (e) {
-      showToast('Save failed', 'error');
+      showToast(e.message || 'Save failed', 'error');
     }
   };
 
@@ -1539,70 +1471,54 @@ function UsersView({ currentUser, setConfirmDialog, showToast }) {
   }, []);
 
   const loadUsers = async () => {
-    const { data } = await supabase.from('users').select('*');
-    if (data) setUsers(data);
+    try {
+      const data = await api.getUsers();
+      setUsers(data);
+    } catch (e) {
+      showToast(e.message || 'Failed to load users', 'error');
+    }
     setLoading(false);
   };
 
-  const saveUsers = async (newUsers) => {
-    const oldUsers = users;
-    setUsers(newUsers);
+  const changeRole = async (userId, newRole) => {
+    if (userId === currentUser.id) return showToast("You can't change your own role", 'error');
     try {
-      const newIds = new Set(newUsers.map(u => u.id));
-      const deletedIds = oldUsers.filter(u => !newIds.has(u.id)).map(u => u.id);
-      const ops = [];
-      if (newUsers.length > 0) ops.push(supabase.from('users').upsert(newUsers));
-      if (deletedIds.length > 0) ops.push(supabase.from('users').delete().in('id', deletedIds));
-      if (ops.length > 0) await Promise.all(ops);
+      await api.updateUser({ id: userId, patch: { role: newRole }, adminUserId: currentUser.id });
+      setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
+      showToast('Role updated');
     } catch (e) {
-      showToast('Save failed', 'error');
+      showToast(e.message || 'Failed to update role', 'error');
     }
   };
 
-  const changeRole = (userId, newRole) => {
-    if (userId === currentUser.id) {
-      showToast("You can't change your own role", 'error');
-      return;
-    }
-    // Don't allow demoting the last admin
-    const admins = users.filter(u => u.role === 'admin' && u.active);
-    if (newRole === 'staff' && admins.length === 1 && admins[0].id === userId) {
-      showToast('Cannot demote the only admin', 'error');
-      return;
-    }
-    saveUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
-    showToast('Role updated');
-  };
-
-  const toggleActive = (userId) => {
-    if (userId === currentUser.id) {
-      showToast("You can't deactivate your own account", 'error');
-      return;
-    }
+  const toggleActive = async (userId) => {
+    if (userId === currentUser.id) return showToast("You can't deactivate your own account", 'error');
     const user = users.find(u => u.id === userId);
-    const admins = users.filter(u => u.role === 'admin' && u.active);
-    if (user.active && user.role === 'admin' && admins.length === 1) {
-      showToast('Cannot deactivate the only admin', 'error');
-      return;
+    try {
+      await api.updateUser({ id: userId, patch: { active: !user.active }, adminUserId: currentUser.id });
+      setUsers(users.map(u => u.id === userId ? { ...u, active: !u.active } : u));
+      showToast(user.active ? 'User deactivated' : 'User activated');
+    } catch (e) {
+      showToast(e.message || 'Failed to update user', 'error');
     }
-    saveUsers(users.map(u => u.id === userId ? { ...u, active: !u.active } : u));
-    showToast(user.active ? 'User deactivated' : 'User activated');
   };
 
   const deleteUser = (userId) => {
-    if (userId === currentUser.id) {
-      showToast("You can't delete your own account", 'error');
-      return;
-    }
+    if (userId === currentUser.id) return showToast("You can't delete your own account", 'error');
     const user = users.find(u => u.id === userId);
     setConfirmDialog({
       title: 'Delete user?',
       message: `Permanently delete "${user.displayName}" (@${user.username})? They'll lose all access. Items they created stay in the system.`,
       confirmLabel: 'Delete',
       danger: true,
-      onConfirm: () => {
-        saveUsers(users.filter(u => u.id !== userId));
-        showToast('User deleted');
+      onConfirm: async () => {
+        try {
+          await api.deleteUsers([userId], currentUser.id);
+          setUsers(users.filter(u => u.id !== userId));
+          showToast('User deleted');
+        } catch (e) {
+          showToast(e.message || 'Failed to delete user', 'error');
+        }
       },
     });
   };
@@ -1722,8 +1638,9 @@ function UsersView({ currentUser, setConfirmDialog, showToast }) {
       {showAddUser && (
         <AddUserModal
           existingUsers={users}
-          onSave={async (newUser) => {
-            await saveUsers([...users, newUser]);
+          onSave={async (fields) => {
+            const newUser = await api.createUser({ ...fields, adminUserId: currentUser.id });
+            setUsers([...users, newUser]);
             setShowAddUser(false);
             showToast(`Added ${newUser.displayName}`);
           }}
@@ -1734,8 +1651,8 @@ function UsersView({ currentUser, setConfirmDialog, showToast }) {
       {resetPasswordFor && (
         <ResetPasswordModal
           user={resetPasswordFor}
-          onSave={async (newHash) => {
-            await saveUsers(users.map(u => u.id === resetPasswordFor.id ? { ...u, passwordHash: newHash } : u));
+          onSave={async (newPassword) => {
+            await api.updateUser({ id: resetPasswordFor.id, newPassword, adminUserId: currentUser.id });
             setResetPasswordFor(null);
             showToast('Password reset');
           }}
@@ -1762,17 +1679,16 @@ function AddUserModal({ existingUsers, onSave, onClose }) {
     if (existingUsers.find(u => u.username === normalized)) return setErr('Username already taken');
 
     setLoading(true);
-    const hash = await hashPassword(password);
-    const user = {
-      id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
-      username: normalized,
-      displayName: displayName.trim() || username.trim(),
-      passwordHash: hash,
-      role,
-      createdAt: new Date().toISOString(),
-      active: true,
-    };
-    await onSave(user);
+    try {
+      await onSave({
+        username: username.trim(),
+        password,
+        displayName: displayName.trim() || username.trim(),
+        role,
+      });
+    } catch (e) {
+      setErr(e.message || 'Failed to create user');
+    }
     setLoading(false);
   };
 
@@ -1823,8 +1739,11 @@ function ResetPasswordModal({ user, onSave, onClose }) {
     setErr('');
     if (password.length < 6) return setErr('Password must be at least 6 characters');
     setLoading(true);
-    const hash = await hashPassword(password);
-    await onSave(hash);
+    try {
+      await onSave(password);
+    } catch (e) {
+      setErr(e.message || 'Failed to reset password');
+    }
     setLoading(false);
   };
 
@@ -1869,21 +1788,10 @@ function ChangePasswordModal({ user, onClose, onSuccess }) {
 
     setLoading(true);
     try {
-      const currentHash = await hashPassword(currentPw);
-      if (currentHash !== user.passwordHash) {
-        setErr('Current password is incorrect');
-        setLoading(false);
-        return;
-      }
-      const newHash = await hashPassword(newPw);
-      const { error } = await supabase
-        .from('users')
-        .update({ passwordHash: newHash })
-        .eq('id', user.id);
-      if (error) throw new Error(error.message);
+      await api.changePassword(user.id, currentPw, newPw);
       onSuccess();
     } catch (e) {
-      setErr(`Error: ${e.message}`);
+      setErr(e.message || 'Failed to change password');
     }
     setLoading(false);
   };

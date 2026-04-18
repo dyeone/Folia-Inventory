@@ -67,13 +67,19 @@ create table if not exists sales (
 );
 
 -- ─── Row-Level Security ───────────────────────────────────────────────────────
--- This is an internal tool accessed via the anon key.
--- All operations are permitted; the app enforces its own role checks.
+-- All data access goes through the server-side API routes (under /api),
+-- which use the service_role key that bypasses RLS. The anon key is no
+-- longer used by this app, so no policies are granted to `anon`. RLS is
+-- still enabled as defense-in-depth in case the anon key ever leaks.
 
-alter table users          enable row level security;
+alter table users           enable row level security;
 alter table inventory_items enable row level security;
 alter table sales           enable row level security;
 
-create policy "allow_all" on users          for all to anon using (true) with check (true);
-create policy "allow_all" on inventory_items for all to anon using (true) with check (true);
-create policy "allow_all" on sales           for all to anon using (true) with check (true);
+-- Drop the old permissive policies if they exist (safe to re-run).
+drop policy if exists "allow_all" on users;
+drop policy if exists "allow_all" on inventory_items;
+drop policy if exists "allow_all" on sales;
+drop policy if exists "anon_all" on users;
+drop policy if exists "anon_all" on inventory_items;
+drop policy if exists "anon_all" on sales;
