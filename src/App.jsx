@@ -192,14 +192,9 @@ function AuthScreen({ onLogin }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-50 to-sky-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
-        <div className="bg-gradient-to-br from-emerald-600 to-emerald-700 px-6 py-5 text-white">
-          <div className="flex items-center gap-2 mb-1">
-            <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center backdrop-blur">
-              <Sprout className="w-5 h-5" />
-            </div>
-            <h1 className="text-lg font-semibold">Folia Inventory</h1>
-          </div>
-          <p className="text-emerald-50 text-sm">
+        <div className="bg-[#d4e9c7] px-6 py-6">
+          <img src="/logo.png" alt="Folia Society" className="h-16 w-auto mx-auto block mb-3" />
+          <p className="text-center text-sm text-[#2d3f5e]">
             {mode === 'register'
               ? (hasAnyUsers === false ? 'Create the first admin account' : 'Register a new staff account')
               : 'Sign in to continue'}
@@ -563,11 +558,8 @@ function InventorySystem() {
     <div className="min-h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-emerald-600 flex items-center justify-center">
-              <Sprout className="w-5 h-5 text-white" />
-            </div>
-            <h1 className="text-lg font-semibold text-gray-900">Folia Inventory</h1>
+          <div className="flex items-center">
+            <img src="/logo.png" alt="Folia Society" className="h-9 w-auto rounded-lg" />
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowBulkModal(true)} className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition">
