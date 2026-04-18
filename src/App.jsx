@@ -1964,7 +1964,7 @@ function ItemFormModal({ title, item, sales, existingItems = [], onSave, onClose
       })
       .filter(n => !isNaN(n) && n > 0);
     const nextNum = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 1;
-    setForm(f => ({ ...f, sku: String(nextNum).padStart(4, '0') }));
+    setForm(f => ({ ...f, sku: String(nextNum) }));
   }, [form.name, form.variety, form.type, isEditing, skuManuallyEdited, existingItems]);
 
   // Auto-calc ideal price from net cost × (1 + profit rate/100)
@@ -2158,9 +2158,7 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
     name: '',
     variety: '',
     quantity: 5,
-    skuPrefix: '',
     skuStart: 1,
-    skuPadding: 4,
     grossCost: '',
     netCost: '',
     profitRate: '200',
@@ -2172,41 +2170,20 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
     imageUrl: '',
   });
   const [err, setErr] = useState('');
-  const [showSkuOptions, setShowSkuOptions] = useState(false);
-  const [prefixManuallyEdited, setPrefixManuallyEdited] = useState(false);
+  const [startManuallyEdited, setStartManuallyEdited] = useState(false);
 
-  // Build prefix automatically from type + name + variety (unless manually edited)
-  const autoPrefix = useMemo(() => {
-    if (!form.name) return '';
-    const typePart = form.type === 'tc' ? 'TC' : 'PL';
-    const namePart = form.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase();
-    if (!namePart) return '';
-    const varietyPart = form.variety ? '-' + form.variety.replace(/[^a-zA-Z0-9]/g, '').slice(0, 3).toUpperCase() : '';
-    return `${typePart}-${namePart}${varietyPart}-`;
-  }, [form.name, form.variety, form.type]);
-
-  // Keep prefix synced with auto-generated value unless user manually edited
+  // Auto-compute starting number as max existing numeric SKU + 1.
   useEffect(() => {
-    if (!prefixManuallyEdited) {
-      setForm(f => ({ ...f, skuPrefix: autoPrefix }));
-    }
-  }, [autoPrefix, prefixManuallyEdited]);
-
-  // Auto-detect next available starting number for this prefix
-  useEffect(() => {
-    if (!form.skuPrefix) return;
-    const prefix = form.skuPrefix;
+    if (startManuallyEdited) return;
     const existingNums = existingItems
-      .filter(i => i.sku?.toLowerCase().startsWith(prefix.toLowerCase()))
       .map(i => {
-        const suffix = i.sku.slice(prefix.length);
-        const match = suffix.match(/^(\d+)/);
-        return match ? parseInt(match[1]) : 0;
+        const s = String(i.sku || '').trim();
+        return /^\d+$/.test(s) ? parseInt(s, 10) : 0;
       })
-      .filter(n => !isNaN(n) && n > 0);
+      .filter(n => n > 0);
     const nextStart = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 1;
     setForm(f => ({ ...f, skuStart: nextStart }));
-  }, [form.skuPrefix, existingItems]);
+  }, [existingItems, startManuallyEdited]);
 
   // Auto-calc ideal price
   useEffect(() => {
@@ -2220,39 +2197,32 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
   const previewSkus = useMemo(() => {
     const qty = parseInt(form.quantity) || 0;
     const start = parseInt(form.skuStart) || 1;
-    const padding = parseInt(form.skuPadding) || 0;
     const result = [];
     for (let i = 0; i < Math.min(qty, 5); i++) {
-      const num = start + i;
-      const padded = padding > 0 ? String(num).padStart(padding, '0') : String(num);
-      result.push(`${form.skuPrefix}${padded}`);
+      result.push(String(start + i));
     }
     return result;
-  }, [form.skuPrefix, form.skuStart, form.quantity, form.skuPadding]);
+  }, [form.skuStart, form.quantity]);
 
   const handleSubmit = () => {
     setErr('');
     if (!form.name.trim()) return setErr('Plant name is required');
-    if (!form.skuPrefix.trim()) return setErr('Enter a plant name to generate SKUs');
     const qty = parseInt(form.quantity);
     if (!qty || qty < 1) return setErr('Quantity must be at least 1');
     if (qty > 500) return setErr('Maximum 500 items per batch');
 
     const start = parseInt(form.skuStart) || 1;
-    const padding = parseInt(form.skuPadding) || 0;
-    const existingSkuSet = new Set(existingItems.map(i => i.sku?.toLowerCase()));
+    const existingSkuSet = new Set(existingItems.map(i => String(i.sku || '')));
 
     const items = [];
     const duplicates = [];
     for (let i = 0; i < qty; i++) {
-      const num = start + i;
-      const padded = padding > 0 ? String(num).padStart(padding, '0') : String(num);
-      const sku = `${form.skuPrefix}${padded}`;
-      if (existingSkuSet.has(sku.toLowerCase())) {
+      const sku = String(start + i);
+      if (existingSkuSet.has(sku)) {
         duplicates.push(sku);
         continue;
       }
-      existingSkuSet.add(sku.toLowerCase());
+      existingSkuSet.add(sku);
       items.push({
         sku,
         type: form.type,
@@ -2321,59 +2291,35 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
           <input type="text" value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input" placeholder="Japanese" />
         </Field>
 
-        {/* SKU preview + collapsible advanced options */}
         {previewSkus.length > 0 && (
-          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-            <div className="flex items-center justify-between">
-              <div className="text-xs">
-                <span className="font-medium text-emerald-900">Auto-generated SKUs: </span>
-                <span className="font-mono text-emerald-800">{previewSkus[0]}
-                  {previewSkus.length > 1 && ` → ${previewSkus[previewSkus.length - 1]}`}
-                  {parseInt(form.quantity) > 5 && ` ... (${form.quantity} total)`}
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSkuOptions(!showSkuOptions)}
-                className="text-xs text-emerald-700 hover:text-emerald-900 font-medium whitespace-nowrap ml-2"
-              >
-                {showSkuOptions ? 'Hide' : 'Customize'}
-              </button>
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 space-y-2">
+            <div className="text-xs">
+              <span className="font-medium text-emerald-900">SKUs: </span>
+              <span className="font-mono text-emerald-800">{previewSkus[0]}
+                {previewSkus.length > 1 && ` → ${previewSkus[previewSkus.length - 1]}`}
+                {parseInt(form.quantity) > 5 && ` … (${form.quantity} total)`}
+              </span>
             </div>
-            {showSkuOptions && (
-              <div className="mt-3 pt-3 border-t border-emerald-200 space-y-2">
-                <Field label="SKU Prefix">
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={form.skuPrefix}
-                      onChange={(e) => { setForm({ ...form, skuPrefix: e.target.value }); setPrefixManuallyEdited(true); }}
-                      className="input font-mono flex-1"
-                    />
-                    {prefixManuallyEdited && (
-                      <button
-                        type="button"
-                        onClick={() => { setPrefixManuallyEdited(false); setForm({ ...form, skuPrefix: autoPrefix }); }}
-                        className="px-2 py-1 text-xs text-gray-600 hover:text-gray-900 border border-gray-300 rounded whitespace-nowrap"
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
-                </Field>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Field label="Start Number">
-                    <input type="number" min="1" value={form.skuStart} onChange={(e) => setForm({ ...form, skuStart: e.target.value })} className="input" />
-                  </Field>
-                  <Field label="Zero-pad digits">
-                    <input type="number" min="0" max="6" value={form.skuPadding} onChange={(e) => setForm({ ...form, skuPadding: e.target.value })} className="input" />
-                  </Field>
-                </div>
-                <div className="text-xs text-emerald-700">
-                  Preview: <span className="font-mono">{previewSkus.join(', ')}{parseInt(form.quantity) > 5 && '...'}</span>
-                </div>
+            <Field label="Start number">
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min="1"
+                  value={form.skuStart}
+                  onChange={(e) => { setForm({ ...form, skuStart: e.target.value }); setStartManuallyEdited(true); }}
+                  className="input font-mono flex-1"
+                />
+                {startManuallyEdited && (
+                  <button
+                    type="button"
+                    onClick={() => setStartManuallyEdited(false)}
+                    className="px-2 py-1 text-xs text-gray-600 hover:text-gray-900 border border-gray-300 rounded whitespace-nowrap"
+                  >
+                    Auto
+                  </button>
+                )}
               </div>
-            )}
+            </Field>
           </div>
         )}
 
