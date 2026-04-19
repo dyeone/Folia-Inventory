@@ -657,6 +657,7 @@ function InventorySystem() {
         <ItemFormModal
           title="Add New SKU"
           sales={sales}
+          existingItems={items}
           onSave={(data) => { addItem(data); setShowAddModal(false); }}
           onClose={() => setShowAddModal(false)}
         />
