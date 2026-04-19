@@ -4,6 +4,8 @@ import * as XLSX from 'xlsx';
 import JsBarcode from 'jsbarcode';
 import { api } from './api.js';
 
+const VARIETIES = ['Anthurium', 'Alocasia', 'Monstera', 'Jewel Orchid'];
+
 const PRICE_BUCKETS = [
   { label: '$0 – 25', min: 0, max: 25 },
   { label: '$25 – 50', min: 25, max: 50 },
@@ -690,6 +692,7 @@ function InventorySystem() {
       {showConvertModal && convertingItem && (
         <ConvertModal
           item={convertingItem}
+          existingItems={items}
           onConvert={(data) => { convertToPlant(convertingItem.id, data); setShowConvertModal(false); setConvertingItem(null); }}
           onClose={() => { setShowConvertModal(false); setConvertingItem(null); }}
         />
@@ -1950,22 +1953,19 @@ function ItemFormModal({ title, item, sales, existingItems = [], onSave, onClose
     imageUrl: item?.imageUrl || '',
   });
   const [err, setErr] = useState('');
-  const [skuManuallyEdited, setSkuManuallyEdited] = useState(isEditing);
 
-  // Auto-generate SKU as next sequential number across all items
+  // Auto-generate SKU as the next sequential number across all items (new items only).
   useEffect(() => {
-    if (isEditing || skuManuallyEdited) return;
-    if (!form.name) return;
-    // Find highest numeric SKU across all existing items
+    if (isEditing) return;
     const existingNums = existingItems
       .map(i => {
         const s = String(i.sku || '').trim();
-        return /^\d+$/.test(s) ? parseInt(s) : 0;
+        return /^\d+$/.test(s) ? parseInt(s, 10) : 0;
       })
-      .filter(n => !isNaN(n) && n > 0);
+      .filter(n => n > 0);
     const nextNum = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 1;
     setForm(f => ({ ...f, sku: String(nextNum) }));
-  }, [form.name, form.variety, form.type, isEditing, skuManuallyEdited, existingItems]);
+  }, [isEditing, existingItems]);
 
   // Auto-calc ideal price from net cost × (1 + profit rate/100)
   const recalcIdeal = (netCost, profitRate) => {
@@ -1978,12 +1978,12 @@ function ItemFormModal({ title, item, sales, existingItems = [], onSave, onClose
   };
 
   const handleSubmit = () => {
-    if (!form.sku.trim()) return setErr('SKU is required');
-    if (!/^\d+$/.test(form.sku.trim())) return setErr('SKU must contain only numbers');
+    if (!form.variety) return setErr('Variety is required');
     if (!form.name.trim()) return setErr('Name is required');
-    // Check SKU uniqueness for new items
+    if (!form.sku.trim()) return setErr('SKU could not be generated — try again');
+    // Defense-in-depth: ensure we didn't accidentally pick an SKU that's already taken.
     if (!isEditing && existingItems.some(i => String(i.sku || '').trim() === form.sku.trim())) {
-      return setErr(`SKU "${form.sku}" already exists.`);
+      return setErr(`SKU "${form.sku}" already exists. Please retry.`);
     }
     onSave({
       ...form,
@@ -2013,35 +2013,20 @@ function ItemFormModal({ title, item, sales, existingItems = [], onSave, onClose
             <input type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" />
           </Field>
         </div>
-        <Field label="Plant Name *">
-          <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" placeholder="Monstera Albo" />
+        <Field label="Variety *">
+          <select value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input">
+            <option value="">Select variety…</option>
+            {VARIETIES.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
         </Field>
-        <Field label="Variety / Strain">
-          <input type="text" value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input" placeholder="e.g. Japanese" />
+        <Field label="Plant Name *">
+          <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" placeholder="e.g. Monstera Albo Japanese" />
         </Field>
 
-        <Field label={isEditing ? 'SKU *' : 'SKU (auto-generated)'}>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={form.sku}
-              onChange={(e) => { setForm({ ...form, sku: e.target.value.replace(/\D/g, '') }); setSkuManuallyEdited(true); }}
-              className="input font-mono flex-1"
-              placeholder={isEditing ? '' : 'Enter plant name above'}
-            />
-            {!isEditing && skuManuallyEdited && (
-              <button
-                type="button"
-                onClick={() => setSkuManuallyEdited(false)}
-                className="px-2 py-1 text-xs text-gray-600 hover:text-gray-900 border border-gray-300 rounded whitespace-nowrap"
-              >
-                Auto
-              </button>
-            )}
-          </div>
-        </Field>
+        <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-xs">
+          <span className="text-gray-500">{isEditing ? 'SKU' : 'SKU (auto-assigned)'}</span>
+          <span className="font-mono font-bold text-gray-900">{form.sku || '—'}</span>
+        </div>
 
         <div className="border-t border-gray-200 pt-3">
           <div className="text-xs font-semibold text-gray-700 mb-2">Cost & Pricing</div>
@@ -2206,6 +2191,7 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
 
   const handleSubmit = () => {
     setErr('');
+    if (!form.variety) return setErr('Variety is required');
     if (!form.name.trim()) return setErr('Plant name is required');
     const qty = parseInt(form.quantity);
     if (!qty || qty < 1) return setErr('Quantity must be at least 1');
@@ -2284,11 +2270,14 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
             <input type="number" min="1" max="500" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" />
           </Field>
         </div>
-        <Field label="Plant Name *">
-          <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" placeholder="Monstera Albo" />
+        <Field label="Variety *">
+          <select value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input">
+            <option value="">Select variety…</option>
+            {VARIETIES.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
         </Field>
-        <Field label="Variety / Strain">
-          <input type="text" value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input" placeholder="Japanese" />
+        <Field label="Plant Name *">
+          <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" placeholder="e.g. Monstera Albo Japanese" />
         </Field>
 
         {previewSkus.length > 0 && (
@@ -2398,9 +2387,20 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
   );
 }
 
-function ConvertModal({ item, onConvert, onClose }) {
+function ConvertModal({ item, existingItems = [], onConvert, onClose }) {
+  // Assign the next sequential numeric SKU across all items.
+  const nextSku = useMemo(() => {
+    const nums = existingItems
+      .map(i => {
+        const s = String(i.sku || '').trim();
+        return /^\d+$/.test(s) ? parseInt(s, 10) : 0;
+      })
+      .filter(n => n > 0);
+    return String(nums.length > 0 ? Math.max(...nums) + 1 : 1);
+  }, [existingItems]);
+
   const [form, setForm] = useState({
-    sku: item.sku.replace(/^TC[-_]?/i, 'PL-'),
+    sku: nextSku,
     name: item.name,
     variety: item.variety || '',
     cost: item.cost || '',
@@ -2416,15 +2416,19 @@ function ConvertModal({ item, onConvert, onClose }) {
           <div className="font-medium mb-1">Converting tissue culture to plant</div>
           <div>The original TC SKU will be marked as "converted" and a new Plant SKU will be created, preserving the lineage.</div>
         </div>
-        <Field label="New Plant SKU *">
-          <input type="text" value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} className="input font-mono" />
-        </Field>
+        <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-xs">
+          <span className="text-gray-500">New Plant SKU (auto-assigned)</span>
+          <span className="font-mono font-bold text-gray-900">{form.sku}</span>
+        </div>
         <Field label="Plant Name *">
           <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" />
         </Field>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Field label="Variety">
-            <input type="text" value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input" />
+          <Field label="Variety *">
+            <select value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input">
+              <option value="">Select variety…</option>
+              {VARIETIES.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
           </Field>
           <Field label="Quantity">
             <input type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" />
