@@ -6,6 +6,27 @@ import { api } from './api.js';
 
 const VARIETIES = ['Anthurium', 'Alocasia', 'Monstera', 'Jewel Orchid'];
 
+// Short code prefixes used when generating SKUs. Each SKU is `${code}-${n}`
+// where n is the next unused number within that variety's sequence.
+const VARIETY_CODES = {
+  'Anthurium': 'ANT',
+  'Alocasia': 'ALO',
+  'Monstera': 'MON',
+  'Jewel Orchid': 'JOR',
+};
+
+function nextSkuForVariety(variety, existingItems) {
+  const code = VARIETY_CODES[variety];
+  if (!code) return '';
+  const prefix = `${code}-`;
+  const nums = (existingItems || [])
+    .filter(i => String(i.sku || '').startsWith(prefix))
+    .map(i => parseInt(String(i.sku).slice(prefix.length), 10))
+    .filter(n => !isNaN(n) && n > 0);
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  return `${prefix}${next}`;
+}
+
 const PRICE_BUCKETS = [
   { label: '$0 – 25', min: 0, max: 25 },
   { label: '$25 – 50', min: 25, max: 50 },
@@ -1955,18 +1976,11 @@ function ItemFormModal({ title, item, sales, existingItems = [], onSave, onClose
   });
   const [err, setErr] = useState('');
 
-  // Auto-generate SKU as the next sequential number across all items (new items only).
+  // Auto-generate the SKU from the selected variety (new items only).
   useEffect(() => {
     if (isEditing) return;
-    const existingNums = existingItems
-      .map(i => {
-        const s = String(i.sku || '').trim();
-        return /^\d+$/.test(s) ? parseInt(s, 10) : 0;
-      })
-      .filter(n => n > 0);
-    const nextNum = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 1;
-    setForm(f => ({ ...f, sku: String(nextNum) }));
-  }, [isEditing, existingItems]);
+    setForm(f => ({ ...f, sku: nextSkuForVariety(f.variety, existingItems) }));
+  }, [isEditing, form.variety, existingItems]);
 
   // Auto-calc ideal price from net cost × (1 + profit rate/100)
   const recalcIdeal = (netCost, profitRate) => {
@@ -1981,9 +1995,8 @@ function ItemFormModal({ title, item, sales, existingItems = [], onSave, onClose
   const handleSubmit = () => {
     if (!form.variety) return setErr('Variety is required');
     if (!form.name.trim()) return setErr('Name is required');
-    if (!form.sku.trim()) return setErr('SKU could not be generated — try again');
-    // Defense-in-depth: ensure we didn't accidentally pick an SKU that's already taken.
-    if (!isEditing && existingItems.some(i => String(i.sku || '').trim() === form.sku.trim())) {
+    if (!form.sku) return setErr('SKU could not be generated — pick a variety first');
+    if (!isEditing && existingItems.some(i => i.sku === form.sku)) {
       return setErr(`SKU "${form.sku}" already exists. Please retry.`);
     }
     onSave({
@@ -2158,18 +2171,19 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
   const [err, setErr] = useState('');
   const [startManuallyEdited, setStartManuallyEdited] = useState(false);
 
-  // Auto-compute starting number as max existing numeric SKU + 1.
+  // Auto-compute the starting number within the selected variety's namespace.
   useEffect(() => {
     if (startManuallyEdited) return;
-    const existingNums = existingItems
-      .map(i => {
-        const s = String(i.sku || '').trim();
-        return /^\d+$/.test(s) ? parseInt(s, 10) : 0;
-      })
-      .filter(n => n > 0);
-    const nextStart = existingNums.length > 0 ? Math.max(...existingNums) + 1 : 1;
+    const code = VARIETY_CODES[form.variety];
+    if (!code) { setForm(f => ({ ...f, skuStart: 1 })); return; }
+    const prefix = `${code}-`;
+    const nums = existingItems
+      .filter(i => String(i.sku || '').startsWith(prefix))
+      .map(i => parseInt(String(i.sku).slice(prefix.length), 10))
+      .filter(n => !isNaN(n) && n > 0);
+    const nextStart = nums.length > 0 ? Math.max(...nums) + 1 : 1;
     setForm(f => ({ ...f, skuStart: nextStart }));
-  }, [existingItems, startManuallyEdited]);
+  }, [existingItems, form.variety, startManuallyEdited]);
 
   // Auto-calc ideal price
   useEffect(() => {
@@ -2181,14 +2195,16 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
   }, [form.netCost, form.profitRate]);
 
   const previewSkus = useMemo(() => {
+    const code = VARIETY_CODES[form.variety];
+    if (!code) return [];
     const qty = parseInt(form.quantity) || 0;
     const start = parseInt(form.skuStart) || 1;
     const result = [];
     for (let i = 0; i < Math.min(qty, 5); i++) {
-      result.push(String(start + i));
+      result.push(`${code}-${start + i}`);
     }
     return result;
-  }, [form.skuStart, form.quantity]);
+  }, [form.variety, form.skuStart, form.quantity]);
 
   const handleSubmit = () => {
     setErr('');
@@ -2198,13 +2214,14 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
     if (!qty || qty < 1) return setErr('Quantity must be at least 1');
     if (qty > 500) return setErr('Maximum 500 items per batch');
 
+    const code = VARIETY_CODES[form.variety];
     const start = parseInt(form.skuStart) || 1;
     const existingSkuSet = new Set(existingItems.map(i => String(i.sku || '')));
 
     const items = [];
     const duplicates = [];
     for (let i = 0; i < qty; i++) {
-      const sku = String(start + i);
+      const sku = `${code}-${start + i}`;
       if (existingSkuSet.has(sku)) {
         duplicates.push(sku);
         continue;
@@ -2389,19 +2406,8 @@ function BatchVarietyModal({ existingItems, onSave, onClose }) {
 }
 
 function ConvertModal({ item, existingItems = [], onConvert, onClose }) {
-  // Assign the next sequential numeric SKU across all items.
-  const nextSku = useMemo(() => {
-    const nums = existingItems
-      .map(i => {
-        const s = String(i.sku || '').trim();
-        return /^\d+$/.test(s) ? parseInt(s, 10) : 0;
-      })
-      .filter(n => n > 0);
-    return String(nums.length > 0 ? Math.max(...nums) + 1 : 1);
-  }, [existingItems]);
-
   const [form, setForm] = useState({
-    sku: nextSku,
+    sku: nextSkuForVariety(item.variety || '', existingItems),
     name: item.name,
     variety: item.variety || '',
     cost: item.cost || '',
@@ -2409,6 +2415,11 @@ function ConvertModal({ item, existingItems = [], onConvert, onClose }) {
     notes: item.notes || '',
     quantity: item.quantity || 1,
   });
+
+  // Keep the new SKU in sync if the user switches variety.
+  useEffect(() => {
+    setForm(f => ({ ...f, sku: nextSkuForVariety(f.variety, existingItems) }));
+  }, [form.variety, existingItems]);
 
   return (
     <Modal title={`Convert ${item.sku} to Plant`} onClose={onClose}>
