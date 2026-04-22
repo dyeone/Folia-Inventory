@@ -10,7 +10,6 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
     name: '',
     variety: '',
     quantity: 5,
-    skuStart: 1,
     grossCost: '',
     netCost: '',
     profitRate: '200',
@@ -22,21 +21,6 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
     imageUrl: '',
   });
   const [err, setErr] = useState('');
-  const [startManuallyEdited, setStartManuallyEdited] = useState(false);
-
-  // Auto-compute the starting number within the selected variety's namespace.
-  useEffect(() => {
-    if (startManuallyEdited) return;
-    const code = VARIETY_CODES[form.variety];
-    if (!code) { setForm(f => ({ ...f, skuStart: 1 })); return; }
-    const prefix = `${code}-`;
-    const nums = existingItems
-      .filter(i => String(i.sku || '').startsWith(prefix))
-      .map(i => parseInt(String(i.sku).slice(prefix.length), 10))
-      .filter(n => !isNaN(n) && n > 0);
-    const nextStart = nums.length > 0 ? Math.max(...nums) + 1 : 1;
-    setForm(f => ({ ...f, skuStart: nextStart }));
-  }, [existingItems, form.variety, startManuallyEdited]);
 
   // Auto-calc ideal price
   useEffect(() => {
@@ -47,17 +31,26 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
     }
   }, [form.netCost, form.profitRate]);
 
+  // Preview of the SKUs the server is likely to assign. Just a hint — server
+  // is authoritative and may pick different numbers if another user beats us.
+  // Numbering is global across all items; prefix just marks the variety.
   const previewSkus = useMemo(() => {
     const code = VARIETY_CODES[form.variety];
     if (!code) return [];
+    const nums = existingItems
+      .map(i => {
+        const m = String(i.sku || '').match(/-(\d+)$/);
+        return m ? parseInt(m[1], 10) : 0;
+      })
+      .filter(n => n > 0);
+    const start = nums.length > 0 ? Math.max(...nums) + 1 : 1;
     const qty = parseInt(form.quantity) || 0;
-    const start = parseInt(form.skuStart) || 1;
     const result = [];
     for (let i = 0; i < Math.min(qty, 5); i++) {
       result.push(`${code}-${start + i}`);
     }
     return result;
-  }, [form.variety, form.skuStart, form.quantity]);
+  }, [form.variety, form.quantity, existingItems]);
 
   const handleSubmit = () => {
     setErr('');
@@ -67,48 +60,23 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
     if (!qty || qty < 1) return setErr('Quantity must be at least 1');
     if (qty > 500) return setErr('Maximum 500 items per batch');
 
-    const code = VARIETY_CODES[form.variety];
-    const start = parseInt(form.skuStart) || 1;
-    const existingSkuSet = new Set(existingItems.map(i => String(i.sku || '')));
-
-    const items = [];
-    const duplicates = [];
-    for (let i = 0; i < qty; i++) {
-      const sku = `${code}-${start + i}`;
-      if (existingSkuSet.has(sku)) {
-        duplicates.push(sku);
-        continue;
-      }
-      existingSkuSet.add(sku);
-      items.push({
-        sku,
-        type: form.type,
-        name: form.name.trim(),
-        variety: form.variety.trim(),
-        quantity: 1,
-        grossCost: form.grossCost,
-        cost: form.grossCost,
-        netCost: form.netCost,
-        profitRate: form.profitRate,
-        idealPrice: form.idealPrice,
-        listingPrice: form.listingPrice || form.idealPrice,
-        source: form.source,
-        acquiredAt: form.acquiredAt,
-        notes: form.notes,
-        imageUrl: form.imageUrl,
-      });
-    }
-
-    if (duplicates.length === qty) {
-      setErr(`All ${qty} SKUs conflict with existing items. Try changing the starting number.`);
-      return;
-    }
-    if (duplicates.length > 0) {
-      if (!confirm(`${duplicates.length} SKU(s) already exist and will be skipped: ${duplicates.slice(0, 3).join(', ')}${duplicates.length > 3 ? '...' : ''}. Create the other ${items.length}?`)) {
-        return;
-      }
-    }
-
+    // Server assigns SKUs. We just send the shared template `qty` times.
+    const items = Array.from({ length: qty }, () => ({
+      type: form.type,
+      name: form.name.trim(),
+      variety: form.variety.trim(),
+      quantity: 1,
+      grossCost: form.grossCost,
+      cost: form.grossCost,
+      netCost: form.netCost,
+      profitRate: form.profitRate,
+      idealPrice: form.idealPrice,
+      listingPrice: form.listingPrice || form.idealPrice,
+      source: form.source,
+      acquiredAt: form.acquiredAt,
+      notes: form.notes,
+      imageUrl: form.imageUrl,
+    }));
     onSave(items);
   };
 
@@ -152,34 +120,14 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
         </Field>
 
         {previewSkus.length > 0 && (
-          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 space-y-2">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
             <div className="text-xs">
-              <span className="font-medium text-emerald-900">SKUs: </span>
+              <span className="font-medium text-emerald-900">SKUs (auto-assigned): </span>
               <span className="font-mono text-emerald-800">{previewSkus[0]}
                 {previewSkus.length > 1 && ` → ${previewSkus[previewSkus.length - 1]}`}
                 {parseInt(form.quantity) > 5 && ` … (${form.quantity} total)`}
               </span>
             </div>
-            <Field label="Start number">
-              <div className="flex gap-2">
-                <input
-                  type="number"
-                  min="1"
-                  value={form.skuStart}
-                  onChange={(e) => { setForm({ ...form, skuStart: e.target.value }); setStartManuallyEdited(true); }}
-                  className="input font-mono flex-1"
-                />
-                {startManuallyEdited && (
-                  <button
-                    type="button"
-                    onClick={() => setStartManuallyEdited(false)}
-                    className="px-2 py-1 text-xs text-gray-600 hover:text-gray-900 border border-gray-300 rounded whitespace-nowrap"
-                  >
-                    Auto
-                  </button>
-                )}
-              </div>
-            </Field>
           </div>
         )}
 

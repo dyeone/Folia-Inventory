@@ -9,16 +9,20 @@ export const VARIETY_CODES = {
   'Jewel Orchid': 'JOR',
 };
 
+// Global SKU counter: the number after the variety prefix increments across
+// ALL items, regardless of variety. So you might see ANT-1, ALO-2, ANT-3, MON-4…
+// Prefix just identifies the variety; number is globally unique.
 export function nextSkuForVariety(variety, existingItems) {
   const code = VARIETY_CODES[variety];
   if (!code) return '';
-  const prefix = `${code}-`;
   const nums = (existingItems || [])
-    .filter(i => String(i.sku || '').startsWith(prefix))
-    .map(i => parseInt(String(i.sku).slice(prefix.length), 10))
-    .filter(n => !isNaN(n) && n > 0);
+    .map(i => {
+      const m = String(i.sku || '').match(/-(\d+)$/);
+      return m ? parseInt(m[1], 10) : 0;
+    })
+    .filter(n => n > 0);
   const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
-  return `${prefix}${next}`;
+  return `${code}-${next}`;
 }
 
 export const PRICE_BUCKETS = [

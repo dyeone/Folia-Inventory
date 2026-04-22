@@ -11,35 +11,32 @@ function stripServerOwned(item) {
   return clean;
 }
 
-// Assign SKUs (variety-prefixed sequential) to items that don't have one.
-// Batched items of the same variety get consecutive numbers.
+// Assign SKUs to items that don't have one. Numbering is GLOBAL across all
+// items; the variety code is only a prefix for identification. Example
+// sequence: ANT-1, ALO-2, ANT-3, MON-4, JOR-5…
 async function assignMissingSkus(items) {
   const needSku = items.filter(i => !i.sku);
   if (needSku.length === 0) return;
 
-  const byVariety = {};
-  for (const i of needSku) {
-    if (!byVariety[i.variety]) byVariety[i.variety] = [];
-    byVariety[i.variety].push(i);
+  // Validate varieties up front so we don't half-assign and fail.
+  for (const item of needSku) {
+    if (!VARIETY_CODES[item.variety]) {
+      const e = new Error(`Unknown variety: ${item.variety}`); e.status = 400; throw e;
+    }
   }
 
-  for (const [variety, group] of Object.entries(byVariety)) {
-    const code = VARIETY_CODES[variety];
-    if (!code) {
-      const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
-    }
-    const prefix = `${code}-`;
-    const { data } = await supabase
-      .from('inventory_items')
-      .select('sku')
-      .like('sku', `${prefix}%`);
-    const nums = (data || [])
-      .map(r => parseInt(String(r.sku).slice(prefix.length), 10))
-      .filter(n => !isNaN(n) && n > 0);
-    let next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
-    for (const item of group) {
-      item.sku = `${prefix}${next++}`;
-    }
+  // Find the current max suffix across all items (regardless of prefix).
+  const { data } = await supabase.from('inventory_items').select('sku');
+  const nums = (data || [])
+    .map(r => {
+      const m = String(r.sku || '').match(/-(\d+)$/);
+      return m ? parseInt(m[1], 10) : 0;
+    })
+    .filter(n => n > 0);
+  let next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+
+  for (const item of needSku) {
+    item.sku = `${VARIETY_CODES[item.variety]}-${next++}`;
   }
 }
 

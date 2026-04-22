@@ -2,21 +2,21 @@ import { supabase, requireUser, newId } from '../_lib/supabase.js';
 import { wrap, methodNotAllowed } from '../_lib/respond.js';
 import { VARIETY_CODES } from '../../src/constants.js';
 
+// Global numbering across all items; prefix identifies variety only.
 async function nextSkuForVariety(variety) {
   const code = VARIETY_CODES[variety];
   if (!code) {
     const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
   }
-  const prefix = `${code}-`;
-  const { data } = await supabase
-    .from('inventory_items')
-    .select('sku')
-    .like('sku', `${prefix}%`);
+  const { data } = await supabase.from('inventory_items').select('sku');
   const nums = (data || [])
-    .map(r => parseInt(String(r.sku).slice(prefix.length), 10))
-    .filter(n => !isNaN(n) && n > 0);
+    .map(r => {
+      const m = String(r.sku || '').match(/-(\d+)$/);
+      return m ? parseInt(m[1], 10) : 0;
+    })
+    .filter(n => n > 0);
   const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
-  return `${prefix}${next}`;
+  return `${code}-${next}`;
 }
 
 // POST /api/items/convert
