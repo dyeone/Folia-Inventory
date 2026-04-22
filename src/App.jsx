@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useContext } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
-  Layers, Users, LogOut, Shield, User, Key,
+  Layers, Users, LogOut, Shield, User, Key, Check, Printer,
 } from 'lucide-react';
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -107,6 +107,8 @@ function InventorySystem() {
   const [filterSale, setFilterSale] = useState('all');
   const [toast, setToast] = useState(null);
   const [labelItems, setLabelItems] = useState(null);
+  // { items: [...], title: 'Added N items' } — summary dialog after creation
+  const [addSummary, setAddSummary] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -177,12 +179,15 @@ function InventorySystem() {
       await api.upsertItems([{ ...clean, status: item.status || 'available' }]);
       const fresh = await api.getItems();
       setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
-      // Find the new item in the fresh list to show its generated SKU + print label.
+      // Find the new item in the fresh list to show its generated SKU.
       const newest = fresh.reduce((latest, i) =>
         (!latest || new Date(i.createdAt) > new Date(latest.createdAt)) ? i : latest, null);
       if (newest) {
-        showToast(`Added ${newest.sku}`);
-        setLabelItems([newest]);
+        setAddSummary({
+          title: 'Item added',
+          detail: `${newest.sku} · ${newest.name}${newest.variety ? ` · ${newest.variety}` : ''}`,
+          items: [newest],
+        });
       }
     } catch (e) {
       showToast(e.message || 'Failed to add item', 'error');
@@ -516,9 +521,16 @@ function InventorySystem() {
               const sorted = [...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
               setItems(sorted);
               const justAdded = sorted.filter(i => !before.has(i.id));
-              showToast(`Added ${justAdded.length} items`);
               setShowBatchModal(false);
-              if (justAdded.length > 0) setLabelItems(justAdded);
+              if (justAdded.length > 0) {
+                const firstSku = justAdded[justAdded.length - 1]?.sku;
+                const lastSku = justAdded[0]?.sku;
+                setAddSummary({
+                  title: `Added ${justAdded.length} ${justAdded.length === 1 ? 'item' : 'items'}`,
+                  detail: firstSku === lastSku ? firstSku : `${firstSku} → ${lastSku}`,
+                  items: justAdded,
+                });
+              }
             } catch (e) {
               showToast(e.message || 'Failed to add items', 'error');
             }
@@ -663,6 +675,40 @@ function InventorySystem() {
 
       {labelItems && labelItems.length > 0 && (
         <LabelSheet items={labelItems} onClose={() => setLabelItems(null)} />
+      )}
+
+      {addSummary && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setAddSummary(null)}>
+          <div className="bg-white rounded-xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="p-5">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                  <Check className="w-5 h-5 text-emerald-600" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold text-gray-900">{addSummary.title}</h3>
+                  {addSummary.detail && (
+                    <p className="text-sm text-gray-600 mt-1 font-mono truncate">{addSummary.detail}</p>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-5 py-3 flex justify-end gap-2">
+              <button
+                onClick={() => { setLabelItems(addSummary.items); setAddSummary(null); }}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 hover:bg-gray-100 rounded-lg"
+              >
+                <Printer className="w-4 h-4" /> Print labels
+              </button>
+              <button
+                onClick={() => setAddSummary(null)}
+                className="px-4 py-2 text-sm text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
