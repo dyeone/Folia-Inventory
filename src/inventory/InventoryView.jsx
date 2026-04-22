@@ -1,8 +1,24 @@
 import { useState, useMemo } from 'react';
 import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
+import { VARIETIES } from '../constants.js';
 
-export function InventoryView({ items, allItems, sales, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+  // Variety tab further narrows the list. `items` below = the final list
+  // shown in the table / cards (after search/type/status/sale + variety tab).
+  const [varietyTab, setVarietyTab] = useState('all');
+  const items = useMemo(
+    () => varietyTab === 'all' ? filteredItems : filteredItems.filter(i => i.variety === varietyTab),
+    [filteredItems, varietyTab]
+  );
+  const varietyCounts = useMemo(() => {
+    const counts = { all: filteredItems.length };
+    for (const v of VARIETIES) {
+      counts[v] = filteredItems.filter(i => i.variety === v).length;
+    }
+    return counts;
+  }, [filteredItems]);
+
   // Selection is local to this view; cleared whenever filters change or after an action.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
@@ -103,6 +119,30 @@ export function InventoryView({ items, allItems, sales, searchQuery, setSearchQu
             ...sales.map(s => ({ value: s.id, label: s.name })),
           ]} />
         </div>
+      </div>
+
+      {/* Variety tabs */}
+      <div className="bg-white rounded-xl border border-gray-200 px-1 py-1 flex gap-0.5 overflow-x-auto">
+        {[{ value: 'all', label: 'All' }, ...VARIETIES.map(v => ({ value: v, label: v }))].map(tab => {
+          const active = varietyTab === tab.value;
+          const count = varietyCounts[tab.value] ?? 0;
+          return (
+            <button
+              key={tab.value}
+              onClick={() => setVarietyTab(tab.value)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition ${
+                active
+                  ? 'bg-emerald-600 text-white font-medium'
+                  : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              {tab.label}
+              <span className={`text-xs ${active ? 'text-emerald-100' : 'text-gray-400'}`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       <div className="flex items-center justify-between gap-2 px-1">
