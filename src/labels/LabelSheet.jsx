@@ -108,6 +108,21 @@ export function LabelSheet({ items, onClose }) {
     pdf.save(`folia-labels-${stamp}.pdf`);
   };
 
+  // Use the same PDF for printing — opens it in a new tab with the print
+  // dialog already triggered. This sidesteps browser CSS print quirks and
+  // guarantees the printed output matches the downloaded PDF exactly.
+  const handlePrint = () => {
+    const pdf = buildPdf(items);
+    pdf.autoPrint();
+    const url = pdf.output('bloburl');
+    const win = window.open(url, '_blank');
+    if (!win) {
+      // Pop-up blocked — fall back to triggering the browser's own print
+      // dialog on the on-screen preview.
+      window.print();
+    }
+  };
+
   // Render through a portal so this becomes a direct child of <body>.
   // That lets the @media print rules reliably hide everything except the
   // sheet itself — otherwise the React root (also a body child) contains the
@@ -123,7 +138,7 @@ export function LabelSheet({ items, onClose }) {
             Close
           </button>
           <button
-            onClick={() => window.print()}
+            onClick={handlePrint}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-gray-700"
           >
             <Printer className="w-4 h-4" /> Print
