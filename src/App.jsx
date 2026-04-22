@@ -450,6 +450,25 @@ function InventorySystem() {
             onConvert={(item) => { setConvertingItem(item); setShowConvertModal(true); }}
             onAssignSale={(item) => { setAssigningItem(item); setShowAssignModal(true); }}
             onPrintLabel={(item) => setLabelItems([item])}
+            onBulkPrintLabel={(selected) => setLabelItems(selected)}
+            onBulkDelete={(ids, clear) => {
+              if (!isAdmin) {
+                showToast('Only admins can delete items', 'error');
+                return;
+              }
+              setConfirmDialog({
+                title: `Delete ${ids.length} ${ids.length === 1 ? 'item' : 'items'}?`,
+                message: `Permanently delete ${ids.length} ${ids.length === 1 ? 'item' : 'items'}? This can't be undone.`,
+                confirmLabel: 'Delete',
+                danger: true,
+                onConfirm: async () => {
+                  const idSet = new Set(ids);
+                  await saveItems(items.filter(i => !idSet.has(i.id)));
+                  showToast(`Deleted ${ids.length} ${ids.length === 1 ? 'item' : 'items'}`);
+                  clear?.();
+                },
+              });
+            }}
             onStatusChange={(id, status) => {
               const updates = { status };
               if (status === 'sold') updates.soldAt = new Date().toISOString();

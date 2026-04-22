@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { Printer } from 'lucide-react';
+import { Printer, Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
+import { jsPDF } from 'jspdf';
 
 function Label({ item }) {
   const svgRef = useRef(null);
@@ -38,19 +39,95 @@ function Label({ item }) {
   );
 }
 
+// One label per page, page size = 2" × 1" (standard thermal label stock).
+const LABEL_W = 2;
+const LABEL_H = 1;
+
+// Renders a CODE128 barcode into a hidden canvas and returns it as a PNG data
+// URL, ready to embed in a jsPDF page.
+function barcodeDataUrl(canvas, value) {
+  try {
+    JsBarcode(canvas, value, {
+      format: 'CODE128',
+      height: 50,      // drawing height in px
+      width: 2,        // bar width multiplier
+      margin: 0,
+      displayValue: false,
+    });
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
+}
+
+function buildPdf(items) {
+  const pdf = new jsPDF({
+    unit: 'in',
+    format: [LABEL_W, LABEL_H],
+    orientation: 'landscape',
+  });
+  const canvas = document.createElement('canvas');
+
+  items.forEach((item, idx) => {
+    if (idx > 0) pdf.addPage([LABEL_W, LABEL_H], 'landscape');
+
+    // Top: name + variety — 8pt, centered, truncated to fit the label width.
+    const title = `${item.name || ''}${item.variety ? ` · ${item.variety}` : ''}`;
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(70);
+    pdf.text(title, LABEL_W / 2, 0.18, {
+      align: 'center',
+      maxWidth: LABEL_W - 0.15,
+    });
+
+    // Middle: SKU — 14pt bold monospace, centered.
+    const sku = String(item.sku || '');
+    pdf.setFont('courier', 'bold');
+    pdf.setFontSize(14);
+    pdf.setTextColor(0);
+    pdf.text(sku, LABEL_W / 2, 0.45, { align: 'center' });
+
+    // Bottom: barcode image (0.1" side gutters, ~0.4" tall).
+    if (sku) {
+      const dataUrl = barcodeDataUrl(canvas, sku);
+      if (dataUrl) {
+        pdf.addImage(dataUrl, 'PNG', 0.1, 0.55, LABEL_W - 0.2, 0.4);
+      }
+    }
+  });
+
+  return pdf;
+}
+
 export function LabelSheet({ items, onClose }) {
+  const handleDownloadPdf = () => {
+    const pdf = buildPdf(items);
+    const stamp = new Date().toISOString().slice(0, 10);
+    pdf.save(`folia-labels-${stamp}.pdf`);
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-gray-100 overflow-auto folia-label-sheet">
       <div className="folia-no-print sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-2">
         <h2 className="text-base font-semibold text-gray-900">
-          Print labels <span className="text-gray-400 font-normal">· {items.length} {items.length === 1 ? 'item' : 'items'} · 2″ × 1″</span>
+          Labels <span className="text-gray-400 font-normal">· {items.length} {items.length === 1 ? 'item' : 'items'} · 2″ × 1″</span>
         </h2>
         <div className="ml-auto flex gap-2">
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close
           </button>
-          <button onClick={() => window.print()} className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white">
+          <button
+            onClick={() => window.print()}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-gray-700"
+          >
             <Printer className="w-4 h-4" /> Print
+          </button>
+          <button
+            onClick={handleDownloadPdf}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white"
+          >
+            <Download className="w-4 h-4" /> Download PDF
           </button>
         </div>
       </div>
@@ -81,7 +158,6 @@ export function LabelSheet({ items, onClose }) {
             page-break-inside: avoid !important;
             break-inside: avoid !important;
           }
-          /* Letter paper: 3 labels across × 10 down = 30 per page */
           @page { size: letter; margin: 0.25in; }
         }
       `}</style>

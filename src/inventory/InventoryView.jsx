@@ -1,7 +1,48 @@
-import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
 
-export function InventoryView({ items, allItems, sales, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onStatusChange, isAdmin }) {
+export function InventoryView({ items, allItems, sales, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+  // Selection is local to this view; cleared whenever filters change or after an action.
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+
+  // Drop selections that are no longer visible (e.g. filtered out) to avoid
+  // acting on rows the user can't see.
+  const visibleIds = useMemo(() => new Set(items.map(i => i.id)), [items]);
+  const visibleSelected = useMemo(
+    () => [...selectedIds].filter(id => visibleIds.has(id)),
+    [selectedIds, visibleIds]
+  );
+
+  const toggleSelect = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    const allVisibleSelected = items.length > 0 && items.every(i => selectedIds.has(i.id));
+    setSelectedIds(allVisibleSelected ? new Set() : new Set(items.map(i => i.id)));
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleBulkPrint = () => {
+    const selected = items.filter(i => selectedIds.has(i.id));
+    if (selected.length === 0) return;
+    onBulkPrintLabel(selected);
+    clearSelection();
+  };
+
+  const handleBulkDelete = () => {
+    if (visibleSelected.length === 0) return;
+    onBulkDelete(visibleSelected, () => clearSelection());
+  };
+
+  const allVisibleSelected = items.length > 0 && items.every(i => selectedIds.has(i.id));
   const exportCSV = () => {
     const headers = ['SKU', 'Type', 'Name', 'Variety', 'Quantity', 'Cost', 'Listing Price', 'Sale Price', 'Status', 'Sale Event', 'Lot', 'Source', 'Acquired', 'Notes'];
     const rows = items.map(i => {
@@ -64,9 +105,47 @@ export function InventoryView({ items, allItems, sales, searchQuery, setSearchQu
         </div>
       </div>
 
-      <div className="text-xs text-gray-500 px-1">
-        Showing {items.length} of {allItems.length} items
+      <div className="flex items-center justify-between gap-2 px-1">
+        <div className="text-xs text-gray-500">
+          Showing {items.length} of {allItems.length} items
+        </div>
+        {items.length > 0 && (
+          <button onClick={toggleSelectAll} className="text-xs text-gray-600 hover:text-gray-900 whitespace-nowrap">
+            {allVisibleSelected ? 'Deselect all' : 'Select all'}
+          </button>
+        )}
       </div>
+
+      {visibleSelected.length > 0 && (
+        <div className="sticky top-28 z-20 bg-emerald-600 text-white rounded-xl px-3 py-2 flex items-center justify-between shadow-md">
+          <div className="text-sm font-medium">
+            {visibleSelected.length} selected
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleBulkPrint}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white/15 hover:bg-white/25 rounded-lg transition"
+            >
+              <Printer className="w-4 h-4" /> <span className="hidden sm:inline">Print labels</span>
+            </button>
+            {isAdmin && (
+              <button
+                onClick={handleBulkDelete}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white/15 hover:bg-red-500 rounded-lg transition"
+              >
+                <Trash2 className="w-4 h-4" /> <span className="hidden sm:inline">Delete</span>
+              </button>
+            )}
+            <button
+              onClick={clearSelection}
+              title="Clear selection"
+              className="p-1.5 hover:bg-white/15 rounded-lg transition"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {items.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center">
@@ -84,9 +163,18 @@ export function InventoryView({ items, allItems, sales, searchQuery, setSearchQu
               const isSold = ['sold','shipped','delivered'].includes(item.status);
               const profitRate = isSold && !isNaN(sp) && sp > 0 && !isNaN(cost) && cost > 0
                 ? ((sp - cost) / cost) * 100 : null;
+              const checked = selectedIds.has(item.id);
               return (
-                <div key={item.id} className="bg-white rounded-xl border border-gray-200 p-3">
+                <div key={item.id} className={`bg-white rounded-xl border p-3 transition ${
+                  checked ? 'border-emerald-400 ring-1 ring-emerald-400' : 'border-gray-200'
+                }`}>
                   <div className="flex items-start justify-between gap-2">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleSelect(item.id)}
+                      className="mt-1 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 flex-shrink-0 cursor-pointer"
+                    />
                     <div className="min-w-0 flex-1">
                       <div className="font-medium text-gray-900 truncate">{item.name}</div>
                       <div className="text-xs text-gray-500 flex items-center gap-1.5 mt-0.5">
@@ -173,6 +261,15 @@ export function InventoryView({ items, allItems, sales, searchQuery, setSearchQu
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr className="text-left text-xs font-medium text-gray-600 uppercase tracking-wide">
+                    <th className="px-3 py-2.5 w-10">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        ref={(el) => { if (el) el.indeterminate = !allVisibleSelected && visibleSelected.length > 0; }}
+                        onChange={toggleSelectAll}
+                        className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                      />
+                    </th>
                     <th className="px-3 py-2.5">SKU / Name</th>
                     <th className="px-3 py-2.5">Type</th>
                     <th className="px-3 py-2.5">Status</th>
@@ -185,8 +282,17 @@ export function InventoryView({ items, allItems, sales, searchQuery, setSearchQu
                 <tbody className="divide-y divide-gray-100">
                   {items.map(item => {
                     const sale = sales.find(s => s.id === item.saleId);
+                    const checked = selectedIds.has(item.id);
                     return (
-                      <tr key={item.id} className="hover:bg-gray-50">
+                      <tr key={item.id} className={`hover:bg-gray-50 ${checked ? 'bg-emerald-50/50' : ''}`}>
+                        <td className="px-3 py-2.5">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleSelect(item.id)}
+                            className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                          />
+                        </td>
                         <td className="px-3 py-2.5">
                           <div className="font-medium text-gray-900">{item.name}</div>
                           <div className="text-xs text-gray-500 flex items-center gap-1.5">
