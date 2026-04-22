@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Printer, Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { jsPDF } from 'jspdf';
@@ -107,7 +108,11 @@ export function LabelSheet({ items, onClose }) {
     pdf.save(`folia-labels-${stamp}.pdf`);
   };
 
-  return (
+  // Render through a portal so this becomes a direct child of <body>.
+  // That lets the @media print rules reliably hide everything except the
+  // sheet itself — otherwise the React root (also a body child) contains the
+  // sheet and gets hidden along with it.
+  return createPortal(
     <div className="fixed inset-0 z-50 bg-gray-100 overflow-auto folia-label-sheet">
       <div className="folia-no-print sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-2">
         <h2 className="text-base font-semibold text-gray-900">
@@ -161,6 +166,7 @@ export function LabelSheet({ items, onClose }) {
           @page { size: letter; margin: 0.25in; }
         }
       `}</style>
-    </div>
+    </div>,
+    document.body
   );
 }
