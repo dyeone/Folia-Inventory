@@ -43,6 +43,21 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
     });
   };
 
+  // Toggle selection of every item in a group. If all are already selected,
+  // clears them; otherwise adds them all to the selection.
+  const toggleGroupSelection = (groupItems) => {
+    const ids = groupItems.map(i => i.id);
+    const allSelected = ids.length > 0 && ids.every(id => selectedIds.has(id));
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (allSelected) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
+  };
+
   // Selection is local to this view; cleared whenever filters change or after an action.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
@@ -222,20 +237,31 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
           <div className="sm:hidden space-y-4">
             {groups.map(group => {
               const isCollapsed = collapsedGroups.has(group.name);
+              const groupIds = group.items.map(i => i.id);
+              const allInGroupSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.has(id));
+              const someInGroupSelected = groupIds.some(id => selectedIds.has(id));
               return (
                 <div key={group.name} className="space-y-2">
-                  <button
+                  <div
                     onClick={() => toggleGroup(group.name)}
-                    className="w-full flex items-center justify-between text-left px-2 py-1.5 bg-gray-50 rounded-lg hover:bg-gray-100"
+                    className="w-full flex items-center justify-between gap-2 text-left px-2 py-1.5 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer"
                   >
                     <div className="flex items-center gap-2 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={allInGroupSelected}
+                        ref={(el) => { if (el) el.indeterminate = !allInGroupSelected && someInGroupSelected; }}
+                        onChange={() => toggleGroupSelection(group.items)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer flex-shrink-0"
+                      />
                       <span className={`text-xs text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
                       <span className="font-medium text-gray-900 text-sm truncate">{group.name}</span>
                     </div>
                     <span className="text-xs text-gray-500 whitespace-nowrap">
                       {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
                     </span>
-                  </button>
+                  </div>
                   {!isCollapsed && group.items.map(item => {
               const sale = sales.find(s => s.id === item.saleId);
               const sp = parseFloat(item.salePrice);
@@ -364,10 +390,22 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
                 </thead>
                 {groups.map(group => {
                   const isCollapsed = collapsedGroups.has(group.name);
+                  const groupIds = group.items.map(i => i.id);
+                  const allInGroupSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.has(id));
+                  const someInGroupSelected = groupIds.some(id => selectedIds.has(id));
                   return (
                     <tbody key={group.name} className="divide-y divide-gray-100">
                       <tr className="bg-gray-50 border-y border-gray-200">
-                        <td colSpan={8} className="px-3 py-2">
+                        <td className="px-3 py-2 w-10">
+                          <input
+                            type="checkbox"
+                            checked={allInGroupSelected}
+                            ref={(el) => { if (el) el.indeterminate = !allInGroupSelected && someInGroupSelected; }}
+                            onChange={() => toggleGroupSelection(group.items)}
+                            className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                          />
+                        </td>
+                        <td colSpan={7} className="px-3 py-2">
                           <button
                             onClick={() => toggleGroup(group.name)}
                             className="flex items-center justify-between w-full text-left"
