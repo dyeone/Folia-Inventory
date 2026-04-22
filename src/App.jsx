@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useContext } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
-  Layers, Users, LogOut, Shield, User, Key, Check, Printer,
+  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package,
 } from 'lucide-react';
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -22,6 +22,7 @@ import { ReconcileModal } from './sales/ReconcileModal.jsx';
 import { UsersView } from './users/UsersView.jsx';
 import { LabelSheet } from './labels/LabelSheet.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
+import { PackingView } from './packing/PackingView.jsx';
 
 export default function InventoryApp() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -330,6 +331,7 @@ function InventorySystem() {
     { id: 'dashboard', label: 'Dashboard', icon: TrendingUp },
     { id: 'inventory', label: 'Inventory', icon: Archive },
     { id: 'sales', label: 'Sales Events', icon: Calendar },
+    { id: 'packing', label: 'Packing', icon: Package },
   ];
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users });
 
@@ -504,6 +506,9 @@ function InventorySystem() {
               });
             }}
           />
+        )}
+        {activeTab === 'packing' && (
+          <PackingView inventoryItems={items} />
         )}
         {activeTab === 'users' && isAdmin && (
           <UsersView
