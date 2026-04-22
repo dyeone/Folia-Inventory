@@ -1,11 +1,41 @@
 // Thin fetch wrapper around the /api/* routes.
 // Each call returns parsed JSON on success and throws Error(message) on failure.
 
+// The server uses this to identify the caller. Set after login and on
+// session restore; cleared on logout.
+let authUserId = null;
+export function setAuthUserId(id) { authUserId = id; }
+
+// Routes that should NOT have userId appended (auth endpoints).
+// Everything else (items/sales/users) gets userId so the server can verify
+// the caller is an active user.
+const UNAUTHED = new Set([
+  '/auth/has-users',
+  '/auth/register',
+  '/auth/login',
+  '/auth/session',
+]);
+
 async function request(path, { method = 'GET', body } = {}) {
-  const res = await fetch(`/api${path}`, {
+  const isAuthed = !UNAUTHED.has(path);
+
+  // Build the request URL; for GET add userId as a query param.
+  let url = `/api${path}`;
+  let finalBody = body;
+
+  if (isAuthed) {
+    if (method === 'GET') {
+      const sep = url.includes('?') ? '&' : '?';
+      url = `${url}${sep}userId=${encodeURIComponent(authUserId ?? '')}`;
+    } else {
+      finalBody = { ...(body || {}), userId: authUserId };
+    }
+  }
+
+  const res = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: finalBody ? { 'Content-Type': 'application/json' } : undefined,
+    body: finalBody ? JSON.stringify(finalBody) : undefined,
   });
 
   const ct = res.headers.get('content-type') || '';
@@ -33,6 +63,8 @@ export const api = {
   getItems: () => request('/items').then(r => r.items),
   upsertItems: (items) => request('/items', { method: 'POST', body: { items } }),
   deleteItems: (ids) => request('/items', { method: 'DELETE', body: { ids } }),
+  convertItem: ({ tcId, plantData }) =>
+    request('/items/convert', { method: 'POST', body: { tcId, plantData } }).then(r => r),
 
   // Sales
   getSales: () => request('/sales').then(r => r.sales),

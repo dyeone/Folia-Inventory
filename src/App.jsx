@@ -3,7 +3,7 @@ import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
   Layers, Users, LogOut, Shield, User, Key,
 } from 'lucide-react';
-import { api } from './api.js';
+import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
 
 import { AuthScreen } from './auth/AuthScreen.jsx';
@@ -34,7 +34,10 @@ export default function InventoryApp() {
         if (stored) {
           const { id } = JSON.parse(stored);
           const user = await api.session(id);
-          if (user) setCurrentUser(user);
+          if (user) {
+            setCurrentUser(user);
+            setAuthUserId(user.id);
+          }
         }
       } catch (e) {
         localStorage.removeItem('session-current-user');
@@ -45,11 +48,13 @@ export default function InventoryApp() {
 
   const login = (user) => {
     setCurrentUser(user);
+    setAuthUserId(user.id);
     localStorage.setItem('session-current-user', JSON.stringify({ id: user.id }));
   };
 
   const logout = () => {
     setCurrentUser(null);
+    setAuthUserId(null);
     localStorage.removeItem('session-current-user');
   };
 
@@ -162,26 +167,31 @@ function InventorySystem() {
     setTimeout(() => setToast(null), 2500);
   };
 
-  const addItem = (item) => {
-    const newItem = {
-      ...item,
-      id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
-      createdAt: new Date().toISOString(),
-      createdBy: currentUser.displayName,
-      status: item.status || 'available',
-    };
-    saveItems([newItem, ...items]);
-    showToast(`Added ${item.sku}`);
-    setLabelItems([newItem]);
+  // Server assigns id, createdAt, createdBy, and (if missing) sku.
+  // We send the raw item data and let POST /api/items handle the rest,
+  // then refresh from the API so the client sees the server-authoritative copy.
+  const addItem = async (item) => {
+    try {
+      // Strip any client-set server-owned fields; let server own them.
+      const { id, createdAt, createdBy, modifiedAt, modifiedBy, sku, ...clean } = item;
+      await api.upsertItems([{ ...clean, status: item.status || 'available' }]);
+      const fresh = await api.getItems();
+      setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+      // Find the new item in the fresh list to show its generated SKU + print label.
+      const newest = fresh.reduce((latest, i) =>
+        (!latest || new Date(i.createdAt) > new Date(latest.createdAt)) ? i : latest, null);
+      if (newest) {
+        showToast(`Added ${newest.sku}`);
+        setLabelItems([newest]);
+      }
+    } catch (e) {
+      showToast(e.message || 'Failed to add item', 'error');
+    }
   };
 
   const updateItem = (id, updates) => {
-    saveItems(items.map(i => i.id === id ? {
-      ...i,
-      ...updates,
-      modifiedAt: new Date().toISOString(),
-      modifiedBy: currentUser.displayName,
-    } : i));
+    // Only send id + updates; server stamps modifiedAt/modifiedBy.
+    saveItems(items.map(i => i.id === id ? { ...i, ...updates } : i));
     showToast('Updated');
   };
 
@@ -203,26 +213,18 @@ function InventorySystem() {
     });
   };
 
-  const convertToPlant = (id, conversionData) => {
+  const convertToPlant = async (id, conversionData) => {
     const tc = items.find(i => i.id === id);
     if (!tc) return;
-    const plant = {
-      ...tc,
-      ...conversionData,
-      id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
-      type: 'plant',
-      convertedFromTcId: tc.id,
-      convertedFromSku: tc.sku,
-      convertedAt: new Date().toISOString(),
-      convertedBy: currentUser.displayName,
-      createdAt: new Date().toISOString(),
-      status: 'available',
-      saleId: null,
-      lotNumber: null,
-    };
-    const updatedTc = { ...tc, status: 'converted', convertedToPlantId: plant.id };
-    saveItems([plant, ...items.map(i => i.id === id ? updatedTc : i)]);
-    showToast(`Converted ${tc.sku} → ${plant.sku}`);
+    try {
+      // Strip client-generated and server-owned fields from plantData.
+      const { id: _id, createdAt, createdBy, modifiedAt, modifiedBy, sku, ...plantData } = conversionData;
+      const { plant, tc: updatedTc } = await api.convertItem({ tcId: id, plantData });
+      setItems([plant, ...items.map(i => i.id === id ? updatedTc : i)]);
+      showToast(`Converted ${tc.sku} → ${plant.sku}`);
+    } catch (e) {
+      showToast(e.message || 'Conversion failed', 'error');
+    }
   };
 
   const filteredItems = useMemo(() => {
@@ -500,18 +502,26 @@ function InventorySystem() {
       {showBatchModal && (
         <BatchVarietyModal
           existingItems={items}
-          onSave={(newItems) => {
-            const stamped = newItems.map(i => ({
-              ...i,
-              id: Date.now().toString() + Math.random().toString(36).slice(2, 7) + Math.random().toString(36).slice(2, 5),
-              createdAt: new Date().toISOString(),
-              createdBy: currentUser.displayName,
-              status: i.status || 'available',
-            }));
-            saveItems([...stamped, ...items]);
-            showToast(`Added ${stamped.length} items`);
-            setShowBatchModal(false);
-            setLabelItems(stamped);
+          onSave={async (newItems) => {
+            try {
+              // Strip client IDs and timestamps — server generates them,
+              // and server re-generates SKUs to guard against races.
+              const clean = newItems.map(({ id, createdAt, createdBy, modifiedAt, modifiedBy, sku, ...rest }) => ({
+                ...rest,
+                status: rest.status || 'available',
+              }));
+              const before = new Set(items.map(i => i.id));
+              await api.upsertItems(clean);
+              const fresh = await api.getItems();
+              const sorted = [...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+              setItems(sorted);
+              const justAdded = sorted.filter(i => !before.has(i.id));
+              showToast(`Added ${justAdded.length} items`);
+              setShowBatchModal(false);
+              if (justAdded.length > 0) setLabelItems(justAdded);
+            } catch (e) {
+              showToast(e.message || 'Failed to add items', 'error');
+            }
           }}
           onClose={() => setShowBatchModal(false)}
         />
@@ -536,33 +546,36 @@ function InventorySystem() {
       )}
       {showBulkModal && (
         <BulkImportModal
-          onImport={(newItems) => {
-            const stamped = newItems.map(i => ({
-              ...i,
-              id: Date.now().toString() + Math.random().toString(36).slice(2, 7) + Math.random().toString(36).slice(2, 5),
-              createdAt: new Date().toISOString(),
-              createdBy: currentUser.displayName,
-              status: i.status || 'available',
-            }));
-            saveItems([...stamped, ...items]);
-            showToast(`Imported ${stamped.length} items`);
-            setShowBulkModal(false);
+          onImport={async (newItems) => {
+            try {
+              const clean = newItems.map(({ id, createdAt, createdBy, modifiedAt, modifiedBy, ...rest }) => ({
+                ...rest,
+                status: rest.status || 'available',
+              }));
+              await api.upsertItems(clean);
+              const fresh = await api.getItems();
+              setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+              showToast(`Imported ${clean.length} items`);
+              setShowBulkModal(false);
+            } catch (e) {
+              showToast(e.message || 'Import failed', 'error');
+            }
           }}
           onClose={() => setShowBulkModal(false)}
         />
       )}
       {showSaleModal && (
         <SaleFormModal
-          onSave={(data) => {
-            const newSale = {
-              ...data,
-              id: Date.now().toString() + Math.random().toString(36).slice(2, 7),
-              createdBy: currentUser.displayName,
-              createdAt: new Date().toISOString(),
-            };
-            saveSales([newSale, ...sales]);
-            showToast('Sale event created');
-            setShowSaleModal(false);
+          onSave={async (data) => {
+            try {
+              await api.upsertSales([data]);
+              const fresh = await api.getSales();
+              setSales([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+              showToast('Sale event created');
+              setShowSaleModal(false);
+            } catch (e) {
+              showToast(e.message || 'Failed to create sale', 'error');
+            }
           }}
           onClose={() => setShowSaleModal(false)}
         />

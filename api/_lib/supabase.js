@@ -39,3 +39,28 @@ export async function requireAdmin(adminUserId) {
   }
   return data;
 }
+
+// Verify a request came from a currently-active user (any role).
+// Returns the user row (with displayName) on success, or throws.
+export async function requireUser(userId) {
+  if (!userId) {
+    const e = new Error('Not authenticated');
+    e.status = 401;
+    throw e;
+  }
+  const { data } = await supabase
+    .from('users')
+    .select('id,role,active,"displayName"')
+    .eq('id', userId)
+    .maybeSingle();
+  if (!data || !data.active) {
+    const e = new Error('Authentication required');
+    e.status = 401;
+    throw e;
+  }
+  return data;
+}
+
+export function newId() {
+  return Date.now().toString() + Math.random().toString(36).slice(2, 9);
+}
