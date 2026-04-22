@@ -196,7 +196,12 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
 
         <div className="flex gap-2 justify-end pt-2 sticky bottom-0 bg-white">
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg">Cancel</button>
-          <button onClick={handleSubmit} className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-1.5">
+          <button
+            onClick={handleSubmit}
+            disabled={String(form.grossCost).trim() === '' || String(form.netCost).trim() === ''}
+            title={String(form.grossCost).trim() === '' || String(form.netCost).trim() === '' ? 'Enter gross cost and net cost first' : ''}
+            className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5"
+          >
             <Plus className="w-4 h-4" /> Create {form.quantity || 0} Items
           </button>
         </div>
