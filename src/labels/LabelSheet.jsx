@@ -147,23 +147,28 @@ export function LabelSheet({ items, onClose }) {
             position: static !important;
             overflow: visible !important;
             background: white !important;
+            padding: 0 !important;
           }
           .folia-label-grid {
-            display: flex !important;
-            flex-wrap: wrap !important;
+            display: block !important;
             gap: 0 !important;
             padding: 0 !important;
-            justify-content: flex-start !important;
           }
           .folia-label {
             width: 2in !important;
             height: 1in !important;
             margin: 0 !important;
-            border: 1px solid #666 !important;
+            border: none !important;
+            page-break-after: always !important;
+            break-after: page !important;
             page-break-inside: avoid !important;
             break-inside: avoid !important;
           }
-          @page { size: letter; margin: 0.25in; }
+          .folia-label:last-child {
+            page-break-after: auto !important;
+            break-after: auto !important;
+          }
+          @page { size: 2in 1in; margin: 0; }
         }
       `}</style>
     </div>,
