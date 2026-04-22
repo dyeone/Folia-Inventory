@@ -19,6 +19,30 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
     return counts;
   }, [filteredItems]);
 
+  // Group items by name (alphabetical). Within each group items keep their
+  // existing order (newest first, sorted in the parent).
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const item of items) {
+      const key = (item.name || '').trim() || '(unnamed)';
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(item);
+    }
+    return [...map.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, list]) => ({ name, items: list }));
+  }, [items]);
+
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const toggleGroup = (name) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
   // Selection is local to this view; cleared whenever filters change or after an action.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
 
@@ -194,9 +218,25 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
         </div>
       ) : (
         <>
-          {/* Mobile card list */}
-          <div className="sm:hidden space-y-2">
-            {items.map(item => {
+          {/* Mobile card list — grouped by name */}
+          <div className="sm:hidden space-y-4">
+            {groups.map(group => {
+              const isCollapsed = collapsedGroups.has(group.name);
+              return (
+                <div key={group.name} className="space-y-2">
+                  <button
+                    onClick={() => toggleGroup(group.name)}
+                    className="w-full flex items-center justify-between text-left px-2 py-1.5 bg-gray-50 rounded-lg hover:bg-gray-100"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`text-xs text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
+                      <span className="font-medium text-gray-900 text-sm truncate">{group.name}</span>
+                    </div>
+                    <span className="text-xs text-gray-500 whitespace-nowrap">
+                      {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
+                    </span>
+                  </button>
+                  {!isCollapsed && group.items.map(item => {
               const sale = sales.find(s => s.id === item.saleId);
               const sp = parseFloat(item.salePrice);
               const cost = parseFloat(item.grossCost ?? item.cost);
@@ -292,6 +332,9 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
                   </div>
                 </div>
               );
+                  })}
+                </div>
+              );
             })}
           </div>
 
@@ -319,8 +362,27 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
                     <th className="px-3 py-2.5"></th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {items.map(item => {
+                {groups.map(group => {
+                  const isCollapsed = collapsedGroups.has(group.name);
+                  return (
+                    <tbody key={group.name} className="divide-y divide-gray-100">
+                      <tr className="bg-gray-50 border-y border-gray-200">
+                        <td colSpan={8} className="px-3 py-2">
+                          <button
+                            onClick={() => toggleGroup(group.name)}
+                            className="flex items-center justify-between w-full text-left"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className={`text-xs text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
+                              <span className="text-sm font-semibold text-gray-900">{group.name}</span>
+                            </div>
+                            <span className="text-xs text-gray-500">
+                              {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
+                            </span>
+                          </button>
+                        </td>
+                      </tr>
+                      {!isCollapsed && group.items.map(item => {
                     const sale = sales.find(s => s.id === item.saleId);
                     const checked = selectedIds.has(item.id);
                     return (
@@ -425,8 +487,10 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
                         </td>
                       </tr>
                     );
-                  })}
-                </tbody>
+                      })}
+                    </tbody>
+                  );
+                })}
               </table>
             </div>
           </div>
