@@ -102,6 +102,21 @@ begin
   end if;
 end $$;
 
+-- Order-level details captured from the Palmstreet orders file (so we can
+-- reconcile against the cashflow report by Order No), plus refund tracking
+-- populated when the cashflow report is uploaded in the Financial tab.
+alter table inventory_items add column if not exists "orderId" text;
+alter table inventory_items add column if not exists "orderDate" timestamptz;
+alter table inventory_items add column if not exists "refundedAmount" numeric default 0;
+alter table inventory_items add column if not exists "refundedAt" timestamptz;
+create index if not exists inventory_items_orderid_idx on inventory_items ("orderId");
+
+-- Allow 'refunded' as a status (full refunds get marked here; partials keep
+-- their existing sold/shipped status with refundedAmount > 0).
+alter table inventory_items drop constraint if exists inventory_items_status_check;
+alter table inventory_items add constraint inventory_items_status_check
+  check (status in ('available','listed','sold','shipped','delivered','converted','refunded'));
+
 -- ─── Constraints ──────────────────────────────────────────────────────────────
 -- Enforce SKU uniqueness across all inventory items. Using a unique index
 -- with IF NOT EXISTS so this is safe to re-run. If existing rows already

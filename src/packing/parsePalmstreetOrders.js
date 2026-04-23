@@ -43,6 +43,13 @@ export function parsePalmstreetOrders(rows) {
     const country = String(pick(row, 'Country')).trim();
     const username = String(pick(row, 'Palmstreet UserName', 'Username')).trim();
     const orderNum = String(pick(row, 'Order number', 'Order Number', 'Order')).trim();
+    const orderDateRaw = String(pick(row, 'Order Date(PDT)', 'Order Date', 'OrderDate')).trim();
+    // Palmstreet exports `2026-04-06 21:30:12`. Treat as ISO-ish; new Date()
+    // handles the space delimiter.
+    const orderDateIso = orderDateRaw ? (() => {
+      const d = new Date(orderDateRaw.replace(' ', 'T'));
+      return isNaN(d.getTime()) ? null : d.toISOString();
+    })() : null;
     const shipMethod = String(pick(row, 'Shipment Method', 'Shipping Method')).trim();
     const sellerNote = String(pick(row, 'Seller Order Note')).trim();
     const buyerNote = String(pick(row, 'Buyer Order Note')).trim();
@@ -99,6 +106,7 @@ export function parsePalmstreetOrders(rows) {
       quantity,
       price,
       orderNumber: orderNum,
+      orderDate: orderDateIso,
     });
   });
 

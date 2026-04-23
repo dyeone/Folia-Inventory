@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useContext } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
-  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package,
+  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart,
 } from 'lucide-react';
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -22,6 +22,7 @@ import { UsersView } from './users/UsersView.jsx';
 import { LabelSheet } from './labels/LabelSheet.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
 import { PackingView } from './packing/PackingView.jsx';
+import { FinancialView } from './financial/FinancialView.jsx';
 
 export default function InventoryApp() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -330,6 +331,7 @@ function InventorySystem() {
     { id: 'inventory', label: 'Inventory', icon: Archive },
     { id: 'sales', label: 'Sales Events', icon: Calendar },
     { id: 'packing', label: 'Packing', icon: Package },
+    { id: 'financial', label: 'Financial', icon: LineChart },
   ];
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users });
 
@@ -342,13 +344,13 @@ function InventorySystem() {
             <h1 className="text-lg font-semibold text-gray-900">Folia Inventory</h1>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setShowBulkModal(true)} className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition">
+            <button onClick={() => setShowBulkModal(true)} className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition">
               <Upload className="w-4 h-4" /> Import
             </button>
-            <button onClick={() => setShowAddModal(true)} className="hidden md:flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-100 rounded-lg transition">
+            <button onClick={() => setShowAddModal(true)} className="hidden md:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition">
               <Plus className="w-4 h-4" /> Single
             </button>
-            <button onClick={() => setShowBatchModal(true)} className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg transition">
+            <button onClick={() => setShowBatchModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-medium rounded-lg transition">
               <Layers className="w-4 h-4" /><span className="hidden sm:inline">Add Variety</span>
             </button>
             <div className="relative">
@@ -397,7 +399,7 @@ function InventorySystem() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 transition whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-4 py-3 text-sm font-medium border-b-2 transition whitespace-nowrap active:bg-gray-100 ${
                   activeTab === tab.id
                     ? 'border-emerald-600 text-emerald-700'
                     : 'border-transparent text-gray-600 hover:text-gray-900'
@@ -552,6 +554,22 @@ function InventorySystem() {
                 }
               } catch (e) {
                 showToast(e.message || 'Ship failed', 'error');
+              }
+            }}
+          />
+        )}
+        {activeTab === 'financial' && (
+          <FinancialView
+            items={items}
+            sales={sales}
+            onApplyRefunds={async (updates) => {
+              try {
+                await api.upsertItems(updates);
+                const fresh = await api.getItems();
+                setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+                showToast(`Synced ${updates.length} refund${updates.length === 1 ? '' : 's'}`);
+              } catch (e) {
+                showToast(e.message || 'Refund sync failed', 'error');
               }
             }}
           />
