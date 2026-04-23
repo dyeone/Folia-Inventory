@@ -1,19 +1,542 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   Upload, Package, MapPin, AlertCircle, X, ChevronDown, ChevronRight,
-  Check, Link2, Truck, FileText,
+  Check, Link2, Truck, FileText, Box, ArrowLeft, PackageCheck, PackageOpen,
+  Send,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { parsePalmstreetOrders } from './parsePalmstreetOrders.js';
 import { matchInventory } from './matchInventory.js';
 
-export function PackingView({ inventoryItems }) {
+export function PackingView({ inventoryItems, sales, onApplyOrders, onShipBox }) {
+  const [activeSaleId, setActiveSaleId] = useState(null);
+
+  const pendingSales = useMemo(
+    () => sales.filter(s => s.status === 'packing'),
+    [sales]
+  );
+
+  const activeSale = pendingSales.find(s => s.id === activeSaleId)
+    || sales.find(s => s.id === activeSaleId);
+
+  if (activeSale) {
+    return (
+      <SalePackingPane
+        sale={activeSale}
+        inventoryItems={inventoryItems}
+        onBack={() => setActiveSaleId(null)}
+        onApplyOrders={(updates) => onApplyOrders(activeSale.id, updates)}
+        onShipBox={(itemIds) => onShipBox(activeSale.id, itemIds)}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+          <Package className="w-5 h-5 text-emerald-600" /> Packing
+        </h2>
+        <p className="text-sm text-gray-500 mt-0.5">
+          Sale events that have been sent to packing show up here. Upload the Palmstreet
+          orders file to mark items sold and assemble shipping boxes.
+        </p>
+      </div>
+
+      <section className="space-y-2">
+        <h3 className="text-sm font-medium text-gray-700">
+          Pending sale events ({pendingSales.length})
+        </h3>
+        {pendingSales.length === 0 ? (
+          <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
+            <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+            <p className="text-sm text-gray-500">
+              No sale events pending. Click "Send to Packing" on a sale event to start packing.
+            </p>
+          </div>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-3">
+            {pendingSales.map(sale => (
+              <SalePendingCard
+                key={sale.id}
+                sale={sale}
+                inventoryItems={inventoryItems}
+                onOpen={() => setActiveSaleId(sale.id)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <StandaloneUploader inventoryItems={inventoryItems} />
+    </div>
+  );
+}
+
+function SalePendingCard({ sale, inventoryItems, onOpen }) {
+  const saleLots = inventoryItems.filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway');
+  const giveaways = inventoryItems.filter(i => i.saleId === sale.id && i.lotKind === 'giveaway');
+  const sold = saleLots.filter(i => ['sold', 'shipped', 'delivered'].includes(i.status));
+  const shipped = saleLots.filter(i => ['shipped', 'delivered'].includes(i.status));
+  const hasUpload = saleLots.some(i => i.shipmentBoxId);
+
+  return (
+    <button
+      onClick={onOpen}
+      className="text-left bg-white border border-gray-200 rounded-xl p-4 hover:border-emerald-400 hover:shadow-sm transition"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-gray-900 truncate">{sale.name}</div>
+          <div className="text-xs text-gray-500">{sale.date}</div>
+        </div>
+        <span className={`text-[11px] px-2 py-0.5 rounded-full whitespace-nowrap ${
+          hasUpload ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
+        }`}>
+          {hasUpload ? `${shipped.length}/${saleLots.length} shipped` : 'Awaiting upload'}
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+        <Mini label="Lots" value={saleLots.length} />
+        <Mini label="Giveaways" value={giveaways.length} />
+        <Mini label="Sold" value={sold.length} />
+      </div>
+    </button>
+  );
+}
+
+function Mini({ label, value }) {
+  return (
+    <div className="bg-gray-50 rounded p-2">
+      <div className="text-gray-500">{label}</div>
+      <div className="font-semibold text-gray-900">{value}</div>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Per-sale packing pane: shows the upload prompt OR the assembled boxes
+// (derived from items once the upload has been applied).
+// ───────────────────────────────────────────────────────────────────────────
+
+function SalePackingPane({ sale, inventoryItems, onBack, onApplyOrders, onShipBox }) {
+  const saleItems = useMemo(
+    () => inventoryItems.filter(i => i.saleId === sale.id),
+    [inventoryItems, sale.id]
+  );
+
+  // If any item has a shipmentBoxId, the upload was already applied.
+  const hasApplied = saleItems.some(i => i.shipmentBoxId);
+
+  if (!hasApplied) {
+    return (
+      <PackingUploadPane
+        sale={sale}
+        saleItems={saleItems}
+        inventoryItems={inventoryItems}
+        onBack={onBack}
+        onApply={onApplyOrders}
+      />
+    );
+  }
+  return (
+    <PackingBoxesPane
+      sale={sale}
+      saleItems={saleItems}
+      onBack={onBack}
+      onShipBox={onShipBox}
+    />
+  );
+}
+
+// ───── Upload phase ────────────────────────────────────────────────────────
+
+function PackingUploadPane({ sale, saleItems, inventoryItems, onBack, onApply }) {
   const [fileName, setFileName] = useState('');
   const [boxes, setBoxes] = useState(null);
-  const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
-  const [collapsed, setCollapsed] = useState(() => new Set());
-  // Manual SKU overrides keyed by `${boxId}::${rowKey}` → inventory item id (or null to clear)
+  const [err, setErr] = useState('');
+  const [overrides, setOverrides] = useState({}); // `${boxId}::${rowKey}` → invItemId | null
+  const [pickerFor, setPickerFor] = useState(null);
+
+  // Match candidates: prefer this sale's lineup. If a row doesn't match
+  // anything in the lineup, fall back to all inventory.
+  const lineupItems = saleItems;
+
+  const handleFile = async (file) => {
+    setErr('');
+    setLoading(true);
+    setFileName(file.name);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      const parsed = parsePalmstreetOrders(rows);
+      if (parsed.length === 0) {
+        setErr('No shippable items found in this file.');
+        setBoxes(null);
+      } else {
+        setBoxes(parsed);
+      }
+    } catch (e) {
+      setErr(`Could not read file: ${e.message}`);
+      setBoxes(null);
+    }
+    setLoading(false);
+  };
+
+  const resolved = useMemo(() => {
+    if (!boxes) return null;
+    return boxes.map(box => ({
+      ...box,
+      items: box.items.map(item => {
+        const key = `${box.id}::${item.rowKey}`;
+        const override = overrides[key];
+        let match = null;
+        if (override === null) {
+          match = null;
+        } else if (override) {
+          const inv = inventoryItems.find(i => i.id === override);
+          match = inv ? { item: inv, confidence: 'manual' } : null;
+        } else {
+          match = matchInventory(item, lineupItems) || matchInventory(item, inventoryItems);
+        }
+        return { ...item, match, manual: override !== undefined };
+      }),
+    }));
+  }, [boxes, overrides, lineupItems, inventoryItems]);
+
+  const summary = useMemo(() => {
+    if (!resolved) return null;
+    let totalItems = 0, matched = 0, unmatched = 0;
+    for (const box of resolved) {
+      for (const it of box.items) {
+        totalItems += 1;
+        if (it.match?.item) matched += 1;
+        else unmatched += 1;
+      }
+    }
+    return { totalItems, matched, unmatched };
+  }, [resolved]);
+
+  const handleApply = () => {
+    if (!resolved) return;
+    const updates = [];
+    const now = new Date().toISOString();
+    for (const box of resolved) {
+      for (const it of box.items) {
+        if (!it.match?.item) continue;
+        const inv = it.match.item;
+        const finalPrice = it.price > 0 ? it.price : parseFloat(inv.listingPrice) || 0;
+        const cost = parseFloat(inv.grossCost ?? inv.cost) || 0;
+        updates.push({
+          id: inv.id,
+          status: 'sold',
+          salePrice: finalPrice,
+          soldAt: now,
+          buyer: box.recipientName,
+          buyerUsername: box.username,
+          buyerAddress: {
+            street1: box.street1,
+            street2: box.street2,
+            city: box.city,
+            state: box.state,
+            zip: box.zip,
+            country: box.country,
+            shipmentMethod: box.shipmentMethod,
+          },
+          shipmentBoxId: box.id,
+          actualProfit: cost > 0 ? finalPrice - cost : null,
+          actualProfitRate: cost > 0 ? ((finalPrice - cost) / cost) * 100 : null,
+        });
+      }
+    }
+    if (updates.length === 0) {
+      alert('No matched items to apply. Link items first.');
+      return;
+    }
+    onApply(updates);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="p-1.5 text-gray-600 hover:bg-gray-100 rounded">
+          <ArrowLeft className="w-4 h-4" />
+        </button>
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">{sale.name}</h2>
+          <p className="text-xs text-gray-500">
+            {saleItems.length} lineup items · {sale.date}
+          </p>
+        </div>
+      </div>
+
+      {!boxes ? (
+        <>
+          <label className="block">
+            <div className="border-2 border-dashed border-gray-300 rounded-xl p-10 text-center hover:border-emerald-400 hover:bg-emerald-50/50 cursor-pointer transition">
+              <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+              <div className="text-sm font-medium text-gray-900">
+                {loading ? 'Reading file...' : 'Upload Palmstreet orders file'}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">.xlsx, .xls or .csv</div>
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }}
+                className="hidden"
+              />
+            </div>
+          </label>
+          {err && (
+            <div className="flex items-start gap-2 bg-red-50 text-red-700 text-xs px-3 py-2 rounded-lg">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" /> {err}
+            </div>
+          )}
+          <div className="text-xs text-gray-600 bg-gray-50 rounded-lg p-3">
+            <div className="font-medium text-gray-900 mb-1">What this does:</div>
+            <ul className="space-y-0.5 list-disc list-inside">
+              <li>Matches each order row against the sale's lineup (then full inventory as fallback)</li>
+              <li>Marks matched items as <em>sold</em> with the buyer's price, name, and address</li>
+              <li>Groups items into boxes by recipient — one box per buyer</li>
+            </ul>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex items-center justify-between">
+            <div className="text-sm">
+              <span className="text-gray-500">File:</span>{' '}
+              <span className="font-medium text-gray-900">{fileName}</span>
+              <span className="text-gray-500"> · {summary.totalItems} items</span>
+            </div>
+            <button
+              onClick={() => { setBoxes(null); setFileName(''); setOverrides({}); }}
+              className="text-xs text-gray-600 hover:text-gray-900"
+            >
+              Choose different file
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <SummaryStat label="Boxes" value={resolved.length} tone="emerald" />
+            <SummaryStat
+              label="Will mark sold"
+              value={summary.matched}
+              tone={summary.matched > 0 ? 'blue' : 'gray'}
+            />
+            <SummaryStat
+              label="Unmatched"
+              value={summary.unmatched}
+              tone={summary.unmatched > 0 ? 'amber' : 'gray'}
+            />
+          </div>
+
+          <BoxesList
+            boxes={resolved}
+            mode="preview"
+            onPick={(boxId, rowKey, title) => setPickerFor({ boxId, rowKey, title })}
+            onClearOverride={(boxId, rowKey) => {
+              const key = `${boxId}::${rowKey}`;
+              setOverrides(prev => ({ ...prev, [key]: null }));
+            }}
+          />
+
+          <div className="sticky bottom-0 bg-white border-t border-gray-200 -mx-4 px-4 py-3 flex justify-end gap-2">
+            <button onClick={() => { setBoxes(null); setFileName(''); }} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg">Cancel</button>
+            <button
+              onClick={handleApply}
+              disabled={summary.matched === 0}
+              className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 text-white rounded-lg flex items-center gap-1.5"
+            >
+              <Check className="w-4 h-4" /> Apply &amp; mark {summary.matched} sold
+            </button>
+          </div>
+
+          {pickerFor && (
+            <InventoryPicker
+              title={pickerFor.title}
+              inventoryItems={inventoryItems}
+              preferredItems={lineupItems}
+              onPick={(invId) => {
+                const key = `${pickerFor.boxId}::${pickerFor.rowKey}`;
+                setOverrides(prev => ({ ...prev, [key]: invId }));
+                setPickerFor(null);
+              }}
+              onClose={() => setPickerFor(null)}
+            />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ───── Boxes phase (after apply) ───────────────────────────────────────────
+
+function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
+  // Group sold items by shipmentBoxId. Each group is a "box".
+  const boxes = useMemo(() => {
+    const map = new Map();
+    for (const item of saleItems) {
+      if (!item.shipmentBoxId) continue;
+      if (!map.has(item.shipmentBoxId)) {
+        map.set(item.shipmentBoxId, {
+          id: item.shipmentBoxId,
+          recipientName: item.buyer || '(unknown)',
+          username: item.buyerUsername || '',
+          address: item.buyerAddress || {},
+          items: [],
+        });
+      }
+      map.get(item.shipmentBoxId).items.push(item);
+    }
+    return [...map.values()].sort((a, b) =>
+      (a.recipientName || '').localeCompare(b.recipientName || '')
+    );
+  }, [saleItems]);
+
+  const totalBoxes = boxes.length;
+  const shippedBoxes = boxes.filter(b =>
+    b.items.every(i => ['shipped', 'delivered'].includes(i.status))
+  ).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="p-1.5 text-gray-600 hover:bg-gray-100 rounded">
+          <ArrowLeft className="w-4 h-4" />
+        </button>
+        <div className="flex-1">
+          <h2 className="text-lg font-semibold text-gray-900">{sale.name}</h2>
+          <p className="text-xs text-gray-500">
+            {shippedBoxes}/{totalBoxes} boxes shipped · {sale.date}
+          </p>
+        </div>
+        <span className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded">
+          Orders applied
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <SummaryStat label="Total boxes" value={totalBoxes} tone="blue" />
+        <SummaryStat
+          label="Shipped"
+          value={shippedBoxes}
+          tone={shippedBoxes === totalBoxes && totalBoxes > 0 ? 'emerald' : 'gray'}
+        />
+        <SummaryStat label="Outstanding" value={totalBoxes - shippedBoxes} tone="amber" />
+      </div>
+
+      <div className="space-y-3">
+        {boxes.map(box => (
+          <ShipBoxCard
+            key={box.id}
+            box={box}
+            onShip={() => onShipBox(box.items.map(i => i.id))}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ShipBoxCard({ box, onShip }) {
+  const [open, setOpen] = useState(true);
+  const allShipped = box.items.every(i => ['shipped', 'delivered'].includes(i.status));
+  const a = box.address || {};
+  const addressLine = [
+    a.street1,
+    a.street2,
+    [a.city, a.state, a.zip].filter(Boolean).join(', '),
+    a.country && a.country !== 'US' ? a.country : null,
+  ].filter(Boolean).join(' · ');
+
+  return (
+    <div className={`bg-white border rounded-xl overflow-hidden ${
+      allShipped ? 'border-emerald-300' : 'border-gray-200'
+    }`}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-start gap-3 px-4 py-3 hover:bg-gray-50 text-left"
+      >
+        <div className="mt-0.5 text-gray-400">
+          {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-gray-900">{box.recipientName}</span>
+            {box.username && <span className="text-xs text-gray-500">@{box.username}</span>}
+            {a.shipmentMethod && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
+                <Truck className="w-3 h-3" /> {a.shipmentMethod}
+              </span>
+            )}
+            {allShipped && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                <PackageCheck className="w-3 h-3" /> Shipped
+              </span>
+            )}
+          </div>
+          {addressLine && (
+            <div className="text-xs text-gray-500 mt-0.5 flex items-start gap-1">
+              <MapPin className="w-3 h-3 mt-0.5 flex-shrink-0" />
+              <span>{addressLine}</span>
+            </div>
+          )}
+        </div>
+        <div className="text-right flex-shrink-0">
+          <div className="text-sm font-medium text-gray-900">
+            {box.items.length} {box.items.length === 1 ? 'item' : 'items'}
+          </div>
+        </div>
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100">
+          <div className="divide-y divide-gray-100">
+            {box.items.map(item => (
+              <div key={item.id} className="px-4 py-2.5 flex items-start gap-3">
+                <Box className="w-3.5 h-3.5 text-gray-400 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-gray-900 truncate">
+                    {item.name}{item.variety ? ` · ${item.variety}` : ''}
+                  </div>
+                  <div className="text-xs text-gray-500 font-mono">
+                    {item.sku}
+                    {item.lotNumber ? ` · Lot #${item.lotNumber}` : ''}
+                    {item.salePrice ? ` · $${parseFloat(item.salePrice).toFixed(2)}` : ''}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {!allShipped && (
+            <div className="px-4 py-3 bg-gray-50 flex justify-end">
+              <button
+                onClick={onShip}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg"
+              >
+                <Send className="w-3.5 h-3.5" /> Mark Shipped
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ───── Standalone uploader (no sale linkage) ───────────────────────────────
+
+function StandaloneUploader({ inventoryItems }) {
+  const [open, setOpen] = useState(false);
+  const [fileName, setFileName] = useState('');
+  const [boxes, setBoxes] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
   const [overrides, setOverrides] = useState({});
   const [pickerFor, setPickerFor] = useState(null);
 
@@ -40,15 +563,6 @@ export function PackingView({ inventoryItems }) {
     setLoading(false);
   };
 
-  const reset = () => {
-    setBoxes(null);
-    setFileName('');
-    setOverrides({});
-    setCollapsed(new Set());
-    setErr('');
-  };
-
-  // Resolve every box item to either its override or its auto-match.
   const resolved = useMemo(() => {
     if (!boxes) return null;
     return boxes.map(box => ({
@@ -56,212 +570,168 @@ export function PackingView({ inventoryItems }) {
       items: box.items.map(item => {
         const key = `${box.id}::${item.rowKey}`;
         const override = overrides[key];
-        if (override === null) return { ...item, match: null, manual: true };
-        if (override) {
+        let match = null;
+        if (override === null) match = null;
+        else if (override) {
           const inv = inventoryItems.find(i => i.id === override);
-          return { ...item, match: inv ? { item: inv, confidence: 'manual' } : null, manual: true };
+          match = inv ? { item: inv, confidence: 'manual' } : null;
+        } else {
+          match = matchInventory(item, inventoryItems);
         }
-        return { ...item, match: matchInventory(item, inventoryItems), manual: false };
+        return { ...item, match, manual: override !== undefined };
       }),
     }));
   }, [boxes, overrides, inventoryItems]);
 
-  const summary = useMemo(() => {
-    if (!resolved) return null;
-    let totalItems = 0;
-    let matched = 0;
-    let unmatched = 0;
-    let totalValue = 0;
-    let totalShipping = 0;
-    for (const box of resolved) {
-      totalShipping += box.shippingFee;
-      for (const it of box.items) {
-        totalItems += it.quantity;
-        totalValue += it.price * it.quantity;
-        if (it.match?.item) matched += 1;
-        else unmatched += 1;
-      }
-    }
-    return { totalItems, matched, unmatched, totalValue, totalShipping };
-  }, [resolved]);
-
-  if (!boxes) {
-    return (
-      <div className="max-w-2xl mx-auto">
-        <div className="mb-4">
-          <h2 className="text-lg font-semibold text-gray-900">Packing</h2>
-          <p className="text-sm text-gray-500 mt-0.5">
-            Upload a Palmstreet orders file to plan boxes and link items to inventory.
-          </p>
-        </div>
-        <label className="block">
-          <div className="border-2 border-dashed border-gray-300 rounded-xl p-10 text-center hover:border-emerald-400 hover:bg-emerald-50/50 cursor-pointer transition">
-            <Upload className="w-8 h-8 text-gray-400 mx-auto mb-2" />
-            <div className="text-sm font-medium text-gray-900">
-              {loading ? 'Reading file...' : 'Upload Palmstreet orders file'}
-            </div>
-            <div className="text-xs text-gray-500 mt-1">.xlsx, .xls or .csv</div>
-            <input
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }}
-              className="hidden"
-            />
-          </div>
-        </label>
-        {err && (
-          <div className="mt-3 flex items-start gap-2 bg-red-50 text-red-700 text-xs px-3 py-2 rounded-lg">
-            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" /> {err}
-          </div>
-        )}
-        <div className="mt-4 text-xs text-gray-600 bg-gray-50 rounded-lg p-3">
-          <div className="font-medium text-gray-900 mb-1">What this does:</div>
-          <ul className="space-y-0.5 list-disc list-inside">
-            <li>Groups order rows into boxes by recipient + address (one buyer with multiple orders ships in one box)</li>
-            <li>Skips shipping/service line items (📦 Free Shipping, Vacation Hold, etc.)</li>
-            <li>Tries to match each item to inventory by SKU, lot number, then fuzzy name</li>
-          </ul>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <Package className="w-5 h-5 text-emerald-600" /> Packing
-          </h2>
-          <p className="text-xs text-gray-500 mt-0.5 flex items-center gap-1">
-            <FileText className="w-3 h-3" /> {fileName}
-          </p>
-        </div>
-        <button onClick={reset} className="text-xs text-gray-600 hover:text-gray-900 px-3 py-1.5 border border-gray-200 rounded-lg">
-          Upload different file
-        </button>
-      </div>
-
-      {summary && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <SummaryStat label="Boxes" value={resolved.length} tone="emerald" />
-          <SummaryStat label="Items" value={summary.totalItems} tone="blue" />
-          <SummaryStat
-            label="Matched / Unmatched"
-            value={`${summary.matched} / ${summary.unmatched}`}
-            tone={summary.unmatched === 0 ? 'emerald' : 'amber'}
-          />
-          <SummaryStat
-            label="Item value"
-            value={`$${summary.totalValue.toFixed(0)}`}
-            sub={summary.totalShipping > 0 ? `+ $${summary.totalShipping.toFixed(0)} ship` : null}
-            tone="gray"
-          />
-        </div>
-      )}
-
-      <div className="space-y-3">
-        {resolved.map(box => {
-          const isCollapsed = collapsed.has(box.id);
-          const matchCount = box.items.filter(i => i.match?.item).length;
-          return (
-            <div key={box.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
-              <button
-                onClick={() => {
-                  setCollapsed(prev => {
-                    const next = new Set(prev);
-                    if (next.has(box.id)) next.delete(box.id); else next.add(box.id);
-                    return next;
-                  });
-                }}
-                className="w-full flex items-start gap-3 px-4 py-3 hover:bg-gray-50 text-left"
-              >
-                <div className="mt-0.5 text-gray-400">
-                  {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-medium text-gray-900">{box.recipientName}</span>
-                    <span className="text-xs text-gray-500">@{box.username}</span>
-                    {box.shipmentMethod && (
-                      <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
-                        <Truck className="w-3 h-3" /> {box.shipmentMethod}
-                      </span>
-                    )}
+    <section className="space-y-2">
+      <button
+        onClick={() => setOpen(!open)}
+        className="text-sm font-medium text-gray-700 hover:text-gray-900 flex items-center gap-1"
+      >
+        {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+        Standalone upload (not linked to a sale event)
+      </button>
+      {open && (
+        <div className="bg-gray-50 rounded-xl p-4 space-y-3">
+          {!boxes ? (
+            <>
+              <label className="block">
+                <div className="border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-emerald-400 hover:bg-white cursor-pointer transition">
+                  <Upload className="w-6 h-6 text-gray-400 mx-auto mb-1.5" />
+                  <div className="text-sm text-gray-900">
+                    {loading ? 'Reading file...' : 'Upload a Palmstreet orders file'}
                   </div>
-                  <div className="text-xs text-gray-500 mt-0.5 flex items-start gap-1">
-                    <MapPin className="w-3 h-3 mt-0.5 flex-shrink-0" />
-                    <span>{formatAddress(box)}</span>
-                  </div>
+                  <div className="text-xs text-gray-500 mt-1">Preview only — does not change inventory</div>
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }}
+                    className="hidden"
+                  />
                 </div>
-                <div className="text-right flex-shrink-0">
-                  <div className="text-sm font-medium text-gray-900">{box.items.length} {box.items.length === 1 ? 'item' : 'items'}</div>
-                  <div className={`text-xs ${matchCount === box.items.length ? 'text-emerald-600' : 'text-amber-600'}`}>
-                    {matchCount}/{box.items.length} matched
-                  </div>
-                </div>
-              </button>
-
-              {!isCollapsed && (
-                <div className="border-t border-gray-100 divide-y divide-gray-100">
-                  {box.items.map(item => (
-                    <BoxItemRow
-                      key={item.rowKey}
-                      boxId={box.id}
-                      item={item}
-                      inventoryItems={inventoryItems}
-                      onPick={() => setPickerFor({ boxId: box.id, rowKey: item.rowKey, title: item.title })}
-                      onClear={() => {
-                        const key = `${box.id}::${item.rowKey}`;
-                        setOverrides(prev => ({ ...prev, [key]: null }));
-                      }}
-                    />
-                  ))}
-                  {box.orderNumbers.length > 0 && (
-                    <div className="px-4 py-2 bg-gray-50/60 text-[11px] text-gray-500">
-                      Order #: {box.orderNumbers.join(', ')}
-                    </div>
-                  )}
-                  {box.notes.length > 0 && (
-                    <div className="px-4 py-2 bg-amber-50 text-xs text-amber-900">
-                      <span className="font-medium">Notes:</span> {box.notes.join(' · ')}
-                    </div>
-                  )}
+              </label>
+              {err && (
+                <div className="flex items-start gap-2 bg-red-50 text-red-700 text-xs px-3 py-2 rounded-lg">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" /> {err}
                 </div>
               )}
-            </div>
-          );
-        })}
-      </div>
-
-      {pickerFor && (
-        <InventoryPicker
-          title={pickerFor.title}
-          inventoryItems={inventoryItems}
-          onPick={(invId) => {
-            const key = `${pickerFor.boxId}::${pickerFor.rowKey}`;
-            setOverrides(prev => ({ ...prev, [key]: invId }));
-            setPickerFor(null);
-          }}
-          onClose={() => setPickerFor(null)}
-        />
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between">
+                <div className="text-sm">
+                  <FileText className="w-3 h-3 inline mr-1 text-gray-400" />
+                  <span className="font-medium text-gray-900">{fileName}</span>
+                  <span className="text-gray-500"> · {resolved.length} boxes</span>
+                </div>
+                <button
+                  onClick={() => { setBoxes(null); setFileName(''); setOverrides({}); }}
+                  className="text-xs text-gray-600 hover:text-gray-900"
+                >
+                  Reset
+                </button>
+              </div>
+              <BoxesList
+                boxes={resolved}
+                mode="preview"
+                onPick={(boxId, rowKey, title) => setPickerFor({ boxId, rowKey, title })}
+                onClearOverride={(boxId, rowKey) => {
+                  const key = `${boxId}::${rowKey}`;
+                  setOverrides(prev => ({ ...prev, [key]: null }));
+                }}
+              />
+            </>
+          )}
+          {pickerFor && (
+            <InventoryPicker
+              title={pickerFor.title}
+              inventoryItems={inventoryItems}
+              onPick={(invId) => {
+                const key = `${pickerFor.boxId}::${pickerFor.rowKey}`;
+                setOverrides(prev => ({ ...prev, [key]: invId }));
+                setPickerFor(null);
+              }}
+              onClose={() => setPickerFor(null)}
+            />
+          )}
+        </div>
       )}
-    </div>
+    </section>
   );
 }
 
-function SummaryStat({ label, value, sub, tone }) {
-  const tones = {
-    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-900',
-    blue: 'bg-blue-50 border-blue-200 text-blue-900',
-    amber: 'bg-amber-50 border-amber-200 text-amber-900',
-    gray: 'bg-gray-50 border-gray-200 text-gray-900',
-  };
+// ───── Shared building blocks ──────────────────────────────────────────────
+
+function BoxesList({ boxes, onPick, onClearOverride }) {
+  const [collapsed, setCollapsed] = useState(() => new Set());
   return (
-    <div className={`border rounded-lg p-3 ${tones[tone] || tones.gray}`}>
-      <div className="text-xs opacity-70">{label}</div>
-      <div className="text-xl font-semibold">{value}</div>
-      {sub && <div className="text-[11px] opacity-70 mt-0.5">{sub}</div>}
+    <div className="space-y-3">
+      {boxes.map(box => {
+        const isCollapsed = collapsed.has(box.id);
+        const matched = box.items.filter(i => i.match?.item).length;
+        const a = box;
+        return (
+          <div key={box.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+            <button
+              onClick={() => setCollapsed(prev => {
+                const next = new Set(prev);
+                if (next.has(box.id)) next.delete(box.id); else next.add(box.id);
+                return next;
+              })}
+              className="w-full flex items-start gap-3 px-4 py-3 hover:bg-gray-50 text-left"
+            >
+              <div className="mt-0.5 text-gray-400">
+                {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-medium text-gray-900">{box.recipientName}</span>
+                  {box.username && <span className="text-xs text-gray-500">@{box.username}</span>}
+                  {a.shipmentMethod && (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
+                      <Truck className="w-3 h-3" /> {a.shipmentMethod}
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-gray-500 mt-0.5 flex items-start gap-1">
+                  <MapPin className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                  <span>
+                    {[a.street1, a.street2, [a.city, a.state, a.zip].filter(Boolean).join(', ')]
+                      .filter(Boolean).join(' · ')}
+                  </span>
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="text-sm font-medium text-gray-900">
+                  {box.items.length} {box.items.length === 1 ? 'item' : 'items'}
+                </div>
+                <div className={`text-xs ${matched === box.items.length ? 'text-emerald-600' : 'text-amber-600'}`}>
+                  {matched}/{box.items.length} matched
+                </div>
+              </div>
+            </button>
+
+            {!isCollapsed && (
+              <div className="border-t border-gray-100 divide-y divide-gray-100">
+                {box.items.map(item => (
+                  <BoxItemRow
+                    key={item.rowKey}
+                    item={item}
+                    onPick={() => onPick(box.id, item.rowKey, item.title)}
+                    onClear={() => onClearOverride(box.id, item.rowKey)}
+                  />
+                ))}
+                {box.notes?.length > 0 && (
+                  <div className="px-4 py-2 bg-amber-50 text-xs text-amber-900">
+                    <span className="font-medium">Notes:</span> {box.notes.join(' · ')}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -310,6 +780,22 @@ function BoxItemRow({ item, onPick, onClear }) {
   );
 }
 
+function SummaryStat({ label, value, sub, tone }) {
+  const tones = {
+    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+    blue: 'bg-blue-50 border-blue-200 text-blue-900',
+    amber: 'bg-amber-50 border-amber-200 text-amber-900',
+    gray: 'bg-gray-50 border-gray-200 text-gray-900',
+  };
+  return (
+    <div className={`border rounded-lg p-3 ${tones[tone] || tones.gray}`}>
+      <div className="text-xs opacity-70">{label}</div>
+      <div className="text-xl font-semibold">{value}</div>
+      {sub && <div className="text-[11px] opacity-70 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
 function confidenceLabel(c) {
   if (c === 'sku') return 'SKU';
   if (c === 'lot') return 'lot #';
@@ -318,31 +804,34 @@ function confidenceLabel(c) {
   return c;
 }
 
-function formatAddress(box) {
-  const parts = [
-    box.street1,
-    box.street2,
-    [box.city, box.state, box.zip].filter(Boolean).join(', '),
-    box.country && box.country !== 'US' ? box.country : null,
-  ].filter(Boolean);
-  return parts.join(' · ');
-}
-
-function InventoryPicker({ title, inventoryItems, onPick, onClose }) {
+function InventoryPicker({ title, inventoryItems, preferredItems, onPick, onClose }) {
   const [q, setQ] = useState('');
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
-    const list = inventoryItems
-      .filter(i => i.status === 'available' || i.status === 'listed')
-      .slice(0, 500);
-    if (!query) return list.slice(0, 50);
-    return list.filter(i => (
+    const pool = inventoryItems
+      .filter(i => i.status === 'available' || i.status === 'listed');
+    const prefIds = new Set((preferredItems || []).map(i => i.id));
+    const sorted = [...pool].sort((a, b) => {
+      const ap = prefIds.has(a.id) ? 0 : 1;
+      const bp = prefIds.has(b.id) ? 0 : 1;
+      return ap - bp;
+    });
+    if (!query) return sorted.slice(0, 50);
+    return sorted.filter(i => (
       i.sku?.toLowerCase().includes(query) ||
       i.name?.toLowerCase().includes(query) ||
       i.variety?.toLowerCase().includes(query) ||
       String(i.lotNumber || '').toLowerCase().includes(query)
     )).slice(0, 100);
-  }, [q, inventoryItems]);
+  }, [q, inventoryItems, preferredItems]);
+
+  // Re-focus the search input when opened.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      document.getElementById('inv-picker-search')?.focus();
+    }, 0);
+    return () => clearTimeout(t);
+  }, []);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
@@ -358,7 +847,7 @@ function InventoryPicker({ title, inventoryItems, onPick, onClose }) {
         </div>
         <div className="p-3">
           <input
-            autoFocus
+            id="inv-picker-search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search SKU, name, variety, lot #"

@@ -18,7 +18,6 @@ import { AssignSaleModal } from './inventory/AssignSaleModal.jsx';
 import { SalesView } from './sales/SalesView.jsx';
 import { SaleFormModal } from './sales/SaleFormModal.jsx';
 import { LineupBuilder } from './sales/LineupBuilder.jsx';
-import { ReconcileModal } from './sales/ReconcileModal.jsx';
 import { UsersView } from './users/UsersView.jsx';
 import { LabelSheet } from './labels/LabelSheet.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
@@ -91,11 +90,10 @@ function InventorySystem() {
   const [showConvertModal, setShowConvertModal] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [showSaleModal, setShowSaleModal] = useState(false);
+  const [editingSale, setEditingSale] = useState(null);
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showLineupBuilder, setShowLineupBuilder] = useState(false);
   const [lineupSale, setLineupSale] = useState(null);
-  const [showReconcile, setShowReconcile] = useState(false);
-  const [reconcileSale, setReconcileSale] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [convertingItem, setConvertingItem] = useState(null);
   const [assigningItem, setAssigningItem] = useState(null);
@@ -485,8 +483,19 @@ function InventorySystem() {
             items={items}
             isAdmin={isAdmin}
             onCreate={() => setShowSaleModal(true)}
+            onEdit={(sale) => setEditingSale(sale)}
             onBuildLineup={(sale) => { setLineupSale(sale); setShowLineupBuilder(true); }}
-            onReconcile={(sale) => { setReconcileSale(sale); setShowReconcile(true); }}
+            onSendToPacking={async (sale) => {
+              try {
+                await api.upsertSales([{ id: sale.id, status: 'packing' }]);
+                const fresh = await api.getSales();
+                setSales([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+                showToast(`${sale.name} sent to Packing`);
+                setActiveTab('packing');
+              } catch (e) {
+                showToast(e.message || 'Failed to send to packing', 'error');
+              }
+            }}
             onDelete={(id) => {
               if (!isAdmin) {
                 showToast('Only admins can delete sale events', 'error');
@@ -508,7 +517,44 @@ function InventorySystem() {
           />
         )}
         {activeTab === 'packing' && (
-          <PackingView inventoryItems={items} />
+          <PackingView
+            inventoryItems={items}
+            sales={sales}
+            onApplyOrders={async (saleId, updates) => {
+              try {
+                await api.upsertItems(updates);
+                const fresh = await api.getItems();
+                setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+                showToast(`Applied ${updates.length} orders`);
+              } catch (e) {
+                showToast(e.message || 'Apply failed', 'error');
+              }
+            }}
+            onShipBox={async (saleId, itemIds) => {
+              try {
+                const now = new Date().toISOString();
+                const shipUpdates = itemIds.map(id => ({ id, status: 'shipped', shippedAt: now }));
+                await api.upsertItems(shipUpdates);
+                const freshItems = await api.getItems();
+                const sorted = [...freshItems].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+                setItems(sorted);
+
+                // If every sale lot for this event is now shipped, close the sale.
+                const saleLots = sorted.filter(i => i.saleId === saleId && i.lotKind !== 'giveaway');
+                const allShipped = saleLots.length > 0 && saleLots.every(i => ['shipped', 'delivered'].includes(i.status));
+                if (allShipped) {
+                  await api.upsertSales([{ id: saleId, status: 'closed', closedAt: now }]);
+                  const freshSales = await api.getSales();
+                  setSales([...freshSales].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+                  showToast('All boxes shipped — sale closed');
+                } else {
+                  showToast(`Marked ${itemIds.length} ${itemIds.length === 1 ? 'item' : 'items'} shipped`);
+                }
+              } catch (e) {
+                showToast(e.message || 'Ship failed', 'error');
+              }
+            }}
+          />
         )}
         {activeTab === 'users' && isAdmin && (
           <UsersView
@@ -638,7 +684,7 @@ function InventorySystem() {
             const newItems = items.map(i => {
               if (updateMap.has(i.id)) {
                 const u = updateMap.get(i.id);
-                return { ...i, saleId: u.saleId, lotNumber: u.lotNumber };
+                return { ...i, saleId: u.saleId, lotNumber: u.lotNumber, lotKind: u.lotKind };
               }
               return i;
             });
@@ -650,24 +696,21 @@ function InventorySystem() {
           onClose={() => { setShowLineupBuilder(false); setLineupSale(null); }}
         />
       )}
-      {showReconcile && reconcileSale && (
-        <ReconcileModal
-          sale={reconcileSale}
-          items={items}
-          onApply={(updates) => {
-            const updateMap = new Map(updates.map(u => [u.id, u]));
-            const newItems = items.map(i => {
-              if (updateMap.has(i.id)) {
-                return { ...i, ...updateMap.get(i.id) };
-              }
-              return i;
-            });
-            saveItems(newItems);
-            showToast(`Reconciled ${reconcileSale.name}`);
-            setShowReconcile(false);
-            setReconcileSale(null);
+      {editingSale && (
+        <SaleFormModal
+          initial={editingSale}
+          onSave={async (data) => {
+            try {
+              await api.upsertSales([data]);
+              const fresh = await api.getSales();
+              setSales([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+              showToast('Sale event updated');
+              setEditingSale(null);
+            } catch (e) {
+              showToast(e.message || 'Failed to update sale', 'error');
+            }
           }}
-          onClose={() => { setShowReconcile(false); setReconcileSale(null); }}
+          onClose={() => setEditingSale(null)}
         />
       )}
       {showChangePassword && (

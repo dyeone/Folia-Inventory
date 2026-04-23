@@ -1,20 +1,32 @@
-import { useState, useMemo } from 'react';
-import { X, Layers, Search, DollarSign, Tag, Sprout, ListOrdered, Check } from 'lucide-react';
+import { useState, useMemo, useRef, useEffect } from 'react';
+import {
+  X, Layers, Search, DollarSign, Tag, Sprout, ListOrdered, Check,
+  ScanLine, Gift,
+} from 'lucide-react';
 import { PRICE_BUCKETS } from '../constants.js';
 
 export function LineupBuilder({ sale, items, onSave, onClose }) {
+  // Items eligible for this sale: those already on it, or unassigned and
+  // available/listed. The sale's `itemTypes` further narrows TC vs Plant.
   const eligible = useMemo(() => {
     return items.filter(i => {
       if (i.saleId === sale.id) return true;
       if (i.saleId && i.saleId !== sale.id) return false;
-      return ['available', 'listed'].includes(i.status);
+      if (!['available', 'listed'].includes(i.status)) return false;
+      if (sale.itemTypes === 'tc' && i.type !== 'tc') return false;
+      if (sale.itemTypes === 'plant' && i.type !== 'plant') return false;
+      return true;
     });
-  }, [items, sale.id]);
+  }, [items, sale.id, sale.itemTypes]);
 
+  // Per-selected-item state: { lotNumber, kind: 'sale'|'giveaway' }.
   const initialSelected = useMemo(() => {
     const m = {};
     items.filter(i => i.saleId === sale.id).forEach(i => {
-      m[i.id] = { lotNumber: i.lotNumber || '' };
+      m[i.id] = {
+        lotNumber: i.lotNumber || '',
+        kind: i.lotKind === 'giveaway' ? 'giveaway' : 'sale',
+      };
     });
     return m;
   }, [items, sale.id]);
@@ -25,11 +37,72 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState({});
 
+  // Barcode scanner state. The hidden input is auto-focused; USB scanners
+  // type the SKU then send Enter, which fires `handleScan`. `scanFlash`
+  // briefly highlights the affected row so the user gets visual feedback.
+  const scanRef = useRef(null);
+  const [scanInput, setScanInput] = useState('');
+  const [scanFlash, setScanFlash] = useState({ id: null, kind: null });
+  const [scanMessage, setScanMessage] = useState(null);
+
+  useEffect(() => {
+    scanRef.current?.focus();
+  }, []);
+
+  // Briefly clear the flash highlight after 1.2s.
+  useEffect(() => {
+    if (!scanFlash.id) return;
+    const t = setTimeout(() => setScanFlash({ id: null, kind: null }), 1200);
+    return () => clearTimeout(t);
+  }, [scanFlash]);
+
+  useEffect(() => {
+    if (!scanMessage) return;
+    const t = setTimeout(() => setScanMessage(null), 2000);
+    return () => clearTimeout(t);
+  }, [scanMessage]);
+
+  const handleScan = (raw) => {
+    const code = (raw || '').trim();
+    if (!code) return;
+    const found = items.find(i => i.sku?.toLowerCase() === code.toLowerCase());
+    if (!found) {
+      setScanMessage({ type: 'error', text: `No SKU "${code}" in inventory` });
+      return;
+    }
+    if (found.saleId && found.saleId !== sale.id) {
+      setScanMessage({ type: 'error', text: `${found.sku} is already on another sale` });
+      return;
+    }
+    if (sale.itemTypes === 'tc' && found.type !== 'tc') {
+      setScanMessage({ type: 'error', text: `${found.sku} is not a TC; this sale is TC only` });
+      return;
+    }
+    if (sale.itemTypes === 'plant' && found.type !== 'plant') {
+      setScanMessage({ type: 'error', text: `${found.sku} is not a plant; this sale is plants only` });
+      return;
+    }
+    setSelected(prev => {
+      if (prev[found.id]) return prev; // already selected; just flash it
+      return { ...prev, [found.id]: { lotNumber: '', kind: 'sale' } };
+    });
+    setScanFlash({ id: found.id, kind: 'add' });
+    setScanMessage({ type: 'ok', text: `Added ${found.sku} · ${found.name}` });
+  };
+
+  const onScanKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleScan(scanInput);
+      setScanInput('');
+    }
+  };
+
   const toggleItem = (id) => {
     setSelected(prev => {
       const next = { ...prev };
       if (next[id]) delete next[id];
-      else next[id] = { lotNumber: '' };
+      else next[id] = { lotNumber: '', kind: 'sale' };
       return next;
     });
   };
@@ -40,7 +113,7 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
       if (allSelected) {
         ids.forEach(id => delete next[id]);
       } else {
-        ids.forEach(id => { if (!next[id]) next[id] = { lotNumber: '' }; });
+        ids.forEach(id => { if (!next[id]) next[id] = { lotNumber: '', kind: 'sale' }; });
       }
       return next;
     });
@@ -50,31 +123,45 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
     setSelected(prev => ({ ...prev, [id]: { ...prev[id], lotNumber: lot } }));
   };
 
+  const setKind = (id, kind) => {
+    setSelected(prev => ({ ...prev, [id]: { ...prev[id], kind } }));
+  };
+
+  // Auto-number assigns sequential lot #s to *sale* items, sorted by price
+  // ascending. Giveaways are skipped (they don't take a lot number).
   const autoNumber = () => {
-    const sortedIds = Object.keys(selected).sort((a, b) => {
+    const saleIds = Object.entries(selected)
+      .filter(([, v]) => v.kind !== 'giveaway')
+      .map(([id]) => id);
+    const sorted = saleIds.sort((a, b) => {
       const ia = eligible.find(i => i.id === a);
       const ib = eligible.find(i => i.id === b);
       const pa = parseFloat(ia?.listingPrice) || 0;
       const pb = parseFloat(ib?.listingPrice) || 0;
       return pa - pb;
     });
-    const next = { ...selected };
-    sortedIds.forEach((id, idx) => {
-      next[id] = { ...next[id], lotNumber: String(idx + 1) };
+    setSelected(prev => {
+      const next = { ...prev };
+      sorted.forEach((id, idx) => {
+        next[id] = { ...next[id], lotNumber: String(idx + 1) };
+      });
+      return next;
     });
-    setSelected(next);
   };
 
   const clearLots = () => {
-    const next = {};
-    Object.keys(selected).forEach(id => { next[id] = { lotNumber: '' }; });
-    setSelected(next);
+    setSelected(prev => {
+      const next = {};
+      Object.keys(prev).forEach(id => { next[id] = { ...prev[id], lotNumber: '' }; });
+      return next;
+    });
   };
 
   const handleSave = () => {
+    // Lot # uniqueness only matters for sale items.
     const lotCounts = {};
     Object.values(selected).forEach(s => {
-      if (s.lotNumber) {
+      if (s.kind !== 'giveaway' && s.lotNumber) {
         lotCounts[s.lotNumber] = (lotCounts[s.lotNumber] || 0) + 1;
       }
     });
@@ -86,10 +173,15 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
 
     const updates = [];
     Object.entries(selected).forEach(([id, meta]) => {
-      updates.push({ id, saleId: sale.id, lotNumber: meta.lotNumber || null });
+      updates.push({
+        id,
+        saleId: sale.id,
+        lotNumber: meta.kind === 'giveaway' ? null : (meta.lotNumber || null),
+        lotKind: meta.kind,
+      });
     });
     items.filter(i => i.saleId === sale.id && !selected[i.id]).forEach(i => {
-      updates.push({ id: i.id, saleId: null, lotNumber: null });
+      updates.push({ id: i.id, saleId: null, lotNumber: null, lotKind: 'sale' });
     });
     onSave(updates);
   };
@@ -145,7 +237,10 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
   }, [filtered, groupBy]);
 
   const selectedCount = Object.keys(selected).length;
-  const selectedValue = Object.keys(selected).reduce((sum, id) => {
+  const giveawayCount = Object.values(selected).filter(s => s.kind === 'giveaway').length;
+  const saleCount = selectedCount - giveawayCount;
+  const selectedValue = Object.entries(selected).reduce((sum, [id, meta]) => {
+    if (meta.kind === 'giveaway') return sum;
     const item = eligible.find(i => i.id === id);
     return sum + (parseFloat(item?.listingPrice) || 0);
   }, 0);
@@ -159,7 +254,10 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
               <Layers className="w-4 h-4 text-emerald-600" />
               Build Lineup · <span className="truncate">{sale.name}</span>
             </h3>
-            <p className="text-xs text-gray-500 mt-0.5">{sale.date} · {sale.platform || 'Palmstreet'}</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {sale.date} · {sale.platform || 'Palmstreet'}
+              {sale.itemTypes && sale.itemTypes !== 'both' && ` · ${sale.itemTypes.toUpperCase()} only`}
+            </p>
           </div>
           <button onClick={onClose} className="p-1 text-gray-500 hover:bg-gray-100 rounded ml-2">
             <X className="w-5 h-5" />
@@ -167,6 +265,25 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
         </div>
 
         <div className="border-b border-gray-200 px-4 py-3 space-y-2 flex-shrink-0 bg-gray-50">
+          <div className="relative">
+            <ScanLine className="w-4 h-4 text-emerald-600 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              ref={scanRef}
+              type="text"
+              value={scanInput}
+              onChange={(e) => setScanInput(e.target.value)}
+              onKeyDown={onScanKeyDown}
+              placeholder="Scan a barcode (or type SKU + Enter)"
+              className="w-full pl-9 pr-3 py-2 text-sm border border-emerald-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+            />
+            {scanMessage && (
+              <div className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs px-2 py-0.5 rounded ${
+                scanMessage.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+              }`}>
+                {scanMessage.text}
+              </div>
+            )}
+          </div>
           <div className="flex flex-col sm:flex-row gap-2">
             <div className="flex-1 relative">
               <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -211,7 +328,7 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
             </div>
           </div>
           {selectedCount > 0 && (
-            <div className="flex items-center gap-2 pt-1">
+            <div className="flex items-center gap-2 pt-1 flex-wrap">
               <button onClick={autoNumber} className="flex items-center gap-1 px-2 py-1 text-xs bg-white border border-gray-300 rounded-lg hover:bg-gray-100">
                 <ListOrdered className="w-3 h-3" /> Auto-number by price
               </button>
@@ -264,13 +381,15 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
                     {!isCollapsed && (
                       <div className="divide-y divide-gray-100">
                         {groupItems.map(item => {
-                          const isSelected = !!selected[item.id];
-                          const lotValue = selected[item.id]?.lotNumber || '';
+                          const meta = selected[item.id];
+                          const isSelected = !!meta;
+                          const isGiveaway = meta?.kind === 'giveaway';
+                          const flashed = scanFlash.id === item.id;
                           return (
                             <label
                               key={item.id}
                               className={`flex items-center gap-3 px-3 py-2 cursor-pointer hover:bg-gray-50 transition ${
-                                isSelected ? 'bg-emerald-50/50' : ''
+                                flashed ? 'bg-emerald-100' : isGiveaway ? 'bg-amber-50/60' : isSelected ? 'bg-emerald-50/50' : ''
                               }`}
                             >
                               <input
@@ -295,14 +414,41 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
                                 {item.listingPrice ? `$${parseFloat(item.listingPrice).toFixed(0)}` : '—'}
                               </div>
                               {isSelected && (
-                                <input
-                                  type="text"
-                                  value={lotValue}
-                                  onChange={(e) => setLot(item.id, e.target.value)}
-                                  onClick={(e) => e.preventDefault()}
-                                  placeholder="Lot #"
-                                  className="w-16 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-500 flex-shrink-0"
-                                />
+                                <>
+                                  <div
+                                    className="flex items-center bg-gray-100 rounded p-0.5 flex-shrink-0"
+                                    onClick={(e) => e.preventDefault()}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => setKind(item.id, 'sale')}
+                                      className={`px-2 py-0.5 text-[11px] font-medium rounded ${
+                                        !isGiveaway ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-500'
+                                      }`}
+                                    >
+                                      Sale
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setKind(item.id, 'giveaway')}
+                                      className={`px-2 py-0.5 text-[11px] font-medium rounded inline-flex items-center gap-1 ${
+                                        isGiveaway ? 'bg-white text-amber-700 shadow-sm' : 'text-gray-500'
+                                      }`}
+                                    >
+                                      <Gift className="w-3 h-3" /> Give
+                                    </button>
+                                  </div>
+                                  {!isGiveaway && (
+                                    <input
+                                      type="text"
+                                      value={meta.lotNumber || ''}
+                                      onChange={(e) => setLot(item.id, e.target.value)}
+                                      onClick={(e) => e.preventDefault()}
+                                      placeholder="Lot #"
+                                      className="w-16 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-500 flex-shrink-0"
+                                    />
+                                  )}
+                                </>
                               )}
                             </label>
                           );
@@ -318,8 +464,10 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
 
         <div className="border-t border-gray-200 px-4 py-3 flex items-center justify-between flex-shrink-0 bg-white">
           <div className="text-sm">
-            <span className="font-semibold text-gray-900">{selectedCount}</span>
-            <span className="text-gray-500"> lots selected · </span>
+            <span className="font-semibold text-gray-900">{saleCount}</span>
+            <span className="text-gray-500"> sale lots · </span>
+            <span className="font-semibold text-amber-700">{giveawayCount}</span>
+            <span className="text-gray-500"> giveaway · </span>
             <span className="font-semibold text-emerald-700">${selectedValue.toFixed(0)}</span>
           </div>
           <div className="flex gap-2">

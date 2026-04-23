@@ -66,6 +66,42 @@ create table if not exists sales (
   "createdBy" text
 );
 
+-- Sale event lifecycle: ongoing (being built / live / pre-handoff)
+-- → packing (sent to Packing tab, file may or may not be uploaded yet)
+-- → closed (every box shipped; archived).
+alter table sales add column if not exists status text;
+alter table sales add column if not exists "startTime" timestamptz;
+alter table sales add column if not exists "durationMinutes" integer;
+alter table sales add column if not exists "itemTypes" text;
+alter table sales add column if not exists "closedAt" timestamptz;
+update sales set status = 'ongoing' where status is null;
+alter table sales alter column status set default 'ongoing';
+alter table sales alter column status set not null;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'sales_status_check') then
+    alter table sales add constraint sales_status_check
+      check (status in ('ongoing','packing','closed'));
+  end if;
+end $$;
+
+-- Per-item buyer / shipping data populated when a Palmstreet orders file is
+-- uploaded for a sale event. lotKind separates live-sale lots from
+-- giveaways assigned during lineup building.
+alter table inventory_items add column if not exists "lotKind" text default 'sale';
+alter table inventory_items add column if not exists "buyer" text;
+alter table inventory_items add column if not exists "buyerUsername" text;
+alter table inventory_items add column if not exists "buyerAddress" jsonb;
+alter table inventory_items add column if not exists "shipmentBoxId" text;
+alter table inventory_items add column if not exists "shippedAt" timestamptz;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'inventory_items_lotkind_check') then
+    alter table inventory_items add constraint inventory_items_lotkind_check
+      check ("lotKind" in ('sale','giveaway'));
+  end if;
+end $$;
+
 -- ─── Constraints ──────────────────────────────────────────────────────────────
 -- Enforce SKU uniqueness across all inventory items. Using a unique index
 -- with IF NOT EXISTS so this is safe to re-run. If existing rows already
