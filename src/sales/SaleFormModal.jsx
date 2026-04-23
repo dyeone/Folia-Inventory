@@ -47,14 +47,14 @@ export function SaleFormModal({ initial, onSave, onClose }) {
   };
 
   return (
-    <Modal title={isEdit ? 'Edit Sale Event' : 'New Sale Event'} onClose={onClose}>
-      <div className="space-y-3">
+    <Modal title={isEdit ? 'Edit Sale Event' : 'New Sale Event'} onClose={onClose} size="lg">
+      <div className="space-y-4">
         <Field label="Event Name *">
           <input
             type="text"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
-            className="input"
+            className="input text-base"
             placeholder="Friday Aurea Drop"
             autoFocus
           />
@@ -98,10 +98,10 @@ export function SaleFormModal({ initial, onSave, onClose }) {
                 key={opt.v}
                 type="button"
                 onClick={() => setForm({ ...form, itemTypes: opt.v })}
-                className={`flex-1 px-3 py-1.5 text-sm font-medium rounded-md transition ${
+                className={`flex-1 px-3 py-2 text-sm font-medium rounded-md transition ${
                   form.itemTypes === opt.v
                     ? 'bg-white text-emerald-700 shadow-sm'
-                    : 'text-gray-600 hover:text-gray-900'
+                    : 'text-gray-600 active:bg-gray-200'
                 }`}
               >
                 {opt.label}
@@ -125,18 +125,19 @@ export function SaleFormModal({ initial, onSave, onClose }) {
             className="input resize-none"
           />
         </Field>
-        <div className="flex gap-2 justify-end pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg">Cancel</button>
+        <div className="flex gap-2 justify-end pt-3">
+          <button onClick={onClose} className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg">
+            Cancel
+          </button>
           <button
             onClick={handleSave}
             disabled={!form.name.trim()}
-            className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 text-white rounded-lg"
+            className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-gray-300 text-white rounded-lg"
           >
             {isEdit ? 'Save' : 'Create'}
           </button>
         </div>
       </div>
-      <style>{`.input{width:100%;padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:.5rem;font-size:.875rem;outline:none;background:white}.input:focus{border-color:#059669;box-shadow:0 0 0 3px rgba(5,150,105,.1)}`}</style>
     </Modal>
   );
 }

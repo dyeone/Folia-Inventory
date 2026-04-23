@@ -45,10 +45,10 @@ export function SalesView({
     <div className="space-y-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-gray-900">Sale Events</h2>
-          <p className="text-xs text-gray-500 mt-0.5">From lineup to packed boxes — track each event end-to-end</p>
+          <h2 className="text-lg font-semibold text-gray-900">Sale Events</h2>
+          <p className="text-sm text-gray-500 mt-0.5">From lineup to packed boxes — track each event end-to-end</p>
         </div>
-        <button onClick={onCreate} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-lg self-start sm:self-auto">
+        <button onClick={onCreate} className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-medium rounded-lg self-start sm:self-auto">
           <Plus className="w-4 h-4" /> New Sale Event
         </button>
       </div>
@@ -56,20 +56,20 @@ export function SalesView({
       <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
         <button
           onClick={() => setTab('active')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition ${
-            tab === 'active' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'
+          className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition ${
+            tab === 'active' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 active:bg-gray-200'
           }`}
         >
-          <Clock className="w-3.5 h-3.5" /> Active
+          <Clock className="w-4 h-4" /> Active
           <span className="text-xs text-gray-500">({activeCount})</span>
         </button>
         <button
           onClick={() => setTab('archive')}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition ${
-            tab === 'archive' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600'
+          className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition ${
+            tab === 'archive' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 active:bg-gray-200'
           }`}
         >
-          <Archive className="w-3.5 h-3.5" /> Archive
+          <Archive className="w-4 h-4" /> Archive
           <span className="text-xs text-gray-500">({archiveCount})</span>
         </button>
       </div>
@@ -82,7 +82,7 @@ export function SalesView({
           </p>
         </div>
       ) : (
-        <div className="grid md:grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {visible.map(sale => (
             <SaleCard
               key={sale.id}
@@ -139,13 +139,13 @@ function SaleCard({ sale, items, isAdmin, onBuildLineup, onSendToPacking, onExpo
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           {sale.status !== 'closed' && (
-            <button onClick={onEdit} className="p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded" title="Edit">
-              <Edit2 className="w-3.5 h-3.5" />
+            <button onClick={onEdit} className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg" title="Edit" aria-label="Edit">
+              <Edit2 className="w-4 h-4" />
             </button>
           )}
           {isAdmin && (
-            <button onClick={onDelete} className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded" title="Delete (admin only)">
-              <Trash2 className="w-3.5 h-3.5" />
+            <button onClick={onDelete} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg" title="Delete (admin only)" aria-label="Delete">
+              <Trash2 className="w-4 h-4" />
             </button>
           )}
         </div>
@@ -210,11 +210,11 @@ function SaleActions({ sale, total, onBuildLineup, onSendToPacking, onExportCsv 
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={onExportCsv}
-          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm font-medium rounded-lg"
+          className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-800 text-sm font-medium rounded-lg"
         >
           <Download className="w-4 h-4" /> Re-export CSV
         </button>
-        <div className="flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-50 text-blue-800 text-sm font-medium rounded-lg">
+        <div className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-blue-50 text-blue-800 text-sm font-medium rounded-lg">
           <PackageOpen className="w-4 h-4" /> In Packing tab
         </div>
       </div>
@@ -227,14 +227,14 @@ function SaleActions({ sale, total, onBuildLineup, onSendToPacking, onExportCsv 
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={onBuildLineup}
-          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-sm font-medium rounded-lg transition"
+          className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 text-emerald-700 text-sm font-medium rounded-lg transition"
         >
           <Layers className="w-4 h-4" /> Build Lineup
         </button>
         <button
           onClick={onExportCsv}
           disabled={total === 0}
-          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-gray-900 hover:bg-gray-800 disabled:bg-gray-300 text-white text-sm font-medium rounded-lg transition"
+          className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-gray-900 hover:bg-gray-800 active:bg-black disabled:bg-gray-300 text-white text-sm font-medium rounded-lg transition"
         >
           <Download className="w-4 h-4" /> Export CSV
         </button>
@@ -242,7 +242,7 @@ function SaleActions({ sale, total, onBuildLineup, onSendToPacking, onExportCsv 
       <button
         onClick={onSendToPacking}
         disabled={total === 0}
-        className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white text-sm font-medium rounded-lg transition"
+        className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-gray-300 text-white text-sm font-medium rounded-lg transition"
       >
         <PackageOpen className="w-4 h-4" /> Send to Packing
       </button>
