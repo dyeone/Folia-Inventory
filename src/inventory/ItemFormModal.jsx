@@ -2,15 +2,44 @@ import { useState, useEffect } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
-import { VARIETIES, nextSkuForVariety } from '../constants.js';
+import { nextSkuForCode } from '../constants.js';
+import { SpeciesPicker } from './SpeciesPicker.jsx';
 
-export function ItemFormModal({ title, item, sales, existingItems = [], onSave, onClose }) {
+export function ItemFormModal({
+  title, item, sales, existingItems = [],
+  varieties = [], species = [],
+  onCreateVariety, onCreateSpecies,
+  onSave, onClose,
+}) {
   const isEditing = !!item;
+
+  // Resolve initial catalog selection from the item (if linked) or by
+  // matching the legacy variety/name fields against the catalog.
+  const initialPick = (() => {
+    if (item?.speciesId) {
+      const sp = species.find(s => s.id === item.speciesId);
+      const v = sp ? varieties.find(x => x.id === sp.varietyId) : null;
+      return {
+        varietyId: v?.id || '',
+        varietyName: v?.name || item?.variety || '',
+        speciesId: sp?.id || null,
+        speciesEpithet: sp?.epithet || item?.name || '',
+      };
+    }
+    const v = varieties.find(x => x.name === item?.variety);
+    const sp = v ? species.find(s => s.varietyId === v.id && s.epithet === item?.name) : null;
+    return {
+      varietyId: v?.id || '',
+      varietyName: v?.name || item?.variety || '',
+      speciesId: sp?.id || null,
+      speciesEpithet: sp?.epithet || item?.name || '',
+    };
+  })();
+
+  const [pick, setPick] = useState(initialPick);
   const [form, setForm] = useState({
     sku: item?.sku || '',
     type: item?.type || 'tc',
-    name: item?.name || '',
-    variety: item?.variety || '',
     quantity: item?.quantity || 1,
     grossCost: item?.grossCost ?? item?.cost ?? '',
     netCost: item?.netCost ?? '',
@@ -31,36 +60,40 @@ export function ItemFormModal({ title, item, sales, existingItems = [], onSave, 
   // Auto-generate the SKU from the selected variety (new items only).
   useEffect(() => {
     if (isEditing) return;
-    setForm(f => ({ ...f, sku: nextSkuForVariety(f.variety, existingItems) }));
-  }, [isEditing, form.variety, existingItems]);
+    const v = varieties.find(x => x.id === pick.varietyId);
+    setForm(f => ({ ...f, sku: nextSkuForCode(v?.code, existingItems) }));
+  }, [isEditing, pick.varietyId, varieties, existingItems]);
 
-  // Auto-calc ideal price from net cost × (1 + profit rate/100)
   const recalcIdeal = (netCost, profitRate) => {
     const c = parseFloat(netCost);
     const p = parseFloat(profitRate);
-    if (!isNaN(c) && !isNaN(p)) {
-      return (c * (1 + p / 100)).toFixed(2);
-    }
+    if (!isNaN(c) && !isNaN(p)) return (c * (1 + p / 100)).toFixed(2);
     return form.idealPrice;
   };
 
   const handleSubmit = () => {
-    if (!form.variety) return setErr('Variety is required');
-    if (!form.name.trim()) return setErr('Name is required');
-    if (!form.sku) return setErr('SKU could not be generated — pick a variety first');
+    setErr('');
+    if (!pick.varietyId) return setErr('Variety is required');
+    if (!pick.speciesEpithet) return setErr('Species is required');
+    if (!form.sku) return setErr('SKU could not be generated');
     if (!isEditing && existingItems.some(i => i.sku === form.sku)) {
       return setErr(`SKU "${form.sku}" already exists. Please retry.`);
     }
     onSave({
       ...form,
-      cost: form.grossCost, // backward compat
+      // Denormalized columns kept in sync from the catalog pick so the
+      // existing inventory list / search / sale matching keep working.
+      variety: pick.varietyName,
+      name: pick.speciesEpithet,
+      speciesId: pick.speciesId || null,
+      cost: form.grossCost,
       saleId: form.saleId || null,
       lotNumber: form.lotNumber || null,
     });
   };
 
   return (
-    <Modal title={title} onClose={onClose}>
+    <Modal title={title} onClose={onClose} size="lg">
       <div className="space-y-3">
         {err && (
           <div className="flex items-center gap-2 bg-red-50 text-red-700 text-xs px-3 py-2 rounded-lg">
@@ -79,15 +112,15 @@ export function ItemFormModal({ title, item, sales, existingItems = [], onSave, 
             <input type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" />
           </Field>
         </div>
-        <Field label="Variety *">
-          <select value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input">
-            <option value="">Select variety…</option>
-            {VARIETIES.map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </Field>
-        <Field label="Plant Name *">
-          <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" placeholder="e.g. Monstera Albo Japanese" />
-        </Field>
+
+        <SpeciesPicker
+          varieties={varieties}
+          species={species}
+          value={pick}
+          onChange={setPick}
+          onCreateVariety={onCreateVariety}
+          onCreateSpecies={onCreateSpecies}
+        />
 
         <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-xs">
           <span className="text-gray-500">{isEditing ? 'SKU' : 'SKU (auto-assigned)'}</span>
@@ -98,11 +131,7 @@ export function ItemFormModal({ title, item, sales, existingItems = [], onSave, 
           <div className="text-xs font-semibold text-gray-700 mb-2">Cost & Pricing</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Gross Cost">
-              <input
-                type="number" step="0.01" value={form.grossCost}
-                onChange={(e) => setForm({ ...form, grossCost: e.target.value })}
-                className="input" placeholder="0.00"
-              />
+              <input type="number" step="0.01" value={form.grossCost} onChange={(e) => setForm({ ...form, grossCost: e.target.value })} className="input" placeholder="0.00" />
             </Field>
             <Field label="Net Cost (incl. overhead)">
               <input
@@ -127,11 +156,7 @@ export function ItemFormModal({ title, item, sales, existingItems = [], onSave, 
               />
             </Field>
             <Field label="Ideal Sale Price">
-              <input
-                type="number" step="0.01" value={form.idealPrice}
-                onChange={(e) => setForm({ ...form, idealPrice: e.target.value })}
-                className="input bg-emerald-50/50" placeholder="auto"
-              />
+              <input type="number" step="0.01" value={form.idealPrice} onChange={(e) => setForm({ ...form, idealPrice: e.target.value })} className="input bg-emerald-50/50" placeholder="auto" />
             </Field>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
@@ -172,6 +197,7 @@ export function ItemFormModal({ title, item, sales, existingItems = [], onSave, 
                 <option value="sold">Sold</option>
                 <option value="shipped">Shipped</option>
                 <option value="delivered">Delivered</option>
+                <option value="refunded">Refunded</option>
               </select>
             </Field>
           </div>
@@ -194,11 +220,10 @@ export function ItemFormModal({ title, item, sales, existingItems = [], onSave, 
           </div>
         )}
         <div className="flex gap-2 justify-end pt-2">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg">Cancel</button>
-          <button onClick={handleSubmit} className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg">Save</button>
+          <button onClick={onClose} className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg">Cancel</button>
+          <button onClick={handleSubmit} className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-lg">Save</button>
         </div>
       </div>
-      <style>{`.input{width:100%;padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:.5rem;font-size:.875rem;outline:none;background:white}.input:focus{border-color:#059669;box-shadow:0 0 0 3px rgba(5,150,105,.1)}`}</style>
     </Modal>
   );
 }

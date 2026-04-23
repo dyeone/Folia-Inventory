@@ -1,19 +1,13 @@
+// Variety + species are now persisted in the `varieties` and `species`
+// tables and loaded at runtime via the catalog API. The constants below
+// are kept only as a fallback for legacy callers (e.g. the inventory
+// variety filter pills); admins can now add or rename varieties via the
+// catalog UI.
 export const VARIETIES = ['Anthurium', 'Alocasia', 'Monstera', 'Jewel Orchid'];
 
-// Short code prefixes used when generating SKUs. Each SKU is `${code}-${n}`
-// where n is the next unused number within that variety's sequence.
-export const VARIETY_CODES = {
-  'Anthurium': 'ANT',
-  'Alocasia': 'ALO',
-  'Monstera': 'MON',
-  'Jewel Orchid': 'JOR',
-};
-
-// Global SKU counter: the number after the variety prefix increments across
-// ALL items, regardless of variety. So you might see ANT-1, ALO-2, ANT-3, MON-4…
-// Prefix just identifies the variety; number is globally unique.
-export function nextSkuForVariety(variety, existingItems) {
-  const code = VARIETY_CODES[variety];
+// Compute the next SKU suffix given a code prefix and the existing items.
+// Numbering is GLOBAL across all items; the prefix is purely for display.
+export function nextSkuForCode(code, existingItems) {
   if (!code) return '';
   const nums = (existingItems || [])
     .map(i => {

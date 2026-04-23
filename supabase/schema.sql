@@ -117,6 +117,81 @@ alter table inventory_items drop constraint if exists inventory_items_status_che
 alter table inventory_items add constraint inventory_items_status_check
   check (status in ('available','listed','sold','shipped','delivered','converted','refunded'));
 
+-- ─── Catalog: Varieties (Genus) + Species ────────────────────────────────────
+-- A two-level catalog so items can be hierarchically classified:
+--   variety (genus, e.g. Alocasia)  →  species (e.g. sinuata 'Aurea')
+-- Items keep `variety` and `name` text columns denormalized for quick reads
+-- and to avoid breaking any code that reads them directly; speciesId is the
+-- canonical link when set.
+
+create table if not exists varieties (
+  id          text        primary key,
+  name        text        unique not null,
+  code        text        not null,                  -- 3-letter SKU prefix (ALO, ANT, MON, JOR…)
+  "createdAt" timestamptz not null default now(),
+  "createdBy" text
+);
+
+create table if not exists species (
+  id           text        primary key,
+  "varietyId"  text        not null references varieties(id) on delete restrict,
+  epithet      text        not null,                 -- the species/cultivar name, free text
+  "commonName" text,
+  notes        text,
+  "imageUrl"   text,
+  "createdAt"  timestamptz not null default now(),
+  "createdBy"  text,
+  unique ("varietyId", epithet)
+);
+
+-- Items get an optional FK to the species catalog. Nullable so existing
+-- rows (and ad-hoc imports) keep working; when set, the form auto-syncs
+-- the denormalized variety + name on the item.
+alter table inventory_items add column if not exists "speciesId" text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'inventory_items_species_fk') then
+    alter table inventory_items
+      add constraint inventory_items_species_fk
+      foreign key ("speciesId") references species(id) on delete set null;
+  end if;
+end $$;
+create index if not exists inventory_items_speciesid_idx on inventory_items ("speciesId");
+
+-- Seed the four built-in varieties from the original constants list. Safe
+-- to re-run; uses ON CONFLICT to leave existing rows alone.
+insert into varieties (id, name, code) values
+  ('var_alocasia',     'Alocasia',     'ALO'),
+  ('var_anthurium',    'Anthurium',    'ANT'),
+  ('var_monstera',     'Monstera',     'MON'),
+  ('var_jewel_orchid', 'Jewel Orchid', 'JOR')
+on conflict (name) do nothing;
+
+-- Backfill species from existing distinct (variety, name) pairs on items.
+-- Skips rows where variety or name is empty. Uses md5 for a deterministic
+-- id so re-running doesn't duplicate.
+insert into species (id, "varietyId", epithet)
+select
+  'sp_' || substr(md5(v.id || '|' || i.name), 1, 16) as id,
+  v.id as "varietyId",
+  i.name as epithet
+from (
+  select distinct variety, name
+  from inventory_items
+  where coalesce(variety, '') <> '' and coalesce(name, '') <> ''
+) i
+join varieties v on v.name = i.variety
+on conflict ("varietyId", epithet) do nothing;
+
+-- Link existing items to their backfilled species rows.
+update inventory_items i
+set "speciesId" = s.id
+from species s
+join varieties v on v.id = s."varietyId"
+where i."speciesId" is null
+  and i.variety = v.name
+  and i.name = s.epithet;
+
 -- ─── Constraints ──────────────────────────────────────────────────────────────
 -- Enforce SKU uniqueness across all inventory items. Using a unique index
 -- with IF NOT EXISTS so this is safe to re-run. If existing rows already
@@ -134,6 +209,8 @@ create unique index if not exists inventory_items_sku_unique
 alter table users           enable row level security;
 alter table inventory_items enable row level security;
 alter table sales           enable row level security;
+alter table varieties       enable row level security;
+alter table species         enable row level security;
 
 -- Drop the old permissive policies if they exist (safe to re-run).
 drop policy if exists "allow_all" on users;

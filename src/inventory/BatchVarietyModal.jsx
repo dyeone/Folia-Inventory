@@ -2,13 +2,19 @@ import { useState, useEffect, useMemo } from 'react';
 import { AlertCircle, Plus } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
-import { VARIETIES, VARIETY_CODES } from '../constants.js';
+import { SpeciesPicker } from './SpeciesPicker.jsx';
 
-export function BatchVarietyModal({ existingItems, onSave, onClose }) {
+export function BatchVarietyModal({
+  existingItems,
+  varieties = [], species = [],
+  onCreateVariety, onCreateSpecies,
+  onSave, onClose,
+}) {
+  const [pick, setPick] = useState({
+    varietyId: '', varietyName: '', speciesId: null, speciesEpithet: '',
+  });
   const [form, setForm] = useState({
     type: 'tc',
-    name: '',
-    variety: '',
     quantity: 5,
     grossCost: '',
     netCost: '',
@@ -22,7 +28,6 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
   });
   const [err, setErr] = useState('');
 
-  // Auto-calc ideal price
   useEffect(() => {
     const c = parseFloat(form.netCost);
     const p = parseFloat(form.profitRate);
@@ -31,12 +36,9 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
     }
   }, [form.netCost, form.profitRate]);
 
-  // Preview of the SKUs the server is likely to assign. Just a hint — server
-  // is authoritative and may pick different numbers if another user beats us.
-  // Numbering is global across all items; prefix just marks the variety.
   const previewSkus = useMemo(() => {
-    const code = VARIETY_CODES[form.variety];
-    if (!code) return [];
+    const v = varieties.find(x => x.id === pick.varietyId);
+    if (!v?.code) return [];
     const nums = existingItems
       .map(i => {
         const m = String(i.sku || '').match(/-(\d+)$/);
@@ -47,24 +49,24 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
     const qty = parseInt(form.quantity) || 0;
     const result = [];
     for (let i = 0; i < Math.min(qty, 5); i++) {
-      result.push(`${code}-${start + i}`);
+      result.push(`${v.code}-${start + i}`);
     }
     return result;
-  }, [form.variety, form.quantity, existingItems]);
+  }, [pick.varietyId, varieties, form.quantity, existingItems]);
 
   const handleSubmit = () => {
     setErr('');
-    if (!form.variety) return setErr('Variety is required');
-    if (!form.name.trim()) return setErr('Plant name is required');
+    if (!pick.varietyId) return setErr('Variety is required');
+    if (!pick.speciesEpithet) return setErr('Species is required');
     const qty = parseInt(form.quantity);
     if (!qty || qty < 1) return setErr('Quantity must be at least 1');
     if (qty > 500) return setErr('Maximum 500 items per batch');
 
-    // Server assigns SKUs. We just send the shared template `qty` times.
     const items = Array.from({ length: qty }, () => ({
       type: form.type,
-      name: form.name.trim(),
-      variety: form.variety.trim(),
+      name: pick.speciesEpithet,
+      variety: pick.varietyName,
+      speciesId: pick.speciesId || null,
       quantity: 1,
       grossCost: form.grossCost,
       cost: form.grossCost,
@@ -85,11 +87,11 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
   const totalProfit = totalPotential - totalInvestment;
 
   return (
-    <Modal title="Add Variety (Batch)" onClose={onClose}>
+    <Modal title="Add Variety (Batch)" onClose={onClose} size="lg">
       <div className="space-y-3">
         <div className="bg-sky-50 border border-sky-200 rounded-lg p-3 text-xs text-sky-900">
-          <div className="font-medium mb-1">Create multiple unique SKUs for one variety</div>
-          <div>Fill in the plant details — SKUs will be generated automatically.</div>
+          <div className="font-medium mb-1">Create multiple unique SKUs for one species</div>
+          <div>Pick a variety + species — SKUs will be generated automatically.</div>
         </div>
 
         {err && (
@@ -109,15 +111,15 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
             <input type="number" min="1" max="500" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" />
           </Field>
         </div>
-        <Field label="Variety *">
-          <select value={form.variety} onChange={(e) => setForm({ ...form, variety: e.target.value })} className="input">
-            <option value="">Select variety…</option>
-            {VARIETIES.map(v => <option key={v} value={v}>{v}</option>)}
-          </select>
-        </Field>
-        <Field label="Plant Name *">
-          <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="input" placeholder="e.g. Monstera Albo Japanese" />
-        </Field>
+
+        <SpeciesPicker
+          varieties={varieties}
+          species={species}
+          value={pick}
+          onChange={setPick}
+          onCreateVariety={onCreateVariety}
+          onCreateSpecies={onCreateSpecies}
+        />
 
         {previewSkus.length > 0 && (
           <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
@@ -195,18 +197,17 @@ export function BatchVarietyModal({ existingItems, onSave, onClose }) {
         </div>
 
         <div className="flex gap-2 justify-end pt-2 sticky bottom-0 bg-white">
-          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg">Cancel</button>
+          <button onClick={onClose} className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg">Cancel</button>
           <button
             onClick={handleSubmit}
             disabled={String(form.grossCost).trim() === '' || String(form.netCost).trim() === ''}
             title={String(form.grossCost).trim() === '' || String(form.netCost).trim() === '' ? 'Enter gross cost and net cost first' : ''}
-            className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5"
+            className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" /> Create {form.quantity || 0} Items
           </button>
         </div>
       </div>
-      <style>{`.input{width:100%;padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:.5rem;font-size:.875rem;outline:none;background:white}.input:focus{border-color:#059669;box-shadow:0 0 0 3px rgba(5,150,105,.1)}`}</style>
     </Modal>
   );
 }

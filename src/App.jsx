@@ -23,6 +23,7 @@ import { LabelSheet } from './labels/LabelSheet.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
 import { PackingView } from './packing/PackingView.jsx';
 import { FinancialView } from './financial/FinancialView.jsx';
+import { CatalogModal } from './inventory/CatalogModal.jsx';
 
 export default function InventoryApp() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -85,6 +86,9 @@ function InventorySystem() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [items, setItems] = useState([]);
   const [sales, setSales] = useState([]);
+  const [varieties, setVarieties] = useState([]);
+  const [species, setSpecies] = useState([]);
+  const [showCatalogModal, setShowCatalogModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -113,17 +117,37 @@ function InventorySystem() {
   useEffect(() => {
     (async () => {
       try {
-        const [itemsData, salesData] = await Promise.all([api.getItems(), api.getSales()]);
+        const [itemsData, salesData, varietiesData, speciesData] = await Promise.all([
+          api.getItems(),
+          api.getSales(),
+          api.getVarieties(),
+          api.getSpecies(),
+        ]);
         const sortByCreated = (arr) =>
           [...arr].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
         setItems(sortByCreated(itemsData));
         setSales(sortByCreated(salesData));
+        setVarieties(varietiesData);
+        setSpecies(speciesData);
       } catch (e) {
         showToast(e.message || 'Failed to load data', 'error');
       }
       setLoading(false);
     })();
   }, []);
+
+  // Catalog mutations: create immediately to API, optimistic-add to local
+  // state so the new item is selectable in the same modal session.
+  const addVariety = async ({ name, code }) => {
+    const v = await api.createVariety({ name, code });
+    setVarieties(prev => [...prev, v].sort((a, b) => a.name.localeCompare(b.name)));
+    return v;
+  };
+  const addSpecies = async ({ varietyId, epithet, commonName, notes, imageUrl }) => {
+    const s = await api.createSpecies({ varietyId, epithet, commonName, notes, imageUrl });
+    setSpecies(prev => [...prev, s].sort((a, b) => a.epithet.localeCompare(b.epithet)));
+    return s;
+  };
 
   // Diff two arrays and return only the rows that were added or changed.
   // Shallow JSON compare is fine here — item/sale objects have stable shapes.
@@ -375,6 +399,12 @@ function InventorySystem() {
                       </div>
                     </div>
                     <button
+                      onClick={() => { setShowCatalogModal(true); setShowUserMenu(false); }}
+                      className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                    >
+                      <Layers className="w-4 h-4" /> Manage Catalog
+                    </button>
+                    <button
                       onClick={() => { setShowChangePassword(true); setShowUserMenu(false); }}
                       className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
                     >
@@ -439,6 +469,7 @@ function InventorySystem() {
             items={filteredItems}
             allItems={items}
             sales={sales}
+            varieties={varieties}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             filterType={filterType}
@@ -588,6 +619,10 @@ function InventorySystem() {
           title="Add New SKU"
           sales={sales}
           existingItems={items}
+          varieties={varieties}
+          species={species}
+          onCreateVariety={addVariety}
+          onCreateSpecies={addSpecies}
           onSave={(data) => { addItem(data); setShowAddModal(false); }}
           onClose={() => setShowAddModal(false)}
         />
@@ -595,6 +630,10 @@ function InventorySystem() {
       {showBatchModal && (
         <BatchVarietyModal
           existingItems={items}
+          varieties={varieties}
+          species={species}
+          onCreateVariety={addVariety}
+          onCreateSpecies={addSpecies}
           onSave={async (newItems) => {
             try {
               // Strip client IDs and timestamps — server generates them,
@@ -632,6 +671,10 @@ function InventorySystem() {
           sales={sales}
           item={editingItem}
           existingItems={items}
+          varieties={varieties}
+          species={species}
+          onCreateVariety={addVariety}
+          onCreateSpecies={addSpecies}
           onSave={(data) => { updateItem(editingItem.id, data); setEditingItem(null); }}
           onClose={() => setEditingItem(null)}
         />
@@ -640,6 +683,10 @@ function InventorySystem() {
         <ConvertModal
           item={convertingItem}
           existingItems={items}
+          varieties={varieties}
+          species={species}
+          onCreateVariety={addVariety}
+          onCreateSpecies={addSpecies}
           onConvert={(data) => { convertToPlant(convertingItem.id, data); setShowConvertModal(false); setConvertingItem(null); }}
           onClose={() => { setShowConvertModal(false); setConvertingItem(null); }}
         />
@@ -729,6 +776,18 @@ function InventorySystem() {
             }
           }}
           onClose={() => setEditingSale(null)}
+        />
+      )}
+      {showCatalogModal && (
+        <CatalogModal
+          varieties={varieties}
+          species={species}
+          items={items}
+          isAdmin={isAdmin}
+          onVarietiesChange={setVarieties}
+          onSpeciesChange={setSpecies}
+          onClose={() => setShowCatalogModal(false)}
+          showToast={showToast}
         />
       )}
       {showChangePassword && (

@@ -1,6 +1,5 @@
 import { supabase, requireUser, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
-import { VARIETY_CODES } from '../src/constants.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 const SERVER_OWNED = ['createdAt', 'createdBy', 'modifiedAt', 'modifiedBy'];
@@ -14,13 +13,19 @@ function stripServerOwned(item) {
 // Assign SKUs to items that don't have one. Numbering is GLOBAL across all
 // items; the variety code is only a prefix for identification. Example
 // sequence: ANT-1, ALO-2, ANT-3, MON-4, JOR-5…
+//
+// Variety codes come from the `varieties` table (so admin-added varieties
+// work without a code release).
 async function assignMissingSkus(items) {
   const needSku = items.filter(i => !i.sku);
   if (needSku.length === 0) return;
 
-  // Validate varieties up front so we don't half-assign and fail.
+  const { data: varieties, error: vErr } = await supabase.from('varieties').select('name, code');
+  if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
+  const codeByName = Object.fromEntries((varieties || []).map(v => [v.name, v.code]));
+
   for (const item of needSku) {
-    if (!VARIETY_CODES[item.variety]) {
+    if (!codeByName[item.variety]) {
       const e = new Error(`Unknown variety: ${item.variety}`); e.status = 400; throw e;
     }
   }
@@ -36,7 +41,7 @@ async function assignMissingSkus(items) {
   let next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
 
   for (const item of needSku) {
-    item.sku = `${VARIETY_CODES[item.variety]}-${next++}`;
+    item.sku = `${codeByName[item.variety]}-${next++}`;
   }
 }
 

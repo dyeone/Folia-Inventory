@@ -71,6 +71,24 @@ export const api = {
   upsertSales: (sales) => request('/sales', { method: 'POST', body: { sales } }),
   deleteSales: (ids) => request('/sales', { method: 'DELETE', body: { ids } }),
 
+  // Varieties (genus catalog)
+  getVarieties: () => request('/varieties').then(r => r.varieties),
+  createVariety: ({ name, code }) =>
+    request('/varieties', { method: 'POST', body: { name, code } }).then(r => r.variety),
+  updateVariety: ({ id, patch }) =>
+    request('/varieties', { method: 'PATCH', body: { id, ...patch } }),
+  deleteVariety: (id) =>
+    request('/varieties', { method: 'DELETE', body: { id } }),
+
+  // Species catalog
+  getSpecies: () => request('/species').then(r => r.species),
+  createSpecies: ({ varietyId, epithet, commonName, notes, imageUrl }) =>
+    request('/species', { method: 'POST', body: { varietyId, epithet, commonName, notes, imageUrl } }).then(r => r.species),
+  updateSpecies: ({ id, patch }) =>
+    request('/species', { method: 'PATCH', body: { id, ...patch } }),
+  deleteSpecies: (id) =>
+    request('/species', { method: 'DELETE', body: { id } }),
+
   // Users (admin only, enforced server-side)
   getUsers: () => request('/users').then(r => r.users),
   createUser: ({ username, password, displayName, role, adminUserId }) =>

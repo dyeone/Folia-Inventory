@@ -1,11 +1,15 @@
 import { useState, useMemo } from 'react';
 import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
-import { VARIETIES } from '../constants.js';
+import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 
-export function InventoryView({ items: filteredItems, allItems, sales, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
-  // Variety tab further narrows the list. `items` below = the final list
-  // shown in the table / cards (after search/type/status/sale + variety tab).
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+  // Variety tabs come from the live catalog when available, falling back to
+  // the legacy constant list while it's still loading.
+  const varietyNames = useMemo(
+    () => varieties.length > 0 ? varieties.map(v => v.name) : DEFAULT_VARIETIES,
+    [varieties]
+  );
   const [varietyTab, setVarietyTab] = useState('all');
   const items = useMemo(
     () => varietyTab === 'all' ? filteredItems : filteredItems.filter(i => i.variety === varietyTab),
@@ -13,11 +17,11 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
   );
   const varietyCounts = useMemo(() => {
     const counts = { all: filteredItems.length };
-    for (const v of VARIETIES) {
+    for (const v of varietyNames) {
       counts[v] = filteredItems.filter(i => i.variety === v).length;
     }
     return counts;
-  }, [filteredItems]);
+  }, [filteredItems, varietyNames]);
 
   // Group items by name (alphabetical). Within each group items keep their
   // existing order (newest first, sorted in the parent).
@@ -162,7 +166,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, searchQue
 
       {/* Variety tabs */}
       <div className="bg-white rounded-xl border border-gray-200 px-1 py-1 flex gap-0.5 overflow-x-auto">
-        {[{ value: 'all', label: 'All' }, ...VARIETIES.map(v => ({ value: v, label: v }))].map(tab => {
+        {[{ value: 'all', label: 'All' }, ...varietyNames.map(v => ({ value: v, label: v }))].map(tab => {
           const active = varietyTab === tab.value;
           const count = varietyCounts[tab.value] ?? 0;
           return (
