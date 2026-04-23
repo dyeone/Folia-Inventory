@@ -10,12 +10,22 @@ import { parseCashflow, buildRefundUpdates } from './parseCashflow.js';
 const SOLD_STATUSES = new Set(['sold', 'shipped', 'delivered']);
 
 const RANGES = [
-  { id: 'all',  label: 'All time', days: null },
-  { id: '30d',  label: '30 days',  days: 30 },
-  { id: '90d',  label: '90 days',  days: 90 },
-  { id: 'ytd',  label: 'This year', days: null, ytd: true },
-  { id: '12m',  label: '12 months', days: 365 },
+  { id: 'all',    label: 'All time',  days: null },
+  { id: '30d',    label: '30 days',   days: 30 },
+  { id: '90d',    label: '90 days',   days: 90 },
+  { id: 'ytd',    label: 'This year', days: null, ytd: true },
+  { id: '12m',    label: '12 months', days: 365 },
+  { id: 'custom', label: 'Custom',    days: null, custom: true },
 ];
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+function daysAgoIso(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
 
 function fmt$(n) {
   if (n === null || n === undefined || isNaN(n)) return '—';
@@ -36,6 +46,11 @@ function inRange(item, range) {
   if (range.id === 'all') return true;
   const t = item.soldAt ? new Date(item.soldAt).getTime() : 0;
   if (!t) return false;
+  if (range.custom) {
+    const from = range.from ? new Date(`${range.from}T00:00:00`).getTime() : 0;
+    const to = range.to ? new Date(`${range.to}T23:59:59.999`).getTime() : Date.now();
+    return t >= from && t <= to;
+  }
   if (range.ytd) {
     const yStart = new Date(new Date().getFullYear(), 0, 1).getTime();
     return t >= yStart;
@@ -89,7 +104,12 @@ const TABS = [
 export function FinancialView({ items, sales, onApplyRefunds }) {
   const [tab, setTab] = useState('overview');
   const [rangeId, setRangeId] = useState('all');
-  const range = RANGES.find(r => r.id === rangeId) || RANGES[0];
+  const [customFrom, setCustomFrom] = useState(() => daysAgoIso(30));
+  const [customTo, setCustomTo] = useState(() => todayIso());
+  const range = useMemo(() => {
+    const base = RANGES.find(r => r.id === rangeId) || RANGES[0];
+    return base.custom ? { ...base, from: customFrom, to: customTo } : base;
+  }, [rangeId, customFrom, customTo]);
 
   return (
     <div className="space-y-4">
@@ -103,18 +123,40 @@ export function FinancialView({ items, sales, onApplyRefunds }) {
           </p>
         </div>
         {tab !== 'cashflow' && (
-          <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
-            {RANGES.map(r => (
-              <button
-                key={r.id}
-                onClick={() => setRangeId(r.id)}
-                className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition ${
-                  rangeId === r.id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 active:bg-gray-200'
-                }`}
-              >
-                {r.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
+              {RANGES.map(r => (
+                <button
+                  key={r.id}
+                  onClick={() => setRangeId(r.id)}
+                  className={`px-3 py-1.5 text-xs sm:text-sm font-medium rounded-md transition ${
+                    rangeId === r.id ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 active:bg-gray-200'
+                  }`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+            {rangeId === 'custom' && (
+              <div className="flex items-center gap-1.5 bg-white border border-gray-300 rounded-lg p-1">
+                <input
+                  type="date"
+                  value={customFrom}
+                  max={customTo}
+                  onChange={(e) => setCustomFrom(e.target.value)}
+                  className="px-2 py-1 text-sm border-0 focus:outline-none focus:ring-0 bg-transparent"
+                />
+                <span className="text-gray-400 text-sm">→</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  min={customFrom}
+                  max={todayIso()}
+                  onChange={(e) => setCustomTo(e.target.value)}
+                  className="px-2 py-1 text-sm border-0 focus:outline-none focus:ring-0 bg-transparent"
+                />
+              </div>
+            )}
           </div>
         )}
       </div>
