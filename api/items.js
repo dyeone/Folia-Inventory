@@ -105,13 +105,23 @@ export default wrap(async (req, res) => {
           const e = new Error(error.message); e.status = 500; throw e;
         }
       }
+      // For updates we use UPDATE (not UPSERT) so partial payloads — e.g.
+      // restoring a soft-deleted row by sending only { id, deletedAt: null }
+      // — don't trip the NOT NULL constraints on sku/type during the
+      // INSERT phase of an upsert.
       if (updates.length > 0) {
-        const { error } = await supabase.from('inventory_items').upsert(updates);
-        if (error) {
-          if (error.code === '23505' && /sku/i.test(error.message || '')) {
-            const e = new Error('SKU already exists — SKUs must be unique.'); e.status = 409; throw e;
+        for (const item of updates) {
+          const { id, ...patch } = item;
+          const { error } = await supabase
+            .from('inventory_items')
+            .update(patch)
+            .eq('id', id);
+          if (error) {
+            if (error.code === '23505' && /sku/i.test(error.message || '')) {
+              const e = new Error('SKU already exists — SKUs must be unique.'); e.status = 409; throw e;
+            }
+            const e = new Error(error.message); e.status = 500; throw e;
           }
-          const e = new Error(error.message); e.status = 500; throw e;
         }
       }
       return res.status(200).json({ ok: true, inserted: inserts.length, updated: updates.length });
