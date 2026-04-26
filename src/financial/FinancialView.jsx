@@ -411,10 +411,6 @@ function Overview({ items, sales, range }) {
           )}
         </section>
 
-        <section className="bg-white border border-gray-200 rounded-xl overflow-hidden lg:col-span-2">
-          <ProfitTrendByName items={items} />
-        </section>
-
         <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-200">
             <h3 className="font-medium text-gray-900">Monthly trend</h3>
@@ -445,6 +441,10 @@ function Overview({ items, sales, range }) {
             </div>
             <MonthlyDelta monthly={monthly} />
           </div>
+        </section>
+
+        <section className="bg-white border border-gray-200 rounded-xl overflow-hidden lg:col-span-2">
+          <ProfitTrendByName items={items} />
         </section>
       </div>
     </div>
