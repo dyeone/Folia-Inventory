@@ -52,6 +52,11 @@ export default wrap(async (req, res) => {
 
   switch (req.method) {
     case 'GET': {
+      // Lazy purge: hard-delete anything in the trash longer than 30 days.
+      // Best-effort — we don't fail the read if this errors.
+      const cutoff = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
+      await supabase.from('inventory_items').delete().lt('deletedAt', cutoff);
+
       const { data, error } = await supabase.from('inventory_items').select('*');
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ items: data || [] });
@@ -113,13 +118,28 @@ export default wrap(async (req, res) => {
     }
 
     case 'DELETE': {
-      const { ids } = req.body || {};
+      const { ids, purge } = req.body || {};
       if (!Array.isArray(ids) || ids.length === 0) {
         const e = new Error('ids required'); e.status = 400; throw e;
       }
-      const { error } = await supabase.from('inventory_items').delete().in('id', ids);
+      if (purge) {
+        // Hard delete — bypass the 30-day grace. Used by the Recently
+        // Deleted tab's "Delete forever" action.
+        const { error } = await supabase.from('inventory_items').delete().in('id', ids);
+        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        return res.status(200).json({ ok: true, purged: ids.length });
+      }
+      // Soft delete: items keep all their data and are recoverable for
+      // 30 days from the Recently Deleted tab.
+      const { error } = await supabase
+        .from('inventory_items')
+        .update({
+          deletedAt: new Date().toISOString(),
+          deletedBy: user.displayName,
+        })
+        .in('id', ids);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-      return res.status(200).json({ ok: true });
+      return res.status(200).json({ ok: true, deleted: ids.length });
     }
 
     default:

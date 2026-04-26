@@ -112,6 +112,14 @@ alter table inventory_items add column if not exists "refundedAmount" numeric de
 alter table inventory_items add column if not exists "refundedAt" timestamptz;
 create index if not exists inventory_items_orderid_idx on inventory_items ("orderId");
 
+-- Soft-delete with a 30-day grace window. The API filters deletedAt rows
+-- out of the main inventory and exposes them through a "Recently Deleted"
+-- view; rows past the 30-day mark are hard-purged the next time the API
+-- reads items.
+alter table inventory_items add column if not exists "deletedAt" timestamptz;
+alter table inventory_items add column if not exists "deletedBy" text;
+create index if not exists inventory_items_deletedat_idx on inventory_items ("deletedAt");
+
 -- Allow 'refunded' as a status (full refunds get marked here; partials keep
 -- their existing sold/shipped status with refundedAmount > 0).
 alter table inventory_items drop constraint if exists inventory_items_status_check;

@@ -62,7 +62,14 @@ export const api = {
   // Items
   getItems: () => request('/items').then(r => r.items),
   upsertItems: (items) => request('/items', { method: 'POST', body: { items } }),
+  // Soft delete: items move to the Recently Deleted tab and stay
+  // recoverable for 30 days before being purged on read.
   deleteItems: (ids) => request('/items', { method: 'DELETE', body: { ids } }),
+  // Restore from soft delete by clearing deletedAt.
+  restoreItems: (ids) =>
+    request('/items', { method: 'POST', body: { items: ids.map(id => ({ id, deletedAt: null, deletedBy: null })) } }),
+  // Hard delete — bypasses the 30-day grace.
+  purgeItems: (ids) => request('/items', { method: 'DELETE', body: { ids, purge: true } }),
   convertItem: ({ tcId, plantData }) =>
     request('/items/convert', { method: 'POST', body: { tcId, plantData } }).then(r => r),
 

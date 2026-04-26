@@ -26,6 +26,7 @@ import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
 import { PackingView } from './packing/PackingView.jsx';
 import { FinancialView } from './financial/FinancialView.jsx';
 import { CatalogModal } from './inventory/CatalogModal.jsx';
+import { RecentlyDeletedView } from './inventory/RecentlyDeletedView.jsx';
 
 export default function InventoryApp() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -87,6 +88,7 @@ function InventorySystem() {
 
   const [activeTab, setActiveTab] = useState('dashboard');
   const [items, setItems] = useState([]);
+  const [deletedItems, setDeletedItems] = useState([]);
   const [sales, setSales] = useState([]);
   const [varieties, setVarieties] = useState([]);
   const [species, setSpecies] = useState([]);
@@ -117,6 +119,16 @@ function InventorySystem() {
   // { items: [...], title: 'Added N items' } — summary dialog after creation
   const [addSummary, setAddSummary] = useState(null);
 
+  // Split an /items response into active (visible) and trash (soft-deleted)
+  // and update both states. Centralizes ordering + the deletedAt partition.
+  const applyItemsFresh = (fresh) => {
+    const sorted = [...fresh].sort(
+      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+    );
+    setItems(sorted.filter(i => !i.deletedAt));
+    setDeletedItems(sorted.filter(i => i.deletedAt));
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -128,7 +140,7 @@ function InventorySystem() {
         ]);
         const sortByCreated = (arr) =>
           [...arr].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-        setItems(sortByCreated(itemsData));
+        applyItemsFresh(itemsData);
         setSales(sortByCreated(salesData));
         setVarieties(varietiesData);
         setSpecies(speciesData);
@@ -170,6 +182,12 @@ function InventorySystem() {
       if (toUpsert.length) ops.push(api.upsertItems(toUpsert));
       if (deletedIds.length) ops.push(api.deleteItems(deletedIds));
       if (ops.length) await Promise.all(ops);
+      // After a soft-delete, refresh so the trashed rows show up in the
+      // Recently Deleted tab right away.
+      if (deletedIds.length) {
+        const fresh = await api.getItems();
+        applyItemsFresh(fresh);
+      }
     } catch (e) {
       showToast(e.message || 'Save failed', 'error');
     }
@@ -205,7 +223,7 @@ function InventorySystem() {
       const { id, createdAt, createdBy, modifiedAt, modifiedBy, sku, ...clean } = item;
       await api.upsertItems([{ ...clean, status: item.status || 'available' }]);
       const fresh = await api.getItems();
-      setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+      applyItemsFresh(fresh);
       // Find the new item in the fresh list to show its generated SKU.
       const newest = fresh.reduce((latest, i) =>
         (!latest || new Date(i.createdAt) > new Date(latest.createdAt)) ? i : latest, null);
@@ -359,6 +377,10 @@ function InventorySystem() {
     { id: 'sales', label: 'Sales Events', icon: Calendar },
     { id: 'packing', label: 'Packing', icon: Package },
     { id: 'financial', label: 'Financial', icon: LineChart },
+    {
+      id: 'trash', label: 'Recently Deleted', icon: Trash2,
+      badge: deletedItems.length > 0 ? deletedItems.length : null,
+    },
   ];
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users });
 
@@ -439,6 +461,11 @@ function InventorySystem() {
                 }`}
               >
                 <Icon className="w-4 h-4" /> {tab.label}
+                {tab.badge != null && (
+                  <span className="ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                    {tab.badge}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -449,7 +476,9 @@ function InventorySystem() {
       <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-gray-200 flex">
         {tabs.map(tab => {
           const Icon = tab.icon;
-          const shortLabel = tab.id === 'sales' ? 'Sales' : tab.label;
+          const shortLabel = tab.id === 'sales' ? 'Sales'
+            : tab.id === 'trash' ? 'Trash'
+            : tab.label;
           return (
             <button
               key={tab.id}
@@ -575,10 +604,10 @@ function InventorySystem() {
                 const shipUpdates = itemIds.map(id => ({ id, status: 'shipped', shippedAt: now }));
                 await api.upsertItems(shipUpdates);
                 const freshItems = await api.getItems();
-                const sorted = [...freshItems].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-                setItems(sorted);
+                applyItemsFresh(freshItems);
 
                 // If every sale lot for this event is now shipped, close the sale.
+                const sorted = freshItems.filter(i => !i.deletedAt);
                 const saleLots = sorted.filter(i => i.saleId === saleId && i.lotKind !== 'giveaway');
                 const allShipped = saleLots.length > 0 && saleLots.every(i => ['shipped', 'delivered'].includes(i.status));
                 if (allShipped) {
@@ -603,11 +632,49 @@ function InventorySystem() {
               try {
                 await api.upsertItems(updates);
                 const fresh = await api.getItems();
-                setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+                applyItemsFresh(fresh);
                 showToast(`Synced ${updates.length} refund${updates.length === 1 ? '' : 's'}`);
               } catch (e) {
                 showToast(e.message || 'Refund sync failed', 'error');
               }
+            }}
+          />
+        )}
+        {activeTab === 'trash' && (
+          <RecentlyDeletedView
+            deletedItems={deletedItems}
+            isAdmin={isAdmin}
+            onRestore={async (ids) => {
+              try {
+                await api.restoreItems(ids);
+                const fresh = await api.getItems();
+                applyItemsFresh(fresh);
+                showToast(`Restored ${ids.length} ${ids.length === 1 ? 'item' : 'items'}`);
+              } catch (e) {
+                showToast(e.message || 'Restore failed', 'error');
+              }
+            }}
+            onPurge={(ids) => {
+              if (!isAdmin) {
+                showToast('Only admins can permanently delete items', 'error');
+                return;
+              }
+              setConfirmDialog({
+                title: `Delete ${ids.length} ${ids.length === 1 ? 'item' : 'items'} forever?`,
+                message: 'This cannot be undone. The items will be permanently removed from the database.',
+                confirmLabel: 'Delete forever',
+                danger: true,
+                onConfirm: async () => {
+                  try {
+                    await api.purgeItems(ids);
+                    const fresh = await api.getItems();
+                    applyItemsFresh(fresh);
+                    showToast(`Purged ${ids.length} ${ids.length === 1 ? 'item' : 'items'}`);
+                  } catch (e) {
+                    showToast(e.message || 'Purge failed', 'error');
+                  }
+                },
+              });
             }}
           />
         )}
@@ -651,8 +718,10 @@ function InventorySystem() {
               const before = new Set(items.map(i => i.id));
               await api.upsertItems(clean);
               const fresh = await api.getItems();
-              const sorted = [...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-              setItems(sorted);
+              applyItemsFresh(fresh);
+              const sorted = [...fresh]
+                .filter(i => !i.deletedAt)
+                .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
               const justAdded = sorted.filter(i => !before.has(i.id));
               setShowBatchModal(false);
               if (justAdded.length > 0) {
@@ -707,7 +776,7 @@ function InventorySystem() {
               }));
               await api.upsertItems(clean);
               const fresh = await api.getItems();
-              setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+              applyItemsFresh(fresh);
               showToast(`Imported ${clean.length} items`);
               setShowBulkModal(false);
             } catch (e) {
@@ -775,7 +844,7 @@ function InventorySystem() {
             try {
               await api.upsertItems(updates);
               const fresh = await api.getItems();
-              setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+              applyItemsFresh(fresh);
               showToast(`Marked ${updates.length} ${updates.length === 1 ? 'item' : 'items'} sold`);
               setUploadSale(null);
             } catch (e) {
