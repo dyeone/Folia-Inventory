@@ -18,6 +18,8 @@ import { AssignSaleModal } from './inventory/AssignSaleModal.jsx';
 import { SalesView } from './sales/SalesView.jsx';
 import { SaleFormModal } from './sales/SaleFormModal.jsx';
 import { LineupBuilder } from './sales/LineupBuilder.jsx';
+import { SalesUploadModal } from './sales/SalesUploadModal.jsx';
+import { exportPalmstreetCsv } from './sales/palmstreetExport.js';
 import { UsersView } from './users/UsersView.jsx';
 import { LabelSheet } from './labels/LabelSheet.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
@@ -99,6 +101,7 @@ function InventorySystem() {
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [showLineupBuilder, setShowLineupBuilder] = useState(false);
   const [lineupSale, setLineupSale] = useState(null);
+  const [uploadSale, setUploadSale] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [convertingItem, setConvertingItem] = useState(null);
   const [assigningItem, setAssigningItem] = useState(null);
@@ -518,6 +521,19 @@ function InventorySystem() {
             onCreate={() => setShowSaleModal(true)}
             onEdit={(sale) => setEditingSale(sale)}
             onBuildLineup={(sale) => { setLineupSale(sale); setShowLineupBuilder(true); }}
+            onExportCsv={async (sale) => {
+              const result = exportPalmstreetCsv(sale, items);
+              if (!result.ok) { showToast(result.reason, 'error'); return; }
+              try {
+                await api.upsertSales([{ id: sale.id, exportedAt: new Date().toISOString() }]);
+                const fresh = await api.getSales();
+                setSales([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+                showToast(`Exported ${result.count} lots`);
+              } catch (e) {
+                showToast(e.message || 'Failed to record export', 'error');
+              }
+            }}
+            onUploadSalesReport={(sale) => setUploadSale(sale)}
             onSendToPacking={async (sale) => {
               try {
                 await api.upsertSales([{ id: sale.id, status: 'packing' }]);
@@ -553,16 +569,6 @@ function InventorySystem() {
           <PackingView
             inventoryItems={items}
             sales={sales}
-            onApplyOrders={async (saleId, updates) => {
-              try {
-                await api.upsertItems(updates);
-                const fresh = await api.getItems();
-                setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
-                showToast(`Applied ${updates.length} orders`);
-              } catch (e) {
-                showToast(e.message || 'Apply failed', 'error');
-              }
-            }}
             onShipBox={async (saleId, itemIds) => {
               try {
                 const now = new Date().toISOString();
@@ -759,6 +765,24 @@ function InventorySystem() {
             setLineupSale(null);
           }}
           onClose={() => { setShowLineupBuilder(false); setLineupSale(null); }}
+        />
+      )}
+      {uploadSale && (
+        <SalesUploadModal
+          sale={uploadSale}
+          items={items}
+          onApply={async (updates) => {
+            try {
+              await api.upsertItems(updates);
+              const fresh = await api.getItems();
+              setItems([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+              showToast(`Marked ${updates.length} ${updates.length === 1 ? 'item' : 'items'} sold`);
+              setUploadSale(null);
+            } catch (e) {
+              showToast(e.message || 'Apply failed', 'error');
+            }
+          }}
+          onClose={() => setUploadSale(null)}
         />
       )}
       {editingSale && (

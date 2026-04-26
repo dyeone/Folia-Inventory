@@ -74,6 +74,7 @@ alter table sales add column if not exists "startTime" timestamptz;
 alter table sales add column if not exists "durationMinutes" integer;
 alter table sales add column if not exists "itemTypes" text;
 alter table sales add column if not exists "closedAt" timestamptz;
+alter table sales add column if not exists "exportedAt" timestamptz;
 update sales set status = 'ongoing' where status is null;
 alter table sales alter column status set default 'ongoing';
 alter table sales alter column status set not null;

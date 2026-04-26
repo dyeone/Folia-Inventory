@@ -1,15 +1,15 @@
 import { useMemo, useState } from 'react';
 import {
   Plus, Calendar, Layers, Download, Trash2, Edit2, PackageOpen,
-  Archive, Clock, Gift, CheckCircle2,
+  Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock,
 } from 'lucide-react';
-import { exportPalmstreetCsv } from './palmstreetExport.js';
-
 const STATUS_META = {
   ongoing:  { label: 'Ongoing',  cls: 'bg-emerald-100 text-emerald-800', icon: Clock },
   packing:  { label: 'Packing',  cls: 'bg-blue-100 text-blue-800',       icon: PackageOpen },
   closed:   { label: 'Closed',   cls: 'bg-gray-200 text-gray-700',       icon: CheckCircle2 },
 };
+
+const SOLD_STATUSES = new Set(['sold', 'shipped', 'delivered', 'refunded']);
 
 function formatStart(sale) {
   if (sale.startTime) {
@@ -25,18 +25,14 @@ function formatStart(sale) {
 }
 
 export function SalesView({
-  sales, items, onCreate, onEdit, onDelete, onBuildLineup, onSendToPacking, isAdmin,
+  sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
+  onUploadSalesReport, onSendToPacking, isAdmin,
 }) {
-  const [tab, setTab] = useState('active'); // 'active' | 'archive'
+  const [tab, setTab] = useState('active');
 
   const visible = useMemo(() => {
     return sales.filter(s => tab === 'archive' ? s.status === 'closed' : s.status !== 'closed');
   }, [sales, tab]);
-
-  const exportCsv = (sale) => {
-    const result = exportPalmstreetCsv(sale, items);
-    if (!result.ok) alert(result.reason);
-  };
 
   const archiveCount = sales.filter(s => s.status === 'closed').length;
   const activeCount = sales.length - archiveCount;
@@ -90,8 +86,9 @@ export function SalesView({
               items={items}
               isAdmin={isAdmin}
               onBuildLineup={() => onBuildLineup(sale)}
+              onExportCsv={() => onExportCsv(sale)}
+              onUploadSalesReport={() => onUploadSalesReport(sale)}
               onSendToPacking={() => onSendToPacking(sale)}
-              onExportCsv={() => exportCsv(sale)}
               onEdit={() => onEdit(sale)}
               onDelete={() => onDelete(sale.id)}
             />
@@ -102,22 +99,30 @@ export function SalesView({
   );
 }
 
-function SaleCard({ sale, items, isAdmin, onBuildLineup, onSendToPacking, onExportCsv, onEdit, onDelete }) {
+function SaleCard({
+  sale, items, isAdmin,
+  onBuildLineup, onExportCsv, onUploadSalesReport, onSendToPacking, onEdit, onDelete,
+}) {
   const saleLots = items.filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway');
   const giveaways = items.filter(i => i.saleId === sale.id && i.lotKind === 'giveaway');
-  const total = saleLots.length + giveaways.length;
+  const totalAssigned = saleLots.length + giveaways.length;
   const totalValue = saleLots.reduce((s, i) => s + (parseFloat(i.listingPrice) || 0), 0);
 
   const meta = STATUS_META[sale.status] || STATUS_META.ongoing;
   const StatusIcon = meta.icon;
 
-  // Packing progress: how many sale items are sold/shipped vs still
-  // outstanding for this sale.
-  const soldOrShipped = saleLots.filter(i => ['sold', 'shipped', 'delivered'].includes(i.status)).length;
+  // Step completion derived from sale + items state.
+  const step1Done = totalAssigned > 0;
+  const step2Done = !!sale.exportedAt;
+  const soldCount = saleLots.filter(i => SOLD_STATUSES.has(i.status)).length;
+  const step3Done = soldCount > 0;
+  const step4Done = sale.status === 'packing' || sale.status === 'closed';
+
   const shipped = saleLots.filter(i => ['shipped', 'delivered'].includes(i.status)).length;
+  const isClosed = sale.status === 'closed';
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4">
+    <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-col">
       <div className="flex items-start justify-between gap-2 mb-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1">
@@ -138,7 +143,7 @@ function SaleCard({ sale, items, isAdmin, onBuildLineup, onSendToPacking, onExpo
           </div>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
-          {sale.status !== 'closed' && (
+          {!isClosed && (
             <button onClick={onEdit} className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg" title="Edit" aria-label="Edit">
               <Edit2 className="w-4 h-4" />
             </button>
@@ -161,7 +166,7 @@ function SaleCard({ sale, items, isAdmin, onBuildLineup, onSendToPacking, onExpo
         <div className="mb-3">
           <div className="flex items-center justify-between text-[11px] text-gray-500 mb-1">
             <span>Packing progress</span>
-            <span>{shipped}/{saleLots.length} shipped · {soldOrShipped}/{saleLots.length} sold</span>
+            <span>{shipped}/{saleLots.length} shipped</span>
           </div>
           <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
             <div
@@ -174,78 +179,91 @@ function SaleCard({ sale, items, isAdmin, onBuildLineup, onSendToPacking, onExpo
 
       {sale.notes && <p className="text-xs text-gray-600 mb-3 line-clamp-2">{sale.notes}</p>}
 
-      <SaleActions
-        sale={sale}
-        total={total}
-        onBuildLineup={onBuildLineup}
-        onSendToPacking={onSendToPacking}
-        onExportCsv={onExportCsv}
-      />
+      {isClosed ? (
+        <div className="text-xs text-gray-500 text-center py-3 bg-gray-50 rounded-lg mt-auto">
+          Sale complete — all boxes shipped
+        </div>
+      ) : (
+        <div className="space-y-1.5 mt-auto">
+          <Step
+            n={1} title="Build Lineup" done={step1Done}
+            actionLabel={step1Done ? 'Edit lineup' : 'Build lineup'}
+            actionIcon={Layers}
+            onAction={onBuildLineup}
+          />
+          <Step
+            n={2} title="Export CSV to Palmstreet" done={step2Done}
+            actionLabel={step2Done ? 'Re-export CSV' : 'Export CSV'}
+            actionIcon={Download}
+            onAction={onExportCsv}
+            disabled={!step1Done}
+            hint={step2Done && sale.exportedAt
+              ? `Exported ${new Date(sale.exportedAt).toLocaleDateString()}`
+              : null}
+          />
+          <Step
+            n={3} title="Upload Sales Report" done={step3Done}
+            actionLabel={step3Done ? 'Re-upload report' : 'Upload report'}
+            actionIcon={Upload}
+            onAction={onUploadSalesReport}
+            disabled={!step1Done}
+            hint={step3Done ? `${soldCount}/${saleLots.length} marked sold` : null}
+          />
+          <Step
+            n={4} title="Send to Packing" done={step4Done}
+            actionLabel={step4Done ? 'In Packing tab' : 'Send to Packing'}
+            actionIcon={PackageOpen}
+            onAction={onSendToPacking}
+            disabled={!step3Done || step4Done}
+            hint={step4Done ? `${shipped}/${saleLots.length} shipped` : null}
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-function Stat({ label, value, icon: Icon }) {
+function Step(props) {
+  const { n, title, done, actionLabel, actionIcon: Icon, onAction, disabled, hint } = props;
+  const locked = disabled && !done;
+  return (
+    <div className={`flex items-center gap-2.5 py-1.5 ${locked ? 'opacity-50' : ''}`}>
+      <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-semibold flex-shrink-0 ${
+        done ? 'bg-emerald-600 text-white'
+        : locked ? 'bg-gray-200 text-gray-500'
+        : 'bg-emerald-100 text-emerald-700 ring-2 ring-emerald-200'
+      }`}>
+        {done ? <Check className="w-3.5 h-3.5" /> : locked ? <Lock className="w-3 h-3" /> : n}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium text-gray-900 truncate">{title}</div>
+        {hint && <div className="text-[11px] text-gray-500 truncate">{hint}</div>}
+      </div>
+      <button
+        onClick={onAction}
+        disabled={disabled}
+        className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg transition flex-shrink-0 ${
+          done
+            ? 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 active:bg-gray-100'
+            : disabled
+            ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+            : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white'
+        }`}
+      >
+        <Icon className="w-3.5 h-3.5" /> {actionLabel}
+      </button>
+    </div>
+  );
+}
+
+function Stat(props) {
+  const { label, value, icon: Icon } = props;
   return (
     <div className="bg-gray-50 rounded p-2">
       <div className="text-gray-500 flex items-center gap-1">
         {Icon && <Icon className="w-3 h-3" />} {label}
       </div>
       <div className="font-semibold text-gray-900">{value}</div>
-    </div>
-  );
-}
-
-function SaleActions({ sale, total, onBuildLineup, onSendToPacking, onExportCsv }) {
-  if (sale.status === 'closed') {
-    return (
-      <div className="text-xs text-gray-500 text-center py-2 bg-gray-50 rounded-lg">
-        Sale complete — all boxes shipped
-      </div>
-    );
-  }
-
-  if (sale.status === 'packing') {
-    return (
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          onClick={onExportCsv}
-          className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-800 text-sm font-medium rounded-lg"
-        >
-          <Download className="w-4 h-4" /> Re-export CSV
-        </button>
-        <div className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-blue-50 text-blue-800 text-sm font-medium rounded-lg">
-          <PackageOpen className="w-4 h-4" /> In Packing tab
-        </div>
-      </div>
-    );
-  }
-
-  // ongoing
-  return (
-    <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          onClick={onBuildLineup}
-          className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 text-emerald-700 text-sm font-medium rounded-lg transition"
-        >
-          <Layers className="w-4 h-4" /> Build Lineup
-        </button>
-        <button
-          onClick={onExportCsv}
-          disabled={total === 0}
-          className="flex items-center justify-center gap-1.5 px-3 py-2.5 bg-gray-900 hover:bg-gray-800 active:bg-black disabled:bg-gray-300 text-white text-sm font-medium rounded-lg transition"
-        >
-          <Download className="w-4 h-4" /> Export CSV
-        </button>
-      </div>
-      <button
-        onClick={onSendToPacking}
-        disabled={total === 0}
-        className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 disabled:bg-gray-300 text-white text-sm font-medium rounded-lg transition"
-      >
-        <PackageOpen className="w-4 h-4" /> Send to Packing
-      </button>
     </div>
   );
 }

@@ -8,7 +8,7 @@ import * as XLSX from 'xlsx';
 import { parsePalmstreetOrders } from './parsePalmstreetOrders.js';
 import { matchInventory } from './matchInventory.js';
 
-export function PackingView({ inventoryItems, sales, onApplyOrders, onShipBox }) {
+export function PackingView({ inventoryItems, sales, onShipBox }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
 
   const pendingSales = useMemo(
@@ -25,7 +25,6 @@ export function PackingView({ inventoryItems, sales, onApplyOrders, onShipBox })
         sale={activeSale}
         inventoryItems={inventoryItems}
         onBack={() => setActiveSaleId(null)}
-        onApplyOrders={(updates) => onApplyOrders(activeSale.id, updates)}
         onShipBox={(itemIds) => onShipBox(activeSale.id, itemIds)}
       />
     );
@@ -38,8 +37,7 @@ export function PackingView({ inventoryItems, sales, onApplyOrders, onShipBox })
           <Package className="w-5 h-5 text-emerald-600" /> Packing
         </h2>
         <p className="text-sm text-gray-500 mt-0.5">
-          Sale events that have been sent to packing show up here. Upload the Palmstreet
-          orders file to mark items sold and assemble shipping boxes.
+          Sale events sent to packing show up here, with their boxes ready to ship.
         </p>
       </div>
 
@@ -119,24 +117,37 @@ function Mini({ label, value }) {
 // (derived from items once the upload has been applied).
 // ───────────────────────────────────────────────────────────────────────────
 
-function SalePackingPane({ sale, inventoryItems, onBack, onApplyOrders, onShipBox }) {
+function SalePackingPane({ sale, inventoryItems, onBack, onShipBox }) {
   const saleItems = useMemo(
     () => inventoryItems.filter(i => i.saleId === sale.id),
     [inventoryItems, sale.id]
   );
 
-  // If any item has a shipmentBoxId, the upload was already applied.
+  // If any item has a shipmentBoxId, the upload was applied (in the Sales
+  // tab, Step 3). Otherwise direct the user back to do it.
   const hasApplied = saleItems.some(i => i.shipmentBoxId);
 
   if (!hasApplied) {
     return (
-      <PackingUploadPane
-        sale={sale}
-        saleItems={saleItems}
-        inventoryItems={inventoryItems}
-        onBack={onBack}
-        onApply={onApplyOrders}
-      />
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <button onClick={onBack} className="p-2 -ml-2 text-gray-600 hover:bg-gray-100 active:bg-gray-200 rounded-lg" aria-label="Back">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">{sale.name}</h2>
+            <p className="text-xs text-gray-500">{saleItems.length} lineup items · {sale.date}</p>
+          </div>
+        </div>
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-center">
+          <AlertCircle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
+          <div className="text-sm font-medium text-gray-900">No boxes to pack yet</div>
+          <p className="text-xs text-gray-600 mt-1">
+            Upload the Palmstreet sales report from the Sales Events tab (step 3)
+            to mark items sold and create the shipping boxes.
+          </p>
+        </div>
+      </div>
     );
   }
   return (
@@ -149,234 +160,6 @@ function SalePackingPane({ sale, inventoryItems, onBack, onApplyOrders, onShipBo
   );
 }
 
-// ───── Upload phase ────────────────────────────────────────────────────────
-
-function PackingUploadPane({ sale, saleItems, inventoryItems, onBack, onApply }) {
-  const [fileName, setFileName] = useState('');
-  const [boxes, setBoxes] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState('');
-  const [overrides, setOverrides] = useState({}); // `${boxId}::${rowKey}` → invItemId | null
-  const [pickerFor, setPickerFor] = useState(null);
-
-  // Match candidates: prefer this sale's lineup. If a row doesn't match
-  // anything in the lineup, fall back to all inventory.
-  const lineupItems = saleItems;
-
-  const handleFile = async (file) => {
-    setErr('');
-    setLoading(true);
-    setFileName(file.name);
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      const parsed = parsePalmstreetOrders(rows);
-      if (parsed.length === 0) {
-        setErr('No shippable items found in this file.');
-        setBoxes(null);
-      } else {
-        setBoxes(parsed);
-      }
-    } catch (e) {
-      setErr(`Could not read file: ${e.message}`);
-      setBoxes(null);
-    }
-    setLoading(false);
-  };
-
-  const resolved = useMemo(() => {
-    if (!boxes) return null;
-    return boxes.map(box => ({
-      ...box,
-      items: box.items.map(item => {
-        const key = `${box.id}::${item.rowKey}`;
-        const override = overrides[key];
-        let match = null;
-        if (override === null) {
-          match = null;
-        } else if (override) {
-          const inv = inventoryItems.find(i => i.id === override);
-          match = inv ? { item: inv, confidence: 'manual' } : null;
-        } else {
-          match = matchInventory(item, lineupItems) || matchInventory(item, inventoryItems);
-        }
-        return { ...item, match, manual: override !== undefined };
-      }),
-    }));
-  }, [boxes, overrides, lineupItems, inventoryItems]);
-
-  const summary = useMemo(() => {
-    if (!resolved) return null;
-    let totalItems = 0, matched = 0, unmatched = 0;
-    for (const box of resolved) {
-      for (const it of box.items) {
-        totalItems += 1;
-        if (it.match?.item) matched += 1;
-        else unmatched += 1;
-      }
-    }
-    return { totalItems, matched, unmatched };
-  }, [resolved]);
-
-  const handleApply = () => {
-    if (!resolved) return;
-    const updates = [];
-    const now = new Date().toISOString();
-    for (const box of resolved) {
-      for (const it of box.items) {
-        if (!it.match?.item) continue;
-        const inv = it.match.item;
-        const finalPrice = it.price > 0 ? it.price : parseFloat(inv.listingPrice) || 0;
-        const cost = parseFloat(inv.grossCost ?? inv.cost) || 0;
-        updates.push({
-          id: inv.id,
-          status: 'sold',
-          salePrice: finalPrice,
-          soldAt: now,
-          buyer: box.recipientName,
-          buyerUsername: box.username,
-          buyerAddress: {
-            street1: box.street1,
-            street2: box.street2,
-            city: box.city,
-            state: box.state,
-            zip: box.zip,
-            country: box.country,
-            shipmentMethod: box.shipmentMethod,
-          },
-          shipmentBoxId: box.id,
-          orderId: it.orderNumber || null,
-          orderDate: it.orderDate || null,
-          actualProfit: cost > 0 ? finalPrice - cost : null,
-          actualProfitRate: cost > 0 ? ((finalPrice - cost) / cost) * 100 : null,
-        });
-      }
-    }
-    if (updates.length === 0) {
-      alert('No matched items to apply. Link items first.');
-      return;
-    }
-    onApply(updates);
-  };
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <button onClick={onBack} className="p-2 -ml-2 text-gray-600 hover:bg-gray-100 active:bg-gray-200 rounded-lg" aria-label="Back">
-          <ArrowLeft className="w-5 h-5" />
-        </button>
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900">{sale.name}</h2>
-          <p className="text-xs text-gray-500">
-            {saleItems.length} lineup items · {sale.date}
-          </p>
-        </div>
-      </div>
-
-      {!boxes ? (
-        <>
-          <label className="block">
-            <div className="border-2 border-dashed border-gray-300 rounded-xl p-12 sm:p-16 text-center hover:border-emerald-400 hover:bg-emerald-50/50 active:bg-emerald-50 cursor-pointer transition">
-              <Upload className="w-10 h-10 text-gray-400 mx-auto mb-3" />
-              <div className="text-base font-medium text-gray-900">
-                {loading ? 'Reading file...' : 'Upload Palmstreet orders file'}
-              </div>
-              <div className="text-sm text-gray-500 mt-1">.xlsx, .xls or .csv</div>
-              <input
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                onChange={(e) => { if (e.target.files?.[0]) handleFile(e.target.files[0]); }}
-                className="hidden"
-              />
-            </div>
-          </label>
-          {err && (
-            <div className="flex items-start gap-2 bg-red-50 text-red-700 text-xs px-3 py-2 rounded-lg">
-              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" /> {err}
-            </div>
-          )}
-          <div className="text-xs text-gray-600 bg-gray-50 rounded-lg p-3">
-            <div className="font-medium text-gray-900 mb-1">What this does:</div>
-            <ul className="space-y-0.5 list-disc list-inside">
-              <li>Matches each order row against the sale's lineup (then full inventory as fallback)</li>
-              <li>Marks matched items as <em>sold</em> with the buyer's price, name, and address</li>
-              <li>Groups items into boxes by recipient — one box per buyer</li>
-            </ul>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="flex items-center justify-between">
-            <div className="text-sm">
-              <span className="text-gray-500">File:</span>{' '}
-              <span className="font-medium text-gray-900">{fileName}</span>
-              <span className="text-gray-500"> · {summary.totalItems} items</span>
-            </div>
-            <button
-              onClick={() => { setBoxes(null); setFileName(''); setOverrides({}); }}
-              className="text-xs text-gray-600 hover:text-gray-900"
-            >
-              Choose different file
-            </button>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            <SummaryStat label="Boxes" value={resolved.length} tone="emerald" />
-            <SummaryStat
-              label="Will mark sold"
-              value={summary.matched}
-              tone={summary.matched > 0 ? 'blue' : 'gray'}
-            />
-            <SummaryStat
-              label="Unmatched"
-              value={summary.unmatched}
-              tone={summary.unmatched > 0 ? 'amber' : 'gray'}
-            />
-          </div>
-
-          <BoxesList
-            boxes={resolved}
-            mode="preview"
-            onPick={(boxId, rowKey, title) => setPickerFor({ boxId, rowKey, title })}
-            onClearOverride={(boxId, rowKey) => {
-              const key = `${boxId}::${rowKey}`;
-              setOverrides(prev => ({ ...prev, [key]: null }));
-            }}
-          />
-
-          <div className="sticky bottom-0 bg-white border-t border-gray-200 -mx-4 px-4 py-3 flex justify-end gap-2">
-            <button onClick={() => { setBoxes(null); setFileName(''); }} className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg">
-              Cancel
-            </button>
-            <button
-              onClick={handleApply}
-              disabled={summary.matched === 0}
-              className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-gray-300 text-white rounded-lg flex items-center gap-1.5"
-            >
-              <Check className="w-4 h-4" /> Apply &amp; mark {summary.matched} sold
-            </button>
-          </div>
-
-          {pickerFor && (
-            <InventoryPicker
-              title={pickerFor.title}
-              inventoryItems={inventoryItems}
-              preferredItems={lineupItems}
-              onPick={(invId) => {
-                const key = `${pickerFor.boxId}::${pickerFor.rowKey}`;
-                setOverrides(prev => ({ ...prev, [key]: invId }));
-                setPickerFor(null);
-              }}
-              onClose={() => setPickerFor(null)}
-            />
-          )}
-        </>
-      )}
-    </div>
-  );
-}
 
 // ───── Boxes phase (after apply) ───────────────────────────────────────────
 
@@ -667,7 +450,7 @@ function StandaloneUploader({ inventoryItems }) {
 
 // ───── Shared building blocks ──────────────────────────────────────────────
 
-function BoxesList({ boxes, onPick, onClearOverride }) {
+export function BoxesList({ boxes, onPick, onClearOverride }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
   return (
     <div className="space-y-3">
@@ -784,7 +567,7 @@ function BoxItemRow({ item, onPick, onClear }) {
   );
 }
 
-function SummaryStat({ label, value, sub, tone }) {
+export function SummaryStat({ label, value, sub, tone }) {
   const tones = {
     emerald: 'bg-emerald-50 border-emerald-200 text-emerald-900',
     blue: 'bg-blue-50 border-blue-200 text-blue-900',
@@ -808,7 +591,7 @@ function confidenceLabel(c) {
   return c;
 }
 
-function InventoryPicker({ title, inventoryItems, preferredItems, onPick, onClose }) {
+export function InventoryPicker({ title, inventoryItems, preferredItems, onPick, onClose }) {
   const [q, setQ] = useState('');
   const filtered = useMemo(() => {
     const query = q.trim().toLowerCase();
