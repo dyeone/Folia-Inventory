@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   Plus, Calendar, Layers, Download, Trash2, Edit2, PackageOpen,
-  Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock,
+  Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock, Radio,
 } from 'lucide-react';
 const STATUS_META = {
   ongoing:  { label: 'Ongoing',  cls: 'bg-emerald-100 text-emerald-800', icon: Clock },
@@ -26,7 +26,7 @@ function formatStart(sale) {
 
 export function SalesView({
   sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
-  onUploadSalesReport, onSendToPacking, isAdmin,
+  onUploadSalesReport, onSendToPacking, onGoLive, isAdmin,
 }) {
   const [tab, setTab] = useState('active');
 
@@ -89,6 +89,7 @@ export function SalesView({
               onExportCsv={() => onExportCsv(sale)}
               onUploadSalesReport={() => onUploadSalesReport(sale)}
               onSendToPacking={() => onSendToPacking(sale)}
+              onGoLive={() => onGoLive(sale)}
               onEdit={() => onEdit(sale)}
               onDelete={() => onDelete(sale.id)}
             />
@@ -101,7 +102,7 @@ export function SalesView({
 
 function SaleCard({
   sale, items, isAdmin,
-  onBuildLineup, onExportCsv, onUploadSalesReport, onSendToPacking, onEdit, onDelete,
+  onBuildLineup, onExportCsv, onUploadSalesReport, onSendToPacking, onGoLive, onEdit, onDelete,
 }) {
   const saleLots = items.filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway');
   const giveaways = items.filter(i => i.saleId === sale.id && i.lotKind === 'giveaway');
@@ -184,7 +185,16 @@ function SaleCard({
           Sale complete — all boxes shipped
         </div>
       ) : (
-        <div className="space-y-1.5 mt-auto">
+        <div className="space-y-2 mt-auto">
+          {step1Done && sale.status === 'ongoing' && (
+            <button
+              onClick={onGoLive}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white text-sm font-semibold rounded-lg transition shadow-sm"
+            >
+              <Radio className="w-4 h-4 animate-pulse" /> On Live
+            </button>
+          )}
+          <div className="space-y-1.5">
           <Step
             n={1} title="Build Lineup" done={step1Done}
             actionLabel={step1Done ? 'Edit lineup' : 'Build lineup'}
@@ -217,6 +227,7 @@ function SaleCard({
             disabled={!step3Done || step4Done}
             hint={step4Done ? `${shipped}/${saleLots.length} shipped` : null}
           />
+          </div>
         </div>
       )}
     </div>

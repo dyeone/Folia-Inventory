@@ -19,6 +19,7 @@ import { SalesView } from './sales/SalesView.jsx';
 import { SaleFormModal } from './sales/SaleFormModal.jsx';
 import { LineupBuilder } from './sales/LineupBuilder.jsx';
 import { SalesUploadModal } from './sales/SalesUploadModal.jsx';
+import { LiveModal } from './sales/LiveModal.jsx';
 import { exportPalmstreetCsv } from './sales/palmstreetExport.js';
 import { UsersView } from './users/UsersView.jsx';
 import { LabelSheet } from './labels/LabelSheet.jsx';
@@ -104,6 +105,7 @@ function InventorySystem() {
   const [showLineupBuilder, setShowLineupBuilder] = useState(false);
   const [lineupSale, setLineupSale] = useState(null);
   const [uploadSale, setUploadSale] = useState(null);
+  const [liveSale, setLiveSale] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [convertingItem, setConvertingItem] = useState(null);
   const [assigningItem, setAssigningItem] = useState(null);
@@ -563,6 +565,7 @@ function InventorySystem() {
               }
             }}
             onUploadSalesReport={(sale) => setUploadSale(sale)}
+            onGoLive={(sale) => setLiveSale(sale)}
             onSendToPacking={async (sale) => {
               try {
                 await api.upsertSales([{ id: sale.id, status: 'packing' }]);
@@ -834,6 +837,13 @@ function InventorySystem() {
             setLineupSale(null);
           }}
           onClose={() => { setShowLineupBuilder(false); setLineupSale(null); }}
+        />
+      )}
+      {liveSale && (
+        <LiveModal
+          sale={liveSale}
+          items={items}
+          onClose={() => setLiveSale(null)}
         />
       )}
       {uploadSale && (
