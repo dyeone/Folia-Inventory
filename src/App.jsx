@@ -773,6 +773,7 @@ function InventorySystem() {
         <BulkImportModal
           varieties={varieties}
           species={species}
+          onCreateVariety={addVariety}
           onCreateSpecies={addSpecies}
           onImport={async (newItems) => {
             try {

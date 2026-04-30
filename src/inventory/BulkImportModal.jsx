@@ -56,8 +56,28 @@ function cleanMoney(raw) {
   return s.replace(/[$,\s]/g, '');
 }
 
+// Pick a SKU code prefix for a new genus: first 3-6 letters of the name,
+// escalating length until it doesn't collide with any code already taken
+// (existing catalog codes plus codes already chosen for other new genera in
+// this same import).
+function suggestCode(name, takenCodes) {
+  const clean = String(name).toUpperCase().replace(/[^A-Z]/g, '');
+  if (!clean) return 'XXX';
+  for (let len = 3; len <= Math.min(6, clean.length); len++) {
+    const c = clean.slice(0, len);
+    if (!takenCodes.has(c)) return c;
+  }
+  // Exhausted distinct prefixes — append a digit suffix.
+  const base = clean.slice(0, 3);
+  for (let i = 2; i < 100; i++) {
+    const c = `${base}${i}`;
+    if (!takenCodes.has(c)) return c;
+  }
+  return base;
+}
+
 function parseRows(rows, mapping, varieties, species) {
-  if (rows.length === 0) return { items: [], rowErrors: [], newSpecies: [] };
+  if (rows.length === 0) return { items: [], rowErrors: [], newSpecies: [], newVarieties: [] };
 
   const get = (row, field) => {
     const col = mapping[field];
@@ -75,6 +95,9 @@ function parseRows(rows, mapping, varieties, species) {
   const rowErrors = [];
   const newSpecies = [];
   const newSpeciesSeen = new Set();
+  const newVarieties = [];
+  const newVarietyByName = new Map(); // lowercased name → { name, code, _placeholderId }
+  const takenCodes = new Set(varieties.map(v => v.code).filter(Boolean));
 
   rows.forEach((row, idx) => {
     const lineNo = idx + 2; // header is row 1
@@ -88,24 +111,47 @@ function parseRows(rows, mapping, varieties, species) {
     if (!cultivarName) { rowErrors.push(`Row ${lineNo}: variety (cultivar) required`); return; }
     if (!qty || qty < 1) { rowErrors.push(`Row ${lineNo}: qty must be a positive number`); return; }
 
-    const variety = varietyByName[genusName.toLowerCase()];
+    const lowerGenus = genusName.toLowerCase();
+    let variety = varietyByName[lowerGenus];
+    let placeholderVarietyId = null;
+
     if (!variety) {
-      rowErrors.push(`Row ${lineNo}: species "${genusName}" not in catalog — add it first`);
-      return;
+      // Queue a new variety for creation. Use a placeholder id so we can
+      // bind species/items to it now and resolve to the real id at import.
+      let pending = newVarietyByName.get(lowerGenus);
+      if (!pending) {
+        const code = suggestCode(genusName, takenCodes);
+        takenCodes.add(code);
+        pending = {
+          name: genusName,
+          code,
+          _placeholderId: `__new_${lowerGenus}`,
+        };
+        newVarietyByName.set(lowerGenus, pending);
+        newVarieties.push(pending);
+      }
+      placeholderVarietyId = pending._placeholderId;
     }
 
-    const sKey = `${variety.id}:${cultivarName.toLowerCase()}`;
-    const existing = speciesByKey[sKey];
+    const varietyId = variety?.id || placeholderVarietyId;
+    const varietyDisplayName = variety?.name || genusName;
+
+    const sKey = `${varietyId}:${cultivarName.toLowerCase()}`;
+    const existing = variety ? speciesByKey[sKey] : null;
     if (!existing && !newSpeciesSeen.has(sKey)) {
       newSpeciesSeen.add(sKey);
-      newSpecies.push({ varietyId: variety.id, varietyName: variety.name, epithet: cultivarName });
+      newSpecies.push({
+        varietyId,                        // may be a placeholder for new genera
+        varietyName: varietyDisplayName,
+        epithet: cultivarName,
+      });
     }
 
     const costRaw = cleanMoney(get(row, 'cost'));
 
     items.push({
       type: category,
-      variety: variety.name,
+      variety: varietyDisplayName,
       name: cultivarName,
       _speciesKey: sKey,
       speciesId: existing?.id || null,
@@ -120,10 +166,10 @@ function parseRows(rows, mapping, varieties, species) {
     });
   });
 
-  return { items, rowErrors, newSpecies };
+  return { items, rowErrors, newSpecies, newVarieties };
 }
 
-export function BulkImportModal({ varieties = [], species = [], onCreateSpecies, onImport, onClose }) {
+export function BulkImportModal({ varieties = [], species = [], onCreateVariety, onCreateSpecies, onImport, onClose }) {
   const [step, setStep] = useState('upload'); // upload | mapping | preview
   const [fileName, setFileName] = useState('');
   const [csvHeaders, setCsvHeaders] = useState([]);
@@ -185,14 +231,27 @@ export function BulkImportModal({ varieties = [], species = [], onCreateSpecies,
     setImporting(true);
     setErr('');
     try {
-      const newIdByKey = {};
-      for (const ns of parsed.newSpecies) {
-        const created = await onCreateSpecies({ varietyId: ns.varietyId, epithet: ns.epithet });
-        newIdByKey[`${ns.varietyId}:${ns.epithet.toLowerCase()}`] = created.id;
+      // 1. Create new varieties first; remember placeholder → real id.
+      const realVarietyId = {};
+      for (const nv of parsed.newVarieties) {
+        const created = await onCreateVariety({ name: nv.name, code: nv.code });
+        realVarietyId[nv._placeholderId] = created.id;
       }
+
+      // 2. Create new species under their (now real) variety ids. Re-key by
+      // the same `${varietyId}:${epithet}` lookup the items use.
+      const newSpeciesIdByKey = {};
+      for (const ns of parsed.newSpecies) {
+        const resolvedVarietyId = realVarietyId[ns.varietyId] || ns.varietyId;
+        const created = await onCreateSpecies({ varietyId: resolvedVarietyId, epithet: ns.epithet });
+        // Items reference the original (possibly-placeholder) varietyId in
+        // their _speciesKey, so we re-key the same way to match them.
+        newSpeciesIdByKey[`${ns.varietyId}:${ns.epithet.toLowerCase()}`] = created.id;
+      }
+
       const finalItems = parsed.items.map(({ _speciesKey, ...rest }) => ({
         ...rest,
-        speciesId: rest.speciesId || newIdByKey[_speciesKey] || null,
+        speciesId: rest.speciesId || newSpeciesIdByKey[_speciesKey] || null,
       }));
       await onImport(finalItems);
     } catch (e) {
@@ -395,6 +454,7 @@ function PreviewStep(props) {
   const validCount = parsed.items.length;
   const errCount = parsed.rowErrors.length;
   const newSpeciesCount = parsed.newSpecies.length;
+  const newVarietyCount = parsed.newVarieties?.length || 0;
 
   return (
     <>
@@ -413,6 +473,23 @@ function PreviewStep(props) {
         <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-900">
           <div className="font-medium mb-0.5">Ready to import {validCount} item{validCount === 1 ? '' : 's'}</div>
           <div className="text-emerald-700 text-xs">SKUs will be assigned automatically on save.</div>
+        </div>
+      )}
+
+      {newVarietyCount > 0 && (
+        <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-sm text-purple-900">
+          <div className="font-medium mb-1 flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5" /> {newVarietyCount} new {newVarietyCount === 1 ? 'genus' : 'genera'} will be added to the catalog
+          </div>
+          <ul className="text-purple-800 text-xs space-y-0.5 max-h-24 overflow-y-auto">
+            {parsed.newVarieties.slice(0, 10).map((nv, i) => (
+              <li key={i}>· {nv.name} <span className="text-purple-500 font-mono">({nv.code})</span></li>
+            ))}
+            {newVarietyCount > 10 && <li>…and {newVarietyCount - 10} more</li>}
+          </ul>
+          <div className="text-purple-700 text-[11px] mt-1.5">
+            SKU prefixes auto-derived from the name. You can rename them later from the catalog screen.
+          </div>
         </div>
       )}
 
