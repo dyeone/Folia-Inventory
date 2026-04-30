@@ -45,9 +45,11 @@ export default wrap(async (req, res) => {
     }
 
     case 'PATCH': {
-      await requireAdmin(userId);
-      const { id, name, code } = req.body || {};
+      const { id, name, code, profitRate } = req.body || {};
       if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
+      // Renames and SKU-prefix changes are structural and require admin —
+      // changing profit rate is operational and any active user can do it.
+      if (name !== undefined || code !== undefined) await requireAdmin(userId);
       const patch = {};
       if (name !== undefined) patch.name = String(name).trim();
       if (code !== undefined) {
@@ -56,6 +58,18 @@ export default wrap(async (req, res) => {
           const e = new Error('Code must be 2–6 uppercase letters'); e.status = 400; throw e;
         }
         patch.code = c;
+      }
+      if (profitRate !== undefined) {
+        if (profitRate === null || profitRate === '') {
+          patch.profitRate = null;
+        } else {
+          const n = parseFloat(profitRate);
+          if (!Number.isFinite(n)) { const e = new Error('profitRate must be a number'); e.status = 400; throw e; }
+          patch.profitRate = n;
+        }
+      }
+      if (Object.keys(patch).length === 0) {
+        const e = new Error('No fields to update'); e.status = 400; throw e;
       }
       const { error } = await supabase.from('varieties').update(patch).eq('id', id);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }

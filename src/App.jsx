@@ -179,6 +179,10 @@ function InventorySystem() {
     setSpecies(prev => [...prev, s].sort((a, b) => a.epithet.localeCompare(b.epithet)));
     return s;
   };
+  const updateVarietyRate = async (id, profitRate) => {
+    await api.updateVariety({ id, patch: { profitRate } });
+    setVarieties(prev => prev.map(v => v.id === id ? { ...v, profitRate } : v));
+  };
 
   // Diff two arrays and return only the rows that were added or changed.
   // Shallow JSON compare is fine here — item/sale objects have stable shapes.
@@ -527,6 +531,7 @@ function InventorySystem() {
             sales={sales}
             varieties={varieties}
             idealRate={idealRate}
+            onUpdateVarietyRate={updateVarietyRate}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             filterType={filterType}

@@ -140,6 +140,10 @@ create table if not exists varieties (
   "createdAt" timestamptz not null default now(),
   "createdBy" text
 );
+-- Per-variety default profit rate. Used as the fallback when an item has no
+-- explicit rate of its own; falls through to the global dashboard rate when
+-- this is null too.
+alter table varieties add column if not exists "profitRate" numeric;
 
 create table if not exists species (
   id           text        primary key,
