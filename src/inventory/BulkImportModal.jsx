@@ -56,8 +56,9 @@ function cleanMoney(raw) {
   const s = String(raw ?? '').trim();
   if (!s) return null;
   const cleaned = s.replace(/[$,\s]/g, '');
-  if (!cleaned || isNaN(parseFloat(cleaned))) return null;
-  return cleaned;
+  const n = parseFloat(cleaned);
+  if (!Number.isFinite(n)) return null;
+  return n;
 }
 
 // Pick a SKU code prefix for a new genus: first 3-6 letters of the name,
