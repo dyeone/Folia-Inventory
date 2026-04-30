@@ -3,7 +3,22 @@ import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X } 
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+// Compute the recommended (ideal) selling price for an item, in priority
+// order: explicit idealPrice → per-item rate × cost → global rate × cost.
+// Cost prefers netCost (post-shipping) but falls back to grossCost so
+// freshly-imported items still get a meaningful number.
+function computeIdealPrice(item, globalRate) {
+  const explicit = parseFloat(item.idealPrice);
+  if (Number.isFinite(explicit)) return explicit;
+  const cost = parseFloat(item.netCost) || parseFloat(item.grossCost ?? item.cost);
+  if (!Number.isFinite(cost) || cost <= 0) return NaN;
+  const itemRate = parseFloat(item.profitRate);
+  const rate = Number.isFinite(itemRate) ? itemRate : parseFloat(globalRate);
+  if (!Number.isFinite(rate)) return NaN;
+  return cost * (1 + rate / 100);
+}
+
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], idealRate, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   // Variety tabs come from the live catalog when available, falling back to
   // the legacy constant list while it's still loading.
   const varietyNames = useMemo(
@@ -302,9 +317,9 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                   {(() => {
                     const gross = parseFloat(item.grossCost ?? item.cost);
                     const net = parseFloat(item.netCost);
-                    const rate = parseFloat(item.profitRate);
-                    let ideal = parseFloat(item.idealPrice);
-                    if (isNaN(ideal) && !isNaN(net) && !isNaN(rate)) ideal = net * (1 + rate / 100);
+                    const itemRate = parseFloat(item.profitRate);
+                    const rate = Number.isFinite(itemRate) ? itemRate : parseFloat(idealRate);
+                    const ideal = computeIdealPrice(item, idealRate);
                     const anyFinancial = !isNaN(gross) || !isNaN(net) || !isNaN(rate) || !isNaN(ideal);
                     if (!anyFinancial) return null;
                     return (
@@ -531,17 +546,17 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums">
                           {(() => {
-                            // Prefer the stored idealPrice; fall back to net * (1 + rate/100)
-                            // so the column is useful even if the user hasn't opened the form.
-                            let ideal = parseFloat(item.idealPrice);
-                            if (isNaN(ideal)) {
-                              const net = parseFloat(item.netCost);
-                              const rate = parseFloat(item.profitRate);
-                              if (!isNaN(net) && !isNaN(rate)) ideal = net * (1 + rate / 100);
-                            }
-                            return isNaN(ideal)
-                              ? <span className="text-gray-400">—</span>
-                              : <span className="text-emerald-700 font-medium">${ideal.toFixed(2)}</span>;
+                            const ideal = computeIdealPrice(item, idealRate);
+                            if (!Number.isFinite(ideal)) return <span className="text-gray-400">—</span>;
+                            // Show a subtle "global" hint when the number relies on
+                            // the dashboard rate so the user can tell what's driving it.
+                            const usesGlobal = isNaN(parseFloat(item.idealPrice)) && isNaN(parseFloat(item.profitRate));
+                            return (
+                              <>
+                                <span className="text-emerald-700 font-medium">${ideal.toFixed(2)}</span>
+                                {usesGlobal && <div className="text-[10px] text-gray-400 leading-tight">global</div>}
+                              </>
+                            );
                           })()}
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums text-gray-900">

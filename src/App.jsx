@@ -110,6 +110,20 @@ function InventorySystem() {
   const [convertingItem, setConvertingItem] = useState(null);
   const [assigningItem, setAssigningItem] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
+
+  // Global ideal profit rate — used as the fallback when an item has no
+  // per-item rate set. Persisted per-browser in localStorage; small enough
+  // and operator-specific enough that a DB-backed setting would be overkill.
+  const [idealRate, setIdealRateState] = useState(() => {
+    const stored = parseFloat(localStorage.getItem('ideal-profit-rate'));
+    return Number.isFinite(stored) ? stored : 100;
+  });
+  const setIdealRate = (n) => {
+    const num = parseFloat(n);
+    const next = Number.isFinite(num) ? num : 0;
+    setIdealRateState(next);
+    localStorage.setItem('ideal-profit-rate', String(next));
+  };
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -497,13 +511,22 @@ function InventorySystem() {
       </nav>
 
       <main className="max-w-7xl mx-auto px-4 pt-4 pb-24 sm:py-6">
-        {activeTab === 'dashboard' && <Dashboard stats={stats} items={items} sales={sales} />}
+        {activeTab === 'dashboard' && (
+          <Dashboard
+            stats={stats}
+            items={items}
+            sales={sales}
+            idealRate={idealRate}
+            onIdealRateChange={setIdealRate}
+          />
+        )}
         {activeTab === 'inventory' && (
           <InventoryView
             items={filteredItems}
             allItems={items}
             sales={sales}
             varieties={varieties}
+            idealRate={idealRate}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             filterType={filterType}

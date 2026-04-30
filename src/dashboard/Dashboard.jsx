@@ -1,8 +1,8 @@
-import { useMemo } from 'react';
-import { Archive, Package, DollarSign, TrendingUp } from 'lucide-react';
+import { useMemo, useState, useEffect } from 'react';
+import { Archive, Package, DollarSign, TrendingUp, Target } from 'lucide-react';
 import { StatCard } from '../ui/StatCard.jsx';
 
-export function Dashboard({ stats, items, sales }) {
+export function Dashboard({ stats, items, sales, idealRate, onIdealRateChange }) {
   const recentSold = items
     .filter(i => ['sold','shipped','delivered'].includes(i.status))
     .sort((a, b) => new Date(b.soldAt || 0) - new Date(a.soldAt || 0))
@@ -42,6 +42,32 @@ export function Dashboard({ stats, items, sales }) {
     if (r >= 0) return 'amber';
     return 'red';
   };
+
+  // Local input state so the user can type freely without committing on every
+  // keystroke; commit on blur (or Enter). Re-syncs if the prop changes from
+  // outside (e.g. another tab updates localStorage).
+  const [rateInput, setRateInput] = useState(String(idealRate ?? ''));
+  useEffect(() => {
+    // Resync local input when the prop changes from outside (e.g. another tab).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRateInput(String(idealRate ?? ''));
+  }, [idealRate]);
+  const commitRate = () => {
+    const num = parseFloat(rateInput);
+    if (Number.isFinite(num) && num !== idealRate) onIdealRateChange(num);
+    else setRateInput(String(idealRate ?? ''));
+  };
+
+  // Count how many items would benefit from the global rate (no per-item
+  // override) so the user can see the blast radius of changing this number.
+  const itemsUsingGlobal = useMemo(() => {
+    return items.filter(i => {
+      const hasItemRate = !isNaN(parseFloat(i.profitRate));
+      const hasItemIdeal = !isNaN(parseFloat(i.idealPrice));
+      const hasCost = !isNaN(parseFloat(i.netCost)) || !isNaN(parseFloat(i.grossCost ?? i.cost));
+      return !hasItemRate && !hasItemIdeal && hasCost;
+    }).length;
+  }, [items]);
 
   return (
     <div className="space-y-6">
@@ -85,6 +111,41 @@ export function Dashboard({ stats, items, sales }) {
             sub={`Revenue ${stats.totalRevenueAllTime.toFixed(0)}`}
             color="emerald"
           />
+        </div>
+      </div>
+
+      {/* Global ideal profit rate */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="flex items-start gap-3">
+          <div className="flex-shrink-0 w-10 h-10 bg-emerald-100 text-emerald-700 rounded-lg flex items-center justify-center">
+            <Target className="w-5 h-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold text-gray-900">Default Ideal Profit Rate</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Used to compute the recommended selling price for items that don't have their own rate set.
+              Currently applies to {itemsUsingGlobal} item{itemsUsingGlobal === 1 ? '' : 's'} in your inventory.
+            </p>
+            <div className="mt-3 flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={rateInput}
+                  onChange={(e) => setRateInput(e.target.value)}
+                  onBlur={commitRate}
+                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                  className="w-24 px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-right focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+                  min="0"
+                  step="10"
+                />
+                <span className="text-sm text-gray-600">%</span>
+              </div>
+              <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+                Example: $10 cost → <span className="font-semibold text-emerald-700">${(10 * (1 + (parseFloat(rateInput) || 0) / 100)).toFixed(2)}</span> ideal price
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
