@@ -103,12 +103,13 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
 
   const allVisibleSelected = items.length > 0 && items.every(i => selectedIds.has(i.id));
   const exportCSV = () => {
-    const headers = ['SKU', 'Type', 'Name', 'Variety', 'Quantity', 'Cost', 'Listing Price', 'Sale Price', 'Status', 'Sale Event', 'Lot', 'Source', 'Acquired', 'Notes'];
+    const headers = ['SKU', 'Type', 'Name', 'Variety', 'Quantity', 'Gross Cost', 'Net Cost', 'Profit Rate %', 'Ideal Price', 'Listing Price', 'Sale Price', 'Status', 'Sale Event', 'Lot', 'Source', 'Acquired', 'Notes'];
     const rows = items.map(i => {
       const sale = sales.find(s => s.id === i.saleId);
       return [
         i.sku, i.type, i.name, i.variety || '', i.quantity || 1,
-        i.cost || '', i.listingPrice || '', i.salePrice || '',
+        i.grossCost ?? i.cost ?? '', i.netCost ?? '', i.profitRate ?? '', i.idealPrice ?? '',
+        i.listingPrice || '', i.salePrice || '',
         i.status, sale?.name || '', i.lotNumber || '',
         i.source || '', i.acquiredAt || '', (i.notes || '').replace(/"/g, '""')
       ].map(v => `"${v}"`).join(',');
@@ -298,6 +299,35 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                       {item.type === 'tc' ? 'TC' : 'Plant'}
                     </span>
                   </div>
+                  {(() => {
+                    const gross = parseFloat(item.grossCost ?? item.cost);
+                    const net = parseFloat(item.netCost);
+                    const rate = parseFloat(item.profitRate);
+                    let ideal = parseFloat(item.idealPrice);
+                    if (isNaN(ideal) && !isNaN(net) && !isNaN(rate)) ideal = net * (1 + rate / 100);
+                    const anyFinancial = !isNaN(gross) || !isNaN(net) || !isNaN(rate) || !isNaN(ideal);
+                    if (!anyFinancial) return null;
+                    return (
+                      <div className="grid grid-cols-4 gap-1 mt-2 text-[11px] tabular-nums">
+                        <div className="bg-gray-50 rounded px-1.5 py-1">
+                          <div className="text-gray-500">Gross</div>
+                          <div className="font-medium text-gray-900">{!isNaN(gross) ? `$${gross.toFixed(2)}` : '—'}</div>
+                        </div>
+                        <div className="bg-gray-50 rounded px-1.5 py-1">
+                          <div className="text-gray-500">Net</div>
+                          <div className="font-medium text-gray-900">{!isNaN(net) ? `$${net.toFixed(2)}` : '—'}</div>
+                        </div>
+                        <div className="bg-gray-50 rounded px-1.5 py-1">
+                          <div className="text-gray-500">Rate</div>
+                          <div className="font-medium text-gray-900">{!isNaN(rate) ? `${rate.toFixed(0)}%` : '—'}</div>
+                        </div>
+                        <div className="bg-emerald-50 rounded px-1.5 py-1">
+                          <div className="text-emerald-700">Ideal</div>
+                          <div className="font-medium text-emerald-800">{!isNaN(ideal) ? `$${ideal.toFixed(2)}` : '—'}</div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   <div className="flex items-center gap-2 mt-2 flex-wrap">
                     <select
                       value={item.status}
@@ -387,8 +417,10 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     <th className="px-3 py-2.5">Type</th>
                     <th className="px-3 py-2.5">Status</th>
                     <th className="px-3 py-2.5">Sale / Lot</th>
-                    <th className="px-3 py-2.5 text-right">Price</th>
-                    <th className="px-3 py-2.5 text-right">Profit</th>
+                    <th className="px-3 py-2.5 text-right">Cost</th>
+                    <th className="px-3 py-2.5 text-right">Ideal $</th>
+                    <th className="px-3 py-2.5 text-right">Listed</th>
+                    <th className="px-3 py-2.5 text-right">Profit %</th>
                     <th className="px-3 py-2.5"></th>
                   </tr>
                 </thead>
@@ -409,7 +441,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                           />
                         </td>
-                        <td colSpan={7} className="px-3 py-2">
+                        <td colSpan={9} className="px-3 py-2">
                           <button
                             onClick={() => toggleGroup(group.name)}
                             className="flex items-center justify-between w-full text-left"
@@ -484,27 +516,61 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             </button>
                           )}
                         </td>
-                        <td className="px-3 py-2.5 text-right text-gray-900">
-                          {item.status === 'sold' && item.salePrice ? `${parseFloat(item.salePrice).toFixed(2)}` :
-                           item.listingPrice ? `${parseFloat(item.listingPrice).toFixed(2)}` : '—'}
+                        <td className="px-3 py-2.5 text-right tabular-nums">
+                          {(() => {
+                            const gross = parseFloat(item.grossCost ?? item.cost);
+                            const net = parseFloat(item.netCost);
+                            if (isNaN(gross) && isNaN(net)) return <span className="text-gray-400">—</span>;
+                            return (
+                              <>
+                                <div className="text-gray-900">{!isNaN(gross) ? `$${gross.toFixed(2)}` : '—'}</div>
+                                {!isNaN(net) && <div className="text-[11px] text-gray-500">net ${net.toFixed(2)}</div>}
+                              </>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">
+                          {(() => {
+                            // Prefer the stored idealPrice; fall back to net * (1 + rate/100)
+                            // so the column is useful even if the user hasn't opened the form.
+                            let ideal = parseFloat(item.idealPrice);
+                            if (isNaN(ideal)) {
+                              const net = parseFloat(item.netCost);
+                              const rate = parseFloat(item.profitRate);
+                              if (!isNaN(net) && !isNaN(rate)) ideal = net * (1 + rate / 100);
+                            }
+                            return isNaN(ideal)
+                              ? <span className="text-gray-400">—</span>
+                              : <span className="text-emerald-700 font-medium">${ideal.toFixed(2)}</span>;
+                          })()}
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-gray-900">
+                          {item.status === 'sold' && item.salePrice ? `$${parseFloat(item.salePrice).toFixed(2)}` :
+                           item.listingPrice ? `$${parseFloat(item.listingPrice).toFixed(2)}` : <span className="text-gray-400">—</span>}
                         </td>
                         <td className="px-3 py-2.5 text-right">
                           {(() => {
                             const sp = parseFloat(item.salePrice);
-                            const cost = parseFloat(item.grossCost ?? item.cost);
+                            const gross = parseFloat(item.grossCost ?? item.cost);
                             const isSold = ['sold','shipped','delivered'].includes(item.status);
-                            if (!isSold || isNaN(sp) || sp <= 0 || isNaN(cost) || cost <= 0) return <span className="text-xs text-gray-400">—</span>;
-                            const rate = ((sp - cost) / cost) * 100;
-                            return (
-                              <span className={`text-xs font-semibold ${
-                                rate >= 200 ? 'text-emerald-600' :
-                                rate >= 100 ? 'text-blue-600' :
-                                rate >= 0 ? 'text-amber-600' :
-                                'text-red-600'
-                              }`}>
-                                {rate >= 0 ? '+' : ''}{rate.toFixed(0)}%
-                              </span>
-                            );
+                            // Realized rate when sold; configured target rate otherwise.
+                            if (isSold && !isNaN(sp) && sp > 0 && !isNaN(gross) && gross > 0) {
+                              const rate = ((sp - gross) / gross) * 100;
+                              return (
+                                <span className={`text-xs font-semibold ${
+                                  rate >= 200 ? 'text-emerald-600' :
+                                  rate >= 100 ? 'text-blue-600' :
+                                  rate >= 0 ? 'text-amber-600' : 'text-red-600'
+                                }`}>
+                                  {rate >= 0 ? '+' : ''}{rate.toFixed(0)}%
+                                </span>
+                              );
+                            }
+                            const target = parseFloat(item.profitRate);
+                            if (!isNaN(target)) {
+                              return <span className="text-xs text-gray-500">{target.toFixed(0)}% target</span>;
+                            }
+                            return <span className="text-xs text-gray-400">—</span>;
                           })()}
                         </td>
                         <td className="px-3 py-2.5">
