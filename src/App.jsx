@@ -257,17 +257,28 @@ function InventorySystem() {
     try {
       // Strip any client-set server-owned fields; let server own them.
       const { id, createdAt, createdBy, modifiedAt, modifiedBy, sku, ...clean } = item;
-      await api.upsertItems([{ ...clean, status: item.status || 'available' }]);
+      // Expand quantity into N separate inventory items, each with its own
+      // auto-generated SKU and quantity 1 — matches the bulk-import behavior
+      // so a single SKU stays the unit of sale through the live flow.
+      const qty = Math.max(1, parseInt(clean.quantity, 10) || 1);
+      const base = { ...clean, quantity: 1, status: item.status || 'available' };
+      const payload = Array.from({ length: qty }, () => ({ ...base }));
+      await api.upsertItems(payload);
       const fresh = await api.getItems();
       applyItemsFresh(fresh);
-      // Find the new item in the fresh list to show its generated SKU.
-      const newest = fresh.reduce((latest, i) =>
-        (!latest || new Date(i.createdAt) > new Date(latest.createdAt)) ? i : latest, null);
-      if (newest) {
+      // Show the newest items (last `qty`) by createdAt so the toast can
+      // surface the assigned SKU range.
+      const newest = [...fresh]
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+        .slice(0, qty);
+      if (newest.length) {
+        const skuRange = qty === 1
+          ? newest[0].sku
+          : `${newest[newest.length - 1].sku} – ${newest[0].sku}`;
         setAddSummary({
-          title: 'Item added',
-          detail: `${newest.sku} · ${newest.name}${newest.variety ? ` · ${newest.variety}` : ''}`,
-          items: [newest],
+          title: qty === 1 ? 'Item added' : `${qty} items added`,
+          detail: `${skuRange} · ${newest[0].name}${newest[0].variety ? ` · ${newest[0].variety}` : ''}`,
+          items: newest,
         });
       }
     } catch (e) {
