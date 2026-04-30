@@ -82,7 +82,7 @@ function suggestCode(name, takenCodes) {
 }
 
 function parseRows(rows, mapping, varieties, species) {
-  if (rows.length === 0) return { items: [], rowErrors: [], newSpecies: [], newVarieties: [] };
+  if (rows.length === 0) return { items: [], rowErrors: [], newSpecies: [], newVarieties: [], totalItems: 0 };
 
   const get = (row, field) => {
     const col = mapping[field];
@@ -154,13 +154,16 @@ function parseRows(rows, mapping, varieties, species) {
 
     const costRaw = cleanMoney(get(row, 'cost'));
 
+    // Each row stays as a single preview entry — we record qty so the user
+    // can see "10 plants of this cultivar" — but at import time it expands
+    // into qty separate inventory items each with their own SKU.
     items.push({
       type: category,
       variety: varietyDisplayName,
       name: cultivarName,
       _speciesKey: sKey,
+      _qty: qty,
       speciesId: existing?.id || null,
-      quantity: qty,
       grossCost:    costRaw,
       cost:         costRaw,
       listingPrice: cleanMoney(get(row, 'listingPrice')),
@@ -171,7 +174,8 @@ function parseRows(rows, mapping, varieties, species) {
     });
   });
 
-  return { items, rowErrors, newSpecies, newVarieties };
+  const totalItems = items.reduce((sum, r) => sum + r._qty, 0);
+  return { items, rowErrors, newSpecies, newVarieties, totalItems };
 }
 
 export function BulkImportModal({ varieties = [], species = [], onCreateVariety, onCreateSpecies, onImport, onClose }) {
@@ -254,10 +258,13 @@ export function BulkImportModal({ varieties = [], species = [], onCreateVariety,
         newSpeciesIdByKey[`${ns.varietyId}:${ns.epithet.toLowerCase()}`] = created.id;
       }
 
-      const finalItems = parsed.items.map(({ _speciesKey, ...rest }) => ({
-        ...rest,
-        speciesId: rest.speciesId || newSpeciesIdByKey[_speciesKey] || null,
-      }));
+      // Expand each row into _qty separate inventory items so each gets its
+      // own auto-generated SKU. Each individual item has quantity: 1.
+      const finalItems = parsed.items.flatMap(({ _speciesKey, _qty, ...rest }) => {
+        const speciesId = rest.speciesId || newSpeciesIdByKey[_speciesKey] || null;
+        const base = { ...rest, speciesId, quantity: 1 };
+        return Array.from({ length: _qty }, () => ({ ...base }));
+      });
       await onImport(finalItems);
     } catch (e) {
       setErr(e.message || 'Import failed');
@@ -456,7 +463,8 @@ function MappingStep(props) {
 
 function PreviewStep(props) {
   const { fileName, parsed, importing, err, onBack, onImport } = props;
-  const validCount = parsed.items.length;
+  const rowCount = parsed.items.length;
+  const totalItems = parsed.totalItems || 0;
   const errCount = parsed.rowErrors.length;
   const newSpeciesCount = parsed.newSpecies.length;
   const newVarietyCount = parsed.newVarieties?.length || 0;
@@ -467,17 +475,21 @@ function PreviewStep(props) {
         <div>
           <FileText className="w-4 h-4 inline mr-1 text-gray-400" />
           <span className="font-medium text-gray-900">{fileName}</span>
-          <span className="text-gray-500"> · {validCount} valid · {errCount} skipped</span>
+          <span className="text-gray-500"> · {rowCount} valid {rowCount === 1 ? 'row' : 'rows'} · {errCount} skipped</span>
         </div>
         <button onClick={onBack} className="text-xs text-gray-600 hover:text-gray-900 flex items-center gap-1">
           <ArrowLeft className="w-3 h-3" /> Edit mapping
         </button>
       </div>
 
-      {validCount > 0 && (
+      {rowCount > 0 && (
         <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-900">
-          <div className="font-medium mb-0.5">Ready to import {validCount} item{validCount === 1 ? '' : 's'}</div>
-          <div className="text-emerald-700 text-xs">SKUs will be assigned automatically on save.</div>
+          <div className="font-medium mb-0.5">
+            Ready to create {totalItems} inventory item{totalItems === 1 ? '' : 's'} from {rowCount} row{rowCount === 1 ? '' : 's'}
+          </div>
+          <div className="text-emerald-700 text-xs">
+            Each row's qty becomes that many separate items, each with its own auto-generated SKU.
+          </div>
         </div>
       )}
 
@@ -524,7 +536,7 @@ function PreviewStep(props) {
         </div>
       )}
 
-      {validCount > 0 && (
+      {rowCount > 0 && (
         <div className="border border-gray-200 rounded-lg overflow-hidden max-h-72 overflow-y-auto">
           <table className="w-full text-xs">
             <thead className="bg-gray-50 text-gray-500 uppercase sticky top-0">
@@ -532,9 +544,9 @@ function PreviewStep(props) {
                 <th className="px-2 py-1.5 text-left font-medium">Category</th>
                 <th className="px-2 py-1.5 text-left font-medium">Species</th>
                 <th className="px-2 py-1.5 text-left font-medium">Variety</th>
-                <th className="px-2 py-1.5 text-right font-medium">Qty</th>
-                <th className="px-2 py-1.5 text-right font-medium">Cost</th>
-                <th className="px-2 py-1.5 text-right font-medium">Price</th>
+                <th className="px-2 py-1.5 text-right font-medium">Items</th>
+                <th className="px-2 py-1.5 text-right font-medium">Cost ea.</th>
+                <th className="px-2 py-1.5 text-right font-medium">Price ea.</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -543,9 +555,9 @@ function PreviewStep(props) {
                   <td className="px-2 py-1.5 uppercase text-gray-700">{r.type}</td>
                   <td className="px-2 py-1.5">{r.variety}</td>
                   <td className="px-2 py-1.5 italic">{r.name}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{r.quantity}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{r.cost || '—'}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{r.listingPrice || '—'}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums font-medium">×{r._qty}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{r.cost ?? '—'}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{r.listingPrice ?? '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -564,14 +576,14 @@ function PreviewStep(props) {
         </div>
       )}
 
-      {validCount > 0 && (
+      {rowCount > 0 && (
         <div className="flex gap-2 justify-end">
           <button
             onClick={onImport}
             disabled={importing}
             className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-gray-300 text-white rounded-lg flex items-center gap-1.5"
           >
-            <Check className="w-4 h-4" /> {importing ? 'Importing…' : `Import ${validCount}`}
+            <Check className="w-4 h-4" /> {importing ? 'Importing…' : `Import ${totalItems} items`}
           </button>
         </div>
       )}
