@@ -95,6 +95,9 @@ function InventorySystem() {
   const [showCatalogModal, setShowCatalogModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  // Holds a partial item draft when "Add to this cultivar" is clicked from
+  // an inventory group header — pre-seeds the add form's variety/species.
+  const [addPrefill, setAddPrefill] = useState(null);
   const [showBatchModal, setShowBatchModal] = useState(false);
   const [showConvertModal, setShowConvertModal] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
@@ -547,6 +550,23 @@ function InventorySystem() {
             idealRate={idealRate}
             onUpdateSpeciesRate={updateSpeciesRate}
             onDeleteVariety={deleteVariety}
+            onAddToSpecies={(speciesRow, sampleItem) => {
+              // Seed the add form with this cultivar's variety/name/speciesId
+              // and copy a few useful fields from a sample item in the group
+              // so cost / source / type don't have to be re-entered.
+              setAddPrefill({
+                type: sampleItem?.type || 'tc',
+                variety: speciesRow?.varietyId
+                  ? varieties.find(v => v.id === speciesRow.varietyId)?.name
+                  : sampleItem?.variety,
+                name: speciesRow?.epithet || sampleItem?.name,
+                speciesId: speciesRow?.id || sampleItem?.speciesId || null,
+                grossCost: sampleItem?.grossCost ?? sampleItem?.cost ?? '',
+                netCost: sampleItem?.netCost ?? '',
+                source: sampleItem?.source || '',
+              });
+              setShowAddModal(true);
+            }}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             filterType={filterType}
@@ -734,15 +754,20 @@ function InventorySystem() {
 
       {showAddModal && (
         <ItemFormModal
-          title="Add New SKU"
+          title={addPrefill?.name ? `Add ${addPrefill.name}` : 'Add New SKU'}
+          item={addPrefill}
           sales={sales}
           existingItems={items}
           varieties={varieties}
           species={species}
           onCreateVariety={addVariety}
           onCreateSpecies={addSpecies}
-          onSave={(data) => { addItem(data); setShowAddModal(false); }}
-          onClose={() => setShowAddModal(false)}
+          onSave={(data) => {
+            addItem(data);
+            setShowAddModal(false);
+            setAddPrefill(null);
+          }}
+          onClose={() => { setShowAddModal(false); setAddPrefill(null); }}
         />
       )}
       {showBatchModal && (

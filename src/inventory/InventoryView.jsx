@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Target } from 'lucide-react';
+import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Target, Plus } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 
@@ -45,7 +45,7 @@ function rateSourceLabel(item, varieties, species) {
   return 'global';
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   // Variety tabs come from the live catalog when available, falling back to
   // the legacy constant list while it's still loading.
   const varietyNames = useMemo(
@@ -329,13 +329,25 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                       <span className={`text-xs text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
                       <span className="font-medium text-gray-900 text-sm truncate">{group.name}</span>
                     </div>
-                    <div className="flex items-center gap-3 flex-shrink-0">
+                    <div className="flex items-center gap-2 flex-shrink-0">
                       {onUpdateSpeciesRate && (
                         <CultivarRateInput
                           species={speciesForItem(group.items[0], varieties, species)}
                           globalRate={idealRate}
                           onUpdate={onUpdateSpeciesRate}
                         />
+                      )}
+                      {onAddToSpecies && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onAddToSpecies(speciesForItem(group.items[0], varieties, species), group.items[0]);
+                          }}
+                          title={`Add another ${group.name}`}
+                          className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition"
+                        >
+                          <Plus className="w-4 h-4" />
+                        </button>
                       )}
                       <span className="text-xs text-gray-500 whitespace-nowrap">
                         {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
@@ -525,6 +537,18 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                                   globalRate={idealRate}
                                   onUpdate={onUpdateSpeciesRate}
                                 />
+                              )}
+                              {onAddToSpecies && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onAddToSpecies(speciesForItem(group.items[0], varieties, species), group.items[0]);
+                                  }}
+                                  title={`Add another ${group.name}`}
+                                  className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition"
+                                >
+                                  <Plus className="w-4 h-4" />
+                                </button>
                               )}
                               <span className="text-xs text-gray-500">
                                 {group.items.length} {group.items.length === 1 ? 'item' : 'items'}

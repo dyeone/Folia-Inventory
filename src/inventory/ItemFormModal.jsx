@@ -11,7 +11,10 @@ export function ItemFormModal({
   onCreateVariety, onCreateSpecies,
   onSave, onClose,
 }) {
-  const isEditing = !!item;
+  // An `item` without an id is a prefill (e.g. "Add to this cultivar" on the
+  // inventory list seeds variety/name/speciesId), not an edit — only treat
+  // rows with a real id as edits so SKU auto-assignment still runs.
+  const isEditing = !!item?.id;
 
   // Resolve initial catalog selection from the item (if linked) or by
   // matching the legacy variety/name fields against the catalog.
