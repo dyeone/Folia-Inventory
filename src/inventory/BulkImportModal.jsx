@@ -50,10 +50,14 @@ function normalizeCategory(raw) {
 }
 
 // Strip currency symbols and thousands separators so "$1,922.66" → "1922.66".
+// Returns null for blank/unparseable input so we don't send "" to numeric DB
+// columns, which Postgres rejects with `invalid input syntax for type numeric`.
 function cleanMoney(raw) {
-  const s = String(raw || '').trim();
-  if (!s) return '';
-  return s.replace(/[$,\s]/g, '');
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const cleaned = s.replace(/[$,\s]/g, '');
+  if (!cleaned || isNaN(parseFloat(cleaned))) return null;
+  return cleaned;
 }
 
 // Pick a SKU code prefix for a new genus: first 3-6 letters of the name,
