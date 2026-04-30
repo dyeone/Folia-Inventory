@@ -74,6 +74,17 @@ export function ItemFormModal({
     return form.idealPrice;
   };
 
+  // Postgres rejects "" for numeric columns ("invalid input syntax for type
+  // numeric"), so blank money fields become null and other numeric strings
+  // get parsed into actual Numbers.
+  const numOrNull = (v) => {
+    if (v === null || v === undefined) return null;
+    const s = String(v).trim();
+    if (!s) return null;
+    const n = parseFloat(s);
+    return Number.isFinite(n) ? n : null;
+  };
+
   const handleSubmit = () => {
     setErr('');
     if (!pick.varietyId) return setErr('Variety is required');
@@ -82,6 +93,7 @@ export function ItemFormModal({
     if (!isEditing && existingItems.some(i => i.sku === form.sku)) {
       return setErr(`SKU "${form.sku}" already exists. Please retry.`);
     }
+    const grossCost = numOrNull(form.grossCost);
     onSave({
       ...form,
       // Denormalized columns kept in sync from the catalog pick so the
@@ -89,7 +101,14 @@ export function ItemFormModal({
       variety: pick.varietyName,
       name: pick.speciesEpithet,
       speciesId: pick.speciesId || null,
-      cost: form.grossCost,
+      quantity: parseInt(form.quantity, 10) || 1,
+      grossCost,
+      cost: grossCost,
+      netCost:      numOrNull(form.netCost),
+      profitRate:   numOrNull(form.profitRate),
+      idealPrice:   numOrNull(form.idealPrice),
+      listingPrice: numOrNull(form.listingPrice),
+      salePrice:    numOrNull(form.salePrice),
       saleId: form.saleId || null,
       lotNumber: form.lotNumber || null,
     });
