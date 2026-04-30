@@ -158,23 +158,32 @@ export default wrap(async (req, res) => {
       if (!Array.isArray(ids) || ids.length === 0) {
         const e = new Error('ids required'); e.status = 400; throw e;
       }
+      // Batch the .in() calls — PostgREST inlines every id into the URL
+      // (?id=in.(...)), so a few hundred ids can blow past proxy URL-length
+      // limits and come back as a generic 400. 200 per batch is well under
+      // every reasonable proxy cap.
+      const CHUNK = 200;
       if (purge) {
         // Hard delete — bypass the 30-day grace. Used by the Recently
         // Deleted tab's "Delete forever" action.
-        const { error } = await supabase.from('inventory_items').delete().in('id', ids);
-        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const batch = ids.slice(i, i + CHUNK);
+          const { error } = await supabase.from('inventory_items').delete().in('id', batch);
+          if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        }
         return res.status(200).json({ ok: true, purged: ids.length });
       }
       // Soft delete: items keep all their data and are recoverable for
       // 30 days from the Recently Deleted tab.
-      const { error } = await supabase
-        .from('inventory_items')
-        .update({
-          deletedAt: new Date().toISOString(),
-          deletedBy: user.displayName,
-        })
-        .in('id', ids);
-      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      const patch = {
+        deletedAt: new Date().toISOString(),
+        deletedBy: user.displayName,
+      };
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const batch = ids.slice(i, i + CHUNK);
+        const { error } = await supabase.from('inventory_items').update(patch).in('id', batch);
+        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      }
       return res.status(200).json({ ok: true, deleted: ids.length });
     }
 
