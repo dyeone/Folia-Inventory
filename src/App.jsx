@@ -179,9 +179,9 @@ function InventorySystem() {
     setSpecies(prev => [...prev, s].sort((a, b) => a.epithet.localeCompare(b.epithet)));
     return s;
   };
-  const updateVarietyRate = async (id, profitRate) => {
-    await api.updateVariety({ id, patch: { profitRate } });
-    setVarieties(prev => prev.map(v => v.id === id ? { ...v, profitRate } : v));
+  const updateSpeciesRate = async (id, profitRate) => {
+    await api.updateSpecies({ id, patch: { profitRate } });
+    setSpecies(prev => prev.map(s => s.id === id ? { ...s, profitRate } : s));
   };
 
   // Diff two arrays and return only the rows that were added or changed.
@@ -530,8 +530,9 @@ function InventorySystem() {
             allItems={items}
             sales={sales}
             varieties={varieties}
+            species={species}
             idealRate={idealRate}
-            onUpdateVarietyRate={updateVarietyRate}
+            onUpdateSpeciesRate={updateSpeciesRate}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             filterType={filterType}

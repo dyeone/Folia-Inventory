@@ -3,36 +3,49 @@ import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, T
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 
+// Find the species/cultivar row that a given item belongs to. Prefer the
+// explicit FK; fall back to (variety name, cultivar name) lookup so older
+// items without speciesId still resolve.
+function speciesForItem(item, varieties, species) {
+  if (item.speciesId) {
+    const s = species.find(s => s.id === item.speciesId);
+    if (s) return s;
+  }
+  const v = varieties.find(v => v.name === item.variety);
+  if (!v) return null;
+  return species.find(s => s.varietyId === v.id && s.epithet === item.name) || null;
+}
+
 // Compute the recommended (ideal) selling price for an item, in priority
-// order: explicit idealPrice → per-item rate → variety rate → global rate,
-// each multiplied by cost (preferring netCost, falling back to grossCost so
-// freshly-imported items still get a meaningful number).
-function computeIdealPrice(item, globalRate, varieties = []) {
+// order: explicit idealPrice → per-item rate → cultivar (species) rate →
+// global rate. Cost prefers netCost (post-shipping) but falls back to
+// grossCost so freshly-imported items still get a meaningful number.
+function computeIdealPrice(item, globalRate, varieties = [], species = []) {
   const explicit = parseFloat(item.idealPrice);
   if (Number.isFinite(explicit)) return explicit;
   const cost = parseFloat(item.netCost) || parseFloat(item.grossCost ?? item.cost);
   if (!Number.isFinite(cost) || cost <= 0) return NaN;
   const itemRate = parseFloat(item.profitRate);
   if (Number.isFinite(itemRate)) return cost * (1 + itemRate / 100);
-  const variety = varieties.find(v => v.name === item.variety);
-  const varRate = parseFloat(variety?.profitRate);
-  if (Number.isFinite(varRate)) return cost * (1 + varRate / 100);
+  const sp = speciesForItem(item, varieties, species);
+  const spRate = parseFloat(sp?.profitRate);
+  if (Number.isFinite(spRate)) return cost * (1 + spRate / 100);
   const gRate = parseFloat(globalRate);
   if (!Number.isFinite(gRate)) return NaN;
   return cost * (1 + gRate / 100);
 }
 
-// Which level supplied the rate for the Ideal $ value, for the small caption
-// shown under the number ("global", "variety rate", or none when explicit).
-function rateSourceLabel(item, varieties) {
+// Which tier supplied the rate, for the small caption under the Ideal $
+// number ("cultivar rate", "global", or none when the item is explicit).
+function rateSourceLabel(item, varieties, species) {
   if (Number.isFinite(parseFloat(item.idealPrice))) return null;
   if (Number.isFinite(parseFloat(item.profitRate))) return null;
-  const variety = varieties.find(v => v.name === item.variety);
-  if (Number.isFinite(parseFloat(variety?.profitRate))) return 'variety rate';
+  const sp = speciesForItem(item, varieties, species);
+  if (Number.isFinite(parseFloat(sp?.profitRate))) return 'cultivar rate';
   return 'global';
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], idealRate, onUpdateVarietyRate, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   // Variety tabs come from the live catalog when available, falling back to
   // the legacy constant list while it's still loading.
   const varietyNames = useMemo(
@@ -218,15 +231,6 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
         })}
       </div>
 
-      {varietyTab !== 'all' && onUpdateVarietyRate && (
-        <VarietyRateStrip
-          variety={varieties.find(v => v.name === varietyTab)}
-          itemCount={varietyCounts[varietyTab] ?? 0}
-          globalRate={idealRate}
-          onUpdate={onUpdateVarietyRate}
-        />
-      )}
-
       <div className="flex items-center justify-between gap-2 px-1">
         <div className="text-xs text-gray-500">
           Showing {items.length} of {allItems.length} items
@@ -301,9 +305,18 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                       <span className={`text-xs text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
                       <span className="font-medium text-gray-900 text-sm truncate">{group.name}</span>
                     </div>
-                    <span className="text-xs text-gray-500 whitespace-nowrap">
-                      {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
-                    </span>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      {onUpdateSpeciesRate && (
+                        <CultivarRateInput
+                          species={speciesForItem(group.items[0], varieties, species)}
+                          globalRate={idealRate}
+                          onUpdate={onUpdateSpeciesRate}
+                        />
+                      )}
+                      <span className="text-xs text-gray-500 whitespace-nowrap">
+                        {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
+                      </span>
+                    </div>
                   </div>
                   {!isCollapsed && group.items.map(item => {
               const sale = sales.find(s => s.id === item.saleId);
@@ -341,12 +354,12 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     const gross = parseFloat(item.grossCost ?? item.cost);
                     const net = parseFloat(item.netCost);
                     const itemRate = parseFloat(item.profitRate);
-                    const variety = varieties.find(v => v.name === item.variety);
-                    const varRate = parseFloat(variety?.profitRate);
+                    const sp = speciesForItem(item, varieties, species);
+                    const spRate = parseFloat(sp?.profitRate);
                     const rate = Number.isFinite(itemRate) ? itemRate
-                      : Number.isFinite(varRate) ? varRate
+                      : Number.isFinite(spRate) ? spRate
                       : parseFloat(idealRate);
-                    const ideal = computeIdealPrice(item, idealRate, varieties);
+                    const ideal = computeIdealPrice(item, idealRate, varieties, species);
                     const anyFinancial = !isNaN(gross) || !isNaN(net) || !isNaN(rate) || !isNaN(ideal);
                     if (!anyFinancial) return null;
                     return (
@@ -484,18 +497,27 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                           />
                         </td>
                         <td colSpan={9} className="px-3 py-2">
-                          <button
-                            onClick={() => toggleGroup(group.name)}
-                            className="flex items-center justify-between w-full text-left"
-                          >
-                            <div className="flex items-center gap-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <button
+                              onClick={() => toggleGroup(group.name)}
+                              className="flex items-center gap-2 flex-1 min-w-0 text-left"
+                            >
                               <span className={`text-xs text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
-                              <span className="text-sm font-semibold text-gray-900">{group.name}</span>
+                              <span className="text-sm font-semibold text-gray-900 truncate">{group.name}</span>
+                            </button>
+                            <div className="flex items-center gap-3 flex-shrink-0">
+                              {onUpdateSpeciesRate && (
+                                <CultivarRateInput
+                                  species={speciesForItem(group.items[0], varieties, species)}
+                                  globalRate={idealRate}
+                                  onUpdate={onUpdateSpeciesRate}
+                                />
+                              )}
+                              <span className="text-xs text-gray-500">
+                                {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
+                              </span>
                             </div>
-                            <span className="text-xs text-gray-500">
-                              {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
-                            </span>
-                          </button>
+                          </div>
                         </td>
                       </tr>
                       {!isCollapsed && group.items.map(item => {
@@ -573,9 +595,9 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums">
                           {(() => {
-                            const ideal = computeIdealPrice(item, idealRate, varieties);
+                            const ideal = computeIdealPrice(item, idealRate, varieties, species);
                             if (!Number.isFinite(ideal)) return <span className="text-gray-400">—</span>;
-                            const src = rateSourceLabel(item, varieties);
+                            const src = rateSourceLabel(item, varieties, species);
                             return (
                               <>
                                 <span className="text-emerald-700 font-medium">${ideal.toFixed(2)}</span>
@@ -648,89 +670,59 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   );
 }
 
-function VarietyRateStrip({ variety, itemCount, globalRate, onUpdate }) {
-  const [val, setVal] = useState(variety?.profitRate != null ? String(variety.profitRate) : '');
+function CultivarRateInput({ species, globalRate, onUpdate }) {
+  const [val, setVal] = useState(species?.profitRate != null ? String(species.profitRate) : '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    // Resync when the user switches to a different variety tab.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setVal(variety?.profitRate != null ? String(variety.profitRate) : '');
+    setVal(species?.profitRate != null ? String(species.profitRate) : '');
     setErr('');
-  }, [variety?.id, variety?.profitRate]);
+  }, [species?.id, species?.profitRate]);
 
-  if (!variety) return null;
+  if (!species) return null;
 
   const commit = async (next) => {
     setErr('');
     setSaving(true);
-    try {
-      await onUpdate(variety.id, next);
-    } catch (e) {
-      setErr(e.message || 'Save failed');
-    }
+    try { await onUpdate(species.id, next); }
+    catch (e) { setErr(e.message || 'Save failed'); }
     setSaving(false);
   };
 
   const handleBlur = () => {
     const trimmed = val.trim();
-    if (trimmed === '' && variety.profitRate == null) return;
+    if (trimmed === '' && species.profitRate == null) return;
     if (trimmed === '') return commit(null);
     const num = parseFloat(trimmed);
-    if (!Number.isFinite(num)) {
-      setErr('Must be a number');
-      return;
-    }
-    if (num === variety.profitRate) return;
+    if (!Number.isFinite(num)) { setErr('Must be a number'); return; }
+    if (num === species.profitRate) return;
     commit(num);
   };
 
-  const effectiveRate = Number.isFinite(parseFloat(val))
-    ? parseFloat(val)
-    : (variety.profitRate ?? globalRate);
-  const usingGlobal = variety.profitRate == null && val.trim() === '';
-
   return (
-    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center gap-3">
-      <div className="flex-shrink-0 w-9 h-9 bg-white text-emerald-700 rounded-lg flex items-center justify-center">
-        <Target className="w-4 h-4" />
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-semibold text-emerald-900">
-          {variety.name} profit rate
-        </div>
-        <div className="text-xs text-emerald-700/80">
-          Applies to {itemCount} item{itemCount === 1 ? '' : 's'} in this variety that don't have their own rate set.
-          {usingGlobal && ` Currently using the global ${globalRate ?? '—'}%.`}
-        </div>
-      </div>
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-1.5">
-          <input
-            type="number"
-            inputMode="decimal"
-            value={val}
-            onChange={(e) => setVal(e.target.value)}
-            onBlur={handleBlur}
-            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-            placeholder={String(globalRate ?? '')}
-            disabled={saving}
-            className="w-20 px-2.5 py-1.5 border border-emerald-300 rounded-lg text-sm text-right tabular-nums bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50"
-            min="0"
-            step="10"
-          />
-          <span className="text-sm text-emerald-800">%</span>
-        </div>
-        {!usingGlobal && Number.isFinite(effectiveRate) && (
-          <span className="text-xs text-emerald-700 whitespace-nowrap hidden sm:inline">
-            $10 → ${(10 * (1 + effectiveRate / 100)).toFixed(2)}
-          </span>
-        )}
-      </div>
-      {err && (
-        <div className="text-xs text-red-700 sm:ml-3">{err}</div>
-      )}
+    <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+      <Target className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+      <input
+        type="number"
+        inputMode="decimal"
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={handleBlur}
+        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        placeholder={String(globalRate ?? '')}
+        disabled={saving}
+        title={err || (species.profitRate == null ? `Defaults to global ${globalRate ?? '—'}%` : 'Per-cultivar rate')}
+        className={`w-16 px-1.5 py-0.5 text-xs text-right tabular-nums border rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-50 ${
+          err ? 'border-red-400 bg-red-50' :
+          species.profitRate != null ? 'border-emerald-400 bg-white text-emerald-800 font-medium' :
+          'border-gray-300 bg-white text-gray-500'
+        }`}
+        min="0"
+        step="10"
+      />
+      <span className="text-xs text-gray-500">%</span>
     </div>
   );
 }

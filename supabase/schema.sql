@@ -156,6 +156,9 @@ create table if not exists species (
   "createdBy"  text,
   unique ("varietyId", epithet)
 );
+-- Per-cultivar profit rate. Used as the fallback when an item has no rate of
+-- its own; falls through to the global dashboard rate when this is null too.
+alter table species add column if not exists "profitRate" numeric;
 
 -- Items get an optional FK to the species catalog. Nullable so existing
 -- rows (and ad-hoc imports) keep working; when set, the form auto-syncs

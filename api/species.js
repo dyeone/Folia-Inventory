@@ -51,15 +51,31 @@ export default wrap(async (req, res) => {
     }
 
     case 'PATCH': {
-      await requireAdmin(userId);
-      const { id, varietyId, epithet, commonName, notes, imageUrl } = req.body || {};
+      const { id, varietyId, epithet, commonName, notes, imageUrl, profitRate } = req.body || {};
       if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
+      // Renames / reparenting are structural and need admin; profitRate is
+      // operational and any active user can change it.
+      const wantsStructural = varietyId !== undefined || epithet !== undefined
+        || commonName !== undefined || notes !== undefined || imageUrl !== undefined;
+      if (wantsStructural) await requireAdmin(userId);
       const patch = {};
       if (varietyId !== undefined) patch.varietyId = varietyId;
       if (epithet !== undefined) patch.epithet = String(epithet).trim();
       if (commonName !== undefined) patch.commonName = commonName ? String(commonName).trim() : null;
       if (notes !== undefined) patch.notes = notes || null;
       if (imageUrl !== undefined) patch.imageUrl = imageUrl ? String(imageUrl).trim() : null;
+      if (profitRate !== undefined) {
+        if (profitRate === null || profitRate === '') {
+          patch.profitRate = null;
+        } else {
+          const n = parseFloat(profitRate);
+          if (!Number.isFinite(n)) { const e = new Error('profitRate must be a number'); e.status = 400; throw e; }
+          patch.profitRate = n;
+        }
+      }
+      if (Object.keys(patch).length === 0) {
+        const e = new Error('No fields to update'); e.status = 400; throw e;
+      }
 
       const { error } = await supabase.from('species').update(patch).eq('id', id);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
