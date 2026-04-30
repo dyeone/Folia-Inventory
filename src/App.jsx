@@ -19,7 +19,7 @@ import { SaleFormModal } from './sales/SaleFormModal.jsx';
 import { LineupBuilder } from './sales/LineupBuilder.jsx';
 import { SalesUploadModal } from './sales/SalesUploadModal.jsx';
 import { LiveModal } from './sales/LiveModal.jsx';
-import { exportPalmstreetCsv } from './sales/palmstreetExport.js';
+import { exportPalmstreetCsv, exportAvailableToPalmstreet } from './sales/palmstreetExport.js';
 import { UsersView } from './users/UsersView.jsx';
 import { LabelSheet } from './labels/LabelSheet.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
@@ -561,6 +561,18 @@ function InventorySystem() {
             idealRate={idealRate}
             onUpdateSpeciesRate={updateSpeciesRate}
             onDeleteVariety={deleteVariety}
+            onExportPalmstreet={() => {
+              const result = exportAvailableToPalmstreet(items, varieties, species, idealRate);
+              if (!result.ok) {
+                showToast(result.reason, 'error');
+                return;
+              }
+              const fromIdeal = result.pricedFromIdeal
+                ? ` (${result.pricedFromIdeal} priced from ideal)` : '';
+              const missing = result.priceless
+                ? ` · ${result.priceless} have no price` : '';
+              showToast(`Exported ${result.count} items to Palmstreet CSV${fromIdeal}${missing}`);
+            }}
             onAddToSpecies={(speciesRow, sampleItem) => {
               // Seed the add form with this cultivar's variety/name/speciesId
               // and copy a few useful fields from a sample item in the group

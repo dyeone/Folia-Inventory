@@ -45,7 +45,7 @@ function rateSourceLabel(item, varieties, species) {
   return 'global';
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   // Variety tabs come from the live catalog when available, falling back to
   // the legacy constant list while it's still loading.
   const varietyNames = useMemo(
@@ -183,6 +183,15 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">
             <Download className="w-4 h-4" /> Export CSV
           </button>
+          {onExportPalmstreet && (
+            <button
+              onClick={onExportPalmstreet}
+              title="Export all available, unassigned items in Palmstreet's CSV template"
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-emerald-700 border border-emerald-300 bg-emerald-50 rounded-lg hover:bg-emerald-100"
+            >
+              <Download className="w-4 h-4" /> Export to Palmstreet
+            </button>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <FilterPill label="Type" value={filterType} onChange={setFilterType} options={[
