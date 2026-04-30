@@ -771,6 +771,9 @@ function InventorySystem() {
       )}
       {showBulkModal && (
         <BulkImportModal
+          varieties={varieties}
+          species={species}
+          onCreateSpecies={addSpecies}
           onImport={async (newItems) => {
             try {
               const clean = newItems.map(({ id, createdAt, createdBy, modifiedAt, modifiedBy, ...rest }) => ({
