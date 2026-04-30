@@ -183,6 +183,22 @@ function InventorySystem() {
     await api.updateSpecies({ id, patch: { profitRate } });
     setSpecies(prev => prev.map(s => s.id === id ? { ...s, profitRate } : s));
   };
+  // Cascade-delete species under the variety first so the API's "still has
+  // species" guard doesn't block deletion of an otherwise-empty variety.
+  const deleteVariety = async (id) => {
+    try {
+      const childSpecies = species.filter(s => s.varietyId === id);
+      for (const s of childSpecies) {
+        await api.deleteSpecies(s.id);
+      }
+      await api.deleteVariety(id);
+      setSpecies(prev => prev.filter(s => s.varietyId !== id));
+      setVarieties(prev => prev.filter(v => v.id !== id));
+      showToast('Variety deleted');
+    } catch (e) {
+      showToast(e.message || 'Could not delete variety', 'error');
+    }
+  };
 
   // Diff two arrays and return only the rows that were added or changed.
   // Shallow JSON compare is fine here — item/sale objects have stable shapes.
@@ -533,6 +549,7 @@ function InventorySystem() {
             species={species}
             idealRate={idealRate}
             onUpdateSpeciesRate={updateSpeciesRate}
+            onDeleteVariety={deleteVariety}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             filterType={filterType}

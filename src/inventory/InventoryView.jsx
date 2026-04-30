@@ -45,7 +45,7 @@ function rateSourceLabel(item, varieties, species) {
   return 'global';
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   // Variety tabs come from the live catalog when available, falling back to
   // the legacy constant list while it's still loading.
   const varietyNames = useMemo(
@@ -212,21 +212,45 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
         {[{ value: 'all', label: 'All' }, ...varietyNames.map(v => ({ value: v, label: v }))].map(tab => {
           const active = varietyTab === tab.value;
           const count = varietyCounts[tab.value] ?? 0;
+          // Empty + admin = show an inline delete affordance. Skip "All".
+          const variety = tab.value === 'all' ? null : varieties.find(v => v.name === tab.value);
+          const canDelete = isAdmin && tab.value !== 'all' && count === 0 && onDeleteVariety && variety;
           return (
-            <button
+            <div
               key={tab.value}
-              onClick={() => setVarietyTab(tab.value)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition ${
-                active
-                  ? 'bg-emerald-600 text-white font-medium'
-                  : 'text-gray-700 hover:bg-gray-100'
+              className={`flex items-center gap-1 rounded-lg overflow-hidden whitespace-nowrap ${
+                active ? 'bg-emerald-600' : 'hover:bg-gray-100'
               }`}
             >
-              {tab.label}
-              <span className={`text-xs ${active ? 'text-emerald-100' : 'text-gray-400'}`}>
-                {count}
-              </span>
-            </button>
+              <button
+                onClick={() => setVarietyTab(tab.value)}
+                className={`flex items-center gap-1.5 pl-3 pr-2 py-1.5 text-sm transition ${
+                  active ? 'text-white font-medium' : 'text-gray-700'
+                }`}
+              >
+                {tab.label}
+                <span className={`text-xs ${active ? 'text-emerald-100' : 'text-gray-400'}`}>
+                  {count}
+                </span>
+              </button>
+              {canDelete && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm(`Delete empty variety "${variety.name}"? This can't be undone.`)) {
+                      onDeleteVariety(variety.id);
+                    }
+                  }}
+                  title="Delete empty variety"
+                  aria-label={`Delete ${variety.name}`}
+                  className={`pl-1 pr-2 py-1.5 ${
+                    active ? 'text-emerald-100 hover:text-white' : 'text-gray-400 hover:text-red-600'
+                  }`}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           );
         })}
       </div>
