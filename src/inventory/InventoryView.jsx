@@ -45,7 +45,7 @@ function rateSourceLabel(item, varieties, species) {
   return 'global';
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onAssignSale, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   // Variety tabs come from the live catalog when available, falling back to
   // the legacy constant list while it's still loading.
   const varietyNames = useMemo(
@@ -343,7 +343,6 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     </div>
                   </div>
                   {!isCollapsed && group.items.map(item => {
-              const sale = sales.find(s => s.id === item.saleId);
               const sp = parseFloat(item.salePrice);
               const cost = parseFloat(item.grossCost ?? item.cost);
               const isSold = ['sold','shipped','delivered'].includes(item.status);
@@ -427,15 +426,6 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                       <option value="delivered">Delivered</option>
                       <option value="converted">Converted</option>
                     </select>
-                    {sale ? (
-                      <span className="text-xs text-gray-500 truncate">
-                        {sale.name}{item.lotNumber && ` · Lot #${item.lotNumber}`}
-                      </span>
-                    ) : (
-                      <button onClick={() => onAssignSale(item)} className="text-xs text-emerald-600 hover:text-emerald-700">
-                        Assign sale
-                      </button>
-                    )}
                     <div className="ml-auto flex items-center gap-1">
                       {profitRate !== null && (
                         <span className={`text-xs font-semibold mr-1 ${
@@ -495,7 +485,6 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     <th className="px-3 py-2.5">SKU / Name</th>
                     <th className="px-3 py-2.5">Type</th>
                     <th className="px-3 py-2.5">Status</th>
-                    <th className="px-3 py-2.5">Sale / Lot</th>
                     <th className="px-3 py-2.5 text-right">Cost</th>
                     <th className="px-3 py-2.5 text-right">Ideal $</th>
                     <th className="px-3 py-2.5 text-right">Listed</th>
@@ -520,7 +509,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                           />
                         </td>
-                        <td colSpan={9} className="px-3 py-2">
+                        <td colSpan={8} className="px-3 py-2">
                           <div className="flex items-center justify-between gap-3">
                             <button
                               onClick={() => toggleGroup(group.name)}
@@ -545,7 +534,6 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                         </td>
                       </tr>
                       {!isCollapsed && group.items.map(item => {
-                    const sale = sales.find(s => s.id === item.saleId);
                     const checked = selectedIds.has(item.id);
                     return (
                       <tr key={item.id} className={`hover:bg-gray-50 ${checked ? 'bg-emerald-50/50' : ''}`}>
@@ -591,18 +579,6 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             <option value="delivered">Delivered</option>
                             <option value="converted">Converted</option>
                           </select>
-                        </td>
-                        <td className="px-3 py-2.5 text-xs">
-                          {sale ? (
-                            <div>
-                              <div className="text-gray-900">{sale.name}</div>
-                              {item.lotNumber && <div className="text-gray-500">Lot #{item.lotNumber}</div>}
-                            </div>
-                          ) : (
-                            <button onClick={() => onAssignSale(item)} className="text-emerald-600 hover:text-emerald-700">
-                              Assign
-                            </button>
-                          )}
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums">
                           {(() => {

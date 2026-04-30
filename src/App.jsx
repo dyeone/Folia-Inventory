@@ -14,7 +14,6 @@ import { ItemFormModal } from './inventory/ItemFormModal.jsx';
 import { BatchVarietyModal } from './inventory/BatchVarietyModal.jsx';
 import { ConvertModal } from './inventory/ConvertModal.jsx';
 import { BulkImportModal } from './inventory/BulkImportModal.jsx';
-import { AssignSaleModal } from './inventory/AssignSaleModal.jsx';
 import { SalesView } from './sales/SalesView.jsx';
 import { SaleFormModal } from './sales/SaleFormModal.jsx';
 import { LineupBuilder } from './sales/LineupBuilder.jsx';
@@ -101,14 +100,12 @@ function InventorySystem() {
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [showSaleModal, setShowSaleModal] = useState(false);
   const [editingSale, setEditingSale] = useState(null);
-  const [showAssignModal, setShowAssignModal] = useState(false);
   const [showLineupBuilder, setShowLineupBuilder] = useState(false);
   const [lineupSale, setLineupSale] = useState(null);
   const [uploadSale, setUploadSale] = useState(null);
   const [liveSale, setLiveSale] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [convertingItem, setConvertingItem] = useState(null);
-  const [assigningItem, setAssigningItem] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
 
   // Global ideal profit rate — used as the fallback when an item has no
@@ -561,7 +558,6 @@ function InventorySystem() {
             onEdit={setEditingItem}
             onDelete={deleteItem}
             onConvert={(item) => { setConvertingItem(item); setShowConvertModal(true); }}
-            onAssignSale={(item) => { setAssigningItem(item); setShowAssignModal(true); }}
             onPrintLabel={(item) => setLabelItems([item])}
             onBulkPrintLabel={(selected) => setLabelItems(selected)}
             onBulkDelete={(ids, clear) => {
@@ -853,19 +849,6 @@ function InventorySystem() {
             }
           }}
           onClose={() => setShowSaleModal(false)}
-        />
-      )}
-      {showAssignModal && assigningItem && (
-        <AssignSaleModal
-          item={assigningItem}
-          sales={sales}
-          items={items}
-          onAssign={(saleId, lotNumber) => {
-            updateItem(assigningItem.id, { saleId, lotNumber });
-            setShowAssignModal(false);
-            setAssigningItem(null);
-          }}
-          onClose={() => { setShowAssignModal(false); setAssigningItem(null); }}
         />
       )}
       {showLineupBuilder && lineupSale && (
