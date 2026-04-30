@@ -4,6 +4,24 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 // Fields the client must never be able to set directly. The server owns these.
 const SERVER_OWNED = ['createdAt', 'createdBy', 'modifiedAt', 'modifiedBy'];
 
+// Supabase caps un-ranged selects at 1000 rows by default. Paginate so we
+// actually return everything for tables that can grow past that. Pass a
+// builder thunk because Supabase queries are single-use awaitables.
+async function fetchAll(buildQuery) {
+  const PAGE = 1000;
+  const all = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await buildQuery().range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
 function stripServerOwned(item) {
   const clean = { ...item };
   for (const k of SERVER_OWNED) delete clean[k];
@@ -30,9 +48,11 @@ async function assignMissingSkus(items) {
     }
   }
 
-  // Find the current max suffix across all items (regardless of prefix).
-  const { data } = await supabase.from('inventory_items').select('sku');
-  const nums = (data || [])
+  // Find the current max suffix across ALL items (regardless of prefix).
+  // Must paginate — Supabase truncates to 1000 rows by default, and missing
+  // higher-numbered SKUs would cause UNIQUE-constraint collisions on insert.
+  const data = await fetchAll(() => supabase.from('inventory_items').select('sku'));
+  const nums = data
     .map(r => {
       const m = String(r.sku || '').match(/-(\d+)$/);
       return m ? parseInt(m[1], 10) : 0;
@@ -57,9 +77,8 @@ export default wrap(async (req, res) => {
       const cutoff = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
       await supabase.from('inventory_items').delete().lt('deletedAt', cutoff);
 
-      const { data, error } = await supabase.from('inventory_items').select('*');
-      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-      return res.status(200).json({ items: data || [] });
+      const data = await fetchAll(() => supabase.from('inventory_items').select('*'));
+      return res.status(200).json({ items: data });
     }
 
     case 'POST': {
@@ -97,12 +116,19 @@ export default wrap(async (req, res) => {
       }
 
       if (inserts.length > 0) {
-        const { error } = await supabase.from('inventory_items').insert(inserts);
-        if (error) {
-          if (error.code === '23505' && /sku/i.test(error.message || '')) {
-            const e = new Error('SKU already exists — someone else may have just taken it. Please retry.'); e.status = 409; throw e;
+        // Batch in chunks of 500 so very large imports don't hit Postgres
+        // parameter limits or Vercel body-size limits in a single request.
+        // SKUs are pre-assigned above so order between batches is irrelevant.
+        const CHUNK = 500;
+        for (let i = 0; i < inserts.length; i += CHUNK) {
+          const batch = inserts.slice(i, i + CHUNK);
+          const { error } = await supabase.from('inventory_items').insert(batch);
+          if (error) {
+            if (error.code === '23505' && /sku/i.test(error.message || '')) {
+              const e = new Error('SKU already exists — someone else may have just taken it. Please retry.'); e.status = 409; throw e;
+            }
+            const e = new Error(error.message); e.status = 500; throw e;
           }
-          const e = new Error(error.message); e.status = 500; throw e;
         }
       }
       // For updates we use UPDATE (not UPSERT) so partial payloads — e.g.
