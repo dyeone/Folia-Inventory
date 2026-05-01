@@ -61,19 +61,31 @@ function cleanMoney(raw) {
   return n;
 }
 
-// Pick a SKU code prefix for a new genus: first 3-6 letters of the name,
-// escalating length until it doesn't collide with any code already taken
-// (existing catalog codes plus codes already chosen for other new genera in
-// this same import).
+// Pick a SKU code prefix for a new genus.
+//
+// Multi-word names (e.g. "Jewel Orchids", "Black Pepper") try acronym-first
+// — initials of each word — because that's what humans naturally pick (JO,
+// BP), not "JEW" or "BLA". Single-word names fall back to first-N-letters.
+// Either way, length escalates until the candidate doesn't collide with any
+// code already taken; final fallback appends a digit.
 function suggestCode(name, takenCodes) {
-  const clean = String(name).toUpperCase().replace(/[^A-Z]/g, '');
-  if (!clean) return 'XXX';
-  for (let len = 3; len <= Math.min(6, clean.length); len++) {
-    const c = clean.slice(0, len);
-    if (!takenCodes.has(c)) return c;
+  const raw = String(name).trim();
+  if (!raw) return 'XXX';
+  const words = raw.split(/\s+/).filter(Boolean);
+  const candidates = [];
+  if (words.length > 1) {
+    const initials = words.map(w => w[0].toUpperCase()).join('').replace(/[^A-Z]/g, '');
+    if (initials.length >= 2) candidates.push(initials.slice(0, 6));
   }
-  // Exhausted distinct prefixes — append a digit suffix.
-  const base = clean.slice(0, 3);
+  const clean = raw.toUpperCase().replace(/[^A-Z]/g, '');
+  for (let len = 3; len <= Math.min(6, clean.length); len++) {
+    candidates.push(clean.slice(0, len));
+  }
+  for (const c of candidates) {
+    if (c.length >= 2 && !takenCodes.has(c)) return c;
+  }
+  // Exhausted distinct prefixes — append a digit suffix to the best base.
+  const base = candidates[0] || clean.slice(0, 3) || 'XXX';
   for (let i = 2; i < 100; i++) {
     const c = `${base}${i}`;
     if (!takenCodes.has(c)) return c;

@@ -180,8 +180,13 @@ insert into varieties (id, name, code) values
   ('var_alocasia',     'Alocasia',     'ALO'),
   ('var_anthurium',    'Anthurium',    'ANT'),
   ('var_monstera',     'Monstera',     'MON'),
-  ('var_jewel_orchid', 'Jewel Orchid', 'JOR')
+  ('var_jewel_orchid', 'Jewel Orchid', 'JWL')
 on conflict (name) do nothing;
+
+-- Backfill any existing Jewel-Orchid rows that were seeded with the old
+-- 'JOR' prefix or auto-created from a bulk import as 'JEW'. Idempotent.
+update varieties set code = 'JWL'
+  where name ilike 'jewel%orchid%' and code <> 'JWL';
 
 -- Backfill species from existing distinct (variety, name) pairs on items.
 -- Skips rows where variety or name is empty. Uses md5 for a deterministic
