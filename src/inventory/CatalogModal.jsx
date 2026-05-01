@@ -6,11 +6,11 @@ import { api } from '../api.js';
 // Manage the variety + species catalog. Anyone can add; only admins can
 // edit or delete (the API enforces this too).
 export function CatalogModal({
-  varieties, species, items, isAdmin,
+  varieties, species, items, isAdmin, initialTab = 'species',
   onVarietiesChange, onSpeciesChange,
   onClose, showToast,
 }) {
-  const [tab, setTab] = useState('species');
+  const [tab, setTab] = useState(initialTab);
 
   return (
     <Modal title="Manage Catalog" onClose={onClose} size="xl">

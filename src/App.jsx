@@ -93,6 +93,7 @@ function InventorySystem() {
   const [varieties, setVarieties] = useState([]);
   const [species, setSpecies] = useState([]);
   const [showCatalogModal, setShowCatalogModal] = useState(false);
+  const [catalogInitialTab, setCatalogInitialTab] = useState('species');
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   // Holds a partial item draft when "Add to this cultivar" is clicked from
@@ -561,6 +562,10 @@ function InventorySystem() {
             idealRate={idealRate}
             onUpdateSpeciesRate={updateSpeciesRate}
             onDeleteVariety={deleteVariety}
+            onManageVarieties={() => {
+              setCatalogInitialTab('varieties');
+              setShowCatalogModal(true);
+            }}
             onExportPalmstreet={() => {
               const result = exportAvailableToPalmstreet(items, varieties, species, idealRate);
               if (!result.ok) {
@@ -968,6 +973,7 @@ function InventorySystem() {
           species={species}
           items={items}
           isAdmin={isAdmin}
+          initialTab={catalogInitialTab}
           onVarietiesChange={setVarieties}
           onSpeciesChange={setSpecies}
           onClose={() => setShowCatalogModal(false)}
