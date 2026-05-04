@@ -2,11 +2,13 @@ import { useState, useMemo, useEffect } from 'react';
 import {
   Upload, Package, MapPin, AlertCircle, X, ChevronDown, ChevronRight,
   Check, Link2, Truck, FileText, Box, ArrowLeft, PackageCheck, PackageOpen,
-  Send,
+  Send, ShoppingCart, Download as DownloadIcon, RotateCcw,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { parsePalmstreetOrders } from './parsePalmstreetOrders.js';
 import { matchInventory } from './matchInventory.js';
+import { api } from '../api.js';
+import { BuyLabelModal } from './BuyLabelModal.jsx';
 
 export function PackingView({ inventoryItems, sales, onShipBox }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
@@ -164,6 +166,35 @@ function SalePackingPane({ sale, inventoryItems, onBack, onShipBox }) {
 // ───── Boxes phase (after apply) ───────────────────────────────────────────
 
 function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
+  // Shipments (= purchased labels) for this sale, keyed by shipmentBoxId.
+  // Loaded once on mount and refreshed after a Buy/Void completes.
+  const [shipmentsByBox, setShipmentsByBox] = useState({});
+  const [buyingFor, setBuyingFor] = useState(null);
+  const [actionToast, setActionToast] = useState(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await api.getShipments(sale.id);
+        setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+      } catch {
+        // Silent — shipments simply won't show until refresh.
+      }
+    })();
+  }, [sale.id]);
+
+  const refreshShipments = async () => {
+    try {
+      const list = await api.getShipments(sale.id);
+      setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+    } catch {/* no-op */}
+  };
+
+  const showToast = (msg) => {
+    setActionToast(msg);
+    setTimeout(() => setActionToast(null), 2500);
+  };
+
   // Group sold items by shipmentBoxId. Each group is a "box". The carrier
   // is read off the first item in the box — apply-time stamps the same
   // value on every item in the group.
@@ -265,17 +296,60 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
           <ShipBoxCard
             key={box.id}
             box={box}
+            shipment={shipmentsByBox[box.id]}
             onShip={() => onShipBox(box.items.map(i => i.id))}
+            onBuyLabel={() => setBuyingFor(box)}
+            onVoidLabel={async () => {
+              if (!confirm(`Void this label for ${box.recipientName}? ShipStation may decline if it's already been used.`)) return;
+              try {
+                await api.voidLabel(box.id);
+                showToast('Label voided');
+                refreshShipments();
+              } catch (e) {
+                showToast(e.message || 'Void failed');
+              }
+            }}
           />
         ))}
       </div>
+
+      {buyingFor && (
+        <BuyLabelModal
+          box={buyingFor}
+          onClose={() => setBuyingFor(null)}
+          onPurchased={() => refreshShipments()}
+          showToast={showToast}
+        />
+      )}
+
+      {actionToast && (
+        <div className="fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50">
+          {actionToast}
+        </div>
+      )}
     </div>
   );
 }
 
-function ShipBoxCard({ box, onShip }) {
+// Convert the base64 PDF returned by ShipStation into a downloadable blob URL.
+function downloadLabelPdf(shipment) {
+  if (!shipment?.labelData) return;
+  const bytes = atob(shipment.labelData);
+  const buf = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+  const blob = new Blob([buf], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `label-${shipment.trackingNumber || shipment.id}.pdf`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ShipBoxCard({ box, shipment, onShip, onBuyLabel, onVoidLabel }) {
   const [open, setOpen] = useState(true);
   const allShipped = box.items.every(i => ['shipped', 'delivered'].includes(i.status));
+  const hasActiveLabel = shipment && !shipment.voidedAt;
   const a = box.address || {};
   const addressLine = [
     a.street1,
@@ -311,6 +385,16 @@ function ShipBoxCard({ box, onShip }) {
             {a.shipmentMethod && (
               <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
                 {a.shipmentMethod}
+              </span>
+            )}
+            {hasActiveLabel && (
+              <span className={`inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded border ${
+                shipment.isTestLabel
+                  ? 'text-amber-800 bg-amber-50 border-amber-200'
+                  : 'text-emerald-800 bg-emerald-50 border-emerald-200'
+              }`}>
+                <ShoppingCart className="w-3 h-3" />
+                Label{shipment.isTestLabel ? ' (test)' : ''}
               </span>
             )}
             {allShipped && (
@@ -352,8 +436,47 @@ function ShipBoxCard({ box, onShip }) {
               </div>
             ))}
           </div>
+          {/* Label tracking row — only when a label has been purchased. */}
+          {hasActiveLabel && (
+            <div className="px-4 py-2.5 bg-gray-50 border-t border-gray-100 flex items-center gap-3 flex-wrap text-xs">
+              <div className="flex items-center gap-1.5 text-gray-700">
+                <Truck className="w-3.5 h-3.5 text-gray-500" />
+                <span className="font-mono">{shipment.trackingNumber || '(no tracking)'}</span>
+              </div>
+              {shipment.labelCost != null && !shipment.isTestLabel && (
+                <span className="text-gray-500">${parseFloat(shipment.labelCost).toFixed(2)}</span>
+              )}
+              <span className="text-gray-400">{shipment.serviceCode}</span>
+              <div className="ml-auto flex items-center gap-1">
+                {shipment.labelData && (
+                  <button
+                    onClick={() => downloadLabelPdf(shipment)}
+                    className="flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-50 rounded"
+                  >
+                    <DownloadIcon className="w-3.5 h-3.5" /> Print
+                  </button>
+                )}
+                {!allShipped && (
+                  <button
+                    onClick={onVoidLabel}
+                    className="flex items-center gap-1 px-2 py-1 text-gray-600 hover:bg-red-50 hover:text-red-600 rounded"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" /> Void
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
           {!allShipped && (
-            <div className="px-4 py-3 bg-gray-50 flex justify-end">
+            <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex justify-end gap-2 flex-wrap">
+              {!hasActiveLabel && (
+                <button
+                  onClick={onBuyLabel}
+                  className="flex items-center gap-1.5 px-4 py-2.5 bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 text-sm font-medium rounded-lg"
+                >
+                  <ShoppingCart className="w-4 h-4" /> Buy {box.carrier?.toUpperCase()} Label
+                </button>
+              )}
               <button
                 onClick={onShip}
                 className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-medium rounded-lg"

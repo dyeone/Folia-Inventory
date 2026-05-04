@@ -103,6 +103,14 @@ export const api = {
   putSettings: (id, data) =>
     request('/settings', { method: 'PUT', body: { id, data } }).then(r => r.settings),
 
+  // Shipments (ShipStation labels). One row per shipmentBoxId.
+  getShipments: (saleId) =>
+    request(`/shipments${saleId ? `?saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.shipments),
+  buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation }) =>
+    request('/shipstation/buy-label', { method: 'POST', body: { shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation } }).then(r => r.shipment),
+  voidLabel: (shipmentBoxId) =>
+    request('/shipstation/void-label', { method: 'POST', body: { shipmentBoxId } }).then(r => r.shipment),
+
   // Users (admin only, enforced server-side)
   getUsers: () => request('/users').then(r => r.users),
   createUser: ({ username, password, displayName, role, adminUserId }) =>
