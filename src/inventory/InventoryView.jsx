@@ -3,31 +3,62 @@ import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, T
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 
+// Track whether the viewport is below Tailwind's `sm` breakpoint (640px)
+// so we can render only the mobile cards OR only the desktop table — not
+// both. Without this, every phone load mounts the full ~1945-row <table>
+// in the DOM (just hidden via CSS), doubling React render work.
+function useIsMobile() {
+  const query = '(max-width: 639px)';
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(query).matches
+  );
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = (e) => setIsMobile(e.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, []);
+  return isMobile;
+}
+
+// Two lookup helpers that turn the linear `varieties.find(...)` and
+// `species.find(...)` scans inside speciesForItem into O(1) Map reads.
+// Pre-built once per varieties/species change in the parent component
+// rather than re-walking the arrays per item per render.
+function buildLookups(varieties, species) {
+  const speciesById = new Map(species.map(s => [s.id, s]));
+  const varietyByName = new Map(varieties.map(v => [v.name, v]));
+  const speciesByVarEpithet = new Map(
+    species.map(s => [`${s.varietyId}|${s.epithet}`, s])
+  );
+  return { speciesById, varietyByName, speciesByVarEpithet };
+}
+
 // Find the species/cultivar row that a given item belongs to. Prefer the
 // explicit FK; fall back to (variety name, cultivar name) lookup so older
 // items without speciesId still resolve.
-function speciesForItem(item, varieties, species) {
+function speciesForItem(item, lookups) {
   if (item.speciesId) {
-    const s = species.find(s => s.id === item.speciesId);
+    const s = lookups.speciesById.get(item.speciesId);
     if (s) return s;
   }
-  const v = varieties.find(v => v.name === item.variety);
+  const v = lookups.varietyByName.get(item.variety);
   if (!v) return null;
-  return species.find(s => s.varietyId === v.id && s.epithet === item.name) || null;
+  return lookups.speciesByVarEpithet.get(`${v.id}|${item.name}`) || null;
 }
 
 // Compute the recommended (ideal) selling price for an item, in priority
 // order: explicit idealPrice → per-item rate → cultivar (species) rate →
 // global rate. Cost prefers netCost (post-shipping) but falls back to
 // grossCost so freshly-imported items still get a meaningful number.
-function computeIdealPrice(item, globalRate, varieties = [], species = []) {
+function computeIdealPrice(item, globalRate, lookups) {
   const explicit = parseFloat(item.idealPrice);
   if (Number.isFinite(explicit)) return explicit;
   const cost = parseFloat(item.netCost) || parseFloat(item.grossCost ?? item.cost);
   if (!Number.isFinite(cost) || cost <= 0) return NaN;
   const itemRate = parseFloat(item.profitRate);
   if (Number.isFinite(itemRate)) return cost * (1 + itemRate / 100);
-  const sp = speciesForItem(item, varieties, species);
+  const sp = speciesForItem(item, lookups);
   const spRate = parseFloat(sp?.profitRate);
   if (Number.isFinite(spRate)) return cost * (1 + spRate / 100);
   const gRate = parseFloat(globalRate);
@@ -37,15 +68,19 @@ function computeIdealPrice(item, globalRate, varieties = [], species = []) {
 
 // Which tier supplied the rate, for the small caption under the Ideal $
 // number ("cultivar rate", "global", or none when the item is explicit).
-function rateSourceLabel(item, varieties, species) {
+function rateSourceLabel(item, lookups) {
   if (Number.isFinite(parseFloat(item.idealPrice))) return null;
   if (Number.isFinite(parseFloat(item.profitRate))) return null;
-  const sp = speciesForItem(item, varieties, species);
+  const sp = speciesForItem(item, lookups);
   if (Number.isFinite(parseFloat(sp?.profitRate))) return 'cultivar rate';
   return 'global';
 }
 
 export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+  const isMobile = useIsMobile();
+  // O(1) lookups for speciesForItem / computeIdealPrice — built once per
+  // varieties/species change instead of linear-scanning per item per render.
+  const lookups = useMemo(() => buildLookups(varieties, species), [varieties, species]);
   // Variety tabs come from the live catalog when available, falling back to
   // the legacy constant list while it's still loading.
   const varietyNames = useMemo(
@@ -79,15 +114,22 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
       .map(([name, list]) => ({ name, items: list }));
   }, [items]);
 
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  // Track expanded groups (additive) instead of collapsed (additive) so
+  // the default state is "everything collapsed" — only group headers paint
+  // on first render. Critical for the 1945-item case on mobile, where
+  // expanding everything was costing seconds of layout work.
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const isGroupExpanded = (name) => expandedGroups.has(name);
   const toggleGroup = (name) => {
-    setCollapsedGroups(prev => {
+    setExpandedGroups(prev => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name);
       else next.add(name);
       return next;
     });
   };
+  const expandAll = () => setExpandedGroups(new Set(groups.map(g => g.name)));
+  const collapseAll = () => setExpandedGroups(new Set());
 
   // Toggle selection of every item in a group. If all are already selected,
   // clears them; otherwise adds them all to the selection.
@@ -277,11 +319,21 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
         <div className="text-xs text-gray-500">
           Showing {items.length} of {allItems.length} items
         </div>
-        {items.length > 0 && (
-          <button onClick={toggleSelectAll} className="text-xs text-gray-600 hover:text-gray-900 whitespace-nowrap">
-            {allVisibleSelected ? 'Deselect all' : 'Select all'}
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {groups.length > 0 && (
+            <button
+              onClick={expandedGroups.size === groups.length ? collapseAll : expandAll}
+              className="text-xs text-gray-600 hover:text-gray-900 whitespace-nowrap"
+            >
+              {expandedGroups.size === groups.length ? 'Collapse all' : 'Expand all'}
+            </button>
+          )}
+          {items.length > 0 && (
+            <button onClick={toggleSelectAll} className="text-xs text-gray-600 hover:text-gray-900 whitespace-nowrap">
+              {allVisibleSelected ? 'Deselect all' : 'Select all'}
+            </button>
+          )}
+        </div>
       </div>
 
       {visibleSelected.length > 0 && (
@@ -322,10 +374,12 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
         </div>
       ) : (
         <>
-          {/* Mobile card list — grouped by name */}
-          <div className="sm:hidden space-y-4">
+          {/* Mobile card list — grouped by name. Only mounted on phone-width
+              viewports so the desktop <table> below doesn't double the DOM. */}
+          {isMobile && (
+          <div className="space-y-4">
             {groups.map(group => {
-              const isCollapsed = collapsedGroups.has(group.name);
+              const isCollapsed = !isGroupExpanded(group.name);
               const groupIds = group.items.map(i => i.id);
               const allInGroupSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.has(id));
               const someInGroupSelected = groupIds.some(id => selectedIds.has(id));
@@ -350,7 +404,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     <div className="flex items-center gap-2 flex-shrink-0">
                       {onUpdateSpeciesRate && (
                         <CultivarRateInput
-                          species={speciesForItem(group.items[0], varieties, species)}
+                          species={speciesForItem(group.items[0], lookups)}
                           globalRate={idealRate}
                           onUpdate={onUpdateSpeciesRate}
                         />
@@ -359,7 +413,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            onAddToSpecies(speciesForItem(group.items[0], varieties, species), group.items[0]);
+                            onAddToSpecies(speciesForItem(group.items[0], lookups), group.items[0]);
                           }}
                           title={`Add another ${group.name}`}
                           className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition"
@@ -407,12 +461,12 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     const gross = parseFloat(item.grossCost ?? item.cost);
                     const net = parseFloat(item.netCost);
                     const itemRate = parseFloat(item.profitRate);
-                    const sp = speciesForItem(item, varieties, species);
+                    const sp = speciesForItem(item, lookups);
                     const spRate = parseFloat(sp?.profitRate);
                     const rate = Number.isFinite(itemRate) ? itemRate
                       : Number.isFinite(spRate) ? spRate
                       : parseFloat(idealRate);
-                    const ideal = computeIdealPrice(item, idealRate, varieties, species);
+                    const ideal = computeIdealPrice(item, idealRate, lookups);
                     const anyFinancial = !isNaN(gross) || !isNaN(net) || !isNaN(rate) || !isNaN(ideal);
                     if (!anyFinancial) return null;
                     return (
@@ -496,9 +550,11 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               );
             })}
           </div>
+          )}
 
-          {/* Desktop table */}
-          <div className="hidden sm:block bg-white rounded-xl border border-gray-200 overflow-hidden">
+          {/* Desktop table — only mounted at sm+ breakpoints. */}
+          {!isMobile && (
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
@@ -523,7 +579,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                   </tr>
                 </thead>
                 {groups.map(group => {
-                  const isCollapsed = collapsedGroups.has(group.name);
+                  const isCollapsed = !isGroupExpanded(group.name);
                   const groupIds = group.items.map(i => i.id);
                   const allInGroupSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.has(id));
                   const someInGroupSelected = groupIds.some(id => selectedIds.has(id));
@@ -551,7 +607,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             <div className="flex items-center gap-3 flex-shrink-0">
                               {onUpdateSpeciesRate && (
                                 <CultivarRateInput
-                                  species={speciesForItem(group.items[0], varieties, species)}
+                                  species={speciesForItem(group.items[0], lookups)}
                                   globalRate={idealRate}
                                   onUpdate={onUpdateSpeciesRate}
                                 />
@@ -560,7 +616,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    onAddToSpecies(speciesForItem(group.items[0], varieties, species), group.items[0]);
+                                    onAddToSpecies(speciesForItem(group.items[0], lookups), group.items[0]);
                                   }}
                                   title={`Add another ${group.name}`}
                                   className="p-1 text-emerald-600 hover:bg-emerald-50 rounded transition"
@@ -637,9 +693,9 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums">
                           {(() => {
-                            const ideal = computeIdealPrice(item, idealRate, varieties, species);
+                            const ideal = computeIdealPrice(item, idealRate, lookups);
                             if (!Number.isFinite(ideal)) return <span className="text-gray-400">—</span>;
-                            const src = rateSourceLabel(item, varieties, species);
+                            const src = rateSourceLabel(item, lookups);
                             return (
                               <>
                                 <span className="text-emerald-700 font-medium">${ideal.toFixed(2)}</span>
@@ -706,6 +762,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               </table>
             </div>
           </div>
+          )}
         </>
       )}
     </div>
