@@ -112,6 +112,20 @@ alter table inventory_items add column if not exists "refundedAmount" numeric de
 alter table inventory_items add column if not exists "refundedAt" timestamptz;
 create index if not exists inventory_items_orderid_idx on inventory_items ("orderId");
 
+-- Carrier the box should ship by ('usps' default, 'ups' if the buyer paid
+-- for the "UPS 2-Day Upgrade" line item in their Palmstreet order). Set at
+-- the item level rather than a separate shipments row so the Packing tab
+-- can group by carrier without an extra join.
+alter table inventory_items add column if not exists "shipmentCarrier" text default 'usps';
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'inventory_items_shipcarrier_check') then
+    alter table inventory_items add constraint inventory_items_shipcarrier_check
+      check ("shipmentCarrier" in ('usps','ups'));
+  end if;
+end $$;
+create index if not exists inventory_items_shipcarrier_idx on inventory_items ("shipmentCarrier");
+
 -- Soft-delete with a 30-day grace window. The API filters deletedAt rows
 -- out of the main inventory and exposes them through a "Recently Deleted"
 -- view; rows past the 30-day mark are hard-purged the next time the API
@@ -220,6 +234,58 @@ where i."speciesId" is null
 -- first, then re-run.
 create unique index if not exists inventory_items_sku_unique
   on inventory_items (sku);
+
+-- ─── App settings ─────────────────────────────────────────────────────────────
+-- Single-row JSON blob keyed by `id` so we can read/write things like the
+-- ship-from address and ShipStation defaults without a column-by-column
+-- migration every time the shape changes. The app uses id='shipping' for
+-- everything ShipStation-related.
+
+create table if not exists app_settings (
+  id          text        primary key,
+  data        jsonb       not null default '{}'::jsonb,
+  "updatedAt" timestamptz not null default now(),
+  "updatedBy" text
+);
+
+-- ─── Shipments (ShipStation labels) ──────────────────────────────────────────
+-- One row per packing box (= shipmentBoxId on inventory_items). Created the
+-- moment a label is purchased; voiding sets voidedAt instead of deleting so
+-- we keep the audit trail and the labelData/tracking history.
+--
+-- labelData holds the base64 PDF returned by ShipStation. For most packing
+-- volumes that's fine; if it ever gets large we can move it to Supabase
+-- Storage and keep just a URL here.
+
+create table if not exists shipments (
+  id                       text        primary key,            -- = shipmentBoxId on inventory_items
+  "saleId"                 text,
+  carrier                  text        not null check (carrier in ('usps','ups')),
+  "carrierCode"            text        not null,
+  "serviceCode"            text        not null,
+  "packageCode"            text        not null default 'package',
+  "weightOz"               numeric     not null,
+  "dimsLength"             numeric,
+  "dimsWidth"              numeric,
+  "dimsHeight"             numeric,
+  "shipFrom"               jsonb       not null,
+  "shipTo"                 jsonb       not null,
+  "trackingNumber"         text,
+  "labelCost"              numeric,
+  "labelData"              text,                                -- base64 PDF
+  "shipstationShipmentId"  text,
+  "shipstationLabelId"     text,
+  "isTestLabel"            boolean     not null default false,
+  "purchasedAt"            timestamptz not null default now(),
+  "purchasedBy"            text,
+  "voidedAt"               timestamptz,
+  "voidedBy"               text
+);
+create index if not exists shipments_saleid_idx on shipments ("saleId");
+create index if not exists shipments_carrier_idx on shipments (carrier);
+
+alter table app_settings enable row level security;
+alter table shipments    enable row level security;
 
 -- ─── Row-Level Security ───────────────────────────────────────────────────────
 -- All data access goes through the server-side API routes (under /api),

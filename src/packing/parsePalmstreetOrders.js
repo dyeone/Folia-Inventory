@@ -9,10 +9,21 @@ const SERVICE_TITLE_PATTERNS = [
   /shipping/i,
 ];
 
+// Buyers who paid for the UPS upgrade have an extra line item with this
+// title in their order. We detect it on any line in the box → flip the
+// whole box's carrier from the default 'usps' to 'ups', then drop the row
+// (it's a service charge, not a shippable item).
+const UPS_UPGRADE_PATTERN = /ups\s*2[\s-]*day\s*upgrade/i;
+
+function isUpsUpgradeLine(title) {
+  return !!title && UPS_UPGRADE_PATTERN.test(title.trim());
+}
+
 function isServiceLine(title, price) {
   if (!title) return true;
   const t = title.trim();
   if (SERVICE_TITLE_PATTERNS.some(re => re.test(t))) return true;
+  if (UPS_UPGRADE_PATTERN.test(t)) return true;
   // Defensive: zero-priced rows with no real plant name.
   if ((!price || price === 0) && t.length < 3) return true;
   return false;
@@ -82,6 +93,9 @@ export function parsePalmstreetOrders(rows) {
         zip,
         country,
         shipmentMethod: shipMethod,
+        // Default carrier — flipped to 'ups' below if any line in this box
+        // contains the "UPS 2-Day Upgrade" item.
+        carrier: 'usps',
         items: [],
         orderNumbers: [],
         notes: [],
@@ -96,6 +110,10 @@ export function parsePalmstreetOrders(rows) {
     if (shippingFee > 0) box.shippingFee += shippingFee;
     if (sellerNote && !box.notes.includes(sellerNote)) box.notes.push(sellerNote);
     if (buyerNote && !box.notes.includes(buyerNote)) box.notes.push(buyerNote);
+
+    // Carrier classification happens before service-line filtering so the
+    // upgrade row sets the carrier even though it isn't itself shippable.
+    if (isUpsUpgradeLine(title)) box.carrier = 'ups';
 
     if (isServiceLine(title, price)) return;
 

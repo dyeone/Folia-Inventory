@@ -96,6 +96,13 @@ export const api = {
   deleteSpecies: (id) =>
     request('/species', { method: 'DELETE', body: { id } }),
 
+  // App settings — single-row JSON blob keyed by id.
+  // GET returns { id, data, updatedAt, updatedBy } (data may be {} if unset).
+  // PUT requires admin and replaces the data blob wholesale.
+  getSettings: (id) => request(`/settings?id=${encodeURIComponent(id)}`).then(r => r.settings),
+  putSettings: (id, data) =>
+    request('/settings', { method: 'PUT', body: { id, data } }).then(r => r.settings),
+
   // Users (admin only, enforced server-side)
   getUsers: () => request('/users').then(r => r.users),
   createUser: ({ username, password, displayName, role, adminUserId }) =>

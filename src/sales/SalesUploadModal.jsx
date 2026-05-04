@@ -110,6 +110,7 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
             shipmentMethod: box.shipmentMethod,
           },
           shipmentBoxId: box.id,
+          shipmentCarrier: box.carrier || 'usps',
           orderId: it.orderNumber || null,
           orderDate: it.orderDate || null,
           actualProfit: cost > 0 ? finalPrice - cost : null,

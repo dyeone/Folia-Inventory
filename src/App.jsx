@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useContext, lazy, Suspense } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
-  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart,
+  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck,
 } from 'lucide-react';
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -37,6 +37,7 @@ const LineupBuilder = lazyNamed(() => import('./sales/LineupBuilder.jsx'), 'Line
 const SalesUploadModal = lazyNamed(() => import('./sales/SalesUploadModal.jsx'), 'SalesUploadModal');
 const LiveModal = lazyNamed(() => import('./sales/LiveModal.jsx'), 'LiveModal');
 const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
+const ShippingSettingsModal = lazyNamed(() => import('./packing/ShippingSettingsModal.jsx'), 'ShippingSettingsModal');
 
 // Lightweight fallback for Suspense boundaries — modals and tab transitions
 // should be near-instant once chunks are cached, so no spinner needed.
@@ -141,6 +142,7 @@ function InventorySystem() {
   };
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [showShippingSettings, setShowShippingSettings] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -491,6 +493,14 @@ function InventorySystem() {
                     >
                       <Layers className="w-4 h-4" /> Manage Catalog
                     </button>
+                    {isAdmin && (
+                      <button
+                        onClick={() => { setShowShippingSettings(true); setShowUserMenu(false); }}
+                        className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <Truck className="w-4 h-4" /> Shipping Settings
+                      </button>
+                    )}
                     <button
                       onClick={() => { setShowChangePassword(true); setShowUserMenu(false); }}
                       className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
@@ -1006,6 +1016,9 @@ function InventorySystem() {
             showToast('Password changed');
           }}
         />
+      )}
+      {showShippingSettings && (
+        <ShippingSettingsModal onClose={() => setShowShippingSettings(false)} />
       )}
 
       {toast && (

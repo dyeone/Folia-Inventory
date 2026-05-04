@@ -164,7 +164,9 @@ function SalePackingPane({ sale, inventoryItems, onBack, onShipBox }) {
 // ───── Boxes phase (after apply) ───────────────────────────────────────────
 
 function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
-  // Group sold items by shipmentBoxId. Each group is a "box".
+  // Group sold items by shipmentBoxId. Each group is a "box". The carrier
+  // is read off the first item in the box — apply-time stamps the same
+  // value on every item in the group.
   const boxes = useMemo(() => {
     const map = new Map();
     for (const item of saleItems) {
@@ -175,6 +177,7 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
           recipientName: item.buyer || '(unknown)',
           username: item.buyerUsername || '',
           address: item.buyerAddress || {},
+          carrier: item.shipmentCarrier || 'usps',
           items: [],
         });
       }
@@ -184,6 +187,16 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
       (a.recipientName || '').localeCompare(b.recipientName || '')
     );
   }, [saleItems]);
+
+  // Carrier filter: 'all' | 'usps' | 'ups'. Default to 'all' so opening
+  // the pane still shows everything, but counts in the tab labels make
+  // the split obvious.
+  const [carrierFilter, setCarrierFilter] = useState('all');
+  const uspsBoxes = useMemo(() => boxes.filter(b => b.carrier === 'usps'), [boxes]);
+  const upsBoxes = useMemo(() => boxes.filter(b => b.carrier === 'ups'), [boxes]);
+  const visibleBoxes = carrierFilter === 'usps' ? uspsBoxes
+    : carrierFilter === 'ups' ? upsBoxes
+    : boxes;
 
   const totalBoxes = boxes.length;
   const shippedBoxes = boxes.filter(b =>
@@ -217,8 +230,38 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
         <SummaryStat label="Outstanding" value={totalBoxes - shippedBoxes} tone="amber" />
       </div>
 
+      {/* Carrier tabs — splits the box list into USPS vs UPS so the user
+          can buy labels in batches per carrier. */}
+      <div className="bg-white rounded-xl border border-gray-200 px-1 py-1 flex gap-0.5 overflow-x-auto">
+        {[
+          { value: 'all', label: 'All', count: totalBoxes },
+          { value: 'usps', label: 'USPS', count: uspsBoxes.length },
+          { value: 'ups', label: 'UPS', count: upsBoxes.length },
+        ].map(tab => {
+          const active = carrierFilter === tab.value;
+          return (
+            <button
+              key={tab.value}
+              onClick={() => setCarrierFilter(tab.value)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition ${
+                active ? 'bg-emerald-600 text-white font-medium' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              {tab.label}
+              <span className={`text-xs ${active ? 'text-emerald-100' : 'text-gray-400'}`}>
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="space-y-3">
-        {boxes.map(box => (
+        {visibleBoxes.length === 0 ? (
+          <div className="bg-white border border-gray-200 rounded-xl p-8 text-center text-sm text-gray-500">
+            No {carrierFilter === 'all' ? '' : carrierFilter.toUpperCase() + ' '}boxes.
+          </div>
+        ) : visibleBoxes.map(box => (
           <ShipBoxCard
             key={box.id}
             box={box}
@@ -256,9 +299,18 @@ function ShipBoxCard({ box, onShip }) {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-gray-900">{box.recipientName}</span>
             {box.username && <span className="text-xs text-gray-500">@{box.username}</span>}
+            {box.carrier && (
+              <span className={`inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded border ${
+                box.carrier === 'ups'
+                  ? 'text-amber-800 bg-amber-50 border-amber-200'
+                  : 'text-blue-800 bg-blue-50 border-blue-200'
+              }`}>
+                <Truck className="w-3 h-3" /> {box.carrier.toUpperCase()}
+              </span>
+            )}
             {a.shipmentMethod && (
               <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
-                <Truck className="w-3 h-3" /> {a.shipmentMethod}
+                {a.shipmentMethod}
               </span>
             )}
             {allShipped && (
