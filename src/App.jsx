@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useContext } from 'react';
+import { useState, useEffect, useMemo, useContext, lazy, Suspense } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart,
@@ -6,27 +6,41 @@ import {
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
 
+// Eager imports: auth screen, the always-rendered chrome, and the default
+// (Dashboard) tab. Everything else is code-split via React.lazy below so a
+// fresh phone load doesn't have to download xlsx / jspdf / live-bridge code
+// before the dashboard can paint.
 import { AuthScreen } from './auth/AuthScreen.jsx';
-import { ChangePasswordModal } from './auth/ChangePasswordModal.jsx';
 import { Dashboard } from './dashboard/Dashboard.jsx';
-import { InventoryView } from './inventory/InventoryView.jsx';
-import { ItemFormModal } from './inventory/ItemFormModal.jsx';
-import { BatchVarietyModal } from './inventory/BatchVarietyModal.jsx';
-import { ConvertModal } from './inventory/ConvertModal.jsx';
-import { BulkImportModal } from './inventory/BulkImportModal.jsx';
-import { SalesView } from './sales/SalesView.jsx';
-import { SaleFormModal } from './sales/SaleFormModal.jsx';
-import { LineupBuilder } from './sales/LineupBuilder.jsx';
-import { SalesUploadModal } from './sales/SalesUploadModal.jsx';
-import { LiveModal } from './sales/LiveModal.jsx';
-import { exportPalmstreetCsv, exportAvailableToPalmstreet } from './sales/palmstreetExport.js';
-import { UsersView } from './users/UsersView.jsx';
-import { LabelSheet } from './labels/LabelSheet.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
-import { PackingView } from './packing/PackingView.jsx';
-import { FinancialView } from './financial/FinancialView.jsx';
-import { CatalogModal } from './inventory/CatalogModal.jsx';
-import { RecentlyDeletedView } from './inventory/RecentlyDeletedView.jsx';
+import { exportPalmstreetCsv, exportAvailableToPalmstreet } from './sales/palmstreetExport.js';
+
+// All named exports — wrap in `.then(m => ({ default: m.X }))` so React.lazy
+// (which expects a default export) gets a usable module.
+const lazyNamed = (loader, name) => lazy(() => loader().then(m => ({ default: m[name] })));
+
+const InventoryView = lazyNamed(() => import('./inventory/InventoryView.jsx'), 'InventoryView');
+const SalesView = lazyNamed(() => import('./sales/SalesView.jsx'), 'SalesView');
+const PackingView = lazyNamed(() => import('./packing/PackingView.jsx'), 'PackingView');
+const FinancialView = lazyNamed(() => import('./financial/FinancialView.jsx'), 'FinancialView');
+const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedView.jsx'), 'RecentlyDeletedView');
+const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
+
+const ChangePasswordModal = lazyNamed(() => import('./auth/ChangePasswordModal.jsx'), 'ChangePasswordModal');
+const ItemFormModal = lazyNamed(() => import('./inventory/ItemFormModal.jsx'), 'ItemFormModal');
+const BatchVarietyModal = lazyNamed(() => import('./inventory/BatchVarietyModal.jsx'), 'BatchVarietyModal');
+const ConvertModal = lazyNamed(() => import('./inventory/ConvertModal.jsx'), 'ConvertModal');
+const BulkImportModal = lazyNamed(() => import('./inventory/BulkImportModal.jsx'), 'BulkImportModal');
+const CatalogModal = lazyNamed(() => import('./inventory/CatalogModal.jsx'), 'CatalogModal');
+const SaleFormModal = lazyNamed(() => import('./sales/SaleFormModal.jsx'), 'SaleFormModal');
+const LineupBuilder = lazyNamed(() => import('./sales/LineupBuilder.jsx'), 'LineupBuilder');
+const SalesUploadModal = lazyNamed(() => import('./sales/SalesUploadModal.jsx'), 'SalesUploadModal');
+const LiveModal = lazyNamed(() => import('./sales/LiveModal.jsx'), 'LiveModal');
+const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
+
+// Lightweight fallback for Suspense boundaries — modals and tab transitions
+// should be near-instant once chunks are cached, so no spinner needed.
+const LazyFallback = () => null;
 
 export default function InventoryApp() {
   const [currentUser, setCurrentUser] = useState(null);
@@ -434,7 +448,7 @@ function InventorySystem() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-30 pt-safe">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <img src="/logo.png" alt="Folia Society" className="h-9 w-auto rounded-lg" />
@@ -520,8 +534,8 @@ function InventorySystem() {
         </div>
       </header>
 
-      {/* Mobile bottom navigation */}
-      <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-gray-200 flex">
+      {/* Mobile bottom navigation — pb-safe pads past the iPhone home indicator. */}
+      <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-gray-200 flex pb-safe">
         {tabs.map(tab => {
           const Icon = tab.icon;
           const shortLabel = tab.id === 'sales' ? 'Sales'
@@ -543,6 +557,7 @@ function InventorySystem() {
       </nav>
 
       <main className="max-w-7xl mx-auto px-4 pt-4 pb-24 sm:py-6">
+        <Suspense fallback={<LazyFallback />}>
         {activeTab === 'dashboard' && (
           <Dashboard
             stats={stats}
@@ -778,8 +793,10 @@ function InventorySystem() {
             showToast={showToast}
           />
         )}
+        </Suspense>
       </main>
 
+      <Suspense fallback={<LazyFallback />}>
       {showAddModal && (
         <ItemFormModal
           title={addPrefill?.name ? `Add ${addPrefill.name}` : 'Add New SKU'}
@@ -1010,6 +1027,7 @@ function InventorySystem() {
       {labelItems && labelItems.length > 0 && (
         <LabelSheet items={labelItems} onClose={() => setLabelItems(null)} />
       )}
+      </Suspense>
 
       {addSummary && (
         <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setAddSummary(null)}>

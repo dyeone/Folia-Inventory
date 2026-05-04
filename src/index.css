@@ -11,6 +11,17 @@
   button, [role="button"], a, label, input, select, textarea {
     touch-action: manipulation;
   }
+
+  /* iOS Safari auto-zooms when a focused input has font-size < 16px and
+     never zooms back out. Force 16px on phones so taps don't shift the
+     viewport. The desktop design keeps text-sm via the 641px+ breakpoint. */
+  @media (max-width: 640px) {
+    input:not([type='checkbox']):not([type='radio']),
+    select,
+    textarea {
+      font-size: 16px;
+    }
+  }
 }
 
 @layer components {
@@ -20,5 +31,17 @@
   .input:focus {
     @apply border-emerald-600;
     box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+  }
+}
+
+/* Expose iPhone safe-area insets as utility paddings. Used by the sticky
+   header (top inset) and the fixed mobile bottom nav (bottom inset) so
+   neither runs under the notch / home-indicator with viewport-fit=cover. */
+@layer utilities {
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
   }
 }
