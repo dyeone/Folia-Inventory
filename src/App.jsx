@@ -186,6 +186,18 @@ function InventorySystem() {
         showToast(e.message || 'Failed to load data', 'error');
       }
       setLoading(false);
+
+      // Once the data is in, idle-prefetch the PDF/label chunks so the
+      // first "Print label" tap doesn't have to download ~600 KB on the
+      // hot path. requestIdleCallback when available, fallback to a
+      // small setTimeout so it doesn't fight with first paint.
+      const prefetch = () => {
+        import('./labels/LabelSheet.jsx').catch(() => {});
+      };
+      if (typeof window !== 'undefined') {
+        if ('requestIdleCallback' in window) window.requestIdleCallback(prefetch, { timeout: 3000 });
+        else setTimeout(prefetch, 1500);
+      }
     })();
   }, [showToast]);
 
