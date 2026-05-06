@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Folia Label Helper",
-  "version": "0.1.0",
-  "description": "Sync USPS tracking from Palmstreet orders into Folia Inventory; optionally automate the Buy-label clicks.",
+  "version": "0.2.0",
+  "description": "Drive Palmstreet's USPS label flow from a Folia work queue. Reads weight from a USB scale, captures label + slip PDFs, syncs tracking back.",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
     "https://*.palmstreet.app/*",

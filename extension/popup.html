@@ -17,26 +17,32 @@
     </div>
 
     <div id="notOnPalmstreet" class="card warn" hidden>
-      <p>Open Palmstreet's orders page to use this extension.</p>
+      <p>Open Palmstreet in this tab to use the extension.</p>
     </div>
 
     <div id="ready" hidden>
       <div class="card">
         <div class="row">
-          <span id="orderCount">—</span>
-          <span class="muted">orders detected on this page</span>
+          <strong id="queueCount">—</strong>
+          <span class="muted">USPS boxes waiting for labels</span>
+          <button id="refresh" class="link">Refresh</button>
         </div>
-        <button id="rescan" class="link">Rescan</button>
+        <ul id="queue" class="queue"></ul>
+      </div>
+
+      <div class="row scale-row">
+        <span id="scaleLabel" class="muted">Scale: not paired</span>
+        <button id="readScale" class="link">Read</button>
       </div>
 
       <div class="modes">
-        <button id="modeSync" class="mode primary">
+        <button id="modeSync" class="mode">
           <strong>Sync tracking only</strong>
-          <small>Read-only · no clicks</small>
+          <small>Read tracking, no clicks</small>
         </button>
-        <button id="modeBuy" class="mode danger">
-          <strong>Buy + sync</strong>
-          <small>Clicks Buy on each order</small>
+        <button id="modeBuy" class="mode primary">
+          <strong>Buy + sync selected</strong>
+          <small>Walks all 8 steps</small>
         </button>
       </div>
 
@@ -50,6 +56,7 @@
       </div>
     </div>
 
+    <script src="scale.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

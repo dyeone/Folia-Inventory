@@ -1,52 +1,35 @@
-// Popup orchestrator. Talks to the content script (which lives on the
-// Palmstreet tab) and to the background service worker (which makes
-// authenticated requests to the Folia API).
+// Popup orchestrator. Pulls the work queue from Folia (boxes that still
+// need USPS labels), lets the operator pick which to process, then
+// drives the content script through the 8-step Palmstreet flow for each.
 
 const $ = (id) => document.getElementById(id);
 let stopRequested = false;
+let lastWeightOz = null;
 
 document.getElementById('openOptions').addEventListener('click', (e) => {
-  e.preventDefault();
-  chrome.runtime.openOptionsPage();
+  e.preventDefault(); chrome.runtime.openOptionsPage();
 });
-document.getElementById('goOptions').addEventListener('click', () => {
-  chrome.runtime.openOptionsPage();
-});
-document.getElementById('rescan').addEventListener('click', init);
-document.getElementById('stop').addEventListener('click', () => { stopRequested = true; });
-
-document.getElementById('modeSync').addEventListener('click', () => runQueue('sync'));
-document.getElementById('modeBuy').addEventListener('click', () => runQueue('buy'));
+$('goOptions').addEventListener('click', () => chrome.runtime.openOptionsPage());
+$('refresh').addEventListener('click', loadQueue);
+$('stop').addEventListener('click', () => { stopRequested = true; });
+$('modeSync').addEventListener('click', () => runQueue('sync'));
+$('modeBuy').addEventListener('click', () => runQueue('buy'));
+$('readScale').addEventListener('click', readScaleNow);
 
 async function init() {
-  stopRequested = false;
-  $('progress').hidden = true;
-  $('needsConfig').hidden = true;
-  $('notOnPalmstreet').hidden = true;
-  $('ready').hidden = true;
-
   const settings = await chrome.storage.sync.get(null);
-  // The bare minimum needed to do anything.
-  const configured = settings.apiBase && settings.userId && settings.selOrderRow && settings.selOrderId;
-  if (!configured) {
-    $('needsConfig').hidden = false;
-    return;
+  if (!settings.apiBase || !settings.userId) {
+    show('needsConfig'); return;
   }
-
   const tab = await activePalmstreetTab();
-  if (!tab) {
-    $('notOnPalmstreet').hidden = false;
-    return;
-  }
+  if (!tab) { show('notOnPalmstreet'); return; }
+  show('ready');
+  await refreshScaleStatus();
+  await loadQueue();
+}
 
-  $('ready').hidden = false;
-
-  // Ask the content script how many orders are on this page.
-  const count = await sendToTab(tab.id, { type: 'count' }).catch(() => null);
-  $('orderCount').textContent = count == null ? '?' : String(count);
-  // Disable Buy if selectors for Buy + Tracking aren't set yet.
-  $('modeBuy').disabled = !(settings.selBuyButton && settings.selTracking);
-  if ($('modeBuy').disabled) $('modeBuy').title = 'Set the Buy button + tracking selectors in Settings to enable';
+function show(which) {
+  for (const id of ['needsConfig', 'notOnPalmstreet', 'ready']) $(id).hidden = id !== which;
 }
 
 async function activePalmstreetTab() {
@@ -56,19 +39,89 @@ async function activePalmstreetTab() {
   return tab;
 }
 
-function sendToTab(tabId, msg) {
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, msg, (resp) => {
-      const err = chrome.runtime.lastError;
-      if (err) reject(new Error(err.message));
-      else resolve(resp);
-    });
-  });
+async function loadQueue() {
+  const settings = await chrome.storage.sync.get(null);
+  const list = $('queue');
+  list.innerHTML = '';
+  $('queueCount').textContent = '…';
+
+  const resp = await sendBg({ type: 'api:pendingUsps', settings });
+  if (!resp.ok) {
+    $('queueCount').textContent = '!';
+    list.innerHTML = `<li class="err">${resp.error}</li>`;
+    return;
+  }
+  const boxes = resp.boxes || [];
+  $('queueCount').textContent = String(boxes.length);
+  if (boxes.length === 0) {
+    list.innerHTML = `<li class="muted">All caught up.</li>`;
+    return;
+  }
+  for (const b of boxes) {
+    const li = document.createElement('li');
+    li.className = 'queue-row';
+    li.innerHTML = `
+      <label class="row">
+        <input type="checkbox" data-box-id="${b.shipmentBoxId}" checked />
+        <div class="col">
+          <strong>${escapeHtml(b.recipientName)}</strong>
+          <small>@${escapeHtml(b.buyerUsername || '?')} · ${b.items.length} item${b.items.length === 1 ? '' : 's'}${b.saleName ? ` · ${escapeHtml(b.saleName)}` : ''}</small>
+        </div>
+      </label>`;
+    list.appendChild(li);
+  }
+}
+
+function getSelectedBoxes(boxes) {
+  const ids = new Set(
+    [...$('queue').querySelectorAll('input[type=checkbox]:checked')].map(c => c.dataset.boxId),
+  );
+  return boxes.filter(b => ids.has(b.shipmentBoxId));
+}
+
+async function refreshScaleStatus() {
+  if (!('hid' in navigator)) {
+    $('scaleLabel').textContent = 'Scale: WebHID not available'; return;
+  }
+  const devices = await window.FoliaScale.listPaired();
+  $('scaleLabel').textContent = devices.length
+    ? `Scale: ${devices[0].productName || 'paired'}`
+    : 'Scale: not paired (open Settings)';
+}
+
+async function readScaleNow() {
+  const oz = await window.FoliaScale.readOnceOz({ timeoutMs: 2500 });
+  if (oz == null) {
+    $('scaleLabel').textContent = 'Scale: no reading';
+    return;
+  }
+  lastWeightOz = oz;
+  $('scaleLabel').textContent = `Scale: ${oz.toFixed(2)} oz`;
+}
+
+async function pickWeight(box, settings) {
+  // Prefer a fresh scale reading. Fall back to the last manual entry,
+  // then the configured default, then a prompt.
+  let oz = await window.FoliaScale.readOnceOz({ timeoutMs: 1500 }).catch(() => null);
+  if (oz != null && oz > 0) {
+    lastWeightOz = oz;
+    return oz;
+  }
+  if (lastWeightOz != null && lastWeightOz > 0) return lastWeightOz;
+  const def = parseFloat(settings.defaultWeightOz);
+  if (Number.isFinite(def) && def > 0 && !settings.confirmEachOrder) return def;
+  const entered = prompt(
+    `Weight (oz) for ${box.recipientName}` + (Number.isFinite(def) && def > 0 ? `\n(default: ${def})` : ''),
+    Number.isFinite(def) && def > 0 ? String(def) : '',
+  );
+  const num = parseFloat(entered);
+  if (!Number.isFinite(num) || num <= 0) throw new Error('Cancelled');
+  return num;
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function randDelay(min, max) {
-  return Math.floor(min + Math.random() * Math.max(1, max - min));
+  return Math.floor((min || 0) + Math.random() * Math.max(1, (max || 0) - (min || 0)));
 }
 
 function logRow(text, tone = '') {
@@ -78,101 +131,113 @@ function logRow(text, tone = '') {
   $('log').appendChild(li);
   $('log').scrollTop = $('log').scrollHeight;
 }
-
 function setProgress(done, total) {
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   $('progFill').style.width = `${pct}%`;
   $('progLabel').textContent = `${done} / ${total}`;
 }
 
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function sendBg(msg) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(msg, (resp) => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(new Error(err.message));
+      else resolve(resp || { ok: false, error: 'No response' });
+    });
+  });
+}
+function sendTab(tabId, msg) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(tabId, msg, (resp) => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(new Error(err.message));
+      else resolve(resp || { ok: false, error: 'No response' });
+    });
+  });
+}
+
 async function runQueue(mode) {
   stopRequested = false;
   const settings = await chrome.storage.sync.get(null);
   const tab = await activePalmstreetTab();
-  if (!tab) { $('notOnPalmstreet').hidden = false; return; }
+  if (!tab) { show('notOnPalmstreet'); return; }
+
+  const all = await sendBg({ type: 'api:pendingUsps', settings });
+  if (!all.ok) { alert(all.error); return; }
+  const selected = getSelectedBoxes(all.boxes || []);
+  if (selected.length === 0) { alert('No boxes selected.'); return; }
 
   $('progress').hidden = false;
   $('log').innerHTML = '';
-  setProgress(0, 0);
+  setProgress(0, selected.length);
 
-  // Pull the order list from the content script.
-  let orders;
-  try {
-    orders = await sendToTab(tab.id, { type: 'list' });
-  } catch (e) {
-    logRow(`Could not read orders: ${e.message}`, 'err');
-    return;
-  }
-  if (!orders?.length) { logRow('No orders found on this page.', 'warn'); return; }
-
-  setProgress(0, orders.length);
   let done = 0;
   let synced = 0;
-  let skipped = 0;
 
-  for (const o of orders) {
+  for (const box of selected) {
     if (stopRequested) { logRow('Stopped.', 'warn'); break; }
+    const label = `${box.recipientName} (@${box.buyerUsername || '?'})`;
 
-    const label = `${o.orderId}${o.recipient ? ` · ${o.recipient}` : ''}`;
-    if (mode === 'buy' && !o.alreadyPurchased) {
-      if (settings.confirmEachBuy && !confirm(`Buy USPS label for ${label}?`)) {
-        logRow(`Skipped ${label}`, 'warn');
-        skipped++;
-        done++; setProgress(done, orders.length);
-        continue;
-      }
-      try {
-        const result = await sendToTab(tab.id, { type: 'buyAndScrape', orderId: o.orderId });
-        if (result?.error) throw new Error(result.error);
-        if (!result?.trackingNumber) {
-          logRow(`No tracking after buy for ${label}`, 'err');
-          done++; setProgress(done, orders.length);
-          continue;
+    if (settings.confirmEachOrder && !confirm(`Process ${label}?`)) {
+      logRow(`Skipped ${label}`, 'warn');
+      done++; setProgress(done, selected.length);
+      continue;
+    }
+
+    try {
+      if (mode === 'sync') {
+        const r = await sendTab(tab.id, { type: 'syncOnly', payload: { box } });
+        if (!r.ok) throw new Error(r.error);
+        if (!r.trackingNumber) { logRow(`No tracking visible for ${label}`, 'warn'); }
+        else {
+          await postTracking(settings, box, { trackingNumber: r.trackingNumber });
+          synced++;
+          logRow(`Synced ${label} → ${r.trackingNumber}`, 'ok');
         }
-        await postTracking(settings, o.orderId, result.trackingNumber);
-        logRow(`Bought + synced ${label} → ${result.trackingNumber}`, 'ok');
-        synced++;
-      } catch (e) {
-        logRow(`Buy failed for ${label}: ${e.message}`, 'err');
-      }
-    } else {
-      // Sync-only mode, or buy-mode with already-purchased orders.
-      try {
-        const result = await sendToTab(tab.id, { type: 'scrape', orderId: o.orderId });
-        if (result?.error) throw new Error(result.error);
-        if (!result?.trackingNumber) {
-          logRow(`No tracking visible for ${label}`, 'warn');
-          done++; setProgress(done, orders.length);
-          continue;
+      } else {
+        const weightOz = await pickWeight(box, settings);
+        const r = await sendTab(tab.id, { type: 'processOrder', payload: { box, weightOz } });
+        if (!r.ok) throw new Error(r.error);
+        if (!r.trackingNumber) {
+          logRow(`Bought, no tracking for ${label}`, 'warn');
         }
-        await postTracking(settings, o.orderId, result.trackingNumber);
-        logRow(`Synced ${label} → ${result.trackingNumber}`, 'ok');
+        await postTracking(settings, box, {
+          trackingNumber: r.trackingNumber || '(missing)',
+          weightOz: r.weightOz,
+          labelPdfBase64: r.labelPdfBase64,
+          slipPdfBase64: r.slipPdfBase64,
+        });
         synced++;
-      } catch (e) {
-        logRow(`Sync failed for ${label}: ${e.message}`, 'err');
+        logRow(`Bought + synced ${label} → ${r.trackingNumber || 'no tracking'}`, 'ok');
       }
+    } catch (e) {
+      logRow(`Failed ${label}: ${e.message}`, 'err');
     }
 
     done++;
-    setProgress(done, orders.length);
-    await sleep(randDelay(settings.delayMin || 800, settings.delayMax || 2000));
+    setProgress(done, selected.length);
+    await sleep(randDelay(settings.delayMin, settings.delayMax));
   }
 
-  logRow(`Done · synced ${synced}, skipped ${skipped}, processed ${done}/${orders.length}`, 'ok');
+  logRow(`Done · ${synced}/${done} synced`, 'ok');
+  await loadQueue();
 }
 
-function postTracking(settings, orderId, trackingNumber) {
-  return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(
-      { type: 'recordTracking', settings, orderId, trackingNumber },
-      (resp) => {
-        const err = chrome.runtime.lastError;
-        if (err) return reject(new Error(err.message));
-        if (!resp?.ok) return reject(new Error(resp?.error || 'API error'));
-        resolve(resp);
-      },
-    );
+async function postTracking(settings, box, extras) {
+  const resp = await sendBg({
+    type: 'api:recordTracking',
+    settings,
+    shipmentBoxId: box.shipmentBoxId,
+    ...extras,
   });
+  if (!resp.ok) throw new Error(resp.error);
+  return resp.shipment;
 }
 
 init();

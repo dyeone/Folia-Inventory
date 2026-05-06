@@ -1,108 +1,152 @@
 # Folia Label Helper (Chrome extension)
 
-A small helper that lets you batch-process Palmstreet USPS labels and
-sync the tracking numbers back to Folia Inventory without retyping them.
+Drives Palmstreet's USPS label-purchase flow from a Folia work queue.
+Reads the box weight from a USB postal scale, captures the shipping
+label + packing slip PDFs, and syncs the tracking number back to Folia
+Inventory — all without manually retyping anything.
 
-Two modes:
+## Flow
 
-| Mode | What it does | Risk |
-|---|---|---|
-| **Sync tracking only** | Reads the tracking numbers already visible on a Palmstreet orders page and POSTs them to Folia. No clicks. | Almost none — same as you reading the page. |
-| **Buy + sync** | Clicks the "Buy label" button on each order, waits for the tracking to appear, then syncs. Random delay between orders, optional confirmation per click. | Higher — looks like automation, can trip Palmstreet's bot defenses. Use sparingly. |
+The extension automates this 8-step Palmstreet sequence per order:
+
+1. Open the "ready to ship" orders list
+2. Search by buyer username
+3. Select the matching order, click Continue
+4. Type the weight (read from the USB scale)
+5. Click Purchase Label
+6. Click Pay
+7. Capture the **shipping label** PDF
+8. Capture the **packing slip** PDF
+
+After that, it POSTs the tracking number + both PDFs to Folia, where
+they show up on the box in the Packing tab. A separate **Sync tracking
+only** mode skips the click sequence and just reads tracking numbers
+already visible on the page — useful for orders you've labeled manually.
 
 ## Install
 
-1. Clone or download this repo so you have the `extension/` folder on disk.
-2. Open Chrome → `chrome://extensions`.
-3. Toggle **Developer mode** on (top right).
-4. Click **Load unpacked** → pick the `extension/` folder.
-5. The Folia leaf should appear in your toolbar. (Pin it for easy access.)
+1. Clone this repo so the `extension/` folder is on disk.
+2. `chrome://extensions` → toggle **Developer mode** (top right) → **Load unpacked** → pick the `extension/` folder.
+3. Pin the leaf icon to your toolbar.
+
+Re-load the extension after edits via the refresh icon on its card on
+the extensions page.
 
 ## First-time setup
 
-Open the extension, hit ⚙︎ to open Settings, then fill in:
+Open the extension → click ⚙︎ to open Settings. You'll fill in three
+groups: API, selectors, scale.
 
 ### Folia API
-- **API base URL** — e.g. `https://your-app.vercel.app` (no trailing slash).
-- **User ID** — your Folia user id. Find it by:
-  1. Open the Folia app in another tab, log in.
-  2. DevTools → Application → Local Storage → entry `session-current-user`.
-  3. Copy the `id` value.
+
+| Field | What |
+|---|---|
+| API base URL | e.g. `https://your-app.vercel.app` (no trailing slash) |
+| User ID | From the Folia app: DevTools → Application → Local Storage → `session-current-user` → copy `id` |
 
 ### Palmstreet selectors
-The extension doesn't know Palmstreet's HTML. You teach it once by filling
-in CSS selectors for these elements:
 
-| Field | What to point at |
-|---|---|
-| Order row | The repeating element on the orders list — one per order. |
-| Order ID inside an order row | The text element holding Palmstreet's order number. |
-| "Buy label" button | The button that purchases the label, inside a row. |
-| Tracking number text | Where the tracking number appears once a label exists. |
-| Already-purchased indicator (optional) | Anything that signals "label already bought". |
+The extension doesn't ship with hard-coded Palmstreet selectors; you
+teach it once by inspecting Palmstreet's UI:
 
-**How to find a selector**: open Palmstreet's orders page → right-click the
-element → Inspect → in DevTools, right-click the highlighted node → Copy →
-**Copy selector**. Paste into the matching field in the extension's Settings.
+> Right-click the element → Inspect → in DevTools right-click the
+> highlighted node → Copy → **Copy selector**. Paste into the matching
+> Settings field.
 
-You only need to set this up once. Re-do it if Palmstreet ever redesigns
-their orders page.
+You need 11 selectors (8 mandatory, 3 optional):
+
+| Step | Setting | What to point at |
+|---|---|---|
+| 1 | "Open shipping" | The link/button on Palmstreet's main page that takes you to the orders-to-ship list |
+| 2 | Search input | The text box you'd normally type a username into to filter the list |
+| 3a | Order row | One element per matching order (the extension clicks the first match for the searched username) |
+| 3b | Continue | The Continue button after selecting an order |
+| 4 | Weight input | The numeric input where the box weight goes |
+| 5 | Purchase label | The button that opens payment confirmation |
+| 6 | Pay | The button that actually charges |
+| 7 | Shipping label link | An `<a href>` to the label PDF (the extension fetches the URL, doesn't click+open) |
+| 8 | Slip link | An `<a href>` to the packing-slip PDF |
+| — | Tracking text | Where the tracking number appears post-purchase |
+| — | Back-to-list | Optional — clicked between orders to return to the search list |
+
+If Palmstreet redesigns their UI, update the selectors here — no code
+release needed.
+
+### Scale
+
+1. Plug your USB postal scale in.
+2. **Pair scale** in Settings → pick your scale from Chrome's device picker.
+3. Click **Read once** to confirm it returns a weight.
+
+Compatible with HID-class postal scales (DYMO M10/M25, Stamps.com 510,
+generic POS scales). When the queue runs, the popup reads the scale
+fresh before each weight entry; if the scale isn't responding, it
+prompts you to type the weight (or uses the configured default).
 
 ### Behavior
-- **Confirm before each Buy** — leave on while you're getting comfortable;
-  the extension will ask before each click.
-- **Random delay** — pause between orders. `800–2000` ms is reasonable;
-  longer is safer-looking.
 
-Click **Save**.
+- **Confirm before each order** — keeps you in the loop. Recommended.
+- **Random delay** — pause between actions so the activity doesn't look like a bot. `800–2000` ms.
+- **Per-step timeout** — how long to wait for each next-step element to appear before aborting that order. `20000` ms is reasonable.
 
 ## Usage
 
-1. Open Palmstreet, navigate to your orders/shipments page.
-2. Click the extension icon in the toolbar.
-3. The popup shows how many orders it sees on the page.
-4. Click **Sync tracking only** to read whatever tracking is already
-   visible and push it to Folia.
-5. Click **Buy + sync** to also click the Buy button (gated by your
-   per-order confirmations).
+1. Open Palmstreet in the active tab.
+2. Click the extension icon. The popup fetches the queue of USPS boxes
+   waiting for labels from Folia.
+3. Uncheck any boxes you don't want to process.
+4. Click **Buy + sync selected** to run the full 8-step flow per box,
+   or **Sync tracking only** to just scrape tracking numbers from the
+   current page.
+5. The progress section shows each order as it's processed; click
+   **Stop** to halt the queue.
 
-The popup logs each order as it goes; **Stop** halts the queue.
+After purchase, the box on Folia's Packing tab shows tracking + a
+**Label** download button (signed URL to Storage) + a **Slip** button.
 
 ## How tracking lands in Folia
 
-The extension POSTs to `POST /api/shipments` with:
-```json
+```
+POST /api/shipments
 {
   "action": "record-tracking",
-  "matchByOrderId": "<palmstreet order #>",
-  "trackingNumber": "<scraped value>",
-  "userId": "<your user id>"
+  "shipmentBoxId": "box_abc",
+  "trackingNumber": "9400 1112 0204 1234 5678 90",
+  "weightOz": 28.5,
+  "labelPdfBase64": "<binary>",
+  "slipPdfBase64":  "<binary>",
+  "userId": "..."
 }
 ```
-Folia looks up which inventory items have that `orderId`, finds their
-`shipmentBoxId`, and upserts a `shipments` row tagged
-`carrierCode = palmstreet`. The Packing tab will show the tracking next
-to the box on the next refresh.
+
+The server uploads both PDFs to the `shipping-labels` Storage bucket and
+upserts a `shipments` row tagged `carrierCode = palmstreet`. The
+PackingView in Folia picks this up on its next refresh.
 
 ## Troubleshooting
 
-- **"Open Palmstreet's orders page"** — the popup only enables itself on
-  `*.palmstreet.app` / `*.palmstreet.com` tabs.
-- **"0 orders detected"** — the **Order row** selector isn't matching
-  anything. Re-inspect the page and update the selector.
-- **"Buy button not found in this row"** — same issue, but for
-  **Buy label button**. The button might be hidden until you hover, or
-  Palmstreet might use different markup for paid vs. unpaid orders.
-- **"No shipment box found for Palmstreet order …"** — this Palmstreet
-  order isn't linked to any inventory item in Folia. Make sure the sale's
-  Palmstreet orders file has been uploaded in the Sales tab first.
+- **"Open Palmstreet in this tab"** — the popup only enables on `*.palmstreet.app` / `*.palmstreet.com` tabs.
+- **"Timed out waiting for [selector]"** — that step's selector either
+  doesn't match anything or Palmstreet hadn't loaded the next screen
+  yet. Re-inspect the page, paste a fresh selector in Settings.
+- **"No matching order row for X"** — Palmstreet's search returned no
+  results for that buyer username. Check that the order actually exists
+  on the orders page and that the `Order row` selector targets the
+  right element.
+- **"Shipping label has no href to fetch"** — the label element isn't
+  an `<a>` with an href. It might be a button that triggers download.
+  In that case the current capture method won't work; report back so we
+  can add a download-interception path.
+- **PDFs aren't appearing in Folia** — the `shipping-labels` Storage
+  bucket might not exist. Create it (private) in Supabase Dashboard →
+  Storage → New bucket. The tracking number is saved either way.
 
-## Limitations
+## Limitations & risks
 
-- The extension only works in Chrome / Edge / Brave (any Chromium browser).
-- Palmstreet's web UI can change. When it does, you update the selectors
-  in Settings — no code release needed.
-- The Buy + sync mode does the riskiest thing: clicking purchase buttons.
-  If Palmstreet's bot defenses ever flag your account, that's on you, not
-  on Folia. Keep the random delay generous and confirm-per-click on until
-  you trust the flow.
+- Chromium-only (Chrome / Edge / Brave). WebHID isn't on Firefox or Safari.
+- Palmstreet may treat fast/repeated clicking as automation. Keep
+  random delays generous and confirm-per-order on. The extension is
+  not officially endorsed by Palmstreet — use at your own risk.
+- A failed step aborts that one order cleanly (no half-purchased
+  state) but the queue continues with the next box. Stopping mid-flight
+  is one click away.

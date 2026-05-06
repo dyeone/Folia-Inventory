@@ -10,54 +10,109 @@
 
     <section>
       <h2>Folia Inventory API</h2>
-      <p class="hint">Where the extension POSTs tracking numbers when it finds them.</p>
+      <p class="hint">Where the extension fetches the work queue and posts back tracking + PDFs.</p>
 
       <label>
         <span>API base URL</span>
         <input id="apiBase" type="url" placeholder="https://your-app.vercel.app" />
-        <small>e.g. <code>https://folia-inventory.vercel.app</code>. No trailing slash.</small>
+        <small>e.g. <code>https://folia-inventory.vercel.app</code> · no trailing slash.</small>
       </label>
 
       <label>
         <span>User ID</span>
         <input id="userId" type="text" placeholder="abc123def456" />
-        <small>Find this in your browser's localStorage on the Folia app, key
-          <code>session-current-user</code>. Used for authenticating API calls.</small>
+        <small>From the Folia app's <code>localStorage</code> entry <code>session-current-user</code>.</small>
       </label>
     </section>
 
     <section>
       <h2>Palmstreet selectors</h2>
-      <p class="hint">CSS selectors that tell the extension where to find things on Palmstreet's pages. Open Palmstreet, right-click → Inspect, find the right element, paste a selector here. Update if Palmstreet ever changes their UI.</p>
+      <p class="hint">CSS selectors that point the extension at each element of the 8-step flow. Inspect Palmstreet, copy each selector, paste here. Change them if Palmstreet redesigns the UI.</p>
 
       <label>
-        <span>Order row on the orders list</span>
+        <span>1 · "View ready-to-ship orders" link/button on Palmstreet's main page</span>
+        <input id="selOpenShipping" type="text" placeholder='button[data-testid="ship-orders"]' />
+        <small>The control that takes you from Palmstreet's home into the orders-to-ship list.</small>
+      </label>
+
+      <label>
+        <span>2 · Search input on the orders list</span>
+        <input id="selSearchInput" type="text" placeholder='input[type="search"]' />
+        <small>The text input where you'd normally type a buyer's username to filter the list.</small>
+      </label>
+
+      <label>
+        <span>3a · Order row in the search results</span>
         <input id="selOrderRow" type="text" placeholder='[data-testid="order-row"]' />
-        <small>One element per order in the orders/shipments list.</small>
+        <small>One element per matching order. The first match for the searched username gets clicked.</small>
       </label>
 
       <label>
-        <span>Order ID inside an order row</span>
-        <input id="selOrderId" type="text" placeholder='.order-number' />
-        <small>The text element holding the Palmstreet order number. Must be inside the row.</small>
+        <span>3b · Continue button (after selecting the order)</span>
+        <input id="selContinue" type="text" placeholder='button:contains("Continue")' />
+        <small>Advances to the weight + payment screen.</small>
       </label>
 
       <label>
-        <span>"Buy label" button (per order)</span>
-        <input id="selBuyButton" type="text" placeholder='button[data-action="buy-label"]' />
-        <small>The button that purchases the USPS label.</small>
+        <span>4 · Weight input field (oz)</span>
+        <input id="selWeightInput" type="text" placeholder='input[name="weight"]' />
+        <small>Where the box weight gets typed.</small>
       </label>
 
       <label>
-        <span>Tracking number text (after label is bought)</span>
-        <input id="selTracking" type="text" placeholder='.tracking-number, [data-testid="tracking"]' />
-        <small>Where the tracking number appears once the label has been generated.</small>
+        <span>5 · Purchase label button</span>
+        <input id="selPurchaseButton" type="text" placeholder='button[data-action="purchase"]' />
+        <small>Triggers payment confirmation.</small>
       </label>
 
       <label>
-        <span>Already-purchased indicator (optional)</span>
-        <input id="selPurchased" type="text" placeholder='.label-purchased' />
-        <small>Optional element whose presence means "label already bought" — used to skip orders that already have one.</small>
+        <span>6 · Pay button</span>
+        <input id="selPayButton" type="text" placeholder='button[data-action="confirm-payment"]' />
+        <small>Final confirmation that actually charges the label.</small>
+      </label>
+
+      <label>
+        <span>7 · Shipping label link / button</span>
+        <input id="selLabelLink" type="text" placeholder='a[data-testid="shipping-label"]' />
+        <small>Must be an <code>&lt;a&gt;</code> with an href to the PDF (the extension will fetch the href, not click and open a tab).</small>
+      </label>
+
+      <label>
+        <span>8 · Shipping slip link / button</span>
+        <input id="selSlipLink" type="text" placeholder='a[data-testid="packing-slip"]' />
+        <small>Same as the label link, but for the packing slip PDF.</small>
+      </label>
+
+      <label>
+        <span>Tracking number text (visible after the label is bought)</span>
+        <input id="selTracking" type="text" placeholder='[data-testid="tracking-number"]' />
+        <small>Where the tracking number appears once Palmstreet generates the label.</small>
+      </label>
+
+      <label>
+        <span>Back-to-list button (optional)</span>
+        <input id="selBackToList" type="text" placeholder='button[aria-label="Back"]' />
+        <small>Optional — clicked between orders to return to the search list. If not set, the queue runner reloads the orders page instead.</small>
+      </label>
+    </section>
+
+    <section>
+      <h2>Scale</h2>
+      <p class="hint">Reads the box weight from a USB postal scale via WebHID. Click <em>Pair scale</em> the first time and pick your scale from Chrome's device picker.</p>
+
+      <label>
+        <span>Status</span>
+        <div class="row">
+          <span id="scaleStatus" class="muted">Not paired</span>
+          <button id="pairScale" type="button">Pair scale</button>
+          <button id="testScale" type="button">Read once</button>
+        </div>
+        <small>Compatible with HID-class postal scales (DYMO M10/M25, Stamps.com 510, generic POS scales). Falls back to manual entry per-order if no scale is paired.</small>
+      </label>
+
+      <label>
+        <span>Default weight (oz) when scale unavailable</span>
+        <input id="defaultWeightOz" type="number" min="0" step="0.1" placeholder="32" />
       </label>
     </section>
 
@@ -65,8 +120,8 @@
       <h2>Behavior</h2>
 
       <label class="row">
-        <input id="confirmEachBuy" type="checkbox" checked />
-        <span>Ask for confirmation before each Buy click (recommended)</span>
+        <input id="confirmEachOrder" type="checkbox" checked />
+        <span>Ask for confirmation before each order (recommended)</span>
       </label>
 
       <label>
@@ -75,7 +130,13 @@
           <input id="delayMin" type="number" min="0" step="100" /> –
           <input id="delayMax" type="number" min="0" step="100" />
         </div>
-        <small>Random pause between each order to look human. <code>800–2000</code> is a reasonable default.</small>
+        <small>Random pause between each click/type to look human. <code>800–2000</code> is reasonable.</small>
+      </label>
+
+      <label>
+        <span>Per-step timeout (ms)</span>
+        <input id="stepTimeoutMs" type="number" min="1000" step="500" placeholder="20000" />
+        <small>How long to wait for each next-step element to appear before aborting an order.</small>
       </label>
     </section>
 
@@ -84,6 +145,7 @@
       <span id="status"></span>
     </div>
 
+    <script src="scale.js"></script>
     <script src="options.js"></script>
   </body>
 </html>
