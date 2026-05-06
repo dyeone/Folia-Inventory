@@ -1,80 +1,10 @@
-import { useState, useMemo, useEffect } from 'react';
-import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Target, Plus } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Plus } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
+import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
-
-// Track whether the viewport is below Tailwind's `sm` breakpoint (640px)
-// so we can render only the mobile cards OR only the desktop table — not
-// both. Without this, every phone load mounts the full ~1945-row <table>
-// in the DOM (just hidden via CSS), doubling React render work.
-function useIsMobile() {
-  const query = '(max-width: 639px)';
-  const [isMobile, setIsMobile] = useState(
-    () => typeof window !== 'undefined' && window.matchMedia(query).matches
-  );
-  useEffect(() => {
-    const mql = window.matchMedia(query);
-    const onChange = (e) => setIsMobile(e.matches);
-    mql.addEventListener('change', onChange);
-    return () => mql.removeEventListener('change', onChange);
-  }, []);
-  return isMobile;
-}
-
-// Two lookup helpers that turn the linear `varieties.find(...)` and
-// `species.find(...)` scans inside speciesForItem into O(1) Map reads.
-// Pre-built once per varieties/species change in the parent component
-// rather than re-walking the arrays per item per render.
-function buildLookups(varieties, species) {
-  const speciesById = new Map(species.map(s => [s.id, s]));
-  const varietyByName = new Map(varieties.map(v => [v.name, v]));
-  const speciesByVarEpithet = new Map(
-    species.map(s => [`${s.varietyId}|${s.epithet}`, s])
-  );
-  return { speciesById, varietyByName, speciesByVarEpithet };
-}
-
-// Find the species/cultivar row that a given item belongs to. Prefer the
-// explicit FK; fall back to (variety name, cultivar name) lookup so older
-// items without speciesId still resolve.
-function speciesForItem(item, lookups) {
-  if (item.speciesId) {
-    const s = lookups.speciesById.get(item.speciesId);
-    if (s) return s;
-  }
-  const v = lookups.varietyByName.get(item.variety);
-  if (!v) return null;
-  return lookups.speciesByVarEpithet.get(`${v.id}|${item.name}`) || null;
-}
-
-// Compute the recommended (ideal) selling price for an item, in priority
-// order: explicit idealPrice → per-item rate → cultivar (species) rate →
-// global rate. Cost prefers netCost (post-shipping) but falls back to
-// grossCost so freshly-imported items still get a meaningful number.
-function computeIdealPrice(item, globalRate, lookups) {
-  const explicit = parseFloat(item.idealPrice);
-  if (Number.isFinite(explicit)) return explicit;
-  const cost = parseFloat(item.netCost) || parseFloat(item.grossCost ?? item.cost);
-  if (!Number.isFinite(cost) || cost <= 0) return NaN;
-  const itemRate = parseFloat(item.profitRate);
-  if (Number.isFinite(itemRate)) return cost * (1 + itemRate / 100);
-  const sp = speciesForItem(item, lookups);
-  const spRate = parseFloat(sp?.profitRate);
-  if (Number.isFinite(spRate)) return cost * (1 + spRate / 100);
-  const gRate = parseFloat(globalRate);
-  if (!Number.isFinite(gRate)) return NaN;
-  return cost * (1 + gRate / 100);
-}
-
-// Which tier supplied the rate, for the small caption under the Ideal $
-// number ("cultivar rate", "global", or none when the item is explicit).
-function rateSourceLabel(item, lookups) {
-  if (Number.isFinite(parseFloat(item.idealPrice))) return null;
-  if (Number.isFinite(parseFloat(item.profitRate))) return null;
-  const sp = speciesForItem(item, lookups);
-  if (Number.isFinite(parseFloat(sp?.profitRate))) return 'cultivar rate';
-  return 'global';
-}
+import { buildLookups, speciesForItem, computeIdealPrice, rateSourceLabel } from './pricing.js';
+import { CultivarRateInput } from './CultivarRateInput.jsx';
 
 export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   const isMobile = useIsMobile();
@@ -767,59 +697,3 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   );
 }
 
-function CultivarRateInput({ species, globalRate, onUpdate }) {
-  const [val, setVal] = useState(species?.profitRate != null ? String(species.profitRate) : '');
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState('');
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setVal(species?.profitRate != null ? String(species.profitRate) : '');
-    setErr('');
-  }, [species?.id, species?.profitRate]);
-
-  if (!species) return null;
-
-  const commit = async (next) => {
-    setErr('');
-    setSaving(true);
-    try { await onUpdate(species.id, next); }
-    catch (e) { setErr(e.message || 'Save failed'); }
-    setSaving(false);
-  };
-
-  const handleBlur = () => {
-    const trimmed = val.trim();
-    if (trimmed === '' && species.profitRate == null) return;
-    if (trimmed === '') return commit(null);
-    const num = parseFloat(trimmed);
-    if (!Number.isFinite(num)) { setErr('Must be a number'); return; }
-    if (num === species.profitRate) return;
-    commit(num);
-  };
-
-  return (
-    <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-      <Target className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
-      <input
-        type="number"
-        inputMode="decimal"
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        onBlur={handleBlur}
-        onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-        placeholder={String(globalRate ?? '')}
-        disabled={saving}
-        title={err || (species.profitRate == null ? `Defaults to global ${globalRate ?? '—'}%` : 'Per-cultivar rate')}
-        className={`w-16 px-1.5 py-0.5 text-xs text-right tabular-nums border rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:opacity-50 ${
-          err ? 'border-red-400 bg-red-50' :
-          species.profitRate != null ? 'border-emerald-400 bg-white text-emerald-800 font-medium' :
-          'border-gray-300 bg-white text-gray-500'
-        }`}
-        min="0"
-        step="10"
-      />
-      <span className="text-xs text-gray-500">%</span>
-    </div>
-  );
-}
