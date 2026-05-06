@@ -10,7 +10,7 @@ import { matchInventory } from './matchInventory.js';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 
-export function PackingView({ inventoryItems, sales, onShipBox }) {
+export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
 
   const pendingSales = useMemo(
@@ -28,6 +28,7 @@ export function PackingView({ inventoryItems, sales, onShipBox }) {
         inventoryItems={inventoryItems}
         onBack={() => setActiveSaleId(null)}
         onShipBox={(itemIds) => onShipBox(activeSale.id, itemIds)}
+        setConfirmDialog={setConfirmDialog}
       />
     );
   }
@@ -119,7 +120,7 @@ function Mini({ label, value }) {
 // (derived from items once the upload has been applied).
 // ───────────────────────────────────────────────────────────────────────────
 
-function SalePackingPane({ sale, inventoryItems, onBack, onShipBox }) {
+function SalePackingPane({ sale, inventoryItems, onBack, onShipBox, setConfirmDialog }) {
   const saleItems = useMemo(
     () => inventoryItems.filter(i => i.saleId === sale.id),
     [inventoryItems, sale.id]
@@ -158,6 +159,7 @@ function SalePackingPane({ sale, inventoryItems, onBack, onShipBox }) {
       saleItems={saleItems}
       onBack={onBack}
       onShipBox={onShipBox}
+      setConfirmDialog={setConfirmDialog}
     />
   );
 }
@@ -165,7 +167,7 @@ function SalePackingPane({ sale, inventoryItems, onBack, onShipBox }) {
 
 // ───── Boxes phase (after apply) ───────────────────────────────────────────
 
-function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
+function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, setConfirmDialog }) {
   // Shipments (= purchased labels) for this sale, keyed by shipmentBoxId.
   // Loaded once on mount and refreshed after a Buy/Void completes.
   const [shipmentsByBox, setShipmentsByBox] = useState({});
@@ -299,15 +301,22 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox }) {
             shipment={shipmentsByBox[box.id]}
             onShip={() => onShipBox(box.items.map(i => i.id))}
             onBuyLabel={() => setBuyingFor(box)}
-            onVoidLabel={async () => {
-              if (!confirm(`Void this label for ${box.recipientName}? ShipStation may decline if it's already been used.`)) return;
-              try {
-                await api.voidLabel(box.id);
-                showToast('Label voided');
-                refreshShipments();
-              } catch (e) {
-                showToast(e.message || 'Void failed');
-              }
+            onVoidLabel={() => {
+              setConfirmDialog?.({
+                title: `Void label for ${box.recipientName}?`,
+                message: `ShipStation may decline if it's already been used or scanned.`,
+                confirmLabel: 'Void label',
+                danger: true,
+                onConfirm: async () => {
+                  try {
+                    await api.voidLabel(box.id);
+                    showToast('Label voided');
+                    refreshShipments();
+                  } catch (e) {
+                    showToast(e.message || 'Void failed');
+                  }
+                },
+              });
             }}
           />
         ))}

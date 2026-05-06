@@ -119,7 +119,7 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
       }
     }
     if (updates.length === 0) {
-      alert('No matched items to apply. Link items first or pick a different file.');
+      setErr('No matched items to apply. Link items first or pick a different file.');
       return;
     }
     onApply(updates);
@@ -218,7 +218,12 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
         </div>
 
         {boxes && (
-          <div className="border-t border-gray-200 px-4 sm:px-5 py-3 flex justify-end gap-2 flex-shrink-0 bg-white">
+          <div className="border-t border-gray-200 px-4 sm:px-5 py-3 flex items-center justify-end gap-3 flex-shrink-0 bg-white">
+            {err && (
+              <div className="flex-1 text-xs text-red-700 flex items-center gap-1.5" role="alert">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {err}
+              </div>
+            )}
             <button onClick={onClose} className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg">
               Cancel
             </button>

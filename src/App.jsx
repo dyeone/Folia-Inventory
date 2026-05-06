@@ -207,19 +207,28 @@ function InventorySystem() {
   };
   // Cascade-delete species under the variety first so the API's "still has
   // species" guard doesn't block deletion of an otherwise-empty variety.
-  const deleteVariety = async (id) => {
-    try {
-      const childSpecies = species.filter(s => s.varietyId === id);
-      for (const s of childSpecies) {
-        await api.deleteSpecies(s.id);
-      }
-      await api.deleteVariety(id);
-      setSpecies(prev => prev.filter(s => s.varietyId !== id));
-      setVarieties(prev => prev.filter(v => v.id !== id));
-      showToast('Variety deleted');
-    } catch (e) {
-      showToast(e.message || 'Could not delete variety', 'error');
-    }
+  // Accepts the full variety object so the confirm dialog can show the name.
+  const deleteVariety = (variety) => {
+    setConfirmDialog({
+      title: `Delete variety "${variety.name}"?`,
+      message: 'Any species under it will be deleted first. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          const childSpecies = species.filter(s => s.varietyId === variety.id);
+          for (const s of childSpecies) {
+            await api.deleteSpecies(s.id);
+          }
+          await api.deleteVariety(variety.id);
+          setSpecies(prev => prev.filter(s => s.varietyId !== variety.id));
+          setVarieties(prev => prev.filter(v => v.id !== variety.id));
+          showToast('Variety deleted');
+        } catch (e) {
+          showToast(e.message || 'Could not delete variety', 'error');
+        }
+      },
+    });
   };
 
   // Diff two arrays and return only the rows that were added or changed.
@@ -716,6 +725,7 @@ function InventorySystem() {
           <PackingView
             inventoryItems={items}
             sales={sales}
+            setConfirmDialog={setConfirmDialog}
             onShipBox={async (saleId, itemIds) => {
               try {
                 const now = new Date().toISOString();
@@ -957,6 +967,7 @@ function InventorySystem() {
           sale={liveSale}
           items={items}
           onClose={() => setLiveSale(null)}
+          setConfirmDialog={setConfirmDialog}
         />
       )}
       {uploadSale && (
@@ -1005,6 +1016,7 @@ function InventorySystem() {
           onSpeciesChange={setSpecies}
           onClose={() => setShowCatalogModal(false)}
           showToast={showToast}
+          setConfirmDialog={setConfirmDialog}
         />
       )}
       {showChangePassword && (

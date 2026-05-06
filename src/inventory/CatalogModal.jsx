@@ -8,7 +8,7 @@ import { api } from '../api.js';
 export function CatalogModal({
   varieties, species, items, isAdmin, initialTab = 'species',
   onVarietiesChange, onSpeciesChange,
-  onClose, showToast,
+  onClose, showToast, setConfirmDialog,
 }) {
   const [tab, setTab] = useState(initialTab);
 
@@ -40,6 +40,7 @@ export function CatalogModal({
           isAdmin={isAdmin}
           onChange={onVarietiesChange}
           showToast={showToast}
+          setConfirmDialog={setConfirmDialog}
         />
       ) : (
         <SpeciesTab
@@ -50,13 +51,14 @@ export function CatalogModal({
           onChange={onSpeciesChange}
           onItemsTouched={() => { /* parent will refresh on next fetch */ }}
           showToast={showToast}
+          setConfirmDialog={setConfirmDialog}
         />
       )}
     </Modal>
   );
 }
 
-function VarietiesTab({ varieties, species, isAdmin, onChange, showToast }) {
+function VarietiesTab({ varieties, species, isAdmin, onChange, showToast, setConfirmDialog }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
@@ -103,17 +105,24 @@ function VarietiesTab({ varieties, species, isAdmin, onChange, showToast }) {
     setBusy(false);
   };
 
-  const remove = async (v) => {
-    if (!confirm(`Delete variety "${v.name}"? This requires no species in it.`)) return;
-    setBusy(true);
-    try {
-      await api.deleteVariety(v.id);
-      onChange(varieties.filter(x => x.id !== v.id));
-      showToast?.('Variety deleted');
-    } catch (e) {
-      showToast?.(e.message || 'Failed', 'error');
-    }
-    setBusy(false);
+  const remove = (v) => {
+    setConfirmDialog?.({
+      title: `Delete variety "${v.name}"?`,
+      message: 'The variety must contain no species. This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        setBusy(true);
+        try {
+          await api.deleteVariety(v.id);
+          onChange(varieties.filter(x => x.id !== v.id));
+          showToast?.('Variety deleted');
+        } catch (e) {
+          showToast?.(e.message || 'Failed', 'error');
+        }
+        setBusy(false);
+      },
+    });
   };
 
   return (
@@ -212,7 +221,7 @@ function VarietiesTab({ varieties, species, isAdmin, onChange, showToast }) {
   );
 }
 
-function SpeciesTab({ varieties, species, items, isAdmin, onChange, showToast }) {
+function SpeciesTab({ varieties, species, items, isAdmin, onChange, showToast, setConfirmDialog }) {
   const [filterVarietyId, setFilterVarietyId] = useState('all');
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
@@ -284,17 +293,24 @@ function SpeciesTab({ varieties, species, items, isAdmin, onChange, showToast })
     setBusy(false);
   };
 
-  const remove = async (s) => {
-    if (!confirm(`Delete species "${s.epithet}"? Items linked to it must be removed/reassigned first.`)) return;
-    setBusy(true);
-    try {
-      await api.deleteSpecies(s.id);
-      onChange(species.filter(x => x.id !== s.id));
-      showToast?.('Species deleted');
-    } catch (e) {
-      showToast?.(e.message || 'Failed', 'error');
-    }
-    setBusy(false);
+  const remove = (s) => {
+    setConfirmDialog?.({
+      title: `Delete species "${s.epithet}"?`,
+      message: 'Items linked to this species must be removed or reassigned first.',
+      confirmLabel: 'Delete',
+      danger: true,
+      onConfirm: async () => {
+        setBusy(true);
+        try {
+          await api.deleteSpecies(s.id);
+          onChange(species.filter(x => x.id !== s.id));
+          showToast?.('Species deleted');
+        } catch (e) {
+          showToast?.(e.message || 'Failed', 'error');
+        }
+        setBusy(false);
+      },
+    });
   };
 
   return (

@@ -22,7 +22,7 @@ function loadState(saleId) {
   }
 }
 
-export function LiveModal({ sale, items, onClose }) {
+export function LiveModal({ sale, items, onClose, setConfirmDialog }) {
   const saleItems = useMemo(
     () => items.filter(i => i.saleId === sale.id),
     [items, sale.id]
@@ -188,8 +188,13 @@ export function LiveModal({ sale, items, onClose }) {
     if (!startedAt) setLiveState(prev => ({ ...prev, startedAt: Date.now() }));
   };
   const resetSession = () => {
-    if (!confirm('Reset live progress for this sale? This clears the current/done state.')) return;
-    setLiveState({ itemStatus: {}, startedAt: null });
+    setConfirmDialog?.({
+      title: 'Reset live progress?',
+      message: 'Clears the current/done state for this sale. The lineup itself is unchanged.',
+      confirmLabel: 'Reset',
+      danger: true,
+      onConfirm: () => setLiveState({ itemStatus: {}, startedAt: null }),
+    });
   };
 
   return (

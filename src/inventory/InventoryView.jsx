@@ -285,9 +285,10 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (confirm(`Delete empty variety "${variety.name}"? This can't be undone.`)) {
-                      onDeleteVariety(variety.id);
-                    }
+                    // Confirmation is handled in the parent (App.jsx) via the
+                    // shared ConfirmDialog — keeps the UI consistent with the
+                    // rest of the destructive actions.
+                    onDeleteVariety(variety);
                   }}
                   title="Delete empty variety"
                   aria-label={`Delete ${variety.name}`}

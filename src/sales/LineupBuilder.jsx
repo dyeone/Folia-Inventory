@@ -49,6 +49,8 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
   const scanRef = useRef(null);
   const [scanInput, setScanInput] = useState('');
   const [scanFlash, setScanFlash] = useState({ id: null, kind: null });
+  // Validation error surfaced in the save bar, replaces the old `alert()`.
+  const [saveError, setSaveError] = useState('');
   const [scanMessage, setScanMessage] = useState(null);
 
   useEffect(() => {
@@ -178,9 +180,10 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
     });
     const dupes = Object.entries(lotCounts).filter(([, c]) => c > 1).map(([n]) => n);
     if (dupes.length) {
-      alert(`Duplicate lot numbers: ${dupes.join(', ')}`);
+      setSaveError(`Duplicate lot numbers: ${dupes.join(', ')}`);
       return;
     }
+    setSaveError('');
 
     const updates = [];
     Object.entries(selected).forEach(([id, meta]) => {
@@ -485,15 +488,18 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
           )}
         </div>
 
-        <div className="border-t border-gray-200 px-4 sm:px-5 py-3 sm:py-4 flex items-center justify-between flex-shrink-0 bg-white">
-          <div className="text-sm">
+        <div className="border-t border-gray-200 px-4 sm:px-5 py-3 sm:py-4 flex items-center justify-between flex-shrink-0 bg-white gap-3">
+          <div className="text-sm min-w-0">
             <span className="font-semibold text-gray-900">{saleCount}</span>
             <span className="text-gray-500"> sale · </span>
             <span className="font-semibold text-amber-700">{giveawayCount}</span>
             <span className="text-gray-500"> give · </span>
             <span className="font-semibold text-emerald-700">${selectedValue.toFixed(0)}</span>
+            {saveError && (
+              <div className="text-xs text-red-700 mt-1 truncate" role="alert">{saveError}</div>
+            )}
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-shrink-0">
             <button onClick={onClose} className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg">
               Cancel
             </button>
