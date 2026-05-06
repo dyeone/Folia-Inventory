@@ -111,6 +111,12 @@ export const api = {
   // URL built from the inline labelData blob (older rows).
   getLabelUrl: (shipmentBoxId) =>
     request(`/shipments?action=label-url&id=${encodeURIComponent(shipmentBoxId)}`).then(r => r.url),
+  // USPS-via-Palmstreet: operator enters the tracking number after
+  // generating the label in Palmstreet. Inserts a manual shipments row.
+  recordPalmstreetTracking: (shipmentBoxId, trackingNumber) =>
+    request('/shipments', { method: 'POST', body: { action: 'record-tracking', shipmentBoxId, trackingNumber } }).then(r => r.shipment),
+  clearPalmstreetTracking: (shipmentBoxId) =>
+    request('/shipments', { method: 'POST', body: { action: 'clear-tracking', shipmentBoxId } }),
   buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation }) =>
     request('/shipstation', { method: 'POST', body: { action: 'buy-label', shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation } }).then(r => r.shipment),
   voidLabel: (shipmentBoxId) =>

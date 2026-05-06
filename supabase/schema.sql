@@ -281,12 +281,12 @@ create table if not exists shipments (
   "carrierCode"            text        not null,
   "serviceCode"            text        not null,
   "packageCode"            text        not null default 'package',
-  "weightOz"               numeric     not null,
+  "weightOz"               numeric,                              -- nullable: not meaningful for Palmstreet-USPS rows
   "dimsLength"             numeric,
   "dimsWidth"              numeric,
   "dimsHeight"             numeric,
-  "shipFrom"               jsonb       not null,
-  "shipTo"                 jsonb       not null,
+  "shipFrom"               jsonb,                                -- nullable: see weightOz
+  "shipTo"                 jsonb,                                -- nullable: see weightOz
   "trackingNumber"         text,
   "labelCost"              numeric,
   "labelData"              text,                                -- legacy: base64 PDF (pre-storage cutover)

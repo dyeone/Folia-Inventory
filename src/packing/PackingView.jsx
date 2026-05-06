@@ -323,6 +323,28 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, setConfirmDialog
                 },
               });
             }}
+            onSaveTracking={async (b, trackingNumber) => {
+              await api.recordPalmstreetTracking(b.id, trackingNumber);
+              showToast('Tracking saved');
+              refreshShipments();
+            }}
+            onClearTracking={() => {
+              setConfirmDialog?.({
+                title: `Clear tracking for ${box.recipientName}?`,
+                message: 'Removes the manual USPS tracking entry. The Palmstreet label itself is not affected.',
+                confirmLabel: 'Clear',
+                danger: true,
+                onConfirm: async () => {
+                  try {
+                    await api.clearPalmstreetTracking(box.id);
+                    showToast('Tracking cleared');
+                    refreshShipments();
+                  } catch (e) {
+                    showToast(e.message || 'Clear failed');
+                  }
+                },
+              });
+            }}
           />
         ))}
       </div>
