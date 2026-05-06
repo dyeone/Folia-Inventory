@@ -8,16 +8,16 @@ export function setAuthUserId(id) { authUserId = id; }
 
 // Routes that should NOT have userId appended (auth endpoints).
 // Everything else (items/sales/users) gets userId so the server can verify
-// the caller is an active user.
-const UNAUTHED = new Set([
-  '/auth/has-users',
-  '/auth/register',
-  '/auth/login',
-  '/auth/session',
-]);
+// the caller is an active user. The auth path collapsed into a single
+// /auth dispatcher (Vercel Hobby's 12-function cap), so we just match
+// the prefix.
+const UNAUTHED_PREFIXES = ['/auth'];
+function isUnauthed(path) {
+  return UNAUTHED_PREFIXES.some(p => path === p || path.startsWith(`${p}?`) || path.startsWith(`${p}/`));
+}
 
 async function request(path, { method = 'GET', body } = {}) {
-  const isAuthed = !UNAUTHED.has(path);
+  const isAuthed = !isUnauthed(path);
 
   // Build the request URL; for GET add userId as a query param.
   let url = `/api${path}`;
@@ -48,16 +48,16 @@ async function request(path, { method = 'GET', body } = {}) {
 }
 
 export const api = {
-  // Auth
-  hasAnyUsers: () => request('/auth/has-users').then(r => r.hasAnyUsers),
+  // Auth — single dispatcher under /auth, action passed via query (GET) or body (POST).
+  hasAnyUsers: () => request('/auth?action=has-users').then(r => r.hasAnyUsers),
   register: ({ username, password, displayName }) =>
-    request('/auth/register', { method: 'POST', body: { username, password, displayName } }).then(r => r.user),
+    request('/auth', { method: 'POST', body: { action: 'register', username, password, displayName } }).then(r => r.user),
   login: ({ username, password }) =>
-    request('/auth/login', { method: 'POST', body: { username, password } }).then(r => r.user),
+    request('/auth', { method: 'POST', body: { action: 'login', username, password } }).then(r => r.user),
   session: (userId) =>
-    request('/auth/session', { method: 'POST', body: { userId } }).then(r => r.user),
+    request('/auth', { method: 'POST', body: { action: 'session', userId } }).then(r => r.user),
   changePassword: (userId, currentPassword, newPassword) =>
-    request('/auth/change-password', { method: 'POST', body: { userId, currentPassword, newPassword } }),
+    request('/auth', { method: 'POST', body: { action: 'change-password', userId, currentPassword, newPassword } }),
 
   // Items
   getItems: () => request('/items').then(r => r.items),
@@ -71,7 +71,7 @@ export const api = {
   // Hard delete — bypasses the 30-day grace.
   purgeItems: (ids) => request('/items', { method: 'DELETE', body: { ids, purge: true } }),
   convertItem: ({ tcId, plantData }) =>
-    request('/items/convert', { method: 'POST', body: { tcId, plantData } }).then(r => r),
+    request('/items', { method: 'POST', body: { action: 'convert', tcId, plantData } }).then(r => r),
 
   // Sales
   getSales: () => request('/sales').then(r => r.sales),
@@ -107,9 +107,9 @@ export const api = {
   getShipments: (saleId) =>
     request(`/shipments${saleId ? `?saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.shipments),
   buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation }) =>
-    request('/shipstation/buy-label', { method: 'POST', body: { shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation } }).then(r => r.shipment),
+    request('/shipstation', { method: 'POST', body: { action: 'buy-label', shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation } }).then(r => r.shipment),
   voidLabel: (shipmentBoxId) =>
-    request('/shipstation/void-label', { method: 'POST', body: { shipmentBoxId } }).then(r => r.shipment),
+    request('/shipstation', { method: 'POST', body: { action: 'void-label', shipmentBoxId } }).then(r => r.shipment),
 
   // Users (admin only, enforced server-side)
   getUsers: () => request('/users').then(r => r.users),

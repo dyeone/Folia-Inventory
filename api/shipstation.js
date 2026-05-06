@@ -1,27 +1,28 @@
-import { supabase, requireUser } from '../_lib/supabase.js';
-import { wrap, methodNotAllowed } from '../_lib/respond.js';
-import { createLabel } from '../_lib/shipstation.js';
-
-// POST /api/shipstation/buy-label
-// Body: {
-//   shipmentBoxId: string,    // = inventory_items.shipmentBoxId
-//   weightOz: number,         // overrides default
-//   dims?: { length, width, height },
-//   serviceCode?: string,     // overrides settings default
-//   packageCode?: string,     // overrides settings default
-//   confirmation?: string,    // overrides settings default
-//   userId: string,
-// }
+// Consolidated ShipStation dispatcher. Used to be two routes
+// (/api/shipstation/buy-label and /api/shipstation/void-label) but
+// merged to stay under Vercel's 12-function Hobby cap.
 //
-// Returns { shipment } — the persisted row including labelData (base64 PDF)
-// and trackingNumber. The shipments table row is keyed by shipmentBoxId so
-// re-buying the same box would conflict; the caller should void first.
+// POST /api/shipstation
+// Body: { action: 'buy-label' | 'void-label', userId, ... }
+
+import { supabase, requireUser } from './_lib/supabase.js';
+import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { createLabel, voidLabel } from './_lib/shipstation.js';
 
 export default wrap(async (req, res) => {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
   const userId = req.body?.userId;
   await requireUser(userId);
 
+  const action = req.body?.action;
+  switch (action) {
+    case 'buy-label': return buyLabel(req, res, userId);
+    case 'void-label': return voidLabelHandler(req, res, userId);
+    default: { const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e; }
+  }
+});
+
+async function buyLabel(req, res, userId) {
   const { shipmentBoxId } = req.body || {};
   if (!shipmentBoxId) {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
@@ -119,7 +120,6 @@ export default wrap(async (req, res) => {
     testLabel,
   };
 
-  // Real call. ShipStation returns labelData (base64 PDF) on success.
   const result = await createLabel(payload);
 
   const row = {
@@ -147,7 +147,6 @@ export default wrap(async (req, res) => {
     voidedBy: null,
   };
 
-  // Upsert (re-buying after a void should overwrite the voided row).
   const { data: saved, error: saveErr } = await supabase
     .from('shipments')
     .upsert(row)
@@ -156,4 +155,43 @@ export default wrap(async (req, res) => {
   if (saveErr) { const e = new Error(saveErr.message); e.status = 500; throw e; }
 
   return res.status(200).json({ shipment: saved });
-});
+}
+
+async function voidLabelHandler(req, res, userId) {
+  const { shipmentBoxId } = req.body || {};
+  if (!shipmentBoxId) {
+    const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
+  }
+
+  const { data: shipment } = await supabase
+    .from('shipments')
+    .select('id, "shipstationShipmentId", "voidedAt"')
+    .eq('id', shipmentBoxId)
+    .maybeSingle();
+  if (!shipment) {
+    const e = new Error('No purchased label for this box'); e.status = 404; throw e;
+  }
+  if (shipment.voidedAt) {
+    const e = new Error('Label already voided'); e.status = 409; throw e;
+  }
+  if (!shipment.shipstationShipmentId) {
+    const e = new Error('Missing ShipStation shipment id — cannot void');
+    e.status = 422; throw e;
+  }
+
+  const result = await voidLabel(Number(shipment.shipstationShipmentId));
+  if (result && result.approved === false) {
+    const e = new Error(result.message || 'ShipStation declined the void');
+    e.status = 409; throw e;
+  }
+
+  const { data: updated, error: updErr } = await supabase
+    .from('shipments')
+    .update({ voidedAt: new Date().toISOString(), voidedBy: userId })
+    .eq('id', shipmentBoxId)
+    .select()
+    .single();
+  if (updErr) { const e = new Error(updErr.message); e.status = 500; throw e; }
+
+  return res.status(200).json({ shipment: updated });
+}

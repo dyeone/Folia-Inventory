@@ -1,5 +1,6 @@
 import { supabase, requireUser, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { VARIETY_CODES } from '../src/constants.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 const SERVER_OWNED = ['createdAt', 'createdBy', 'modifiedAt', 'modifiedBy'];
@@ -65,10 +66,33 @@ async function assignMissingSkus(items) {
   }
 }
 
+// Pick the next global SKU number for a given variety. Used by /convert.
+async function nextSkuForVariety(variety) {
+  const code = VARIETY_CODES[variety];
+  if (!code) {
+    const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
+  }
+  const { data } = await supabase.from('inventory_items').select('sku');
+  const nums = (data || [])
+    .map(r => {
+      const m = String(r.sku || '').match(/-(\d+)$/);
+      return m ? parseInt(m[1], 10) : 0;
+    })
+    .filter(n => n > 0);
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  return `${code}-${next}`;
+}
+
 export default wrap(async (req, res) => {
   // All item operations require an authenticated user.
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   const user = await requireUser(userId);
+
+  // Sub-action dispatch — "convert" used to live at /api/items/convert
+  // but was inlined here to stay under Vercel's 12-function Hobby cap.
+  // The action travels in the query string for GET, body for POST.
+  const action = req.method === 'GET' ? req.query?.action : req.body?.action;
+  if (action === 'convert') return convertItem(req, res, user);
 
   switch (req.method) {
     case 'GET': {
@@ -191,3 +215,78 @@ export default wrap(async (req, res) => {
       return methodNotAllowed(res, ['GET', 'POST', 'DELETE']);
   }
 });
+
+// POST /api/items?action=convert
+// Body: { userId, action: 'convert', tcId, plantData }
+// Atomically converts a TC item into a new Plant item.
+async function convertItem(req, res, user) {
+  if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+
+  const { tcId, plantData } = req.body || {};
+  if (!tcId) { const e = new Error('tcId required'); e.status = 400; throw e; }
+  if (!plantData || typeof plantData !== 'object') {
+    const e = new Error('plantData required'); e.status = 400; throw e;
+  }
+
+  const { data: tc, error: tcErr } = await supabase
+    .from('inventory_items')
+    .select('*')
+    .eq('id', tcId)
+    .maybeSingle();
+  if (tcErr) { const e = new Error(tcErr.message); e.status = 500; throw e; }
+  if (!tc) { const e = new Error('TC item not found'); e.status = 404; throw e; }
+  if (tc.type !== 'tc') { const e = new Error('Item is not a TC — cannot convert'); e.status = 400; throw e; }
+  if (tc.status === 'converted') { const e = new Error('Item is already converted'); e.status = 409; throw e; }
+
+  const variety = plantData.variety || tc.variety;
+  const newSku = await nextSkuForVariety(variety);
+  const now = new Date().toISOString();
+
+  const plant = {
+    ...tc,
+    ...plantData,
+    id: newId(),
+    sku: newSku,
+    type: 'plant',
+    status: 'available',
+    saleId: null,
+    lotNumber: null,
+    variety,
+    convertedFromTcId: tc.id,
+    convertedFromSku: tc.sku,
+    convertedAt: now,
+    convertedBy: user.displayName,
+    createdAt: now,
+    createdBy: user.displayName,
+    modifiedAt: null,
+    modifiedBy: null,
+  };
+
+  const { error: insErr } = await supabase.from('inventory_items').insert(plant);
+  if (insErr) {
+    if (insErr.code === '23505' && /sku/i.test(insErr.message || '')) {
+      const e = new Error('SKU collision during conversion. Please retry.'); e.status = 409; throw e;
+    }
+    const e = new Error(insErr.message); e.status = 500; throw e;
+  }
+
+  const { error: updErr } = await supabase
+    .from('inventory_items')
+    .update({
+      status: 'converted',
+      convertedToPlantId: plant.id,
+      modifiedAt: now,
+      modifiedBy: user.displayName,
+    })
+    .eq('id', tc.id);
+  if (updErr) {
+    // Best-effort rollback: delete the plant we just inserted.
+    await supabase.from('inventory_items').delete().eq('id', plant.id);
+    const e = new Error(`Failed to mark TC as converted: ${updErr.message}`); e.status = 500; throw e;
+  }
+
+  res.status(201).json({
+    plant,
+    tc: { ...tc, status: 'converted', convertedToPlantId: plant.id, modifiedAt: now, modifiedBy: user.displayName },
+  });
+}
