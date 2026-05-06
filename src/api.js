@@ -106,6 +106,11 @@ export const api = {
   // Shipments (ShipStation labels). One row per shipmentBoxId.
   getShipments: (saleId) =>
     request(`/shipments${saleId ? `?saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.shipments),
+  // Returns a fresh ~5-minute signed URL for the label PDF. The URL is
+  // either a Supabase Storage signed URL (preferred) or a legacy data:
+  // URL built from the inline labelData blob (older rows).
+  getLabelUrl: (shipmentBoxId) =>
+    request(`/shipments?action=label-url&id=${encodeURIComponent(shipmentBoxId)}`).then(r => r.url),
   buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation }) =>
     request('/shipstation', { method: 'POST', body: { action: 'buy-label', shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation } }).then(r => r.shipment),
   voidLabel: (shipmentBoxId) =>

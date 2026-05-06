@@ -122,6 +122,29 @@ async function buyLabel(req, res, userId) {
 
   const result = await createLabel(payload);
 
+  // Upload the PDF to the `shipping-labels` Storage bucket so the row stays
+  // small. The DB only keeps the path; signed URLs are minted on demand.
+  // Soft-fall-through to inline labelData if the bucket doesn't exist or
+  // the upload fails — better to leave a working but bigger row than to
+  // lose the label after we've already paid for it.
+  let labelStoragePath = null;
+  let labelData = result?.labelData || null;
+  if (labelData) {
+    try {
+      const buf = Buffer.from(labelData, 'base64');
+      const path = `${shipmentBoxId}.pdf`;
+      const { error: upErr } = await supabase
+        .storage
+        .from('shipping-labels')
+        .upload(path, buf, { contentType: 'application/pdf', upsert: true });
+      if (upErr) throw upErr;
+      labelStoragePath = path;
+      labelData = null; // success — no need to store the bytes inline
+    } catch (e) {
+      console.error('[shipstation] label upload to Storage failed; falling back to inline labelData:', e?.message || e);
+    }
+  }
+
   const row = {
     id: shipmentBoxId,
     saleId: sample.saleId || null,
@@ -137,7 +160,8 @@ async function buyLabel(req, res, userId) {
     shipTo: payload.shipTo,
     trackingNumber: result?.trackingNumber || null,
     labelCost: result?.shipmentCost ?? null,
-    labelData: result?.labelData || null,
+    labelData,
+    labelStoragePath,
     shipstationShipmentId: result?.shipmentId ? String(result.shipmentId) : null,
     shipstationLabelId: result?.labelId ? String(result.labelId) : null,
     isTestLabel: !!testLabel,

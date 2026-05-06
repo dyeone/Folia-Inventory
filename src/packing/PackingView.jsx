@@ -299,6 +299,7 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, setConfirmDialog
             key={box.id}
             box={box}
             shipment={shipmentsByBox[box.id]}
+            showToast={showToast}
             onShip={() => onShipBox(box.items.map(i => i.id))}
             onBuyLabel={() => setBuyingFor(box)}
             onVoidLabel={() => {
@@ -340,22 +341,37 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, setConfirmDialog
   );
 }
 
-// Convert the base64 PDF returned by ShipStation into a downloadable blob URL.
-function downloadLabelPdf(shipment) {
-  if (!shipment?.labelData) return;
-  const bytes = atob(shipment.labelData);
-  const buf = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
-  const blob = new Blob([buf], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `label-${shipment.trackingNumber || shipment.id}.pdf`;
-  a.click();
-  URL.revokeObjectURL(url);
+// Fetch a fresh signed URL for the label PDF and either open it (signed
+// URLs from Storage are direct downloads) or convert a legacy data: URL
+// into a blob and download. Signed URLs expire in 5 min so we never cache.
+async function downloadLabelPdf(shipment, showToast) {
+  try {
+    const url = await api.getLabelUrl(shipment.id);
+    if (url.startsWith('data:')) {
+      // Legacy inline label — wrap in a Blob to trigger a download with a
+      // sane filename. Direct <a download href="data:..."> is unreliable.
+      const base64 = url.split(',')[1] || '';
+      const bytes = atob(base64);
+      const buf = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
+      const blob = new Blob([buf], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `label-${shipment.trackingNumber || shipment.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } else {
+      // Storage signed URL — open in a new tab so the browser's PDF
+      // viewer / native print dialog handles it.
+      window.open(url, '_blank', 'noopener');
+    }
+  } catch (e) {
+    showToast?.(e.message || 'Could not open label');
+  }
 }
 
-function ShipBoxCard({ box, shipment, onShip, onBuyLabel, onVoidLabel }) {
+function ShipBoxCard({ box, shipment, showToast, onShip, onBuyLabel, onVoidLabel }) {
   const [open, setOpen] = useState(true);
   const allShipped = box.items.every(i => ['shipped', 'delivered'].includes(i.status));
   const hasActiveLabel = shipment && !shipment.voidedAt;
@@ -457,14 +473,15 @@ function ShipBoxCard({ box, shipment, onShip, onBuyLabel, onVoidLabel }) {
               )}
               <span className="text-gray-400">{shipment.serviceCode}</span>
               <div className="ml-auto flex items-center gap-1">
-                {shipment.labelData && (
-                  <button
-                    onClick={() => downloadLabelPdf(shipment)}
-                    className="flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-50 rounded"
-                  >
-                    <DownloadIcon className="w-3.5 h-3.5" /> Print
-                  </button>
-                )}
+                {/* Print button is always available when a label exists;
+                    the actual PDF (Storage signed URL or legacy base64)
+                    is fetched on demand. */}
+                <button
+                  onClick={() => downloadLabelPdf(shipment, showToast)}
+                  className="flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-50 rounded"
+                >
+                  <DownloadIcon className="w-3.5 h-3.5" /> Print
+                </button>
                 {!allShipped && (
                   <button
                     onClick={onVoidLabel}

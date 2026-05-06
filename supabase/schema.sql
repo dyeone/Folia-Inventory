@@ -289,7 +289,8 @@ create table if not exists shipments (
   "shipTo"                 jsonb       not null,
   "trackingNumber"         text,
   "labelCost"              numeric,
-  "labelData"              text,                                -- base64 PDF
+  "labelData"              text,                                -- legacy: base64 PDF (pre-storage cutover)
+  "labelStoragePath"       text,                                -- path within `shipping-labels` Storage bucket
   "shipstationShipmentId"  text,
   "shipstationLabelId"     text,
   "isTestLabel"            boolean     not null default false,
