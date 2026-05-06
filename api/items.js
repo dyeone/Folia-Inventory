@@ -28,6 +28,31 @@ function stripServerOwned(item) {
   return clean;
 }
 
+// Walk from the global max suffix down to find the first available number.
+// `select sku, order desc, limit 256` is enough headroom that we'd have to
+// be assigning thousands of SKUs in parallel to miss a hole — and even
+// then the unique index on sku catches it and the caller retries.
+//
+// Why not pull every SKU in to find the max? At 10k items, that's 100KB
+// + JS Math.max over 10k entries on every save. Targeted query is O(1).
+async function findMaxSkuSuffix() {
+  const { data, error } = await supabase
+    .from('inventory_items')
+    .select('sku')
+    .order('sku', { ascending: false })
+    .limit(256);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  let max = 0;
+  for (const r of data || []) {
+    const m = String(r.sku || '').match(/-(\d+)$/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > max) max = n;
+    }
+  }
+  return max;
+}
+
 // Assign SKUs to items that don't have one. Numbering is GLOBAL across all
 // items; the variety code is only a prefix for identification. Example
 // sequence: ANT-1, ALO-2, ANT-3, MON-4, JOR-5…
@@ -48,18 +73,7 @@ async function assignMissingSkus(items) {
     }
   }
 
-  // Find the current max suffix across ALL items (regardless of prefix).
-  // Must paginate — Supabase truncates to 1000 rows by default, and missing
-  // higher-numbered SKUs would cause UNIQUE-constraint collisions on insert.
-  const data = await fetchAll(() => supabase.from('inventory_items').select('sku'));
-  const nums = data
-    .map(r => {
-      const m = String(r.sku || '').match(/-(\d+)$/);
-      return m ? parseInt(m[1], 10) : 0;
-    })
-    .filter(n => n > 0);
-  let next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
-
+  let next = (await findMaxSkuSuffix()) + 1;
   for (const item of needSku) {
     item.sku = `${codeByName[item.variety]}-${next++}`;
   }
@@ -79,14 +93,7 @@ async function nextSkuForVariety(variety) {
   if (!code) {
     const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
   }
-  const data = await fetchAll(() => supabase.from('inventory_items').select('sku'));
-  const nums = data
-    .map(r => {
-      const m = String(r.sku || '').match(/-(\d+)$/);
-      return m ? parseInt(m[1], 10) : 0;
-    })
-    .filter(n => n > 0);
-  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  const next = (await findMaxSkuSuffix()) + 1;
   return `${code}-${next}`;
 }
 
@@ -104,9 +111,16 @@ export default wrap(async (req, res) => {
   switch (req.method) {
     case 'GET': {
       // Lazy purge: hard-delete anything in the trash longer than 30 days.
+      // The not-null guard is defense in depth — `lt` already excludes NULL
+      // by SQL semantics, but one ORM quirk would silently nuke production
+      // data, so we make the intent explicit.
       // Best-effort — we don't fail the read if this errors.
       const cutoff = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
-      await supabase.from('inventory_items').delete().lt('deletedAt', cutoff);
+      await supabase
+        .from('inventory_items')
+        .delete()
+        .not('deletedAt', 'is', null)
+        .lt('deletedAt', cutoff);
 
       const data = await fetchAll(() => supabase.from('inventory_items').select('*'));
       return res.status(200).json({ items: data });

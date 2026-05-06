@@ -67,25 +67,65 @@ async function register(req, res) {
   res.status(201).json({ user: stripUser(newUser) });
 }
 
+// Lock an account for this many minutes after this many failed attempts
+// inside the lookback window. Tuned to be annoying to a guesser without
+// punishing a real user who fat-fingers their password a few times.
+const LOGIN_LOCKOUT_THRESHOLD = 10;
+const LOGIN_LOCKOUT_WINDOW_MIN = 15;
+
+async function recordAttempt(username, succeeded, ip) {
+  // Best-effort — we never fail the login on a logging error.
+  await supabase
+    .from('auth_attempts')
+    .insert({ username, succeeded, ip: ip || null })
+    .then(() => {}, () => {});
+}
+
+async function isLockedOut(username) {
+  const since = new Date(Date.now() - LOGIN_LOCKOUT_WINDOW_MIN * 60 * 1000).toISOString();
+  const { count } = await supabase
+    .from('auth_attempts')
+    .select('id', { count: 'exact', head: true })
+    .eq('username', username)
+    .eq('succeeded', false)
+    .gte('attemptedAt', since);
+  return (count ?? 0) >= LOGIN_LOCKOUT_THRESHOLD;
+}
+
 async function login(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
   const { username, password } = req.body || {};
   if (!username?.trim() || !password) {
     const e = new Error('Username and password required'); e.status = 400; throw e;
   }
-
+  // Vercel forwards the original client IP in x-forwarded-for; first hop wins.
+  const ip = (req.headers?.['x-forwarded-for'] || '').split(',')[0].trim() || null;
   const normalized = username.trim().toLowerCase();
+
+  if (await isLockedOut(normalized)) {
+    const e = new Error(`Too many failed attempts — try again in ${LOGIN_LOCKOUT_WINDOW_MIN} minutes`);
+    e.status = 429; throw e;
+  }
+
   const { data: user } = await supabase
     .from('users')
     .select('*')
     .eq('username', normalized)
     .maybeSingle();
 
-  if (!user) { const e = new Error('Invalid username or password'); e.status = 401; throw e; }
+  if (!user) {
+    await recordAttempt(normalized, false, ip);
+    const e = new Error('Invalid username or password'); e.status = 401; throw e;
+  }
   if (!user.active) { const e = new Error('This account has been deactivated'); e.status = 403; throw e; }
 
   const { valid, needsRehash } = verifyPassword(password, user.passwordHash);
-  if (!valid) { const e = new Error('Invalid username or password'); e.status = 401; throw e; }
+  if (!valid) {
+    await recordAttempt(normalized, false, ip);
+    const e = new Error('Invalid username or password'); e.status = 401; throw e;
+  }
+
+  await recordAttempt(normalized, true, ip);
 
   // Opportunistic upgrade from legacy SHA-256 to pbkdf2 — fire and forget.
   if (needsRehash) {

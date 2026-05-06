@@ -235,6 +235,23 @@ where i."speciesId" is null
 create unique index if not exists inventory_items_sku_unique
   on inventory_items (sku);
 
+-- ─── Auth attempts (login rate limiting) ─────────────────────────────────────
+-- One row per attempted login. The auth handler counts recent failures
+-- per username and locks the account for 15 min after 10 failures inside
+-- a 15-minute window. Row is also written on success (succeeded=true) so
+-- we can show "last login" if we ever want to. Old rows are best-effort
+-- purged by the auth handler.
+
+create table if not exists auth_attempts (
+  id          bigserial   primary key,
+  username    text        not null,
+  succeeded   boolean     not null,
+  ip          text,
+  "attemptedAt" timestamptz not null default now()
+);
+create index if not exists auth_attempts_username_time_idx
+  on auth_attempts (username, "attemptedAt" desc);
+
 -- ─── App settings ─────────────────────────────────────────────────────────────
 -- Single-row JSON blob keyed by `id` so we can read/write things like the
 -- ship-from address and ShipStation defaults without a column-by-column
