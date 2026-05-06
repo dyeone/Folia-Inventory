@@ -90,10 +90,29 @@ async function labelUrl(req, res) {
 }
 
 async function recordTracking(req, res, userId) {
-  const { shipmentBoxId, trackingNumber } = req.body || {};
-  if (!shipmentBoxId) { const e = new Error('shipmentBoxId required'); e.status = 400; throw e; }
+  let { shipmentBoxId, trackingNumber, matchByOrderId } = req.body || {};
   const trim = (trackingNumber || '').trim();
   if (!trim) { const e = new Error('trackingNumber required'); e.status = 400; throw e; }
+
+  // Resolve shipmentBoxId from a Palmstreet order number when the caller
+  // (e.g. the Chrome extension) only knows the order id. All items in a
+  // box share the same recipient address so the join via orderId is safe.
+  if (!shipmentBoxId && matchByOrderId) {
+    const { data: matches } = await supabase
+      .from('inventory_items')
+      .select('"shipmentBoxId"')
+      .eq('orderId', String(matchByOrderId).trim())
+      .not('shipmentBoxId', 'is', null)
+      .limit(1);
+    shipmentBoxId = matches?.[0]?.shipmentBoxId || null;
+    if (!shipmentBoxId) {
+      const e = new Error(`No shipment box found for Palmstreet order ${matchByOrderId}`);
+      e.status = 404; throw e;
+    }
+  }
+  if (!shipmentBoxId) {
+    const e = new Error('shipmentBoxId or matchByOrderId required'); e.status = 400; throw e;
+  }
 
   // Refuse to overwrite a real ShipStation row via this endpoint — those
   // must go through the void-label flow first.

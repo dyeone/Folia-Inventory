@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Folia Label Helper — Settings</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="opts">
+    <h1>Folia Label Helper · Settings</h1>
+
+    <section>
+      <h2>Folia Inventory API</h2>
+      <p class="hint">Where the extension POSTs tracking numbers when it finds them.</p>
+
+      <label>
+        <span>API base URL</span>
+        <input id="apiBase" type="url" placeholder="https://your-app.vercel.app" />
+        <small>e.g. <code>https://folia-inventory.vercel.app</code>. No trailing slash.</small>
+      </label>
+
+      <label>
+        <span>User ID</span>
+        <input id="userId" type="text" placeholder="abc123def456" />
+        <small>Find this in your browser's localStorage on the Folia app, key
+          <code>session-current-user</code>. Used for authenticating API calls.</small>
+      </label>
+    </section>
+
+    <section>
+      <h2>Palmstreet selectors</h2>
+      <p class="hint">CSS selectors that tell the extension where to find things on Palmstreet's pages. Open Palmstreet, right-click → Inspect, find the right element, paste a selector here. Update if Palmstreet ever changes their UI.</p>
+
+      <label>
+        <span>Order row on the orders list</span>
+        <input id="selOrderRow" type="text" placeholder='[data-testid="order-row"]' />
+        <small>One element per order in the orders/shipments list.</small>
+      </label>
+
+      <label>
+        <span>Order ID inside an order row</span>
+        <input id="selOrderId" type="text" placeholder='.order-number' />
+        <small>The text element holding the Palmstreet order number. Must be inside the row.</small>
+      </label>
+
+      <label>
+        <span>"Buy label" button (per order)</span>
+        <input id="selBuyButton" type="text" placeholder='button[data-action="buy-label"]' />
+        <small>The button that purchases the USPS label.</small>
+      </label>
+
+      <label>
+        <span>Tracking number text (after label is bought)</span>
+        <input id="selTracking" type="text" placeholder='.tracking-number, [data-testid="tracking"]' />
+        <small>Where the tracking number appears once the label has been generated.</small>
+      </label>
+
+      <label>
+        <span>Already-purchased indicator (optional)</span>
+        <input id="selPurchased" type="text" placeholder='.label-purchased' />
+        <small>Optional element whose presence means "label already bought" — used to skip orders that already have one.</small>
+      </label>
+    </section>
+
+    <section>
+      <h2>Behavior</h2>
+
+      <label class="row">
+        <input id="confirmEachBuy" type="checkbox" checked />
+        <span>Ask for confirmation before each Buy click (recommended)</span>
+      </label>
+
+      <label>
+        <span>Random delay between actions (ms)</span>
+        <div class="row">
+          <input id="delayMin" type="number" min="0" step="100" /> –
+          <input id="delayMax" type="number" min="0" step="100" />
+        </div>
+        <small>Random pause between each order to look human. <code>800–2000</code> is a reasonable default.</small>
+      </label>
+    </section>
+
+    <div class="actions">
+      <button id="save" class="primary">Save</button>
+      <span id="status"></span>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

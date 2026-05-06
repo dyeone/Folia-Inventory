@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Folia Label Helper",
+  "version": "0.1.0",
+  "description": "Sync USPS tracking from Palmstreet orders into Folia Inventory; optionally automate the Buy-label clicks.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": [
+    "https://*.palmstreet.app/*",
+    "https://*.palmstreet.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Folia Label Helper"
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.palmstreet.app/*",
+        "https://*.palmstreet.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

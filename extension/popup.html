@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Folia Label Helper</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="popup">
+    <header>
+      <strong>Folia Label Helper</strong>
+      <a id="openOptions" href="#" title="Settings">⚙︎</a>
+    </header>
+
+    <div id="needsConfig" class="card warn" hidden>
+      <p>Settings not configured yet.</p>
+      <button id="goOptions" class="primary">Open settings</button>
+    </div>
+
+    <div id="notOnPalmstreet" class="card warn" hidden>
+      <p>Open Palmstreet's orders page to use this extension.</p>
+    </div>
+
+    <div id="ready" hidden>
+      <div class="card">
+        <div class="row">
+          <span id="orderCount">—</span>
+          <span class="muted">orders detected on this page</span>
+        </div>
+        <button id="rescan" class="link">Rescan</button>
+      </div>
+
+      <div class="modes">
+        <button id="modeSync" class="mode primary">
+          <strong>Sync tracking only</strong>
+          <small>Read-only · no clicks</small>
+        </button>
+        <button id="modeBuy" class="mode danger">
+          <strong>Buy + sync</strong>
+          <small>Clicks Buy on each order</small>
+        </button>
+      </div>
+
+      <div id="progress" class="card" hidden>
+        <div class="row">
+          <strong id="progLabel">Working…</strong>
+          <button id="stop" class="link">Stop</button>
+        </div>
+        <div class="bar"><div id="progFill"></div></div>
+        <ul id="log" class="log"></ul>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
