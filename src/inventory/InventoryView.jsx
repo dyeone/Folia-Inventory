@@ -152,10 +152,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   // Drop selections that are no longer visible (e.g. filtered out) to avoid
   // acting on rows the user can't see.
   const visibleIds = useMemo(() => new Set(items.map(i => i.id)), [items]);
-  const visibleSelected = useMemo(
-    () => [...selectedIds].filter(id => visibleIds.has(id)),
-    [selectedIds, visibleIds]
-  );
+  const visibleSelected = [...selectedIds].filter(id => visibleIds.has(id));
 
   const toggleSelect = (id) => {
     setSelectedIds(prev => {

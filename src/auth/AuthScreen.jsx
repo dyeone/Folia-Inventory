@@ -20,7 +20,7 @@ export function AuthScreen({ onLogin }) {
         const hasUsers = await api.hasAnyUsers();
         setHasAnyUsers(hasUsers);
         if (!hasUsers) setMode('register');
-      } catch (e) {
+      } catch (_e) {
         setHasAnyUsers(false);
         setMode('register');
       }

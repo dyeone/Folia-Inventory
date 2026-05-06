@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useContext, lazy, Suspense } from 'react';
+import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck,
@@ -59,7 +59,7 @@ export default function InventoryApp() {
             setAuthUserId(user.id);
           }
         }
-      } catch (e) {
+      } catch (_e) {
         localStorage.removeItem('session-current-user');
       }
       setLoadingSession(false);
@@ -152,6 +152,11 @@ function InventorySystem() {
   // { items: [...], title: 'Added N items' } — summary dialog after creation
   const [addSummary, setAddSummary] = useState(null);
 
+  const showToast = useCallback((msg, type = 'success') => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 2500);
+  }, []);
+
   // Split an /items response into active (visible) and trash (soft-deleted)
   // and update both states. Centralizes ordering + the deletedAt partition.
   const applyItemsFresh = (fresh) => {
@@ -182,7 +187,7 @@ function InventorySystem() {
       }
       setLoading(false);
     })();
-  }, []);
+  }, [showToast]);
 
   // Catalog mutations: create immediately to API, optimistic-add to local
   // state so the new item is selectable in the same modal session.
@@ -262,18 +267,13 @@ function InventorySystem() {
     }
   };
 
-  const showToast = (msg, type = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 2500);
-  };
-
   // Server assigns id, createdAt, createdBy, and (if missing) sku.
   // We send the raw item data and let POST /api/items handle the rest,
   // then refresh from the API so the client sees the server-authoritative copy.
   const addItem = async (item) => {
     try {
       // Strip any client-set server-owned fields; let server own them.
-      const { id, createdAt, createdBy, modifiedAt, modifiedBy, sku, ...clean } = item;
+      const { id: _id, createdAt: _createdAt, createdBy: _createdBy, modifiedAt: _modifiedAt, modifiedBy: _modifiedBy, sku: _sku, ...clean } = item;
       // Expand quantity into N separate inventory items, each with its own
       // auto-generated SKU and quantity 1 — matches the bulk-import behavior
       // so a single SKU stays the unit of sale through the live flow.
@@ -836,7 +836,7 @@ function InventorySystem() {
             try {
               // Strip client IDs and timestamps — server generates them,
               // and server re-generates SKUs to guard against races.
-              const clean = newItems.map(({ id, createdAt, createdBy, modifiedAt, modifiedBy, sku, ...rest }) => ({
+              const clean = newItems.map(({ id: _id, createdAt: _createdAt, createdBy: _createdBy, modifiedAt: _modifiedAt, modifiedBy: _modifiedBy, sku: _sku, ...rest }) => ({
                 ...rest,
                 status: rest.status || 'available',
               }));
@@ -899,7 +899,7 @@ function InventorySystem() {
           onCreateSpecies={addSpecies}
           onImport={async (newItems) => {
             try {
-              const clean = newItems.map(({ id, createdAt, createdBy, modifiedAt, modifiedBy, ...rest }) => ({
+              const clean = newItems.map(({ id: _id, createdAt: _createdAt, createdBy: _createdBy, modifiedAt: _modifiedAt, modifiedBy: _modifiedBy, ...rest }) => ({
                 ...rest,
                 status: rest.status || 'available',
               }));

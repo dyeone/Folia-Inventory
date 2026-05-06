@@ -1,4 +1,5 @@
-export function StatCard({ icon: Icon, label, value, sub, color }) {
+export function StatCard({ icon, label, value, sub, color }) {
+  const Icon = icon;
   const colorMap = {
     emerald: 'bg-emerald-50 text-emerald-700',
     blue: 'bg-blue-50 text-blue-700',

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { ArrowRightLeft } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
@@ -34,16 +34,15 @@ export function ConvertModal({
 
   const [pick, setPick] = useState(initialPick);
   const [form, setForm] = useState({
-    sku: '',
     cost: item.cost || '',
     listingPrice: '',
     notes: item.notes || '',
     quantity: item.quantity || 1,
   });
 
-  useEffect(() => {
+  const sku = useMemo(() => {
     const v = varieties.find(x => x.id === pick.varietyId);
-    setForm(f => ({ ...f, sku: nextSkuForCode(v?.code, existingItems) }));
+    return nextSkuForCode(v?.code, existingItems);
   }, [pick.varietyId, varieties, existingItems]);
 
   return (
@@ -55,7 +54,7 @@ export function ConvertModal({
         </div>
         <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-xs">
           <span className="text-gray-500">New Plant SKU (auto-assigned)</span>
-          <span className="font-mono font-bold text-gray-900">{form.sku || '—'}</span>
+          <span className="font-mono font-bold text-gray-900">{sku || '—'}</span>
         </div>
 
         <SpeciesPicker
@@ -86,11 +85,12 @@ export function ConvertModal({
           <button
             onClick={() => onConvert({
               ...form,
+              sku,
               name: pick.speciesEpithet,
               variety: pick.varietyName,
               speciesId: pick.speciesId || null,
             })}
-            disabled={!form.sku || !pick.speciesEpithet}
+            disabled={!sku || !pick.speciesEpithet}
             className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-gray-300 text-white rounded-lg flex items-center gap-1.5"
           >
             <ArrowRightLeft className="w-4 h-4" /> Convert

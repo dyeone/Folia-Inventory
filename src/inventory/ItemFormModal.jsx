@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
@@ -61,11 +61,11 @@ export function ItemFormModal({
   const [err, setErr] = useState('');
 
   // Auto-generate the SKU from the selected variety (new items only).
-  useEffect(() => {
-    if (isEditing) return;
+  const sku = useMemo(() => {
+    if (isEditing) return form.sku;
     const v = varieties.find(x => x.id === pick.varietyId);
-    setForm(f => ({ ...f, sku: nextSkuForCode(v?.code, existingItems) }));
-  }, [isEditing, pick.varietyId, varieties, existingItems]);
+    return nextSkuForCode(v?.code, existingItems);
+  }, [isEditing, form.sku, pick.varietyId, varieties, existingItems]);
 
   const recalcIdeal = (netCost, profitRate) => {
     const c = parseFloat(netCost);
@@ -89,13 +89,14 @@ export function ItemFormModal({
     setErr('');
     if (!pick.varietyId) return setErr('Variety is required');
     if (!pick.speciesEpithet) return setErr('Species is required');
-    if (!form.sku) return setErr('SKU could not be generated');
-    if (!isEditing && existingItems.some(i => i.sku === form.sku)) {
-      return setErr(`SKU "${form.sku}" already exists. Please retry.`);
+    if (!sku) return setErr('SKU could not be generated');
+    if (!isEditing && existingItems.some(i => i.sku === sku)) {
+      return setErr(`SKU "${sku}" already exists. Please retry.`);
     }
     const grossCost = numOrNull(form.grossCost);
     onSave({
       ...form,
+      sku,
       // Denormalized columns kept in sync from the catalog pick so the
       // existing inventory list / search / sale matching keep working.
       variety: pick.varietyName,
@@ -146,7 +147,7 @@ export function ItemFormModal({
 
         <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-xs">
           <span className="text-gray-500">{isEditing ? 'SKU' : 'SKU (auto-assigned)'}</span>
-          <span className="font-mono font-bold text-gray-900">{form.sku || '—'}</span>
+          <span className="font-mono font-bold text-gray-900">{sku || '—'}</span>
         </div>
 
         <div className="border-t border-gray-200 pt-3">

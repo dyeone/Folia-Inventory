@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { AlertCircle, Plus } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
@@ -28,13 +28,13 @@ export function BatchVarietyModal({
   });
   const [err, setErr] = useState('');
 
-  useEffect(() => {
+  const calculatedIdealPrice = useMemo(() => {
     const c = parseFloat(form.netCost);
     const p = parseFloat(form.profitRate);
-    if (!isNaN(c) && !isNaN(p)) {
-      setForm(f => ({ ...f, idealPrice: (c * (1 + p / 100)).toFixed(2) }));
-    }
+    if (!isNaN(c) && !isNaN(p)) return (c * (1 + p / 100)).toFixed(2);
+    return '';
   }, [form.netCost, form.profitRate]);
+  const idealPrice = form.idealPrice || calculatedIdealPrice;
 
   const previewSkus = useMemo(() => {
     const v = varieties.find(x => x.id === pick.varietyId);
@@ -72,8 +72,8 @@ export function BatchVarietyModal({
       cost: form.grossCost,
       netCost: form.netCost,
       profitRate: form.profitRate,
-      idealPrice: form.idealPrice,
-      listingPrice: form.listingPrice || form.idealPrice,
+      idealPrice,
+      listingPrice: form.listingPrice || idealPrice,
       source: form.source,
       acquiredAt: form.acquiredAt,
       notes: form.notes,
@@ -83,7 +83,7 @@ export function BatchVarietyModal({
   };
 
   const totalInvestment = (parseFloat(form.netCost) || 0) * (parseInt(form.quantity) || 0);
-  const totalPotential = (parseFloat(form.idealPrice) || 0) * (parseInt(form.quantity) || 0);
+  const totalPotential = (parseFloat(idealPrice) || 0) * (parseInt(form.quantity) || 0);
   const totalProfit = totalPotential - totalInvestment;
 
   return (
@@ -148,7 +148,7 @@ export function BatchVarietyModal({
               <input type="number" step="1" value={form.profitRate} onChange={(e) => setForm({ ...form, profitRate: e.target.value })} className="input" placeholder="200" />
             </Field>
             <Field label="Ideal Sale Price">
-              <input type="number" step="0.01" value={form.idealPrice} onChange={(e) => setForm({ ...form, idealPrice: e.target.value })} className="input bg-emerald-50/50" />
+              <input type="number" step="0.01" value={idealPrice} onChange={(e) => setForm({ ...form, idealPrice: e.target.value })} className="input bg-emerald-50/50" />
             </Field>
           </div>
           <div className="mt-3">

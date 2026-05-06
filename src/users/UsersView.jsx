@@ -11,18 +11,20 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
   const [resetPasswordFor, setResetPasswordFor] = useState(null);
 
   useEffect(() => {
-    loadUsers();
-  }, []);
-
-  const loadUsers = async () => {
-    try {
-      const data = await api.getUsers();
-      setUsers(data);
-    } catch (e) {
-      showToast(e.message || 'Failed to load users', 'error');
-    }
-    setLoading(false);
-  };
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await api.getUsers();
+        if (!cancelled) setUsers(data);
+      } catch (e) {
+        showToast(e.message || 'Failed to load users', 'error');
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showToast]);
 
   const changeRole = async (userId, newRole) => {
     if (userId === currentUser.id) return showToast("You can't change your own role", 'error');

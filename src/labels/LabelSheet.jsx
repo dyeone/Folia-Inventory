@@ -17,7 +17,7 @@ function Label({ item }) {
           margin: 0,
           displayValue: false, // SKU is shown separately above
         });
-      } catch (e) {
+      } catch (_e) {
         // ignore — invalid SKU characters leave the svg blank
       }
     }
