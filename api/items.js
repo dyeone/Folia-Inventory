@@ -1,6 +1,5 @@
 import { supabase, requireUser, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
-import { VARIETY_CODES } from '../src/constants.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 const SERVER_OWNED = ['createdAt', 'createdBy', 'modifiedAt', 'modifiedBy'];
@@ -67,13 +66,21 @@ async function assignMissingSkus(items) {
 }
 
 // Pick the next global SKU number for a given variety. Used by /convert.
+// Variety codes live in the `varieties` table (the old VARIETY_CODES
+// constants.js export is gone) so we look them up here.
 async function nextSkuForVariety(variety) {
-  const code = VARIETY_CODES[variety];
+  const { data: row, error: vErr } = await supabase
+    .from('varieties')
+    .select('code')
+    .eq('name', variety)
+    .maybeSingle();
+  if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
+  const code = row?.code;
   if (!code) {
     const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
   }
-  const { data } = await supabase.from('inventory_items').select('sku');
-  const nums = (data || [])
+  const data = await fetchAll(() => supabase.from('inventory_items').select('sku'));
+  const nums = data
     .map(r => {
       const m = String(r.sku || '').match(/-(\d+)$/);
       return m ? parseInt(m[1], 10) : 0;
