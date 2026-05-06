@@ -5,15 +5,14 @@ import {
 } from 'lucide-react';
 import { api } from '../api.js';
 
-// Fetch a fresh signed URL for the label PDF and either open it (signed
-// URLs from Storage are direct downloads) or convert a legacy data: URL
-// into a blob and download. Signed URLs expire in 5 min so we never cache.
-async function downloadLabelPdf(shipment, showToast) {
+// Fetch a fresh signed URL for one of the shipment PDFs (label or slip)
+// and open it in a new tab. Falls back to a Blob download for legacy
+// data: URLs (pre-Storage rows) since direct <a href="data:..."> downloads
+// don't always trigger correctly.
+async function downloadShipmentPdf(shipment, kind, showToast) {
   try {
-    const url = await api.getLabelUrl(shipment.id);
+    const url = await api.getLabelUrl(shipment.id, kind);
     if (url.startsWith('data:')) {
-      // Legacy inline label — wrap in a Blob to trigger a download with a
-      // sane filename. Direct <a download href="data:..."> is unreliable.
       const base64 = url.split(',')[1] || '';
       const bytes = atob(base64);
       const buf = new Uint8Array(bytes.length);
@@ -22,16 +21,14 @@ async function downloadLabelPdf(shipment, showToast) {
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = blobUrl;
-      a.download = `label-${shipment.trackingNumber || shipment.id}.pdf`;
+      a.download = `${kind}-${shipment.trackingNumber || shipment.id}.pdf`;
       a.click();
       URL.revokeObjectURL(blobUrl);
     } else {
-      // Storage signed URL — open in a new tab so the browser's PDF
-      // viewer / native print dialog handles it.
       window.open(url, '_blank', 'noopener');
     }
   } catch (e) {
-    showToast?.(e.message || 'Could not open label');
+    showToast?.(e.message || `Could not open ${kind}`);
   }
 }
 
@@ -229,12 +226,23 @@ export function ShipBoxCard({
                 {isPalmstreetRow ? 'Palmstreet USPS' : shipment.serviceCode}
               </span>
               <div className="ml-auto flex items-center gap-1">
-                {!isPalmstreetRow && (
+                {/* Label PDF — exists for ShipStation rows AND for Palmstreet
+                    rows that came through the Chrome extension flow. */}
+                {(shipment.labelStoragePath || (!isPalmstreetRow)) && (
                   <button
-                    onClick={() => downloadLabelPdf(shipment, showToast)}
+                    onClick={() => downloadShipmentPdf(shipment, 'label', showToast)}
                     className="flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-50 rounded"
                   >
-                    <DownloadIcon className="w-3.5 h-3.5" /> Print
+                    <DownloadIcon className="w-3.5 h-3.5" /> Label
+                  </button>
+                )}
+                {/* Packing slip — only Palmstreet flow currently provides this. */}
+                {shipment.shippingSlipStoragePath && (
+                  <button
+                    onClick={() => downloadShipmentPdf(shipment, 'slip', showToast)}
+                    className="flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-50 rounded"
+                  >
+                    <DownloadIcon className="w-3.5 h-3.5" /> Slip
                   </button>
                 )}
                 {!allShipped && isPalmstreetRow && (

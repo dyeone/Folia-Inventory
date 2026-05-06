@@ -291,6 +291,7 @@ create table if not exists shipments (
   "labelCost"              numeric,
   "labelData"              text,                                -- legacy: base64 PDF (pre-storage cutover)
   "labelStoragePath"       text,                                -- path within `shipping-labels` Storage bucket
+  "shippingSlipStoragePath" text,                               -- second PDF: packing slip (Palmstreet flow)
   "shipstationShipmentId"  text,
   "shipstationLabelId"     text,
   "isTestLabel"            boolean     not null default false,

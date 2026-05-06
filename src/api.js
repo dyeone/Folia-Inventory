@@ -106,11 +106,10 @@ export const api = {
   // Shipments (ShipStation labels). One row per shipmentBoxId.
   getShipments: (saleId) =>
     request(`/shipments${saleId ? `?saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.shipments),
-  // Returns a fresh ~5-minute signed URL for the label PDF. The URL is
-  // either a Supabase Storage signed URL (preferred) or a legacy data:
-  // URL built from the inline labelData blob (older rows).
-  getLabelUrl: (shipmentBoxId) =>
-    request(`/shipments?action=label-url&id=${encodeURIComponent(shipmentBoxId)}`).then(r => r.url),
+  // Returns a fresh ~5-minute signed URL for one of the shipment PDFs.
+  // kind = 'label' (default) or 'slip'.
+  getLabelUrl: (shipmentBoxId, kind = 'label') =>
+    request(`/shipments?action=label-url&id=${encodeURIComponent(shipmentBoxId)}&kind=${kind}`).then(r => r.url),
   // USPS-via-Palmstreet: operator enters the tracking number after
   // generating the label in Palmstreet. Inserts a manual shipments row.
   recordPalmstreetTracking: (shipmentBoxId, trackingNumber) =>
