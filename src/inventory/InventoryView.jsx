@@ -349,7 +349,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                           <Plus className="w-4 h-4" />
                         </button>
                       )}
-                      <span className="text-xs text-gray-500 whitespace-nowrap">
+                      <span className="text-xs text-gray-500 whitespace-nowrap tabular-nums w-16 text-right">
                         {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
                       </span>
                     </div>
@@ -552,7 +552,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                                   <Plus className="w-4 h-4" />
                                 </button>
                               )}
-                              <span className="text-xs text-gray-500">
+                              <span className="text-xs text-gray-500 tabular-nums w-16 text-right">
                                 {group.items.length} {group.items.length === 1 ? 'item' : 'items'}
                               </span>
                             </div>
