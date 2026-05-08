@@ -7,13 +7,38 @@ import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
 import { matchInventory } from '../packing/matchInventory.js';
 import { BoxesList, InventoryPicker, SummaryStat } from '../packing/PackingView.jsx';
 
-// Step 3 of the sale-event lifecycle: upload the Palmstreet sales report,
-// match each row to a lineup item, then mark items sold and create the
-// shipment box assignment that the Packing tab will later draw on.
-export function SalesUploadModal({ sale, items, onApply, onClose }) {
+// Validate Sales modal: upload the Palmstreet sales report, match each
+// row to an inventory item, then update inventory (mark sold, save sale
+// price, persist buyer / order / shipment-box info that the Packing tab
+// will later draw on).
+//
+// Two entry points:
+//   - From a specific sale (per-sale step 3) — `sale` is pre-selected.
+//   - From the Sale tab's top-level "Validate Sales" button — `sale` is
+//     null and the operator picks from `sales` inside the modal.
+export function SalesUploadModal({ sale: presetSale, sales = [], items, onApply, onClose }) {
+  // Internal sale state defaults to whichever sale (if any) the caller
+  // passed in. The picker below mutates this when the modal is opened
+  // without a pre-selected sale.
+  const [selectedSale, setSelectedSale] = useState(presetSale || null);
+  const sale = selectedSale;
+
+  // Sales offered in the picker — exclude already-closed events (their
+  // items are shipped + finalized). Most-recent first.
+  const pickableSales = useMemo(
+    () => [...sales]
+      .filter(s => s.status !== 'closed')
+      .sort((a, b) => {
+        const da = a.startTime || a.date || a.createdAt || '';
+        const db = b.startTime || b.date || b.createdAt || '';
+        return db.localeCompare(da);
+      }),
+    [sales],
+  );
+
   const saleItems = useMemo(
-    () => items.filter(i => i.saleId === sale.id),
-    [items, sale.id]
+    () => sale ? items.filter(i => i.saleId === sale.id) : [],
+    [items, sale],
   );
 
   const [fileName, setFileName] = useState('');
@@ -131,7 +156,7 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-gray-900 text-base sm:text-lg flex items-center gap-2">
               <Upload className="w-5 h-5 text-emerald-600" />
-              Validate Sales · <span className="truncate">{sale.name}</span>
+              Validate Sales{sale ? <> · <span className="truncate">{sale.name}</span></> : null}
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
               Match each Palmstreet order to its inventory item, then update inventory.
@@ -143,7 +168,42 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-4">
-          {!boxes ? (
+          {/* Sale picker — shown when the modal is opened from the top-level
+              "Validate Sales" button (no preset sale). The dropdown lists
+              every active/packing sale, most recent first. */}
+          {!presetSale && (
+            <label className="block">
+              <span className="block text-sm font-medium text-gray-700 mb-1">Sale event</span>
+              <select
+                value={sale?.id || ''}
+                onChange={(e) => {
+                  const next = pickableSales.find(s => s.id === e.target.value) || null;
+                  setSelectedSale(next);
+                  // Reset any in-flight upload + matches when switching sales.
+                  setBoxes(null); setFileName(''); setOverrides({}); setErr('');
+                }}
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              >
+                <option value="">— Select a sale event —</option>
+                {pickableSales.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}{s.startTime ? ` · ${new Date(s.startTime).toLocaleDateString()}` : s.date ? ` · ${s.date}` : ''}{s.status ? ` · ${s.status}` : ''}
+                  </option>
+                ))}
+              </select>
+              {pickableSales.length === 0 && (
+                <small className="text-xs text-amber-700 mt-1 block">
+                  No active sale events. Create one first, or re-open a closed sale.
+                </small>
+              )}
+            </label>
+          )}
+
+          {!sale ? (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-600 text-center">
+              Pick a sale event above to upload its Palmstreet orders file.
+            </div>
+          ) : !boxes ? (
             <>
               <label className="block">
                 <div className="border-2 border-dashed border-gray-300 rounded-xl p-12 sm:p-16 text-center hover:border-emerald-400 hover:bg-emerald-50/50 active:bg-emerald-50 cursor-pointer transition">

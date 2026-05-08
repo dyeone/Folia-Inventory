@@ -121,6 +121,9 @@ function InventorySystem() {
   const [editingSale, setEditingSale] = useState(null);
   const [showLineupBuilder, setShowLineupBuilder] = useState(false);
   const [lineupSale, setLineupSale] = useState(null);
+  // uploadSale: which sale to validate against. A non-null value opens
+  // SalesUploadModal pre-selected; the sentinel string '__pick__' opens
+  // the modal in pick-a-sale mode (top-level Validate Sales button).
   const [uploadSale, setUploadSale] = useState(null);
   const [liveSale, setLiveSale] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
@@ -699,6 +702,7 @@ function InventorySystem() {
               }
             }}
             onUploadSalesReport={(sale) => setUploadSale(sale)}
+            onValidateSales={() => setUploadSale('__pick__')}
             onGoLive={(sale) => setLiveSale(sale)}
             onSendToPacking={async (sale) => {
               try {
@@ -982,7 +986,10 @@ function InventorySystem() {
       )}
       {uploadSale && (
         <SalesUploadModal
-          sale={uploadSale}
+          // '__pick__' sentinel = top-level entry point; modal renders its
+          // own sale picker. Any other truthy value is a real sale object.
+          sale={uploadSale === '__pick__' ? null : uploadSale}
+          sales={sales}
           items={items}
           onApply={async (updates) => {
             try {

@@ -26,7 +26,7 @@ function formatStart(sale) {
 
 export function SalesView({
   sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
-  onUploadSalesReport, onSendToPacking, onGoLive, isAdmin,
+  onUploadSalesReport, onSendToPacking, onGoLive, onValidateSales, isAdmin,
 }) {
   const [tab, setTab] = useState('active');
 
@@ -44,9 +44,20 @@ export function SalesView({
           <h2 className="text-lg font-semibold text-gray-900">Sale Events</h2>
           <p className="text-sm text-gray-500 mt-0.5">From lineup to packed boxes — track each event end-to-end</p>
         </div>
-        <button onClick={onCreate} className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-medium rounded-lg self-start sm:self-auto">
-          <Plus className="w-4 h-4" /> New Sale Event
-        </button>
+        <div className="flex flex-wrap gap-2 self-start sm:self-auto">
+          {onValidateSales && (
+            <button
+              onClick={onValidateSales}
+              title="Match a Palmstreet orders file against any sale's lineup, then update inventory"
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 text-sm font-medium rounded-lg"
+            >
+              <Upload className="w-4 h-4" /> Validate Sales
+            </button>
+          )}
+          <button onClick={onCreate} className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-medium rounded-lg">
+            <Plus className="w-4 h-4" /> New Sale Event
+          </button>
+        </div>
       </div>
 
       <div className="flex gap-1 bg-gray-100 p-1 rounded-lg w-fit">
