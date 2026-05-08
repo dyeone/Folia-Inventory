@@ -29,6 +29,31 @@ function isServiceLine(title, price) {
   return false;
 }
 
+// Sellers sometimes bundle several inventory items into one Palmstreet
+// listing — the title looks like
+//   "Pink BV (ALO-662), Macodes DF (JWL-1774), BFF (JWL-1077)"
+// and the SKU column is blank, so the inventory matcher can't link any
+// of them. Detect that shape and split into one virtual item per SKU so
+// each one matches and gets marked sold.
+//
+// Returns an array of { name, sku } when the title is a clean bundle,
+// or null when it's a normal single-item title (caller leaves as-is).
+const SKU_AT_END = /^(.+?)\s*\(\s*([A-Z]{2,4}-\d+)\s*\)\s*$/;
+
+function splitBundledTitle(title) {
+  const t = String(title || '').trim();
+  if (!t) return null;
+  const chunks = t.split(/\s*,\s*/);
+  if (chunks.length < 2) return null;
+  const out = [];
+  for (const chunk of chunks) {
+    const m = chunk.match(SKU_AT_END);
+    if (!m) return null; // any chunk failing aborts the split
+    out.push({ name: m[1].trim(), sku: m[2].toUpperCase() });
+  }
+  return out;
+}
+
 function pick(row, ...keys) {
   for (const k of keys) {
     if (row[k] !== undefined && row[k] !== null && row[k] !== '') return row[k];
@@ -116,6 +141,27 @@ export function parsePalmstreetOrders(rows) {
     if (isUpsUpgradeLine(title)) box.carrier = 'ups';
 
     if (isServiceLine(title, price)) return;
+
+    // Bundled rows ("Pink BV (ALO-662), Macodes DF (JWL-1774), …") split
+    // into one virtual item per parenthesized SKU so the inventory matcher
+    // can hit each by exact SKU. Quantity carries through; price is split
+    // evenly so the financial roll-up doesn't double-count.
+    const bundled = splitBundledTitle(title);
+    if (bundled && bundled.length > 1) {
+      const each = price / bundled.length;
+      bundled.forEach((b, i) => {
+        box.items.push({
+          rowKey: `r${idx}_${i}`,
+          title: b.name,
+          sku: b.sku,
+          quantity,
+          price: Number.isFinite(each) ? each : 0,
+          orderNumber: orderNum,
+          orderDate: orderDateIso,
+        });
+      });
+      return;
+    }
 
     box.items.push({
       rowKey: `r${idx}`,
