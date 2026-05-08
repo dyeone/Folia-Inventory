@@ -8,7 +8,7 @@ import * as XLSX from 'xlsx';
 import { parseCashflow, buildRefundUpdates } from './parseCashflow.js';
 import {
   SOLD_STATUSES, RANGES, todayIso, daysAgoIso,
-  fmt$, fmt$2, fmtPct, inRange, rollup,
+  fmt$, fmt$2, fmtPct, inRange, rollup, effectiveRevenue,
 } from './financialHelpers.js';
 import { Kpi, PctBadge, StatusBadge, MonthlyDelta, ProfitTrendByName } from './FinancialChrome.jsx';
 
