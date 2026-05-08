@@ -29,38 +29,39 @@ function isServiceLine(title, price) {
   return false;
 }
 
-// Sellers sometimes bundle several inventory items into one Palmstreet
-// listing — the title looks like
-//   "Pink BV (ALO-662), Macodes DF (JWL-1774), BFF (JWL-1077)"
-// and the SKU column is blank, so the inventory matcher can't link any
-// of them. Detect that shape and split into one virtual item per SKU so
-// each one matches and gets marked sold.
+// Pull every SKU pattern out of an order title. The matcher resolves
+// each one to an inventory item so a single Palmstreet line that bundles
+// multiple plants becomes one match per SKU.
 //
-// Returns an array of { name, sku } when the title is a clean bundle,
-// or null when it's a normal single-item title (caller leaves as-is).
+// Recognized SKU shapes:
+//   ALO-142          bare prefix-number anywhere in the title
+//   Alo-142          lowercase prefix (operators are sloppy)
+//   (ALO-142)        parenthesized — the bundled-title convention
+//   (1589)           bare number in parens; matcher resolves by suffix
+//                    against the (globally unique) inventory SKU number
 //
-// Accepted SKU shapes inside the parens (case-insensitive):
-//   ALO-142     standard prefix-number
-//   Alo-142     lowercase prefix (operators don't always type uppercase)
-//   1589        bare number (matcher resolves by suffix to the unique SKU)
-const SKU_AT_END = /^(.+?)\s*\(\s*([A-Z]{2,4}-\d+|\d+)\s*\)\s*$/i;
+// Bare numbers are only honored when parenthesized — bare digits in
+// running text are too ambiguous (could be qty, year, count, etc.).
+const SKU_PATTERN = /\(\s*([A-Za-z]{2,4}-\d+|\d+)\s*\)|\b([A-Za-z]{2,4}-\d+)\b/g;
 
 function normalizeSku(raw) {
   const s = String(raw || '').trim();
-  // prefix-number → uppercase the prefix; bare digits left as-is
   return /^[A-Za-z]{2,4}-\d+$/.test(s) ? s.toUpperCase() : s;
 }
 
-function splitBundledTitle(title) {
-  const t = String(title || '').trim();
-  if (!t) return null;
-  const chunks = t.split(/\s*,\s*/);
-  if (chunks.length < 2) return null;
+function extractAllSkus(title) {
+  const t = String(title || '');
+  const seen = new Set();
   const out = [];
-  for (const chunk of chunks) {
-    const m = chunk.match(SKU_AT_END);
-    if (!m) return null; // any chunk failing aborts the split
-    out.push({ name: m[1].trim(), sku: normalizeSku(m[2]) });
+  let m;
+  SKU_PATTERN.lastIndex = 0;
+  while ((m = SKU_PATTERN.exec(t)) !== null) {
+    const raw = m[1] || m[2];
+    if (!raw) continue;
+    const norm = normalizeSku(raw);
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
   }
   return out;
 }
@@ -153,18 +154,21 @@ export function parsePalmstreetOrders(rows) {
 
     if (isServiceLine(title, price)) return;
 
-    // Bundled rows ("Pink BV (ALO-662), Macodes DF (JWL-1774), …") split
-    // into one virtual item per parenthesized SKU so the inventory matcher
-    // can hit each by exact SKU. Quantity carries through; price is split
-    // evenly so the financial roll-up doesn't double-count.
-    const bundled = splitBundledTitle(title);
-    if (bundled && bundled.length > 1) {
-      const each = price / bundled.length;
-      bundled.forEach((b, i) => {
+    // Find every SKU mentioned in the title. Two SKUs ⇒ this is a
+    // bundled row; emit one virtual item per SKU with even price split.
+    // One SKU ⇒ override Palmstreet's (often empty) sku column with the
+    // one parsed from the title. Zero ⇒ fall back to whatever Palmstreet
+    // gave us; the matcher will return null and the operator can link
+    // manually via the InventoryPicker.
+    const skusInTitle = extractAllSkus(title);
+
+    if (skusInTitle.length > 1) {
+      const each = price / skusInTitle.length;
+      skusInTitle.forEach((sk, i) => {
         box.items.push({
           rowKey: `r${idx}_${i}`,
-          title: b.name,
-          sku: b.sku,
+          title,                 // keep full title for context in the UI
+          sku: sk,
           quantity,
           price: Number.isFinite(each) ? each : 0,
           orderNumber: orderNum,
@@ -174,10 +178,11 @@ export function parsePalmstreetOrders(rows) {
       return;
     }
 
+    const resolvedSku = skusInTitle[0] || sku;
     box.items.push({
       rowKey: `r${idx}`,
       title,
-      sku,
+      sku: resolvedSku,
       quantity,
       price,
       orderNumber: orderNum,

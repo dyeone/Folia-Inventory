@@ -1,24 +1,15 @@
-// Match a Palmstreet order item to an inventory item.
+// Match a Palmstreet order item to an inventory item, by SKU only.
 // Strategy (in order):
-//   1. Exact SKU match against inventory.sku
-//   2. Leading token from item title matches inventory.sku or inventory.lotNumber
-//      (Palmstreet titles often start with a lot # like "10 Alocasia ..." or
-//      an internal code like "A0021 monstera ...")
-//   3. Fuzzy token overlap on inventory.name + inventory.variety
+//   1.  Exact SKU match (case-insensitive).
+//   1b. Bare-number SKU: resolve by suffix (-{number}) against the
+//       globally-unique inventory numbering.
+//   2.  Leading lot/SKU token in the title — catches sale events that
+//       use lot numbers ("10 Alocasia …" → lotNumber 10).
+// Fuzzy name matching used to live here but produced too many wrong
+// links; it's been removed by request. Unmatched rows surface "No
+// inventory match" and the operator links them manually.
 //
-// Returns { item, confidence } or null. Confidence: 'sku' | 'lot' | 'fuzzy'.
-
-const STOP_WORDS = new Set([
-  'a', 'an', 'the', 'and', 'or', 'with', 'plant', 'plants', 'pink', 'green',
-]);
-
-function tokenize(s) {
-  return String(s || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(t => t.length >= 3 && !STOP_WORDS.has(t));
-}
+// Returns { item, confidence } or null. Confidence: 'sku' | 'lot'.
 
 function leadingToken(title) {
   const m = String(title || '').trim().match(/^([A-Za-z]?\d+)\b/);
@@ -52,7 +43,8 @@ export function matchInventory(palmItem, inventoryItems) {
     if (tailHits.length === 1) return { item: tailHits[0], confidence: 'sku' };
   }
 
-  // 2. Leading token vs SKU/lotNumber
+  // 2. Leading token vs SKU/lotNumber. Catches sale events with lot
+  // numbers (e.g. title "10 Alocasia bla bla" → inventory.lotNumber=10).
   const lead = leadingToken(palmItem.title);
   if (lead) {
     const skuLeadHit = candidates.find(i => String(i.sku || '').toLowerCase() === lead);
@@ -61,29 +53,6 @@ export function matchInventory(palmItem, inventoryItems) {
     if (lotHit) return { item: lotHit, confidence: 'lot' };
   }
 
-  // 3. Fuzzy token overlap. Strip the leading code from the title before
-  // tokenizing so we score on the descriptive part only.
-  const cleanedTitle = String(palmItem.title || '').replace(/^[A-Za-z]?\d+\s+/, '');
-  const tokens = tokenize(cleanedTitle);
-  if (tokens.length === 0) return null;
-
-  let best = null;
-  let bestScore = 0;
-  for (const inv of candidates) {
-    const text = `${inv.name || ''} ${inv.variety || ''}`.toLowerCase();
-    let score = 0;
-    for (const t of tokens) {
-      if (text.includes(t)) score += 1;
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      best = inv;
-    }
-  }
-  // Require at least 2 token hits, or at least half the tokens for short titles.
-  const threshold = Math.max(2, Math.ceil(tokens.length / 2));
-  if (best && bestScore >= threshold) {
-    return { item: best, confidence: 'fuzzy' };
-  }
+  // No SKU resolved — no fuzzy fallback. Operator picks manually.
   return null;
 }
