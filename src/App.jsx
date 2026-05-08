@@ -121,10 +121,8 @@ function InventorySystem() {
   const [editingSale, setEditingSale] = useState(null);
   const [showLineupBuilder, setShowLineupBuilder] = useState(false);
   const [lineupSale, setLineupSale] = useState(null);
-  // uploadSale: which sale to validate against. A non-null value opens
-  // SalesUploadModal pre-selected; the sentinel string '__pick__' opens
-  // the modal in pick-a-sale mode (top-level Validate Sales button).
-  const [uploadSale, setUploadSale] = useState(null);
+  // Validate Sales modal — global, not per-sale-event. Boolean toggle.
+  const [showValidateSales, setShowValidateSales] = useState(false);
   const [liveSale, setLiveSale] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [convertingItem, setConvertingItem] = useState(null);
@@ -701,8 +699,7 @@ function InventorySystem() {
                 showToast(e.message || 'Failed to record export', 'error');
               }
             }}
-            onUploadSalesReport={(sale) => setUploadSale(sale)}
-            onValidateSales={() => setUploadSale('__pick__')}
+            onValidateSales={() => setShowValidateSales(true)}
             onGoLive={(sale) => setLiveSale(sale)}
             onSendToPacking={async (sale) => {
               try {
@@ -984,12 +981,8 @@ function InventorySystem() {
           setConfirmDialog={setConfirmDialog}
         />
       )}
-      {uploadSale && (
+      {showValidateSales && (
         <SalesUploadModal
-          // '__pick__' sentinel = top-level entry point; modal renders its
-          // own sale picker. Any other truthy value is a real sale object.
-          sale={uploadSale === '__pick__' ? null : uploadSale}
-          sales={sales}
           items={items}
           onApply={async (updates) => {
             try {
@@ -997,12 +990,12 @@ function InventorySystem() {
               const fresh = await api.getItems();
               applyItemsFresh(fresh);
               showToast(`Marked ${updates.length} ${updates.length === 1 ? 'item' : 'items'} sold`);
-              setUploadSale(null);
+              setShowValidateSales(false);
             } catch (e) {
               showToast(e.message || 'Apply failed', 'error');
             }
           }}
-          onClose={() => setUploadSale(null)}
+          onClose={() => setShowValidateSales(false)}
         />
       )}
       {editingSale && (

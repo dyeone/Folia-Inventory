@@ -26,7 +26,7 @@ function formatStart(sale) {
 
 export function SalesView({
   sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
-  onUploadSalesReport, onSendToPacking, onGoLive, onValidateSales, isAdmin,
+  onSendToPacking, onGoLive, onValidateSales, isAdmin,
 }) {
   const [tab, setTab] = useState('active');
 
@@ -98,7 +98,6 @@ export function SalesView({
               isAdmin={isAdmin}
               onBuildLineup={() => onBuildLineup(sale)}
               onExportCsv={() => onExportCsv(sale)}
-              onUploadSalesReport={() => onUploadSalesReport(sale)}
               onSendToPacking={() => onSendToPacking(sale)}
               onGoLive={() => onGoLive(sale)}
               onEdit={() => onEdit(sale)}
@@ -113,7 +112,7 @@ export function SalesView({
 
 function SaleCard({
   sale, items, isAdmin,
-  onBuildLineup, onExportCsv, onUploadSalesReport, onSendToPacking, onGoLive, onEdit, onDelete,
+  onBuildLineup, onExportCsv, onSendToPacking, onGoLive, onEdit, onDelete,
 }) {
   const saleLots = items.filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway');
   const giveaways = items.filter(i => i.saleId === sale.id && i.lotKind === 'giveaway');
@@ -127,8 +126,11 @@ function SaleCard({
   const step1Done = totalAssigned > 0;
   const step2Done = !!sale.exportedAt;
   const soldCount = saleLots.filter(i => SOLD_STATUSES.has(i.status)).length;
-  const step3Done = soldCount > 0;
-  const step4Done = sale.status === 'packing' || sale.status === 'closed';
+  // "Validated" = at least one of this sale's lineup items has been marked
+  // sold. Validation lives outside the per-sale card now (top-level
+  // Validate Sales button), but we still gate Send-to-Packing on it.
+  const validated = soldCount > 0;
+  const sentToPacking = sale.status === 'packing' || sale.status === 'closed';
 
   const shipped = saleLots.filter(i => ['shipped', 'delivered'].includes(i.status)).length;
   const isClosed = sale.status === 'closed';
@@ -223,20 +225,12 @@ function SaleCard({
               : null}
           />
           <Step
-            n={3} title="Validate Sales" done={step3Done}
-            actionLabel={step3Done ? 'Re-validate sales' : 'Validate sales'}
-            actionIcon={Upload}
-            onAction={onUploadSalesReport}
-            disabled={!step1Done}
-            hint={step3Done ? `${soldCount}/${saleLots.length} marked sold` : null}
-          />
-          <Step
-            n={4} title="Send to Packing" done={step4Done}
-            actionLabel={step4Done ? 'In Packing tab' : 'Send to Packing'}
+            n={3} title="Send to Packing" done={sentToPacking}
+            actionLabel={sentToPacking ? 'In Packing tab' : 'Send to Packing'}
             actionIcon={PackageOpen}
             onAction={onSendToPacking}
-            disabled={!step3Done || step4Done}
-            hint={step4Done ? `${shipped}/${saleLots.length} shipped` : null}
+            disabled={!validated || sentToPacking}
+            hint={sentToPacking ? `${shipped}/${saleLots.length} shipped` : null}
           />
           </div>
         </div>
