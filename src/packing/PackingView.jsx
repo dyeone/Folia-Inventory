@@ -6,7 +6,6 @@ import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
-import { StandaloneUploader } from './StandaloneUploader.jsx';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
 // imports keep working without a churn-y find-and-replace across files.
@@ -73,7 +72,6 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
         )}
       </section>
 
-      <StandaloneUploader inventoryItems={inventoryItems} />
     </div>
   );
 }
@@ -150,8 +148,8 @@ function SalePackingPane({ sale, inventoryItems, onBack, onShipBox, setConfirmDi
           <AlertCircle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
           <div className="text-sm font-medium text-gray-900">No boxes to pack yet</div>
           <p className="text-xs text-gray-600 mt-1">
-            Upload the Palmstreet sales report from the Sales Events tab (step 3)
-            to mark items sold and create the shipping boxes.
+            Run "Validate Sales" from the Sale tab (step 3) to mark items
+            sold and create the shipping boxes.
           </p>
         </div>
       </div>

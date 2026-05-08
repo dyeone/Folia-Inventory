@@ -92,7 +92,8 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
         if (!it.match?.item) continue;
         const inv = it.match.item;
         const finalPrice = it.price > 0 ? it.price : parseFloat(inv.listingPrice) || 0;
-        const cost = parseFloat(inv.grossCost ?? inv.cost) || 0;
+        // Profit / margin are computed at display time from salePrice and
+        // grossCost; nothing to persist beyond the sale price itself.
         updates.push({
           id: inv.id,
           status: 'sold',
@@ -113,8 +114,6 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
           shipmentCarrier: box.carrier || 'usps',
           orderId: it.orderNumber || null,
           orderDate: it.orderDate || null,
-          actualProfit: cost > 0 ? finalPrice - cost : null,
-          actualProfitRate: cost > 0 ? ((finalPrice - cost) / cost) * 100 : null,
         });
       }
     }
@@ -132,10 +131,10 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-gray-900 text-base sm:text-lg flex items-center gap-2">
               <Upload className="w-5 h-5 text-emerald-600" />
-              Upload Sales Report · <span className="truncate">{sale.name}</span>
+              Validate Sales · <span className="truncate">{sale.name}</span>
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Step 3 · Marks lineup items sold, captures buyer / order details
+              Match each Palmstreet order to its inventory item, then update inventory.
             </p>
           </div>
           <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2" aria-label="Close">
@@ -232,7 +231,7 @@ export function SalesUploadModal({ sale, items, onApply, onClose }) {
               disabled={!summary || summary.matched === 0}
               className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-gray-300 text-white rounded-lg flex items-center gap-1.5"
             >
-              <Check className="w-4 h-4" /> Apply &amp; mark {summary?.matched || 0} sold
+              <Check className="w-4 h-4" /> Update Inventory · {summary?.matched || 0} item{summary?.matched === 1 ? '' : 's'}
             </button>
           </div>
         )}

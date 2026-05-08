@@ -212,8 +212,8 @@ function SaleCard({
               : null}
           />
           <Step
-            n={3} title="Upload Sales Report" done={step3Done}
-            actionLabel={step3Done ? 'Re-upload report' : 'Upload report'}
+            n={3} title="Validate Sales" done={step3Done}
+            actionLabel={step3Done ? 'Re-validate sales' : 'Validate sales'}
             actionIcon={Upload}
             onAction={onUploadSalesReport}
             disabled={!step1Done}

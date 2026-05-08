@@ -4,9 +4,9 @@ import {
 } from 'lucide-react';
 
 // Renders the parsed/matched preview of a Palmstreet orders upload.
-// Shared between the StandaloneUploader (preview only) and the
-// SalesUploadModal (apply flow). Each box shows its items + match
-// confidence; "Link" / "Reset" buttons let the user override the match.
+// Used by the Validate Sales modal (SalesUploadModal). Each box shows
+// its items + match confidence; "Link" / "Reset" buttons let the user
+// override the match.
 export function BoxesList({ boxes, onPick, onClearOverride }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
   return (

@@ -459,7 +459,7 @@ function InventorySystem() {
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: TrendingUp },
     { id: 'inventory', label: 'Inventory', icon: Archive },
-    { id: 'sales', label: 'Sales Events', icon: Calendar },
+    { id: 'sales', label: 'Sale', icon: Calendar },
     { id: 'packing', label: 'Packing', icon: Package },
     { id: 'financial', label: 'Financial', icon: LineChart },
     {
@@ -569,9 +569,7 @@ function InventorySystem() {
       <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-gray-200 flex pb-safe">
         {tabs.map(tab => {
           const Icon = tab.icon;
-          const shortLabel = tab.id === 'sales' ? 'Sales'
-            : tab.id === 'trash' ? 'Trash'
-            : tab.label;
+          const shortLabel = tab.id === 'trash' ? 'Trash' : tab.label;
           return (
             <button
               key={tab.id}
