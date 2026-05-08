@@ -33,11 +33,23 @@ export function matchInventory(palmItem, inventoryItems) {
   );
   if (candidates.length === 0) return null;
 
-  // 1. Exact SKU
+  // 1. Exact SKU (case-insensitive).
   if (palmItem.sku) {
     const k = palmItem.sku.toLowerCase();
     const skuHit = candidates.find(i => String(i.sku || '').toLowerCase() === k);
     if (skuHit) return { item: skuHit, confidence: 'sku' };
+  }
+
+  // 1b. Bare-number SKU: bundled titles sometimes drop the prefix and
+  // write just "(1589)" in the parens. Numbering is global across all
+  // varieties so the suffix uniquely identifies the inventory item —
+  // resolve to the candidate whose SKU ends with "-{number}". Refuse
+  // if multiple candidates match (extremely unusual but possible if
+  // one variety code shares numbers with another).
+  if (palmItem.sku && /^\d+$/.test(palmItem.sku)) {
+    const tail = `-${palmItem.sku}`;
+    const tailHits = candidates.filter(i => String(i.sku || '').endsWith(tail));
+    if (tailHits.length === 1) return { item: tailHits[0], confidence: 'sku' };
   }
 
   // 2. Leading token vs SKU/lotNumber

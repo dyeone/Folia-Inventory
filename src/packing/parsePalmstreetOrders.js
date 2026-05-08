@@ -38,7 +38,18 @@ function isServiceLine(title, price) {
 //
 // Returns an array of { name, sku } when the title is a clean bundle,
 // or null when it's a normal single-item title (caller leaves as-is).
-const SKU_AT_END = /^(.+?)\s*\(\s*([A-Z]{2,4}-\d+)\s*\)\s*$/;
+//
+// Accepted SKU shapes inside the parens (case-insensitive):
+//   ALO-142     standard prefix-number
+//   Alo-142     lowercase prefix (operators don't always type uppercase)
+//   1589        bare number (matcher resolves by suffix to the unique SKU)
+const SKU_AT_END = /^(.+?)\s*\(\s*([A-Z]{2,4}-\d+|\d+)\s*\)\s*$/i;
+
+function normalizeSku(raw) {
+  const s = String(raw || '').trim();
+  // prefix-number → uppercase the prefix; bare digits left as-is
+  return /^[A-Za-z]{2,4}-\d+$/.test(s) ? s.toUpperCase() : s;
+}
 
 function splitBundledTitle(title) {
   const t = String(title || '').trim();
@@ -49,7 +60,7 @@ function splitBundledTitle(title) {
   for (const chunk of chunks) {
     const m = chunk.match(SKU_AT_END);
     if (!m) return null; // any chunk failing aborts the split
-    out.push({ name: m[1].trim(), sku: m[2].toUpperCase() });
+    out.push({ name: m[1].trim(), sku: normalizeSku(m[2]) });
   }
   return out;
 }
