@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
-  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck,
+  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
 } from 'lucide-react';
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -23,6 +23,7 @@ const InventoryView = lazyNamed(() => import('./inventory/InventoryView.jsx'), '
 const SalesView = lazyNamed(() => import('./sales/SalesView.jsx'), 'SalesView');
 const PackingView = lazyNamed(() => import('./packing/PackingView.jsx'), 'PackingView');
 const FinancialView = lazyNamed(() => import('./financial/FinancialView.jsx'), 'FinancialView');
+const PurchaseOrderView = lazyNamed(() => import('./purchasing/PurchaseOrderView.jsx'), 'PurchaseOrderView');
 const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedView.jsx'), 'RecentlyDeletedView');
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 
@@ -462,6 +463,7 @@ function InventorySystem() {
     { id: 'inventory', label: 'Inventory', icon: Archive },
     { id: 'sales', label: 'Sale', icon: Calendar },
     { id: 'packing', label: 'Packing', icon: Package },
+    { id: 'purchasing', label: 'Purchase', icon: ShoppingCart },
     { id: 'financial', label: 'Financial', icon: LineChart },
     {
       id: 'trash', label: 'Recently Deleted', icon: Trash2,
@@ -761,6 +763,12 @@ function InventorySystem() {
                 showToast(e.message || 'Ship failed', 'error');
               }
             }}
+          />
+        )}
+        {activeTab === 'purchasing' && (
+          <PurchaseOrderView
+            items={items}
+            varieties={varieties}
           />
         )}
         {activeTab === 'financial' && (
