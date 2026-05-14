@@ -395,6 +395,11 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                           Added {fmtAddedAt(item.createdAt)}
                         </div>
                       )}
+                      {item.soldAt && ['sold','shipped','delivered'].includes(item.status) && (
+                        <div className="text-[11px] text-blue-600 mt-0.5">
+                          Sold {fmtAddedAt(item.soldAt)}
+                        </div>
+                      )}
                     </div>
                     <span className={`flex-shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
                       item.type === 'tc' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
@@ -597,6 +602,11 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                           {item.createdAt && (
                             <div className="text-[11px] text-gray-400 mt-0.5">
                               Added {fmtAddedAt(item.createdAt)}
+                            </div>
+                          )}
+                          {item.soldAt && ['sold','shipped','delivered'].includes(item.status) && (
+                            <div className="text-[11px] text-blue-600 mt-0.5">
+                              Sold {fmtAddedAt(item.soldAt)}
                             </div>
                           )}
                         </td>
