@@ -1,0 +1,14 @@
+{
+  "name": "folia-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local ADB bridge — drives an Android phone from the Folia web app during live sales. Runs on the operator's Mac, not deployed.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
