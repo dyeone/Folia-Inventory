@@ -325,3 +325,18 @@ drop policy if exists "allow_all" on sales;
 drop policy if exists "anon_all" on users;
 drop policy if exists "anon_all" on inventory_items;
 drop policy if exists "anon_all" on sales;
+
+-- ─── Functions ────────────────────────────────────────────────────────────────
+-- Largest numeric SKU suffix across all inventory items. Used by the
+-- /api/items insert path to assign the next global SKU number. Doing this
+-- in SQL avoids the lex-sort bug that the JS-side `order().limit()`
+-- approach had with mixed-width prefixes/suffixes.
+create or replace function inventory_max_sku_suffix() returns int
+language sql stable as $$
+  select coalesce(
+    max((regexp_match(sku, '-(\d+)$'))[1]::int),
+    0
+  )
+  from inventory_items
+  where sku ~ '-\d+$';
+$$;

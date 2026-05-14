@@ -28,29 +28,18 @@ function stripServerOwned(item) {
   return clean;
 }
 
-// Walk from the global max suffix down to find the first available number.
-// `select sku, order desc, limit 256` is enough headroom that we'd have to
-// be assigning thousands of SKUs in parallel to miss a hole — and even
-// then the unique index on sku catches it and the caller retries.
+// Largest numeric SKU suffix across all inventory items, computed in SQL.
 //
-// Why not pull every SKU in to find the max? At 10k items, that's 100KB
-// + JS Math.max over 10k entries on every save. Targeted query is O(1).
+// Why an RPC instead of `order('sku', desc).limit(N)`? Supabase's order is
+// lexicographic — with mixed-width suffixes and prefixes, `MON-99` sorts
+// above `ANT-2000`. The top-N window can miss the true max entirely, which
+// caused new SKUs to collide with existing numbers under a different
+// variety prefix. The RPC (defined in migration 0007) extracts the suffix
+// in regex and takes max(int), which is correct regardless of width.
 async function findMaxSkuSuffix() {
-  const { data, error } = await supabase
-    .from('inventory_items')
-    .select('sku')
-    .order('sku', { ascending: false })
-    .limit(256);
+  const { data, error } = await supabase.rpc('inventory_max_sku_suffix');
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  let max = 0;
-  for (const r of data || []) {
-    const m = String(r.sku || '').match(/-(\d+)$/);
-    if (m) {
-      const n = parseInt(m[1], 10);
-      if (n > max) max = n;
-    }
-  }
-  return max;
+  return data ?? 0;
 }
 
 // Assign SKUs to items that don't have one. Numbering is GLOBAL across all
