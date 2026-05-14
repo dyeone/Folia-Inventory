@@ -6,6 +6,18 @@ import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 import { buildLookups, speciesForItem, computeIdealPrice, rateSourceLabel } from './pricing.js';
 import { CultivarRateInput } from './CultivarRateInput.jsx';
 
+// e.g. "May 8, 3:45 PM" (same year) or "May 8, 2024" (prior year).
+function fmtAddedAt(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const datePart = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
+  if (!sameYear) return datePart;
+  const timePart = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  return `${datePart}, ${timePart}`;
+}
+
 export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   const isMobile = useIsMobile();
   // O(1) lookups for speciesForItem / computeIdealPrice — built once per
@@ -378,6 +390,11 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                         <span className="font-mono">{item.sku}</span>
                         {item.variety && <span>· {item.variety}</span>}
                       </div>
+                      {item.createdAt && (
+                        <div className="text-[11px] text-gray-400 mt-0.5">
+                          Added {fmtAddedAt(item.createdAt)}
+                        </div>
+                      )}
                     </div>
                     <span className={`flex-shrink-0 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
                       item.type === 'tc' ? 'bg-sky-100 text-sky-700' : 'bg-emerald-100 text-emerald-700'
@@ -577,6 +594,11 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             <span className="font-mono">{item.sku}</span>
                             {item.variety && <span>· {item.variety}</span>}
                           </div>
+                          {item.createdAt && (
+                            <div className="text-[11px] text-gray-400 mt-0.5">
+                              Added {fmtAddedAt(item.createdAt)}
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-2.5">
                           <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
