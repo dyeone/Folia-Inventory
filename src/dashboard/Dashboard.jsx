@@ -1,12 +1,36 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Archive, Package, DollarSign, TrendingUp, Target } from 'lucide-react';
+import { Archive, Package, DollarSign, TrendingUp, Target, Sparkles } from 'lucide-react';
 import { StatCard } from '../ui/StatCard.jsx';
+
+// Compact relative-time formatter — "just now / 5m / 3h / 2d / Aug 12".
+// Avoids a full Intl.RelativeTimeFormat / date-fns dep for one tiny use.
+function timeAgo(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return '';
+  const diffMs = Date.now() - t;
+  const min = Math.floor(diffMs / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d`;
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
 
 export function Dashboard({ stats, items, sales, idealRate, onIdealRateChange }) {
   const recentSold = items
     .filter(i => ['sold','shipped','delivered'].includes(i.status))
     .sort((a, b) => new Date(b.soldAt || 0) - new Date(a.soldAt || 0))
     .slice(0, 5);
+
+  const recentlyAdded = useMemo(() => {
+    return [...items]
+      .filter(i => i.createdAt)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+      .slice(0, 6);
+  }, [items]);
 
   // Top varieties by profit rate (for items with cost + sale price data)
   const varietyPerformance = useMemo(() => {
@@ -149,7 +173,40 @@ export function Dashboard({ stats, items, sales, idealRate, onIdealRateChange })
         </div>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h3 className="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-1.5">
+            <Sparkles className="w-4 h-4 text-emerald-600" /> Recently Added
+          </h3>
+          {recentlyAdded.length === 0 ? (
+            <p className="text-sm text-gray-500">No items added yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {recentlyAdded.map(item => (
+                <div key={item.id} className="flex items-center justify-between py-1.5 border-b border-gray-100 last:border-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium text-gray-900 truncate">
+                      {item.name || '(unnamed)'}{item.variety ? ` · ${item.variety}` : ''}
+                    </div>
+                    <div className="text-xs text-gray-500 truncate">
+                      <span className="font-mono">{item.sku}</span>
+                      {item.createdBy ? <> · by {item.createdBy}</> : null}
+                    </div>
+                  </div>
+                  <div className="text-right ml-2 flex-shrink-0">
+                    <div className="text-xs text-gray-500 tabular-nums">{timeAgo(item.createdAt)}</div>
+                    <div className={`text-[10px] font-medium uppercase tracking-wide ${
+                      item.type === 'tc' ? 'text-blue-600' : 'text-emerald-600'
+                    }`}>
+                      {item.type}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <h3 className="text-sm font-semibold text-gray-900 mb-3">Recent Sales</h3>
           {recentSold.length === 0 ? (
