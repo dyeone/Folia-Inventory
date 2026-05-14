@@ -18,6 +18,14 @@ create table if not exists users (
   "createdAt"   timestamptz not null default now()
 );
 
+-- Long-lived bearer token the local Folia Bridge uses to poll for jobs.
+-- Issued on demand via /api/bridge?action=generate-token; rotating it
+-- invalidates a running bridge instantly.
+alter table users add column if not exists "bridgeToken" text;
+create unique index if not exists users_bridge_token_idx
+  on users ("bridgeToken")
+  where "bridgeToken" is not null;
+
 -- ─── Inventory Items ──────────────────────────────────────────────────────────
 
 create table if not exists inventory_items (
@@ -305,6 +313,30 @@ create index if not exists shipments_carrier_idx on shipments (carrier);
 
 alter table app_settings enable row level security;
 alter table shipments    enable row level security;
+
+-- ─── Bridge Jobs ──────────────────────────────────────────────────────────────
+-- Durable queue between the web app and the local Folia Bridge that drives
+-- the Palmstreet Android app via ADB. Web enqueues, bridge polls outbound.
+
+create table if not exists bridge_jobs (
+  id            text        primary key,
+  status        text        not null default 'queued'
+                              check (status in ('queued','running','done','failed')),
+  action        text        not null,
+  payload       jsonb       not null default '{}'::jsonb,
+  result        jsonb,
+  error         text,
+  "createdAt"   timestamptz not null default now(),
+  "createdBy"   text,
+  "claimedAt"   timestamptz,
+  "claimedBy"   text,
+  "completedAt" timestamptz
+);
+create index if not exists bridge_jobs_pending_idx
+  on bridge_jobs (status, "createdAt")
+  where status in ('queued','running');
+
+alter table bridge_jobs enable row level security;
 
 -- ─── Row-Level Security ───────────────────────────────────────────────────────
 -- All data access goes through the server-side API routes (under /api),

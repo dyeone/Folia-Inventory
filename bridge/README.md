@@ -1,87 +1,88 @@
-# Folia ADB Bridge
+# Folia Bridge
 
-Local helper that lets the Folia web app drive an Android phone over ADB.
-Runs on the operator's Mac during a live sale; never deployed.
+Standalone local app that runs on the operator's Mac and drives the
+Palmstreet Android phone via ADB. Decoupled from the inventory system on
+Vercel — the bridge polls Vercel **outbound** for jobs, so there's no
+inbound port, no tunnel, no cert juggling, no LAN setup.
+
+```
+┌─────────────────┐        ┌──────────────┐        ┌────────────┐
+│  Folia (Vercel) │ ◀── HTTPS poll ── │  Bridge (Mac) │ ─adb→ │ Android    │
+└─────────────────┘                   └──────────────┘        └────────────┘
+```
 
 ## One-time setup
 
-1. Install ADB:
-   ```
+1. **Install ADB**
+   ```bash
    brew install android-platform-tools
    ```
-2. On the phone: Settings → About → tap "Build number" 7 times → back to
-   Settings → Developer Options → enable USB debugging.
-3. Plug the phone in via USB; run `adb devices` and accept the auth prompt
-   on the phone screen.
-4. (Optional but recommended) Wireless ADB so you can ditch the cable
-   during a live:
-   ```
+2. **Enable USB debugging on the phone**: Settings → About → tap "Build
+   number" 7 times → back → Developer Options → USB debugging.
+3. **Plug in the phone**, run `adb devices`, accept the auth prompt on
+   the phone screen.
+4. **(Optional but recommended) Wireless ADB** so you can ditch the
+   cable during a live:
+   ```bash
    adb tcpip 5555
    adb connect <phone-ip>:5555
+   ```
+5. **Generate a bridge token.** Open the Folia web app, sign in, and
+   POST to `/api/bridge?action=generate-token` (this gets wired into a
+   settings button in Phase 3). The response contains a one-time
+   `token` — copy it now; it's not recoverable.
+6. **Create `bridge/.env`**:
+   ```
+   FOLIA_API_URL=https://foliainventory.vercel.app
+   BRIDGE_TOKEN=<paste the token>
+   # BRIDGE_DEVICE=<adb-serial>     # only if multiple devices are connected
+   # POLL_MS=1500
    ```
 
 ## Run
 
-```
+```bash
 cd bridge
-npm install
-BRIDGE_SECRET=somelongstring npm start
-```
-
-The bridge prints both `localhost` and your LAN URLs at startup. Point
-the Folia app's "Bridge URL" setting at one of the LAN addresses if
-you're driving from an iPad / phone.
-
-### Environment variables
-
-| var             | default | meaning                                                       |
-| --------------- | ------- | ------------------------------------------------------------- |
-| `BRIDGE_PORT`   | `7755`  | TCP port to bind                                              |
-| `BRIDGE_SECRET` | _none_  | Required `Authorization: Bearer …` token (none = open access) |
-| `BRIDGE_DEVICE` | _none_  | adb serial when more than one device is connected             |
-
-## Endpoints
-
-| method | path        | purpose                                                          |
-| ------ | ----------- | ---------------------------------------------------------------- |
-| GET    | `/health`   | Bridge alive + visible adb devices (no auth)                     |
-| POST   | `/tap`      | `{x,y}` or `{resourceId}` or `{text}` — tap on phone             |
-| POST   | `/type`     | `{text}` — type into focused field                               |
-| GET    | `/dump`     | Current UI XML — used during Phase 2 discovery                   |
-| POST   | `/listing`  | `{sku?, name, price}` — Phase 1: queues. Phase 2: pushes to live |
-| GET    | `/queue`    | All queued listings                                              |
-
-All non-`/health` endpoints require `Authorization: Bearer $BRIDGE_SECRET`
-when `BRIDGE_SECRET` is set.
-
-## Verifying it works (without Palmstreet)
-
-```
-# Terminal 1
 npm start
-
-# Terminal 2
-curl http://localhost:7755/health
-# → { ok: true, adbDevices: [{ serial, status }] }
-
-curl -X POST http://localhost:7755/tap \
-  -H "Authorization: Bearer $BRIDGE_SECRET" \
-  -H "content-type: application/json" \
-  -d '{"x": 540, "y": 1500}'
-# → screen taps at 540,1500
-
-curl http://localhost:7755/dump \
-  -H "Authorization: Bearer $BRIDGE_SECRET" > ui.xml
-# → seed data for Phase 2 selector discovery
 ```
 
-## Known constraints
+Output looks like:
 
-- **HTTPS / mixed-content**: Folia is served over HTTPS (Vercel) but the
-  bridge speaks HTTP, so Safari/Chrome will block fetches to it from the
-  deployed app. Phase 3 options: (a) run the Folia dev server on the
-  same Mac and access it over LAN HTTP, (b) front the bridge with a
-  self-signed TLS cert and trust it once on the iPad, (c) tunnel via
-  ngrok/cloudflared. Decision deferred to Phase 3.
-- **Single host**: queue is in-memory; restarting the bridge drops
-  unprocessed entries. Acceptable for live-sale scope.
+```
+Folia bridge starting
+  api    https://foliainventory.vercel.app
+  device (default adb device)
+  poll   1500ms
+  adb    1 device(s): RFCT80XYZ device
+```
+
+It runs until Ctrl-C. Restarting the bridge is safe — jobs that were
+mid-flight automatically expire after 60 s and get re-claimed.
+
+## Architecture notes
+
+- **No dependencies.** Pure Node + native `fetch`. Whole bridge is one
+  file; nothing to `npm install`.
+- **Token, not server.** The bridge identifies itself by its bearer
+  token. Rotating the token via `generate-token` instantly kicks any
+  running bridge offline.
+- **At-least-once delivery.** If the bridge crashes mid-job, the job
+  goes stale after 60 s and another (or restarted) bridge picks it up.
+  Make job handlers idempotent where it matters.
+- **Backoff.** API errors (offline, token revoked, Vercel cold start)
+  back off up to 30 s before retrying.
+
+## Job actions
+
+The bridge currently handles these `action` values posted to
+`/api/bridge?action=enqueue`:
+
+| action    | payload                                    | result                                |
+| --------- | ------------------------------------------ | ------------------------------------- |
+| `tap`     | `{x,y}` _or_ `{resourceId}` _or_ `{text}`  | `{tapped: {x,y} or {bounds}}`         |
+| `type`    | `{text}`                                   | `{length}`                            |
+| `dump`    | _none_                                     | `{xml}` (current UI tree)             |
+| `listing` | `{sku, name, price}` _(Phase 2 stub)_      | `{stub: true, ...}`                   |
+
+Phase 2 will replace the `listing` handler with the scripted Palmstreet
+"add listing during live" flow.

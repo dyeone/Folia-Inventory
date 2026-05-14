@@ -32,7 +32,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['api/**/*.js', 'vite-plugin-api.js'],
+    files: ['api/**/*.js', 'vite-plugin-api.js', 'bridge/**/*.js'],
     languageOptions: {
       globals: {
         ...globals.node,
