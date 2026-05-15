@@ -177,6 +177,20 @@ async function tapBoundsAttr(boundsAttr) {
 //   5. type the name
 async function listing({ sku, name }) {
   if (typeof name !== 'string' || !name) throw new Error('name required');
+  // Title format on Palmstreet: "SKU - NAME". Operator scans during a
+  // live to look up the inventory item later by SKU; the plant name
+  // alone isn't unique. Bare name when sku is missing (shouldn't
+  // happen in the Live Scan flow, but be defensive).
+  const title = sku ? `${sku} - ${name}` : name;
+
+  // The host sidebar (Listing / Flip / Shop / etc.) auto-hides after
+  // a few seconds of inactivity. If it's already showing we proceed
+  // immediately; if not, a single tap on the live-video area wakes
+  // the UI and the sidebar slides back in.
+  if (!findNode(await dumpUI(), a => a['content-desc'] === 'Listing')) {
+    await adbShell('input', 'tap', '540', '700');
+    await sleep(600);
+  }
 
   await tap({ contentDesc: 'Listing', timeoutMs: 5000 });
 
@@ -192,9 +206,9 @@ async function listing({ sku, name }) {
   await tapBoundsAttr(editTexts[0].bounds);
 
   await sleep(400);
-  await typeText(name);
+  await typeText(title);
 
-  return { sku, name, prefilled: 'title' };
+  return { sku, name, title, prefilled: 'title' };
 }
 
 // ─── Job dispatch ───────────────────────────────────────────────────────────
