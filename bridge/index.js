@@ -34,7 +34,7 @@ if (existsSync(envPath)) {
 const API_URL = (process.env.FOLIA_API_URL || '').replace(/\/$/, '');
 const TOKEN = process.env.BRIDGE_TOKEN || '';
 const DEVICE = process.env.BRIDGE_DEVICE || '';
-const POLL_MS = parseInt(process.env.POLL_MS || '1500', 10);
+const POLL_MS = parseInt(process.env.POLL_MS || '500', 10);
 
 if (!API_URL || !TOKEN) {
   console.error('Missing FOLIA_API_URL or BRIDGE_TOKEN. Create bridge/.env (see README).');
@@ -57,8 +57,12 @@ async function adb(...args) {
 const adbShell = (...args) => adb('shell', ...args);
 
 async function dumpUI() {
-  await adbShell('uiautomator', 'dump', '/sdcard/ui.xml');
-  return adb('exec-out', 'cat', '/sdcard/ui.xml');
+  // Single round-trip: dump + cat in one `adb shell` invocation, vs.
+  // two separate adb calls. --compressed strips nodes that aren't
+  // useful for interaction (decorative views, etc.), shrinking the
+  // payload and the parse work on this side. The dump confirmation
+  // message goes to stderr so stdout is clean XML.
+  return adbShell('uiautomator dump --compressed /sdcard/ui.xml && cat /sdcard/ui.xml');
 }
 
 function parseBounds(boundsAttr) {
@@ -183,28 +187,38 @@ async function listing({ sku, name }) {
   // happen in the Live Scan flow, but be defensive).
   const title = sku ? `${sku} - ${name}` : name;
 
-  // The host sidebar (Listing / Flip / Shop / etc.) auto-hides after
-  // a few seconds of inactivity. If it's already showing we proceed
-  // immediately; if not, a single tap on the live-video area wakes
-  // the UI and the sidebar slides back in.
-  if (!findNode(await dumpUI(), a => a['content-desc'] === 'Listing')) {
-    await adbShell('input', 'tap', '540', '700');
-    await sleep(600);
+  // Tap on the live-video area to wake the host UI. The sidebar
+  // (Flip / Listing / Shop / Support) auto-hides after a few idle
+  // seconds and has to be revived before we can find Listing.
+  // (540, 700) is empty video pixels — no-op when sidebar is already
+  // visible.
+  await adbShell('input', 'tap', '540', '700');
+  await sleep(400);
+
+  // Look up Listing by content-desc. We tried hardcoding the coords
+  // for speed, but Palmstreet shifts the sidebar buttons up by ~130 px
+  // when there's an actively pinned listing — a hardcoded tap landed
+  // on Shop instead of Listing. Content-desc lookup is one dumpUI
+  // (~1.5 s) slower but layout-independent.
+  await tap({ contentDesc: 'Listing', timeoutMs: 3000 });
+
+  // Wait for the form to render AND grab the EditTexts in the same
+  // dump cycle. One round-trip vs. waitForNode then a second dumpUI.
+  let editTexts = null;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const xml = await dumpUI();
+    if (findNode(xml, a => a['content-desc'] === 'Pin & Run')) {
+      editTexts = findAllNodes(xml, a => (a.class || '').endsWith('EditText'));
+      if (editTexts.length > 0) break;
+    }
+    await sleep(200);
+  }
+  if (!editTexts || editTexts.length < 1) {
+    throw new Error('listing form did not open');
   }
 
-  await tap({ contentDesc: 'Listing', timeoutMs: 5000 });
-
-  const formReady = await waitForNode(
-    a => a['content-desc'] === 'Pin & Run',
-    { timeoutMs: 5000 }
-  );
-  if (!formReady) throw new Error('listing form did not open');
-
-  const xml = await dumpUI();
-  const editTexts = findAllNodes(xml, a => (a.class || '').endsWith('EditText'));
-  if (editTexts.length < 1) throw new Error('no EditText fields found in listing form');
   await tapBoundsAttr(editTexts[0].bounds);
-
   await sleep(400);
   await typeText(title);
 
