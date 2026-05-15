@@ -191,9 +191,10 @@ async function listing({ sku, name }) {
   // (Flip / Listing / Shop / Support) auto-hides after a few idle
   // seconds and has to be revived before we can find Listing.
   // (540, 700) is empty video pixels — no-op when sidebar is already
-  // visible.
+  // visible. No explicit sleep after: the next dumpUI() waits for UI
+  // idle on-device, so the sidebar slide-in animation finishes inside
+  // that wait — saves ~400 ms of dead time per scan.
   await adbShell('input', 'tap', '540', '700');
-  await sleep(400);
 
   // Look up Listing by content-desc. We tried hardcoding the coords
   // for speed, but Palmstreet shifts the sidebar buttons up by ~130 px
@@ -219,7 +220,7 @@ async function listing({ sku, name }) {
   }
 
   await tapBoundsAttr(editTexts[0].bounds);
-  await sleep(400);
+  await sleep(300);
   await typeText(title);
 
   return { sku, name, title, prefilled: 'title' };
