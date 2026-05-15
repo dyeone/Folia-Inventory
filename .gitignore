@@ -23,3 +23,11 @@ dist-ssr
 *.sln
 *.sw?
 plant-inventory/
+
+# Claude Code per-project config (local only)
+.claude/
+
+# Bridge secrets — never commit. The BRIDGE_TOKEN in bridge/.env
+# authenticates as the user and can drive the Palmstreet phone if it
+# leaks. Rotate via /api/bridge?action=generate-token if exposed.
+bridge/.env
