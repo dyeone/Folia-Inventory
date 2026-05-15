@@ -182,12 +182,18 @@ async function tap({ x, y, resourceId, text, contentDesc, timeoutMs }) {
 
 async function typeText(text) {
   if (typeof text !== 'string') throw new Error('text required');
-  const escaped = text
-    .replace(/\\/g, '\\\\')
-    .replace(/ /g, '%s')
-    .replace(/'/g, "\\'")
-    .replace(/"/g, '\\"');
-  await adbShell('input', 'text', escaped);
+  // `adb shell` rejoins our argv with spaces and re-runs it through
+  // the device's `sh -c`, so shell metacharacters in the text (parens,
+  // &, $, etc.) cause syntax errors before `input text` ever sees them.
+  // Single-quote the argument: inside single quotes the device shell
+  // preserves everything except a single quote, which we handle by
+  // closing the quote, escaping, and reopening.
+  //   %s is `input text`'s own escape for a space, so we still convert
+  //   spaces before wrapping (single quotes don't help with that since
+  //   the issue is `input text`'s parser, not the shell's).
+  const inputArg = text.replace(/ /g, '%s');
+  const shellArg = "'" + inputArg.replace(/'/g, "'\\''") + "'";
+  await adbShell('input', 'text', shellArg);
   return { length: text.length };
 }
 
