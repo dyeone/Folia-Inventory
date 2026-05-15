@@ -222,12 +222,13 @@ async function listing({ sku, name, grossCost }) {
   // happen in the Live Scan flow, but be defensive).
   const title = sku ? `${sku} - ${name}` : name;
 
-  // Gross cost = what the operator paid for the item. Pre-fill it
-  // into the Starting Price field as a floor — they bid up from
-  // there during the live. Numeric coerce so '12.50' from JSON works
-  // the same as 12.5.
+  // Gross cost = what the operator paid for the item. Pre-fill into
+  // the Starting Price field as a floor — they bid up from there
+  // during the live. Round UP to the next whole dollar (Math.ceil)
+  // so the starting bid is always at or above cost and there are no
+  // awkward $9.46-style starting prices on a live auction.
   const startingPrice = grossCost != null && Number.isFinite(Number(grossCost))
-    ? String(Number(grossCost))
+    ? String(Math.ceil(Number(grossCost)))
     : null;
 
   // Tap on the live-video area to wake the host UI. The sidebar
