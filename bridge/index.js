@@ -214,13 +214,20 @@ async function tapBoundsAttr(boundsAttr) {
 //   3. tap the title EditText (first EditText in form, by doc order)
 //   4. wait ~400 ms for the soft keyboard to slide up
 //   5. type the name
-async function listing({ sku, name }) {
+async function listing({ sku, name, netCost }) {
   if (typeof name !== 'string' || !name) throw new Error('name required');
   // Title format on Palmstreet: "SKU - NAME". Operator scans during a
   // live to look up the inventory item later by SKU; the plant name
   // alone isn't unique. Bare name when sku is missing (shouldn't
   // happen in the Live Scan flow, but be defensive).
   const title = sku ? `${sku} - ${name}` : name;
+
+  // Net cost the operator paid for the item — pre-filled into the
+  // Starting Price field as a floor; they bid up from there during the
+  // live. Numeric coerce so '12.50' from JSON works the same as 12.5.
+  const startingPrice = netCost != null && Number.isFinite(Number(netCost))
+    ? String(Number(netCost))
+    : null;
 
   // Tap on the live-video area to wake the host UI. The sidebar
   // (Flip / Listing / Shop / Support) auto-hides after a few idle
@@ -269,13 +276,32 @@ async function listing({ sku, name }) {
   await sleep(300);
   await typeText(title);
 
-  // Dismiss the soft keyboard so the operator can immediately see and
-  // tap the price field, which the keyboard otherwise covers. With the
-  // keyboard up, KEYCODE_BACK (4) only hides the keyboard — it doesn't
-  // close the Quick-listing modal.
+  // Dismiss the soft keyboard so the operator can immediately see the
+  // price field below the title. With the keyboard up, KEYCODE_BACK
+  // (4) only hides the keyboard — it doesn't close the Quick-listing
+  // modal. Once dismissed, the layout returns to its no-keyboard
+  // state, which is also the state captured in our editTexts[*]
+  // bounds, so the second EditText (price) is back where we recorded
+  // it and can be tapped directly.
   await adbShell('input', 'keyevent', '4');
 
-  return { sku, name, title, prefilled: 'title' };
+  // Pre-fill the Starting Price with the item's net cost (when known).
+  // Defaults in the form are "1" / "1" / "11"; clear before typing.
+  let prefilled = ['title'];
+  if (startingPrice && editTexts.length >= 2) {
+    await sleep(200);  // brief beat for keyboard-dismiss animation
+    await tapBoundsAttr(editTexts[1].bounds);
+    await sleep(300);  // keyboard slides up again for the price field
+    // MOVE_END + a handful of backspaces — overshooting on an empty
+    // field is a no-op, so 8 is safe regardless of the default's length.
+    await adbShell('input', 'keyevent', '123');
+    for (let i = 0; i < 8; i++) await adbShell('input', 'keyevent', '67');
+    await typeText(startingPrice);
+    await adbShell('input', 'keyevent', '4');  // dismiss keyboard again
+    prefilled.push('startingPrice');
+  }
+
+  return { sku, name, title, startingPrice, prefilled };
 }
 
 // ─── Job dispatch ───────────────────────────────────────────────────────────

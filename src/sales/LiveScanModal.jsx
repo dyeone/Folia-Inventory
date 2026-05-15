@@ -94,7 +94,13 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
     try {
       const job = await api.bridgeEnqueue({
         jobAction: 'listing',
-        payload: { sku: item.sku, name: item.name, price, forced },
+        payload: {
+          sku: item.sku,
+          name: item.name,
+          price,
+          netCost: item.netCost,  // bridge types this into the Starting Price field
+          forced,
+        },
       });
       setEntries(prev => prev.map(e => e.tempId === tempId ? { ...e, jobId: job.id } : e));
     } catch (e) {
