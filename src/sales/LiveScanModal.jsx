@@ -136,6 +136,23 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
     setScanInput('');
   };
 
+  // Scanner-dropped-Enter fallback. Most barcode scanners append a CR
+  // after the code which triggers onSubmit naturally, but some scanners
+  // skip it intermittently (low battery, flaky USB, profile config).
+  // When the field matches the SKU pattern and stays stable for 200 ms,
+  // submit anyway. A real human typing pauses longer between characters,
+  // so this rarely fires mid-type — and if it does, the SKU is already
+  // valid so submitting early is harmless.
+  useEffect(() => {
+    if (!scanInput || forcePush) return;
+    if (!/^[A-Za-z]{2,4}-\d+$/.test(scanInput.trim())) return;
+    const id = setTimeout(() => {
+      handleScan(scanInput);
+      setScanInput('');
+    }, 200);
+    return () => clearTimeout(id);
+  }, [scanInput, forcePush]);
+
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-stretch sm:items-center justify-center p-0 sm:p-4">
       <div className="bg-white w-full max-w-3xl h-full sm:h-[92vh] sm:rounded-2xl flex flex-col">
