@@ -11,7 +11,37 @@ inbound port, no tunnel, no cert juggling, no LAN setup.
 └─────────────────┘                   └──────────────┘        └────────────┘
 ```
 
-## One-time setup
+## Quick start (one command)
+
+```bash
+git clone https://github.com/dyeone/Folia-Inventory.git
+cd Folia-Inventory/bridge && ./setup.sh <BRIDGE_TOKEN>
+```
+
+`setup.sh` handles everything — installs Homebrew deps, sets up
+`.env`, pushes the uiautomator2 server to the phone, configures the
+ADB port forward, and starts the bridge. It's idempotent, so you can
+re-run it any time the phone reboots or the u2 server dies.
+
+Generate `<BRIDGE_TOKEN>` by running this in your browser console
+while signed in to https://folia-inventory.vercel.app/ :
+
+```js
+fetch('/api/bridge?action=generate-token', {
+  method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({
+    action: 'generate-token',
+    userId: JSON.parse(localStorage.getItem('session-current-user')).id,
+  }),
+}).then(r => r.json()).then(console.log)
+```
+
+⚠️ Generating a new token instantly kicks any other running bridge
+offline. If you want two Macs to be able to take over from each
+other, copy the same `.env` to both — but **only run one bridge at
+a time** to avoid jobs racing between them.
+
+## Manual setup (if you want to know what `setup.sh` does)
 
 1. **Install ADB**
    ```bash
