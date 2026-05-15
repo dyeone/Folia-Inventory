@@ -26,6 +26,12 @@ create unique index if not exists users_bridge_token_idx
   on users ("bridgeToken")
   where "bridgeToken" is not null;
 
+-- Heartbeat from a running bridge. /next writes this on every poll
+-- (~1.5 s); /health uses it to decide whether to show the bridge as
+-- online — replaces the prior "infer from recent job activity" trick
+-- that gave false-offline readings whenever the bridge was idle.
+alter table users add column if not exists "bridgeLastSeen" timestamptz;
+
 -- ─── Inventory Items ──────────────────────────────────────────────────────────
 
 create table if not exists inventory_items (

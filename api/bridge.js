@@ -96,6 +96,14 @@ async function next(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
   const user = await requireBridgeUser(req);
 
+  // Heartbeat. /health reads this to decide if the bridge is online —
+  // every /next poll (~1.5 s) keeps the timestamp fresh, regardless of
+  // whether a job is actually claimed.
+  await supabase
+    .from('users')
+    .update({ bridgeLastSeen: new Date().toISOString() })
+    .eq('id', user.id);
+
   const staleCutoff = new Date(Date.now() - STALE_RUNNING_MS).toISOString();
 
   // Prefer queued; fall back to a running job that's gone stale.
@@ -142,28 +150,30 @@ async function status(req, res) {
   return res.status(200).json({ jobs: data || [] });
 }
 
-// Liveness signal for the UI's "bridge online" indicator. Inferred from
-// recent job activity (claim or completion) rather than an explicit
-// heartbeat — saves a column. 30s window matches the stale-job threshold.
+// Liveness signal for the UI's "bridge online" indicator. Reads the
+// explicit heartbeat that /next writes on every bridge poll. "Online"
+// means any user with a bridgeToken has a heartbeat within HEARTBEAT_FRESH_MS;
+// the bridge polls every ~1.5 s, so 10 s gives ~6 polls of grace before
+// the UI flips to offline.
+const HEARTBEAT_FRESH_MS = 10_000;
+
 async function health(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
   await requireUser(req.query?.userId);
-  const recent = new Date(Date.now() - 30_000).toISOString();
-  const [{ data: claimed }, { data: completed }, { count: queuedCount }] = await Promise.all([
-    supabase.from('bridge_jobs')
-      .select('claimedAt').not('claimedAt', 'is', null).gte('claimedAt', recent)
-      .order('claimedAt', { ascending: false }).limit(1),
-    supabase.from('bridge_jobs')
-      .select('completedAt').not('completedAt', 'is', null).gte('completedAt', recent)
-      .order('completedAt', { ascending: false }).limit(1),
+  const [{ data: heartbeatRow }, { count: queuedCount }] = await Promise.all([
+    supabase.from('users')
+      .select('bridgeLastSeen')
+      .not('bridgeLastSeen', 'is', null)
+      .order('bridgeLastSeen', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
     supabase.from('bridge_jobs')
       .select('id', { count: 'exact', head: true }).eq('status', 'queued'),
   ]);
-  const lastClaim = claimed?.[0]?.claimedAt;
-  const lastComplete = completed?.[0]?.completedAt;
-  const lastSeen = [lastClaim, lastComplete].filter(Boolean).sort().pop() || null;
+  const lastSeen = heartbeatRow?.bridgeLastSeen || null;
+  const online = !!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < HEARTBEAT_FRESH_MS;
   return res.status(200).json({
-    online: !!lastSeen,
+    online,
     lastSeen,
     queued: queuedCount || 0,
   });
