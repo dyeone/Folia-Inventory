@@ -217,6 +217,7 @@ export function ItemFormModal({
               <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className="input">
                 <option value="available">Available</option>
                 <option value="listed">Listed</option>
+                {form.type === 'tc' && <option value="acclimated">Acclimated</option>}
                 <option value="sold">Sold</option>
                 <option value="shipped">Shipped</option>
                 <option value="delivered">Delivered</option>

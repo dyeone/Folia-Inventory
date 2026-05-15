@@ -144,6 +144,20 @@ function InventorySystem() {
     setIdealRateState(next);
     localStorage.setItem('ideal-profit-rate', String(next));
   };
+  // Default profit rate for items the operator marks "acclimated" — TCs
+  // potted to recover get sold later as grown plants at a higher margin.
+  // Applied at status-change time as a sticky bump on the item's profitRate
+  // so it survives later status transitions and is visible in the row.
+  const [acclimatedRate, setAcclimatedRateState] = useState(() => {
+    const stored = parseFloat(localStorage.getItem('acclimated-profit-rate'));
+    return Number.isFinite(stored) ? stored : 200;
+  });
+  const setAcclimatedRate = (n) => {
+    const num = parseFloat(n);
+    const next = Number.isFinite(num) ? num : 0;
+    setAcclimatedRateState(next);
+    localStorage.setItem('acclimated-profit-rate', String(next));
+  };
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showShippingSettings, setShowShippingSettings] = useState(false);
@@ -599,6 +613,8 @@ function InventorySystem() {
             sales={sales}
             idealRate={idealRate}
             onIdealRateChange={setIdealRate}
+            acclimatedRate={acclimatedRate}
+            onAcclimatedRateChange={setAcclimatedRate}
           />
         )}
         {activeTab === 'inventory' && (
@@ -678,6 +694,15 @@ function InventorySystem() {
             onStatusChange={(id, status) => {
               const updates = { status };
               if (status === 'sold') updates.soldAt = new Date().toISOString();
+              if (status === 'acclimated') {
+                // Sticky rate bump: only raise, never lower. Operator's
+                // existing higher rate (if any) wins.
+                const item = items.find(i => i.id === id);
+                const current = parseFloat(item?.profitRate);
+                if (!Number.isFinite(current) || current < acclimatedRate) {
+                  updates.profitRate = acclimatedRate;
+                }
+              }
               updateItem(id, updates);
             }}
             isAdmin={isAdmin}

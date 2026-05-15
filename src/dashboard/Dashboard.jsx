@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Archive, Package, DollarSign, TrendingUp, Target, Sparkles } from 'lucide-react';
+import { Archive, Package, DollarSign, TrendingUp, Target, Sparkles, Sprout } from 'lucide-react';
 import { StatCard } from '../ui/StatCard.jsx';
 
 // Compact relative-time formatter — "just now / 5m / 3h / 2d / Aug 12".
@@ -19,7 +19,11 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-export function Dashboard({ stats, items, sales, idealRate, onIdealRateChange }) {
+export function Dashboard({
+  stats, items, sales,
+  idealRate, onIdealRateChange,
+  acclimatedRate, onAcclimatedRateChange,
+}) {
   const recentSold = items
     .filter(i => ['sold','shipped','delivered'].includes(i.status))
     .sort((a, b) => new Date(b.soldAt || 0) - new Date(a.soldAt || 0))
@@ -82,6 +86,21 @@ export function Dashboard({ stats, items, sales, idealRate, onIdealRateChange })
     else setRateInput(String(idealRate ?? ''));
   };
 
+  const [acclInput, setAcclInput] = useState(String(acclimatedRate ?? ''));
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAcclInput(String(acclimatedRate ?? ''));
+  }, [acclimatedRate]);
+  const commitAcclRate = () => {
+    const num = parseFloat(acclInput);
+    if (Number.isFinite(num) && num !== acclimatedRate) onAcclimatedRateChange?.(num);
+    else setAcclInput(String(acclimatedRate ?? ''));
+  };
+  const acclimatedCount = useMemo(
+    () => items.filter(i => i.status === 'acclimated').length,
+    [items]
+  );
+
   // Count how many items would benefit from the global rate (no per-item
   // override) so the user can see the blast radius of changing this number.
   const itemsUsingGlobal = useMemo(() => {
@@ -138,35 +157,71 @@ export function Dashboard({ stats, items, sales, idealRate, onIdealRateChange })
         </div>
       </div>
 
-      {/* Global ideal profit rate */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <div className="flex items-start gap-3">
-          <div className="flex-shrink-0 w-10 h-10 bg-emerald-100 text-emerald-700 rounded-lg flex items-center justify-center">
-            <Target className="w-5 h-5" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-semibold text-gray-900">Default Ideal Profit Rate</h3>
-            <p className="text-xs text-gray-500 mt-0.5">
-              Used to compute the recommended selling price for items that don't have their own rate set.
-              Currently applies to {itemsUsingGlobal} item{itemsUsingGlobal === 1 ? '' : 's'} in your inventory.
-            </p>
-            <div className="mt-3 flex items-center gap-3 flex-wrap">
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  value={rateInput}
-                  onChange={(e) => setRateInput(e.target.value)}
-                  onBlur={commitRate}
-                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-                  className="w-24 px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-right focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
-                  min="0"
-                  step="10"
-                />
-                <span className="text-sm text-gray-600">%</span>
+      {/* Profit rate defaults */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 w-10 h-10 bg-emerald-100 text-emerald-700 rounded-lg flex items-center justify-center">
+              <Target className="w-5 h-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-gray-900">Default Ideal Profit Rate</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Fallback rate when an item has no per-item or cultivar rate.
+                Currently applies to {itemsUsingGlobal} item{itemsUsingGlobal === 1 ? '' : 's'}.
+              </p>
+              <div className="mt-3 flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    value={rateInput}
+                    onChange={(e) => setRateInput(e.target.value)}
+                    onBlur={commitRate}
+                    onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                    className="w-24 px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-right focus:outline-none focus:ring-2 focus:ring-emerald-500 tabular-nums"
+                    min="0"
+                    step="10"
+                  />
+                  <span className="text-sm text-gray-600">%</span>
+                </div>
+                <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+                  $10 → <span className="font-semibold text-emerald-700">${(10 * (1 + (parseFloat(rateInput) || 0) / 100)).toFixed(2)}</span>
+                </div>
               </div>
-              <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
-                Example: $10 cost → <span className="font-semibold text-emerald-700">${(10 * (1 + (parseFloat(rateInput) || 0) / 100)).toFixed(2)}</span> ideal price
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <div className="flex items-start gap-3">
+            <div className="flex-shrink-0 w-10 h-10 bg-fuchsia-100 text-fuchsia-700 rounded-lg flex items-center justify-center">
+              <Sprout className="w-5 h-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-semibold text-gray-900">Acclimated Profit Rate</h3>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Bumped onto an item's profit rate when you mark a TC "Acclimated".
+                Sticky once set; never lowers an existing rate. {acclimatedCount} item{acclimatedCount === 1 ? '' : 's'} acclimating.
+              </p>
+              <div className="mt-3 flex items-center gap-3 flex-wrap">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    value={acclInput}
+                    onChange={(e) => setAcclInput(e.target.value)}
+                    onBlur={commitAcclRate}
+                    onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                    className="w-24 px-3 py-2 border border-gray-300 rounded-lg text-sm font-medium text-right focus:outline-none focus:ring-2 focus:ring-fuchsia-500 tabular-nums"
+                    min="0"
+                    step="10"
+                  />
+                  <span className="text-sm text-gray-600">%</span>
+                </div>
+                <div className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+                  $10 → <span className="font-semibold text-fuchsia-700">${(10 * (1 + (parseFloat(acclInput) || 0) / 100)).toFixed(2)}</span>
+                </div>
               </div>
             </div>
           </div>

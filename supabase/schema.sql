@@ -142,11 +142,12 @@ alter table inventory_items add column if not exists "deletedAt" timestamptz;
 alter table inventory_items add column if not exists "deletedBy" text;
 create index if not exists inventory_items_deletedat_idx on inventory_items ("deletedAt");
 
--- Allow 'refunded' as a status (full refunds get marked here; partials keep
--- their existing sold/shipped status with refundedAmount > 0).
+-- Allow 'refunded' (full refunds; partials keep sold/shipped + refundedAmount)
+-- and 'acclimated' (TCs in poor condition that got potted to recover and
+-- will be sold as grown plants later, at a higher profit rate).
 alter table inventory_items drop constraint if exists inventory_items_status_check;
 alter table inventory_items add constraint inventory_items_status_check
-  check (status in ('available','listed','sold','shipped','delivered','converted','refunded'));
+  check (status in ('available','listed','sold','shipped','delivered','converted','refunded','acclimated'));
 
 -- ─── Catalog: Varieties (Genus) + Species ────────────────────────────────────
 -- A two-level catalog so items can be hierarchically classified:

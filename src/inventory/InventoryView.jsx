@@ -184,6 +184,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
             { value: 'all', label: 'All statuses' },
             { value: 'available', label: 'Available' },
             { value: 'listed', label: 'Listed' },
+            { value: 'acclimated', label: 'Acclimated' },
             { value: 'sold', label: 'Sold' },
             { value: 'shipped', label: 'Shipped' },
             { value: 'delivered', label: 'Delivered' },
@@ -447,6 +448,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                       className={`text-xs font-medium rounded px-2 py-1 border-0 focus:ring-2 focus:ring-emerald-500 ${
                         item.status === 'available' ? 'bg-gray-100 text-gray-700' :
                         item.status === 'listed' ? 'bg-amber-100 text-amber-800' :
+                        item.status === 'acclimated' ? 'bg-fuchsia-100 text-fuchsia-800' :
                         item.status === 'sold' ? 'bg-blue-100 text-blue-800' :
                         item.status === 'shipped' ? 'bg-violet-100 text-violet-800' :
                         item.status === 'delivered' ? 'bg-emerald-100 text-emerald-800' :
@@ -455,6 +457,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     >
                       <option value="available">Available</option>
                       <option value="listed">Listed</option>
+                      {item.type === 'tc' && <option value="acclimated">Acclimated</option>}
                       <option value="sold">Sold</option>
                       <option value="shipped">Shipped</option>
                       <option value="delivered">Delivered</option>
@@ -624,6 +627,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             className={`text-xs font-medium rounded px-2 py-1 border-0 focus:ring-2 focus:ring-emerald-500 ${
                               item.status === 'available' ? 'bg-gray-100 text-gray-700' :
                               item.status === 'listed' ? 'bg-amber-100 text-amber-800' :
+                              item.status === 'acclimated' ? 'bg-fuchsia-100 text-fuchsia-800' :
                               item.status === 'sold' ? 'bg-blue-100 text-blue-800' :
                               item.status === 'shipped' ? 'bg-violet-100 text-violet-800' :
                               item.status === 'delivered' ? 'bg-emerald-100 text-emerald-800' :
@@ -632,6 +636,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                           >
                             <option value="available">Available</option>
                             <option value="listed">Listed</option>
+                            {item.type === 'tc' && <option value="acclimated">Acclimated</option>}
                             <option value="sold">Sold</option>
                             <option value="shipped">Shipped</option>
                             <option value="delivered">Delivered</option>
