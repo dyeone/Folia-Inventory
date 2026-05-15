@@ -68,15 +68,45 @@ function parseBounds(boundsAttr) {
   return { x1, y1, x2, y2, cx: Math.round((x1 + x2) / 2), cy: Math.round((y1 + y2) / 2) };
 }
 
+// uiautomator dump emits XML entity escapes inside attribute values
+// (e.g. `&amp;` for `&` in "Pin & Run"). We parse with a flat regex
+// rather than a real XML parser, so callers' predicates would see the
+// escaped form and never match natural strings — unescape on parse so
+// predicates can compare against `'Pin & Run'` directly.
+function unescapeXml(s) {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#10;/g, '\n')
+    .replace(/&#xa;/gi, '\n');
+}
+
+function parseAttrs(tag) {
+  return Object.fromEntries(
+    [...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1], unescapeXml(m[2])])
+  );
+}
+
 function findNode(xml, predicate) {
   const matches = xml.match(/<node\s[^>]*>/g) || [];
   for (const tag of matches) {
-    const attrs = Object.fromEntries(
-      [...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map(m => [m[1], m[2]])
-    );
+    const attrs = parseAttrs(tag);
     if (predicate(attrs)) return attrs;
   }
   return null;
+}
+
+function findAllNodes(xml, predicate) {
+  const matches = xml.match(/<node\s[^>]*>/g) || [];
+  const out = [];
+  for (const tag of matches) {
+    const attrs = parseAttrs(tag);
+    if (predicate(attrs)) out.push(attrs);
+  }
+  return out;
 }
 
 async function waitForNode(predicate, { timeoutMs = 5000, intervalMs = 250 } = {}) {
@@ -90,23 +120,25 @@ async function waitForNode(predicate, { timeoutMs = 5000, intervalMs = 250 } = {
   return null;
 }
 
-async function tap({ x, y, resourceId, text, timeoutMs }) {
+async function tap({ x, y, resourceId, text, contentDesc, timeoutMs }) {
   if (Number.isFinite(x) && Number.isFinite(y)) {
     await adbShell('input', 'tap', String(x), String(y));
     return { tapped: { x, y } };
   }
-  if (resourceId || text) {
+  if (resourceId || text || contentDesc) {
     const node = await waitForNode(
-      a => (resourceId && a['resource-id'] === resourceId) || (text && a.text === text),
+      a => (resourceId && a['resource-id'] === resourceId)
+        || (text && a.text === text)
+        || (contentDesc && a['content-desc'] === contentDesc),
       { timeoutMs: timeoutMs ?? 3000 }
     );
-    if (!node) throw new Error(`node not found: ${resourceId || text}`);
+    if (!node) throw new Error(`node not found: ${resourceId || text || contentDesc}`);
     const b = parseBounds(node.bounds);
     if (!b) throw new Error('matched node has no bounds');
     await adbShell('input', 'tap', String(b.cx), String(b.cy));
     return { tapped: b };
   }
-  throw new Error('tap needs x+y, resourceId, or text');
+  throw new Error('tap needs x+y, resourceId, text, or contentDesc');
 }
 
 async function typeText(text) {
@@ -120,6 +152,51 @@ async function typeText(text) {
   return { length: text.length };
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function tapBoundsAttr(boundsAttr) {
+  const b = parseBounds(boundsAttr);
+  if (!b) throw new Error(`bad bounds: ${boundsAttr}`);
+  await adbShell('input', 'tap', String(b.cx), String(b.cy));
+  return b;
+}
+
+// Palmstreet "Quick listing" automation — title-only.
+//
+// During a live, scanning a SKU should open the Quick-listing form and
+// pre-fill the plant name. The operator then sets price, quantity,
+// image, and taps "Pin & Run" themselves. That split keeps the bridge
+// simple, avoids the keyboard-shift complications around the price
+// field, and gives the operator a final review before posting.
+//
+// Steps:
+//   1. tap sidebar "Listing"
+//   2. wait for the form to render (Pin & Run visible)
+//   3. tap the title EditText (first EditText in form, by doc order)
+//   4. wait ~400 ms for the soft keyboard to slide up
+//   5. type the name
+async function listing({ sku, name }) {
+  if (typeof name !== 'string' || !name) throw new Error('name required');
+
+  await tap({ contentDesc: 'Listing', timeoutMs: 5000 });
+
+  const formReady = await waitForNode(
+    a => a['content-desc'] === 'Pin & Run',
+    { timeoutMs: 5000 }
+  );
+  if (!formReady) throw new Error('listing form did not open');
+
+  const xml = await dumpUI();
+  const editTexts = findAllNodes(xml, a => (a.class || '').endsWith('EditText'));
+  if (editTexts.length < 1) throw new Error('no EditText fields found in listing form');
+  await tapBoundsAttr(editTexts[0].bounds);
+
+  await sleep(400);
+  await typeText(name);
+
+  return { sku, name, prefilled: 'title' };
+}
+
 // ─── Job dispatch ───────────────────────────────────────────────────────────
 
 async function handleJob(job) {
@@ -131,13 +208,7 @@ async function handleJob(job) {
     case 'dump':
       return { xml: await dumpUI() };
     case 'listing':
-      // Phase 2 stub — the Palmstreet "add listing during live" script
-      // lands here once we've captured the resource-ids.
-      return {
-        stub: true,
-        wouldListing: job.payload,
-        note: 'Phase 2: scripted Palmstreet sequence not implemented yet',
-      };
+      return listing(job.payload || {});
     default:
       throw new Error(`unknown action: ${job.action}`);
   }
