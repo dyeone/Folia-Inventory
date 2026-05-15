@@ -9,7 +9,12 @@
 //   BRIDGE_TOKEN     long-lived token from /api/bridge?action=generate-token
 // Optional env:
 //   BRIDGE_DEVICE    adb serial when multiple devices are connected
-//   POLL_MS          poll interval in ms (default 1500)
+//   POLL_MS          poll interval in ms (default 500)
+//   U2_URL           uiautomator2 server URL (default http://localhost:9008)
+//                    Set to "off" to disable and fall back to `adb shell
+//                    uiautomator dump` everywhere. The u2 server is ~7×
+//                    faster per dump (~280 ms vs ~2 s) — well worth the
+//                    one-time setup (`python -m uiautomator2 init`).
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -35,6 +40,8 @@ const API_URL = (process.env.FOLIA_API_URL || '').replace(/\/$/, '');
 const TOKEN = process.env.BRIDGE_TOKEN || '';
 const DEVICE = process.env.BRIDGE_DEVICE || '';
 const POLL_MS = parseInt(process.env.POLL_MS || '500', 10);
+const U2_URL = (process.env.U2_URL ?? 'http://localhost:9008').replace(/\/$/, '');
+const U2_ENABLED = U2_URL.toLowerCase() !== 'off';
 
 if (!API_URL || !TOKEN) {
   console.error('Missing FOLIA_API_URL or BRIDGE_TOKEN. Create bridge/.env (see README).');
@@ -56,13 +63,41 @@ async function adb(...args) {
 }
 const adbShell = (...args) => adb('shell', ...args);
 
-async function dumpUI() {
-  // Single round-trip: dump + cat in one `adb shell` invocation, vs.
-  // two separate adb calls. --compressed strips nodes that aren't
-  // useful for interaction (decorative views, etc.), shrinking the
-  // payload and the parse work on this side. The dump confirmation
-  // message goes to stderr so stdout is clean XML.
+// uiautomator2 server's JSON-RPC `dumpWindowHierarchy` returns the
+// same XML format as `uiautomator dump` but in ~280 ms instead of ~2 s
+// (server is already running on-device, no per-call instrumentation
+// spin-up). We keep using the slower ADB path as a fallback when the
+// server isn't reachable so the bridge degrades gracefully.
+async function u2Dump() {
+  const r = await fetch(`${U2_URL}/jsonrpc/0`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: 1,
+      method: 'dumpWindowHierarchy',
+      params: [false],  // compressed=false; compressed strips too many nodes
+    }),
+  });
+  if (!r.ok) throw new Error(`u2 dump HTTP ${r.status}`);
+  const body = await r.json();
+  if (body.error) throw new Error(`u2 dump: ${body.error.message}`);
+  return body.result;
+}
+
+async function adbDump() {
   return adbShell('uiautomator dump --compressed /sdcard/ui.xml && cat /sdcard/ui.xml');
+}
+
+let u2Healthy = U2_ENABLED;
+async function dumpUI() {
+  if (u2Healthy) {
+    try { return await u2Dump(); }
+    catch (e) {
+      console.warn(`[u2] dump failed (${e.message}); falling back to adb path`);
+      u2Healthy = false;
+    }
+  }
+  return adbDump();
 }
 
 function parseBounds(boundsAttr) {
@@ -205,12 +240,23 @@ async function listing({ sku, name }) {
 
   // Wait for the form to render AND grab the EditTexts in the same
   // dump cycle. One round-trip vs. waitForNode then a second dumpUI.
+  //
+  // The u2 dump includes the host view's chat input EditText at the
+  // bottom of the screen (~y=1862) even when the form modal is open,
+  // because it's outside the modal but still in the same window. The
+  // bridge used to silently tap that chat input instead of the title.
+  // Filter EditTexts to those above the chat band (y2 < 1700) so we
+  // only get the form's own fields.
   let editTexts = null;
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const xml = await dumpUI();
     if (findNode(xml, a => a['content-desc'] === 'Pin & Run')) {
-      editTexts = findAllNodes(xml, a => (a.class || '').endsWith('EditText'));
+      editTexts = findAllNodes(xml, a => {
+        if (!(a.class || '').endsWith('EditText')) return false;
+        const b = parseBounds(a.bounds);
+        return b && b.y2 < 1700;
+      });
       if (editTexts.length > 0) break;
     }
     await sleep(200);

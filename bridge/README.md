@@ -36,8 +36,27 @@ inbound port, no tunnel, no cert juggling, no LAN setup.
    FOLIA_API_URL=https://foliainventory.vercel.app
    BRIDGE_TOKEN=<paste the token>
    # BRIDGE_DEVICE=<adb-serial>     # only if multiple devices are connected
-   # POLL_MS=1500
+   # POLL_MS=500
+   # U2_URL=http://localhost:9008   # or "off" to disable
    ```
+
+7. **Install the uiautomator2 server.** The bridge uses uiautomator2's
+   on-device server for fast UI dumps (~280 ms vs ~2 s for `adb shell
+   uiautomator dump`). Without it the bridge still works, just ~3×
+   slower per scan.
+
+   ```bash
+   pip3 install --user --break-system-packages uiautomator2
+   python3 -m uiautomator2 init    # pushes server jar to the phone
+   ```
+
+   The server runs as a detached process on the phone. After the phone
+   reboots it has to be relaunched:
+   ```bash
+   adb shell "nohup sh -c 'CLASSPATH=/data/local/tmp/u2.jar app_process / com.wetest.uia2.Main' > /dev/null 2>&1 &"
+   adb forward tcp:9008 tcp:9008
+   ```
+   Test with `curl http://localhost:9008/ping` — should print `pong`.
 
 ## Run
 
@@ -52,7 +71,7 @@ Output looks like:
 Folia bridge starting
   api    https://foliainventory.vercel.app
   device (default adb device)
-  poll   1500ms
+  poll   500ms
   adb    1 device(s): RFCT80XYZ device
 ```
 
