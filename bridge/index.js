@@ -269,6 +269,12 @@ async function listing({ sku, name }) {
   await sleep(300);
   await typeText(title);
 
+  // Dismiss the soft keyboard so the operator can immediately see and
+  // tap the price field, which the keyboard otherwise covers. With the
+  // keyboard up, KEYCODE_BACK (4) only hides the keyboard — it doesn't
+  // close the Quick-listing modal.
+  await adbShell('input', 'keyevent', '4');
+
   return { sku, name, title, prefilled: 'title' };
 }
 
