@@ -160,8 +160,18 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search SKU, name, variety..."
-              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+              className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
             />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 rounded"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
           <button
             onClick={() => setShowAcclimation(true)}
