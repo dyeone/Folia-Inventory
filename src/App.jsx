@@ -625,6 +625,7 @@ function InventorySystem() {
             varieties={varieties}
             species={species}
             idealRate={idealRate}
+            acclimatedRate={acclimatedRate}
             onUpdateSpeciesRate={updateSpeciesRate}
             onDeleteVariety={deleteVariety}
             onManageVarieties={() => {

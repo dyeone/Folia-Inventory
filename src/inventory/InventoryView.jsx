@@ -1,10 +1,11 @@
 import { useState, useMemo } from 'react';
-import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Plus } from 'lucide-react';
+import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Plus, Sprout } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 import { buildLookups, speciesForItem, computeIdealPrice, rateSourceLabel } from './pricing.js';
 import { CultivarRateInput } from './CultivarRateInput.jsx';
+import { AcclimationModal } from './AcclimationModal.jsx';
 
 // e.g. "May 8, 3:45 PM" (same year) or "May 8, 2024" (prior year).
 function fmtAddedAt(iso) {
@@ -18,7 +19,7 @@ function fmtAddedAt(iso) {
   return `${datePart}, ${timePart}`;
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
   const isMobile = useIsMobile();
   // O(1) lookups for speciesForItem / computeIdealPrice — built once per
   // varieties/species change instead of linear-scanning per item per render.
@@ -90,6 +91,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
 
   // Selection is local to this view; cleared whenever filters change or after an action.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [showAcclimation, setShowAcclimation] = useState(false);
 
   // Drop selections that are no longer visible (e.g. filtered out) to avoid
   // acting on rows the user can't see.
@@ -161,6 +163,13 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
             />
           </div>
+          <button
+            onClick={() => setShowAcclimation(true)}
+            title="Scan TC SKUs in bulk to mark them Acclimated"
+            className="flex items-center gap-1.5 px-3 py-2 text-sm text-fuchsia-700 border border-fuchsia-300 bg-fuchsia-50 rounded-lg hover:bg-fuchsia-100"
+          >
+            <Sprout className="w-4 h-4" /> Acclimation Mode
+          </button>
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">
             <Download className="w-4 h-4" /> Export CSV
           </button>
@@ -729,6 +738,15 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           </div>
           )}
         </>
+      )}
+
+      {showAcclimation && (
+        <AcclimationModal
+          items={allItems}
+          acclimatedRate={acclimatedRate}
+          onStatusChange={onStatusChange}
+          onClose={() => setShowAcclimation(false)}
+        />
       )}
     </div>
   );
