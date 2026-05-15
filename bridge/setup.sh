@@ -101,28 +101,36 @@ step "Initializing u2 server on the phone (idempotent)"
 python3 -m uiautomator2 init >/tmp/u2-init.log 2>&1 || true
 echo "  ✓ done (log: /tmp/u2-init.log)"
 
-# ─── 6. Launch the u2 server process on the phone ──────────────────────────
-step "Starting u2 server process on the phone"
-if adb shell pgrep -f 'com.wetest.uia2.Main' >/dev/null 2>&1; then
-  echo "  ✓ already running"
-else
-  adb shell "nohup sh -c 'CLASSPATH=/data/local/tmp/u2.jar app_process / com.wetest.uia2.Main' > /dev/null 2>&1 &"
-  sleep 2
-  echo "  ✓ launched"
-fi
-
-# ─── 7. ADB port forward ───────────────────────────────────────────────────
+# ─── 6. ADB port forward (set up first so we can probe HTTP) ───────────────
 step "Setting up adb forward tcp:9008 → phone:9008"
 adb forward tcp:9008 tcp:9008 >/dev/null
 echo "  ✓ done"
 
-# ─── 8. Sanity-check u2 reachable ──────────────────────────────────────────
-step "Pinging u2 server"
-sleep 1
-if curl -sSf -m 3 http://localhost:9008/ping >/dev/null; then
-  echo "  ✓ pong"
+# ─── 7. Ensure u2 server is actually responding ────────────────────────────
+# Pgrep alone is unreliable: `python3 -m uiautomator2 init` leaves a
+# transient process matching com.wetest.uia2.Main that dies seconds
+# later. The only honest test is "does HTTP /ping reply?" via the
+# forward we just set up. If not, kill any zombies and relaunch detached.
+step "Ensuring u2 server is responding"
+ping_ok() { curl -sSf -m 2 http://localhost:9008/ping >/dev/null 2>&1; }
+
+if ping_ok; then
+  echo "  ✓ already responding"
 else
-  echo "  ⚠ u2 server unreachable — bridge will fall back to slow ADB dumps (~3× slower)"
+  adb shell pkill -f 'com.wetest.uia2.Main' >/dev/null 2>&1 || true
+  sleep 1
+  adb shell "nohup sh -c 'CLASSPATH=/data/local/tmp/u2.jar app_process / com.wetest.uia2.Main' > /dev/null 2>&1 &"
+  # Server takes ~2-3 s to bind. Retry the ping for up to 8 s before giving up.
+  for i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    if ping_ok; then
+      echo "  ✓ launched and responding"
+      break
+    fi
+    if [ "$i" = "8" ]; then
+      echo "  ⚠ launched but not responding — bridge will fall back to slow ADB dumps (~3× slower)"
+    fi
+  done
 fi
 
 # ─── 9. Start the bridge ───────────────────────────────────────────────────
