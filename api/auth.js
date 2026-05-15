@@ -33,7 +33,18 @@ async function hasUsers(req, res) {
 
 async function register(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
-  const { username, password, displayName } = req.body || {};
+  const { username, password, displayName, registrationPassword } = req.body || {};
+
+  // Gate new registrations behind a shared secret so random visitors
+  // can't sign themselves up. Configurable via REGISTRATION_PASSWORD
+  // on the deployment; falls back to a default if the env var isn't
+  // set, so a freshly cloned repo works without extra setup.
+  const expected = process.env.REGISTRATION_PASSWORD || 'foliafolialove';
+  if (!registrationPassword || registrationPassword !== expected) {
+    const e = new Error('Invalid registration password');
+    e.status = 401; throw e;
+  }
+
   if (!username?.trim()) { const e = new Error('Username required'); e.status = 400; throw e; }
   if (!password) { const e = new Error('Password required'); e.status = 400; throw e; }
   if (password.length < 6) { const e = new Error('Password must be at least 6 characters'); e.status = 400; throw e; }

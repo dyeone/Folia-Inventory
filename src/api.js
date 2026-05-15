@@ -50,8 +50,8 @@ async function request(path, { method = 'GET', body } = {}) {
 export const api = {
   // Auth — single dispatcher under /auth, action passed via query (GET) or body (POST).
   hasAnyUsers: () => request('/auth?action=has-users').then(r => r.hasAnyUsers),
-  register: ({ username, password, displayName }) =>
-    request('/auth', { method: 'POST', body: { action: 'register', username, password, displayName } }).then(r => r.user),
+  register: ({ username, password, displayName, registrationPassword }) =>
+    request('/auth', { method: 'POST', body: { action: 'register', username, password, displayName, registrationPassword } }).then(r => r.user),
   login: ({ username, password }) =>
     request('/auth', { method: 'POST', body: { action: 'login', username, password } }).then(r => r.user),
   session: (userId) =>

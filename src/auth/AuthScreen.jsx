@@ -9,6 +9,7 @@ export function AuthScreen({ onLogin }) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [registrationPassword, setRegistrationPassword] = useState('');
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -35,6 +36,11 @@ export function AuthScreen({ onLogin }) {
     setLoading(true);
     try {
       if (mode === 'register') {
+        if (!registrationPassword) {
+          setErr('Registration password required');
+          setLoading(false);
+          return;
+        }
         if (password.length < 6) {
           setErr('Password must be at least 6 characters');
           setLoading(false);
@@ -49,6 +55,7 @@ export function AuthScreen({ onLogin }) {
           username: username.trim(),
           password,
           displayName: displayName.trim() || username.trim(),
+          registrationPassword,
         });
         onLogin(user);
       } else {
@@ -134,6 +141,20 @@ export function AuthScreen({ onLogin }) {
                 onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
                 className="input"
                 autoComplete="new-password"
+              />
+            </Field>
+          )}
+
+          {mode === 'register' && (
+            <Field label="Registration Password">
+              <input
+                type="password"
+                value={registrationPassword}
+                onChange={(e) => setRegistrationPassword(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+                className="input"
+                autoComplete="off"
+                placeholder="Ask an admin for this"
               />
             </Field>
           )}
