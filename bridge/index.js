@@ -214,7 +214,7 @@ async function tapBoundsAttr(boundsAttr) {
 //   3. tap the title EditText (first EditText in form, by doc order)
 //   4. wait ~400 ms for the soft keyboard to slide up
 //   5. type the name
-async function listing({ sku, name, netCost }) {
+async function listing({ sku, name, grossCost }) {
   if (typeof name !== 'string' || !name) throw new Error('name required');
   // Title format on Palmstreet: "SKU - NAME". Operator scans during a
   // live to look up the inventory item later by SKU; the plant name
@@ -222,11 +222,12 @@ async function listing({ sku, name, netCost }) {
   // happen in the Live Scan flow, but be defensive).
   const title = sku ? `${sku} - ${name}` : name;
 
-  // Net cost the operator paid for the item — pre-filled into the
-  // Starting Price field as a floor; they bid up from there during the
-  // live. Numeric coerce so '12.50' from JSON works the same as 12.5.
-  const startingPrice = netCost != null && Number.isFinite(Number(netCost))
-    ? String(Number(netCost))
+  // Gross cost = what the operator paid for the item. Pre-fill it
+  // into the Starting Price field as a floor — they bid up from
+  // there during the live. Numeric coerce so '12.50' from JSON works
+  // the same as 12.5.
+  const startingPrice = grossCost != null && Number.isFinite(Number(grossCost))
+    ? String(Number(grossCost))
     : null;
 
   // Tap on the live-video area to wake the host UI. The sidebar
@@ -254,6 +255,12 @@ async function listing({ sku, name, netCost }) {
   // bridge used to silently tap that chat input instead of the title.
   // Filter EditTexts to those above the chat band (y2 < 1700) so we
   // only get the form's own fields.
+  // Wait until BOTH title and price EditTexts are present in the dump.
+  // Breaking at length>=1 used to fire on a transient mid-animation
+  // state where only the title had rendered — bridge then typed the
+  // title fine but skipped the price step because editTexts.length<2.
+  // The y<1700 filter keeps only the form's title and price fields
+  // (Quantity + Auction timer sit below that).
   let editTexts = null;
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
@@ -264,12 +271,12 @@ async function listing({ sku, name, netCost }) {
         const b = parseBounds(a.bounds);
         return b && b.y2 < 1700;
       });
-      if (editTexts.length > 0) break;
+      if (editTexts.length >= 2) break;
     }
     await sleep(200);
   }
-  if (!editTexts || editTexts.length < 1) {
-    throw new Error('listing form did not open');
+  if (!editTexts || editTexts.length < 2) {
+    throw new Error('listing form did not open (or rendered incompletely)');
   }
 
   await tapBoundsAttr(editTexts[0].bounds);

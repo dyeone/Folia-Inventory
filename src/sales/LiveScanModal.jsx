@@ -98,7 +98,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
           sku: item.sku,
           name: item.name,
           price,
-          netCost: item.netCost,  // bridge types this into the Starting Price field
+          grossCost: item.grossCost,  // bridge types this into the Starting Price field
           forced,
         },
       });
