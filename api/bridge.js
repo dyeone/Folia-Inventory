@@ -46,6 +46,8 @@ export default wrap(async (req, res) => {
     case 'enqueue':        return enqueue(req, res);
     case 'next':           return next(req, res);
     case 'complete':       return complete(req, res);
+    case 'status':         return status(req, res);
+    case 'health':         return health(req, res);
     default: {
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
@@ -122,6 +124,49 @@ async function next(req, res) {
   if (updErr) { const e = new Error(updErr.message); e.status = 500; throw e; }
   if (!claimed) return res.status(200).json({ job: null });
   return res.status(200).json({ job: claimed });
+}
+
+// Bulk status lookup for the UI's polling loop. ?ids=a,b,c — at most 32
+// at a time so the URL stays short and the SELECT is bounded.
+async function status(req, res) {
+  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+  await requireUser(req.query?.userId);
+  const raw = (req.query?.ids || '').toString();
+  const ids = raw.split(',').map(s => s.trim()).filter(Boolean).slice(0, 32);
+  if (ids.length === 0) return res.status(200).json({ jobs: [] });
+  const { data, error } = await supabase
+    .from('bridge_jobs')
+    .select('id, status, action, payload, result, error, "createdAt", "claimedAt", "completedAt"')
+    .in('id', ids);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ jobs: data || [] });
+}
+
+// Liveness signal for the UI's "bridge online" indicator. Inferred from
+// recent job activity (claim or completion) rather than an explicit
+// heartbeat — saves a column. 30s window matches the stale-job threshold.
+async function health(req, res) {
+  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+  await requireUser(req.query?.userId);
+  const recent = new Date(Date.now() - 30_000).toISOString();
+  const [{ data: claimed }, { data: completed }, { count: queuedCount }] = await Promise.all([
+    supabase.from('bridge_jobs')
+      .select('claimedAt').not('claimedAt', 'is', null).gte('claimedAt', recent)
+      .order('claimedAt', { ascending: false }).limit(1),
+    supabase.from('bridge_jobs')
+      .select('completedAt').not('completedAt', 'is', null).gte('completedAt', recent)
+      .order('completedAt', { ascending: false }).limit(1),
+    supabase.from('bridge_jobs')
+      .select('id', { count: 'exact', head: true }).eq('status', 'queued'),
+  ]);
+  const lastClaim = claimed?.[0]?.claimedAt;
+  const lastComplete = completed?.[0]?.completedAt;
+  const lastSeen = [lastClaim, lastComplete].filter(Boolean).sort().pop() || null;
+  return res.status(200).json({
+    online: !!lastSeen,
+    lastSeen,
+    queued: queuedCount || 0,
+  });
 }
 
 async function complete(req, res) {

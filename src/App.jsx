@@ -36,6 +36,7 @@ const CatalogModal = lazyNamed(() => import('./inventory/CatalogModal.jsx'), 'Ca
 const SaleFormModal = lazyNamed(() => import('./sales/SaleFormModal.jsx'), 'SaleFormModal');
 const LineupBuilder = lazyNamed(() => import('./sales/LineupBuilder.jsx'), 'LineupBuilder');
 const SalesUploadModal = lazyNamed(() => import('./sales/SalesUploadModal.jsx'), 'SalesUploadModal');
+const LiveScanModal = lazyNamed(() => import('./sales/LiveScanModal.jsx'), 'LiveScanModal');
 const LiveModal = lazyNamed(() => import('./sales/LiveModal.jsx'), 'LiveModal');
 const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
 const ShippingSettingsModal = lazyNamed(() => import('./packing/ShippingSettingsModal.jsx'), 'ShippingSettingsModal');
@@ -124,6 +125,7 @@ function InventorySystem() {
   const [lineupSale, setLineupSale] = useState(null);
   // Validate Sales modal — global, not per-sale-event. Boolean toggle.
   const [showValidateSales, setShowValidateSales] = useState(false);
+  const [showLiveScan, setShowLiveScan] = useState(false);
   const [liveSale, setLiveSale] = useState(null);
   const [editingItem, setEditingItem] = useState(null);
   const [convertingItem, setConvertingItem] = useState(null);
@@ -702,6 +704,7 @@ function InventorySystem() {
               }
             }}
             onValidateSales={() => setShowValidateSales(true)}
+            onStartLiveScan={() => setShowLiveScan(true)}
             onGoLive={(sale) => setLiveSale(sale)}
             onSendToPacking={async (sale) => {
               try {
@@ -987,6 +990,15 @@ function InventorySystem() {
           items={items}
           onClose={() => setLiveSale(null)}
           setConfirmDialog={setConfirmDialog}
+        />
+      )}
+      {showLiveScan && (
+        <LiveScanModal
+          items={items}
+          varieties={varieties}
+          species={species}
+          idealRate={idealRate}
+          onClose={() => setShowLiveScan(false)}
         />
       )}
       {showValidateSales && (

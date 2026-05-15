@@ -121,6 +121,16 @@ export const api = {
   voidLabel: (shipmentBoxId) =>
     request('/shipstation', { method: 'POST', body: { action: 'void-label', shipmentBoxId } }).then(r => r.shipment),
 
+  // Bridge — durable job queue between web app and the local Folia Bridge
+  // that drives Palmstreet via ADB. See api/bridge.js + bridge/index.js.
+  bridgeEnqueue: ({ jobAction, payload }) =>
+    request('/bridge', { method: 'POST', body: { action: 'enqueue', jobAction, payload } }).then(r => r.job),
+  bridgeStatus: (ids) =>
+    request(`/bridge?action=status&ids=${encodeURIComponent(ids.join(','))}`).then(r => r.jobs),
+  bridgeHealth: () => request('/bridge?action=health'),
+  bridgeGenerateToken: () =>
+    request('/bridge', { method: 'POST', body: { action: 'generate-token' } }).then(r => r.token),
+
   // Users (admin only, enforced server-side)
   getUsers: () => request('/users').then(r => r.users),
   createUser: ({ username, password, displayName, role, adminUserId }) =>

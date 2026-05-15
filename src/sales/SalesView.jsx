@@ -26,7 +26,7 @@ function formatStart(sale) {
 
 export function SalesView({
   sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
-  onSendToPacking, onGoLive, onValidateSales, isAdmin,
+  onSendToPacking, onGoLive, onValidateSales, onStartLiveScan, isAdmin,
 }) {
   const [tab, setTab] = useState('active');
 
@@ -45,6 +45,15 @@ export function SalesView({
           <p className="text-sm text-gray-500 mt-0.5">From lineup to packed boxes — track each event end-to-end</p>
         </div>
         <div className="flex flex-wrap gap-2 self-start sm:self-auto">
+          {onStartLiveScan && (
+            <button
+              onClick={onStartLiveScan}
+              title="Open the live-scan window — every barcode scan auto-pushes the SKU to Palmstreet"
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white text-sm font-medium rounded-lg"
+            >
+              <Radio className="w-4 h-4" /> Start Live Mode
+            </button>
+          )}
           {onValidateSales && (
             <button
               onClick={onValidateSales}
