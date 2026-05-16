@@ -91,13 +91,32 @@ async function adbDump() {
   return adbShell('uiautomator dump --compressed /sdcard/ui.xml && cat /sdcard/ui.xml');
 }
 
+// u2 server can die mid-session (device sleep, USB blip, Palmstreet UI
+// churn). The original code latched u2Healthy=false on first failure
+// for the bridge's lifetime, which meant a single dropped u2 call would
+// pin the whole session to the ~2 s adb-dump path. Now we periodically
+// re-probe u2 when in fallback mode and flip back to the fast path on
+// success, so the bridge self-heals without a restart.
 let u2Healthy = U2_ENABLED;
+let u2RetryAfter = 0;
+const U2_RETRY_INTERVAL_MS = 60_000;
+
 async function dumpUI() {
   if (u2Healthy) {
     try { return await u2Dump(); }
     catch (e) {
       console.warn(`[u2] dump failed (${e.message}); falling back to adb path`);
       u2Healthy = false;
+      u2RetryAfter = Date.now() + U2_RETRY_INTERVAL_MS;
+    }
+  } else if (U2_ENABLED && Date.now() >= u2RetryAfter) {
+    try {
+      const result = await u2Dump();
+      console.log(`[u2] recovered — switching back to fast path`);
+      u2Healthy = true;
+      return result;
+    } catch {
+      u2RetryAfter = Date.now() + U2_RETRY_INTERVAL_MS;
     }
   }
   return adbDump();
@@ -207,6 +226,23 @@ async function tapBoundsAttr(boundsAttr) {
   if (!b) throw new Error(`bad bounds: ${boundsAttr}`);
   await adbShell('input', 'tap', String(b.cx), String(b.cy));
   return b;
+}
+
+// Ask Android which window currently has focus. If it isn't Palmstreet,
+// we can't drive the listing form — the operator pushed the app to the
+// background, or a system dialog stole focus. Surface a clear message
+// instead of the generic "node not found: Listing" / "form did not
+// open" errors that don't tell the operator what to fix.
+async function checkPalmstreetForeground() {
+  let focus;
+  try {
+    focus = (await adbShell('dumpsys window | grep mCurrentFocus')).trim();
+  } catch {
+    return; // best-effort diagnostic only — don't mask a real error
+  }
+  if (focus && !/palmstreet/i.test(focus)) {
+    throw new Error('Palmstreet is not in the foreground — open the Palmstreet app on the phone, then re-scan');
+  }
 }
 
 // Locate the Quick-listing form's Starting Price EditText by anchoring
@@ -333,26 +369,27 @@ async function listing({ sku, name, grossCost }) {
     editTexts = await openFormAndGrabFields(3500);
   }
   if (!editTexts) {
+    // Before raising the generic error, check whether Palmstreet is
+    // even foregrounded. Operators sometimes accidentally push it to
+    // the background and every subsequent scan fails with a cryptic
+    // "node not found" — this surfaces the real cause directly.
+    await checkPalmstreetForeground();
     throw new Error('listing form did not open (or rendered incompletely)');
   }
 
   await tapBoundsAttr(editTexts[0].bounds);
   await sleep(220);
-  // Clear any existing title text. Back-to-back scans (where the
-  // previous form was still open and our pre-check skipped the
-  // wake/Listing flow) would otherwise append the new title onto the
-  // old one. MOVE_END + a wide overshoot of backspaces is a no-op on
-  // an empty field and safely flattens anything up to 80 chars (the
-  // form's 0/60 counter caps user entry, so 80 is plenty of slack).
-  await adbShell('input', 'keyevent', '123',
-    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
-    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
-    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
-    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
-    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
-    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
-    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
-    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67');
+  // Clear any existing title text from a previous scan. Back-to-back
+  // scans (pre-check skipped the wake/Listing flow because the form
+  // was still open) would otherwise append the new title onto the old.
+  // Only fire when the field actually has content, and size the
+  // overshoot to the existing length + 5. Skipping when empty saves
+  // ~200 ms on every open-from-scratch scan.
+  const priorTitle = editTexts[0].text || '';
+  if (priorTitle.length > 0) {
+    const backspaces = Array(priorTitle.length + 5).fill('67');
+    await adbShell('input', 'keyevent', '123', ...backspaces);
+  }
   await typeText(title);
 
   // Dismiss the soft keyboard so the operator can immediately see the
@@ -382,14 +419,25 @@ async function listing({ sku, name, grossCost }) {
       const found = findPriceField(await dumpUI());
       if (found) { priceTarget = found.bounds; break; }
     }
-    // Fallback: if the label still isn't in the dump, use the price
-    // EditText we captured at form-open (editTexts[1]). Stale bounds
-    // are better than no fill at all — worst case the operator sees
-    // the price typed in the wrong field and corrects it; the silent
-    // skip used to leave them thinking the bridge had filled it.
-    if (!priceTarget && editTexts.length >= 2) {
-      console.warn(`[${new Date().toISOString()}] Starting Price label not in dump — falling back to cached bounds`);
-      priceTarget = editTexts[1].bounds;
+    // Fallback: if the label still isn't in the dump, re-dump and take
+    // the second EditText with y2<1700 from the FRESH tree. We can't
+    // use the editTexts captured at form-open: if the title wrapped to
+    // two lines after we typed it, every field below it shifted down,
+    // and the cached bounds for editTexts[1] now point at where the
+    // title's second line is — typing the price there would put the
+    // digits in the title field. A fresh dump's editTexts[1] has the
+    // current bounds.
+    if (!priceTarget) {
+      const xmlFresh = await dumpUI();
+      const freshEditTexts = findAllNodes(xmlFresh, a => {
+        if (!(a.class || '').endsWith('EditText')) return false;
+        const b = parseBounds(a.bounds);
+        return b && b.y2 < 1700;
+      });
+      if (freshEditTexts.length >= 2) {
+        console.warn(`[${new Date().toISOString()}] Starting Price label not found — using fresh editTexts[1]`);
+        priceTarget = freshEditTexts[1].bounds;
+      }
     }
     if (priceTarget) {
       await tapBoundsAttr(priceTarget);
