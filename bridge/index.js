@@ -209,6 +209,28 @@ async function tapBoundsAttr(boundsAttr) {
   return b;
 }
 
+// Locate the Quick-listing form's Starting Price EditText by anchoring
+// to the "Starting Price" content-desc View that sits to its left. More
+// robust than position-in-document-order: the title field above can
+// wrap to two lines on long names, which shifts the price down out of
+// the (cached) bounds we captured at form-open.
+function findPriceField(xml) {
+  const label = findNode(xml, a => a['content-desc'] === 'Starting Price');
+  if (!label) return null;
+  const lb = parseBounds(label.bounds);
+  if (!lb) return null;
+  // Same-row EditText: vertical center inside the label's y-range,
+  // give or take a few pixels for half-row alignment differences.
+  const SLOP = 30;
+  const candidates = findAllNodes(xml, a => {
+    if (!(a.class || '').endsWith('EditText')) return false;
+    const b = parseBounds(a.bounds);
+    if (!b) return false;
+    return b.cy >= lb.y1 - SLOP && b.cy <= lb.y2 + SLOP;
+  });
+  return candidates[0] || null;
+}
+
 // Palmstreet "Quick listing" automation — title-only.
 //
 // During a live, scanning a SKU should open the Quick-listing form and
@@ -316,27 +338,37 @@ async function listing({ sku, name, grossCost }) {
   // Dismiss the soft keyboard so the operator can immediately see the
   // price field below the title. With the keyboard up, KEYCODE_BACK
   // (4) only hides the keyboard — it doesn't close the Quick-listing
-  // modal. Once dismissed, the layout returns to its no-keyboard
-  // state, which is also the state captured in our editTexts[*]
-  // bounds, so the second EditText (price) is back where we recorded
-  // it and can be tapped directly.
+  // modal.
   await adbShell('input', 'keyevent', '4');
 
-  // Pre-fill the Starting Price with the item's net cost (when known).
+  // Pre-fill the Starting Price with the item's gross cost (rounded up).
   // Defaults in the form are "1" / "1" / "11"; clear before typing.
+  //
+  // The title field has a 0/60 counter and grows downward when a long
+  // title wraps to a second line, shifting the Starting Price field
+  // below the bounds we captured at form-open. So we re-dump after
+  // dismissing the keyboard and anchor to the "Starting Price"
+  // content-desc View label (always on the left of the price input)
+  // rather than relying on cached bounds.
   let prefilled = ['title'];
-  if (startingPrice && editTexts.length >= 2) {
-    await sleep(80);  // brief beat for keyboard-dismiss animation
-    await tapBoundsAttr(editTexts[1].bounds);
-    await sleep(220);  // keyboard slides up again for the price field
-    // MOVE_END + 8 backspaces in a single adb call. `input keyevent`
-    // accepts a variadic keycode list, so one round-trip clears the
-    // field instead of nine. Overshooting on a 1- or 2-digit default
-    // is a no-op, so 8 is safe regardless of the default's length.
-    await adbShell('input', 'keyevent', '123', '67', '67', '67', '67', '67', '67', '67', '67');
-    await typeText(startingPrice);
-    await adbShell('input', 'keyevent', '4');  // dismiss keyboard again
-    prefilled.push('startingPrice');
+  if (startingPrice) {
+    await sleep(120);  // brief beat for keyboard-dismiss + layout settle
+    const xml2 = await dumpUI();
+    const priceField = findPriceField(xml2);
+    if (priceField) {
+      await tapBoundsAttr(priceField.bounds);
+      await sleep(220);  // keyboard slides up for the price field
+      // MOVE_END + 8 backspaces in a single adb call. `input keyevent`
+      // accepts a variadic keycode list, so one round-trip clears the
+      // field instead of nine. Overshooting on a 1- or 2-digit default
+      // is a no-op, so 8 is safe regardless of the default's length.
+      await adbShell('input', 'keyevent', '123', '67', '67', '67', '67', '67', '67', '67', '67');
+      await typeText(startingPrice);
+      await adbShell('input', 'keyevent', '4');  // dismiss keyboard again
+      prefilled.push('startingPrice');
+    } else {
+      console.warn(`[${new Date().toISOString()}] couldn't locate Starting Price field after title — leaving default`);
+    }
   }
 
   return { sku, name, title, startingPrice, prefilled };
