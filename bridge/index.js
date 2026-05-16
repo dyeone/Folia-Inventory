@@ -333,6 +333,21 @@ async function listing({ sku, name, grossCost }) {
 
   await tapBoundsAttr(editTexts[0].bounds);
   await sleep(220);
+  // Clear any existing title text. Back-to-back scans (where the
+  // previous form was still open and our pre-check skipped the
+  // wake/Listing flow) would otherwise append the new title onto the
+  // old one. MOVE_END + a wide overshoot of backspaces is a no-op on
+  // an empty field and safely flattens anything up to 80 chars (the
+  // form's 0/60 counter caps user entry, so 80 is plenty of slack).
+  await adbShell('input', 'keyevent', '123',
+    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
+    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
+    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
+    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
+    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
+    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
+    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67',
+    '67', '67', '67', '67', '67', '67', '67', '67', '67', '67');
   await typeText(title);
 
   // Dismiss the soft keyboard so the operator can immediately see the
@@ -352,18 +367,27 @@ async function listing({ sku, name, grossCost }) {
   // rather than relying on cached bounds.
   let prefilled = ['title'];
   if (startingPrice) {
-    // The label may not be in the dump on the first try — keyboard-dismiss
-    // animation, layout still settling after a wrapped title, or simple
-    // dump-timing race. Retry for up to ~2 s before giving up.
-    let priceField = null;
-    const deadline = Date.now() + 2000;
+    // Try to find the label-anchored Starting Price field. Retry for up
+    // to ~5 s — back-to-back scans can leave the form in a transient
+    // re-render state where the label is briefly absent from the dump.
+    let priceTarget = null;
+    const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       await sleep(120);
-      priceField = findPriceField(await dumpUI());
-      if (priceField) break;
+      const found = findPriceField(await dumpUI());
+      if (found) { priceTarget = found.bounds; break; }
     }
-    if (priceField) {
-      await tapBoundsAttr(priceField.bounds);
+    // Fallback: if the label still isn't in the dump, use the price
+    // EditText we captured at form-open (editTexts[1]). Stale bounds
+    // are better than no fill at all — worst case the operator sees
+    // the price typed in the wrong field and corrects it; the silent
+    // skip used to leave them thinking the bridge had filled it.
+    if (!priceTarget && editTexts.length >= 2) {
+      console.warn(`[${new Date().toISOString()}] Starting Price label not in dump — falling back to cached bounds`);
+      priceTarget = editTexts[1].bounds;
+    }
+    if (priceTarget) {
+      await tapBoundsAttr(priceTarget);
       await sleep(220);  // keyboard slides up for the price field
       // MOVE_END + 8 backspaces in a single adb call. `input keyevent`
       // accepts a variadic keycode list, so one round-trip clears the
