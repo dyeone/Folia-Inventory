@@ -276,10 +276,29 @@ async function listing({ sku, name, grossCost }) {
     return null;
   }
 
-  let editTexts = await openFormAndGrabFields(5000);
+  // Pre-check: is the form already open from a previous scan that the
+  // operator hasn't pinned yet? If so, the sidebar is hidden behind it,
+  // so tapping "Listing" would fail with "node not found" — but we don't
+  // need to tap Listing at all. Just grab the existing EditTexts and
+  // type the new values over the old. Skips one dump+two taps on the
+  // happy path of back-to-back scans.
+  function grabFieldsIfOpen(xml) {
+    if (!findNode(xml, a => a['content-desc'] === 'Pin & Run')) return null;
+    const fields = findAllNodes(xml, a => {
+      if (!(a.class || '').endsWith('EditText')) return false;
+      const b = parseBounds(a.bounds);
+      return b && b.y2 < 1700;
+    });
+    return fields.length >= 2 ? fields : null;
+  }
+
+  let editTexts = grabFieldsIfOpen(await dumpUI());
   if (!editTexts) {
-    // First attempt didn't get the form to render. Common cause: a stale
-    // form from a previous scan was still on screen, so our first tap on
+    editTexts = await openFormAndGrabFields(5000);
+  }
+  if (!editTexts) {
+    // First open-from-scratch attempt didn't get the form to render.
+    // Common cause: a stale form was mid-animation, so our tap on
     // "Listing" toggled it closed instead of opening it. One retry with
     // a tighter deadline gets us back on track without burning another
     // full 5s on a genuinely broken state.
