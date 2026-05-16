@@ -31,3 +31,4 @@ plant-inventory/
 # authenticates as the user and can drive the Palmstreet phone if it
 # leaks. Rotate via /api/bridge?action=generate-token if exposed.
 bridge/.env
+bridge/.wireless-target
