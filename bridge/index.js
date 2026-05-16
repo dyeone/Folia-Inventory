@@ -240,52 +240,53 @@ async function listing({ sku, name, grossCost }) {
     ? String(Math.ceil(Number(grossCost)))
     : null;
 
-  // Tap on the live-video area to wake the host UI. The sidebar
-  // (Flip / Listing / Shop / Support) auto-hides after a few idle
-  // seconds and has to be revived before we can find Listing.
-  // (540, 700) is empty video pixels — no-op when sidebar is already
-  // visible. No explicit sleep after: the next dumpUI() waits for UI
-  // idle on-device, so the sidebar slide-in animation finishes inside
-  // that wait — saves ~400 ms of dead time per scan.
-  await adbShell('input', 'tap', '540', '700');
-
-  // Look up Listing by content-desc. We tried hardcoding the coords
-  // for speed, but Palmstreet shifts the sidebar buttons up by ~130 px
-  // when there's an actively pinned listing — a hardcoded tap landed
-  // on Shop instead of Listing. Content-desc lookup is one dumpUI
-  // (~1.5 s) slower but layout-independent.
-  await tap({ contentDesc: 'Listing', timeoutMs: 3000 });
-
-  // Wait for the form to render AND grab the EditTexts in the same
-  // dump cycle. One round-trip vs. waitForNode then a second dumpUI.
+  // Open the listing form and grab the title+price EditTexts in one go.
+  // Factored so we can retry once if the first attempt fails — the
+  // "Listing" sidebar item is a toggle, so if a previous form was still
+  // half-dismissed when the next scan arrives, the first tap can close
+  // it instead of opening it. Retrying re-opens.
   //
-  // The u2 dump includes the host view's chat input EditText at the
-  // bottom of the screen (~y=1862) even when the form modal is open,
-  // because it's outside the modal but still in the same window. The
-  // bridge used to silently tap that chat input instead of the title.
-  // Filter EditTexts to those above the chat band (y2 < 1700) so we
-  // only get the form's own fields.
-  // Wait until BOTH title and price EditTexts are present in the dump.
-  // Breaking at length>=1 used to fire on a transient mid-animation
-  // state where only the title had rendered — bridge then typed the
-  // title fine but skipped the price step because editTexts.length<2.
-  // The y<1700 filter keeps only the form's title and price fields
-  // (Quantity + Auction timer sit below that).
-  let editTexts = null;
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    const xml = await dumpUI();
-    if (findNode(xml, a => a['content-desc'] === 'Pin & Run')) {
-      editTexts = findAllNodes(xml, a => {
-        if (!(a.class || '').endsWith('EditText')) return false;
-        const b = parseBounds(a.bounds);
-        return b && b.y2 < 1700;
-      });
-      if (editTexts.length >= 2) break;
+  // The flow each attempt:
+  //   1. Wake-tap empty video at (540, 700) so the auto-hidden sidebar
+  //      slides back in. No-op when sidebar is already showing.
+  //   2. Find "Listing" by content-desc (layout-independent — coords
+  //      shift ~130 px when a listing is pinned).
+  //   3. Wait up to `formDeadlineMs` for the form to render. "Rendered"
+  //      means "Pin & Run" content-desc is present AND both the title
+  //      and price EditTexts are visible (y2 < 1700 to filter out the
+  //      host view's chat-input EditText). Both must be present in the
+  //      same dump cycle — a mid-animation state where only the title
+  //      had rendered used to fire and silently skip the price step.
+  async function openFormAndGrabFields(formDeadlineMs) {
+    await adbShell('input', 'tap', '540', '700');
+    await tap({ contentDesc: 'Listing', timeoutMs: 3000 });
+    const deadline = Date.now() + formDeadlineMs;
+    while (Date.now() < deadline) {
+      const xml = await dumpUI();
+      if (findNode(xml, a => a['content-desc'] === 'Pin & Run')) {
+        const fields = findAllNodes(xml, a => {
+          if (!(a.class || '').endsWith('EditText')) return false;
+          const b = parseBounds(a.bounds);
+          return b && b.y2 < 1700;
+        });
+        if (fields.length >= 2) return fields;
+      }
+      await sleep(200);
     }
-    await sleep(200);
+    return null;
   }
-  if (!editTexts || editTexts.length < 2) {
+
+  let editTexts = await openFormAndGrabFields(5000);
+  if (!editTexts) {
+    // First attempt didn't get the form to render. Common cause: a stale
+    // form from a previous scan was still on screen, so our first tap on
+    // "Listing" toggled it closed instead of opening it. One retry with
+    // a tighter deadline gets us back on track without burning another
+    // full 5s on a genuinely broken state.
+    console.warn(`[${new Date().toISOString()}] listing form didn't render — retrying once`);
+    editTexts = await openFormAndGrabFields(3500);
+  }
+  if (!editTexts) {
     throw new Error('listing form did not open (or rendered incompletely)');
   }
 
