@@ -88,25 +88,11 @@ async function enqueue(req, res) {
   return res.status(200).json({ job });
 }
 
-// Atomic claim: find the oldest queued (or stale-running) job, try to
-// transition it to 'running' with a guard on the prior status. If the
-// guarded update returns 0 rows, another bridge raced us; just return
-// empty and let the caller poll again.
-async function next(req, res) {
-  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
-  const user = await requireBridgeUser(req);
-
-  // Heartbeat. /health reads this to decide if the bridge is online —
-  // every /next poll (~1.5 s) keeps the timestamp fresh, regardless of
-  // whether a job is actually claimed.
-  await supabase
-    .from('users')
-    .update({ bridgeLastSeen: new Date().toISOString() })
-    .eq('id', user.id);
-
+// Try once to claim the oldest queued (or stale-running) job. Atomic via
+// CAS: select candidate, then guarded UPDATE on its prior status. If 0
+// rows return, another bridge raced us; treat as "nothing claimed".
+async function tryClaim(user) {
   const staleCutoff = new Date(Date.now() - STALE_RUNNING_MS).toISOString();
-
-  // Prefer queued; fall back to a running job that's gone stale.
   const { data: candidate, error: selErr } = await supabase
     .from('bridge_jobs')
     .select('*')
@@ -115,14 +101,13 @@ async function next(req, res) {
     .limit(1)
     .maybeSingle();
   if (selErr) { const e = new Error(selErr.message); e.status = 500; throw e; }
-  if (!candidate) return res.status(200).json({ job: null });
+  if (!candidate) return null;
 
-  const claimedAt = new Date().toISOString();
   const { data: claimed, error: updErr } = await supabase
     .from('bridge_jobs')
     .update({
       status: 'running',
-      claimedAt,
+      claimedAt: new Date().toISOString(),
       claimedBy: user.displayName || user.id,
     })
     .eq('id', candidate.id)
@@ -130,8 +115,41 @@ async function next(req, res) {
     .select()
     .maybeSingle();
   if (updErr) { const e = new Error(updErr.message); e.status = 500; throw e; }
-  if (!claimed) return res.status(200).json({ job: null });
-  return res.status(200).json({ job: claimed });
+  return claimed || null;
+}
+
+// Long-poll for the next job. The bridge used to short-poll every 500 ms
+// — that meant ~250 ms of dead time on every scan between the operator
+// tapping the SKU and the bridge issuing its first ADB call. Holding the
+// request open server-side until a job lands collapses that gap to just
+// the network RTT (~80–150 ms).
+//
+// Vercel Hobby caps function duration at 10 s, so we deadline ~9 s and
+// fall back to a null response, which the bridge treats like a normal
+// idle tick and immediately re-polls.
+const NEXT_LONG_POLL_MS = 9_000;
+const NEXT_POLL_INTERVAL_MS = 200;
+
+async function next(req, res) {
+  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+  const user = await requireBridgeUser(req);
+
+  // Heartbeat. /health reads this to decide if the bridge is online.
+  // With long-poll, the bridge issues at most one request per ~9 s when
+  // idle, so HEARTBEAT_FRESH_MS has to be wider than the long-poll
+  // deadline — see the constant for the calculation.
+  await supabase
+    .from('users')
+    .update({ bridgeLastSeen: new Date().toISOString() })
+    .eq('id', user.id);
+
+  const deadline = Date.now() + NEXT_LONG_POLL_MS;
+  while (true) {
+    const claimed = await tryClaim(user);
+    if (claimed) return res.status(200).json({ job: claimed });
+    if (Date.now() >= deadline) return res.status(200).json({ job: null });
+    await new Promise(r => setTimeout(r, NEXT_POLL_INTERVAL_MS));
+  }
 }
 
 // Bulk status lookup for the UI's polling loop. ?ids=a,b,c — at most 32
@@ -151,11 +169,12 @@ async function status(req, res) {
 }
 
 // Liveness signal for the UI's "bridge online" indicator. Reads the
-// explicit heartbeat that /next writes on every bridge poll. "Online"
-// means any user with a bridgeToken has a heartbeat within HEARTBEAT_FRESH_MS;
-// the bridge polls every ~1.5 s, so 10 s gives ~6 polls of grace before
-// the UI flips to offline.
-const HEARTBEAT_FRESH_MS = 10_000;
+// explicit heartbeat that /next writes at the start of every long-poll
+// cycle. With long-poll on, the bridge writes a heartbeat at most every
+// NEXT_LONG_POLL_MS (9 s) when idle, so the freshness window has to be
+// wider than the long-poll deadline plus one full poll round-trip.
+// 15 s = 9 s deadline + ~1 s RTT + ~5 s grace.
+const HEARTBEAT_FRESH_MS = 15_000;
 
 async function health(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);

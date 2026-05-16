@@ -9,7 +9,10 @@
 //   BRIDGE_TOKEN     long-lived token from /api/bridge?action=generate-token
 // Optional env:
 //   BRIDGE_DEVICE    adb serial when multiple devices are connected
-//   POLL_MS          poll interval in ms (default 500)
+//   POLL_MS          sleep between /next requests (default 50ms).
+//                    /next now long-polls server-side for up to ~9s,
+//                    so this is just a tiny breather between cycles —
+//                    not the actual polling rate.
 //   U2_URL           uiautomator2 server URL (default http://localhost:9008)
 //                    Set to "off" to disable and fall back to `adb shell
 //                    uiautomator dump` everywhere. The u2 server is ~7×
@@ -39,7 +42,7 @@ if (existsSync(envPath)) {
 const API_URL = (process.env.FOLIA_API_URL || '').replace(/\/$/, '');
 const TOKEN = process.env.BRIDGE_TOKEN || '';
 const DEVICE = process.env.BRIDGE_DEVICE || '';
-const POLL_MS = parseInt(process.env.POLL_MS || '500', 10);
+const POLL_MS = parseInt(process.env.POLL_MS || '50', 10);
 const U2_URL = (process.env.U2_URL ?? 'http://localhost:9008').replace(/\/$/, '');
 const U2_ENABLED = U2_URL.toLowerCase() !== 'off';
 
@@ -287,7 +290,7 @@ async function listing({ sku, name, grossCost }) {
   }
 
   await tapBoundsAttr(editTexts[0].bounds);
-  await sleep(300);
+  await sleep(220);
   await typeText(title);
 
   // Dismiss the soft keyboard so the operator can immediately see the
@@ -303,13 +306,14 @@ async function listing({ sku, name, grossCost }) {
   // Defaults in the form are "1" / "1" / "11"; clear before typing.
   let prefilled = ['title'];
   if (startingPrice && editTexts.length >= 2) {
-    await sleep(200);  // brief beat for keyboard-dismiss animation
+    await sleep(80);  // brief beat for keyboard-dismiss animation
     await tapBoundsAttr(editTexts[1].bounds);
-    await sleep(300);  // keyboard slides up again for the price field
-    // MOVE_END + a handful of backspaces — overshooting on an empty
-    // field is a no-op, so 8 is safe regardless of the default's length.
-    await adbShell('input', 'keyevent', '123');
-    for (let i = 0; i < 8; i++) await adbShell('input', 'keyevent', '67');
+    await sleep(220);  // keyboard slides up again for the price field
+    // MOVE_END + 8 backspaces in a single adb call. `input keyevent`
+    // accepts a variadic keycode list, so one round-trip clears the
+    // field instead of nine. Overshooting on a 1- or 2-digit default
+    // is a no-op, so 8 is safe regardless of the default's length.
+    await adbShell('input', 'keyevent', '123', '67', '67', '67', '67', '67', '67', '67', '67');
     await typeText(startingPrice);
     await adbShell('input', 'keyevent', '4');  // dismiss keyboard again
     prefilled.push('startingPrice');
