@@ -281,7 +281,12 @@ async function listing({ sku, name, grossCost }) {
   //      had rendered used to fire and silently skip the price step.
   async function openFormAndGrabFields(formDeadlineMs) {
     await adbShell('input', 'tap', '540', '700');
-    await tap({ contentDesc: 'Listing', timeoutMs: 3000 });
+    // Wide timeout: when a listing has just sold, Palmstreet briefly
+    // animates a "SOLD" celebration overlay that can hide the sidebar
+    // for several seconds. 8 s rides through that animation; success
+    // path still resolves on the first dump (~280 ms) so this doesn't
+    // hurt happy-path latency.
+    await tap({ contentDesc: 'Listing', timeoutMs: 8000 });
     const deadline = Date.now() + formDeadlineMs;
     while (Date.now() < deadline) {
       const xml = await dumpUI();
