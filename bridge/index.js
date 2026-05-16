@@ -324,18 +324,52 @@ async function listing({ sku, name, grossCost }) {
 
 // ─── Job dispatch ───────────────────────────────────────────────────────────
 
-async function handleJob(job) {
+function runJob(job) {
   switch (job.action) {
     case 'tap':
       return tap(job.payload || {});
     case 'type':
       return typeText(job.payload?.text);
     case 'dump':
-      return { xml: await dumpUI() };
+      return dumpUI().then(xml => ({ xml }));
     case 'listing':
       return listing(job.payload || {});
     default:
-      throw new Error(`unknown action: ${job.action}`);
+      return Promise.reject(new Error(`unknown action: ${job.action}`));
+  }
+}
+
+// "no devices/emulators found" is what adb prints when the phone has
+// momentarily dropped off the USB bus (cable jiggle, hub power blip,
+// phone slept briefly). Don't blow the whole job — wait for the device
+// to come back, then retry once. `adb wait-for-device` blocks until at
+// least one device is connected, with a hard cap so we don't sit there
+// forever if the operator gave up and unplugged the phone.
+function isDeviceGoneError(err) {
+  return /no devices\/emulators found|device offline|device not found|device '\S+' not found/i
+    .test(err?.message || '');
+}
+
+async function waitForDeviceWithTimeout(timeoutMs) {
+  await Promise.race([
+    adb('wait-for-device'),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('device did not return within ' + timeoutMs + 'ms')), timeoutMs)),
+  ]);
+}
+
+async function handleJob(job) {
+  try {
+    return await runJob(job);
+  } catch (e) {
+    if (!isDeviceGoneError(e)) throw e;
+    console.warn(`[${new Date().toISOString()}] device dropped mid-job (${e.message}); waiting up to 10s for reconnect…`);
+    try {
+      await waitForDeviceWithTimeout(10_000);
+    } catch (waitErr) {
+      throw new Error(`${e.message} (and ${waitErr.message})`);
+    }
+    console.log(`[${new Date().toISOString()}] device back — retrying job ${job.id}`);
+    return runJob(job);
   }
 }
 
