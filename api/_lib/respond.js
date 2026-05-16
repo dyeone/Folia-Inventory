@@ -4,8 +4,19 @@
 // Server errors (5xx) are logged with the request method/url for Vercel's
 // function logs. Client errors (4xx) are not logged — they're expected.
 
+// Every /api response is dynamic and authenticated — never let the
+// browser or any intermediary cache it. Without this header, Vercel's
+// CDN started returning 304 Not Modified on repeat polls (bridge
+// status/health), which the client treats as a failure (res.ok is
+// false for 304) — surfacing as a red "Failed" pill on live scans
+// that the bridge actually ran fine.
+function noCache(res) {
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+}
+
 export function wrap(handler) {
   return async (req, res) => {
+    noCache(res);
     try {
       await handler(req, res);
     } catch (e) {
@@ -21,6 +32,7 @@ export function wrap(handler) {
 }
 
 export function methodNotAllowed(res, allowed = []) {
+  noCache(res);
   if (allowed.length) res.setHeader('Allow', allowed.join(', '));
   res.status(405).json({ error: 'Method not allowed' });
 }

@@ -32,10 +32,17 @@ async function request(path, { method = 'GET', body } = {}) {
     }
   }
 
+  // cache: 'no-store' stops the browser from sending If-None-Match /
+  // If-Modified-Since headers on repeat polls. Without it, Vercel's
+  // CDN was occasionally responding 304 Not Modified to bridge status
+  // polls and (more weirdly) enqueue POSTs, which res.ok flags as a
+  // failure — surfacing as a red "Failed" pill on scans the bridge
+  // actually completed.
   const res = await fetch(url, {
     method,
     headers: finalBody ? { 'Content-Type': 'application/json' } : undefined,
     body: finalBody ? JSON.stringify(finalBody) : undefined,
+    cache: 'no-store',
   });
 
   const ct = res.headers.get('content-type') || '';
