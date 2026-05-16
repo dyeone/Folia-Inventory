@@ -259,21 +259,28 @@ function BridgeBadge({ status }) {
 function EntryRow({ entry }) {
   const { sku, name, variety, price, state, errorMsg, forced } = entry;
   return (
-    <div className="flex items-center gap-3 px-3 py-2.5">
-      <div className="min-w-0 flex-1">
-        <div className="font-medium text-gray-900 truncate">
-          {name}
-          {forced && <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-amber-700">forced</span>}
+    <div className="px-3 py-2.5">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-gray-900 truncate">
+            {name}
+            {forced && <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-amber-700">forced</span>}
+          </div>
+          <div className="text-xs text-gray-500 flex items-center gap-1.5">
+            <span className="font-mono">{sku}</span>
+            {variety && <span>· {variety}</span>}
+          </div>
         </div>
-        <div className="text-xs text-gray-500 flex items-center gap-1.5">
-          <span className="font-mono">{sku}</span>
-          {variety && <span>· {variety}</span>}
+        <div className="text-sm font-semibold text-gray-900 tabular-nums">
+          {price != null ? `$${price.toFixed(2)}` : '—'}
         </div>
+        <StateBadge state={state} errorMsg={errorMsg} />
       </div>
-      <div className="text-sm font-semibold text-gray-900 tabular-nums">
-        {price != null ? `$${price.toFixed(2)}` : '—'}
-      </div>
-      <StateBadge state={state} errorMsg={errorMsg} />
+      {state === 'failed' && errorMsg && (
+        <div className="mt-1 text-xs text-red-700 break-words">
+          {errorMsg}
+        </div>
+      )}
     </div>
   );
 }
