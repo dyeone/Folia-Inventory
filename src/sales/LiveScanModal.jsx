@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  X, Radio, ScanLine, AlertTriangle, Check, Loader2, WifiOff, Wifi,
+  X, Radio, ScanLine, AlertTriangle, Check, Loader2, WifiOff, Wifi, RotateCw,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { buildLookups, computeIdealPrice } from '../inventory/pricing.js';
@@ -219,7 +219,14 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
           ) : (
             <div className="divide-y divide-gray-100 border border-gray-200 rounded-xl bg-white">
               {entries.map(e => (
-                <EntryRow key={e.tempId} entry={e} />
+                <EntryRow
+                  key={e.tempId}
+                  entry={e}
+                  onRetry={() => {
+                    const item = itemsBySku.get(e.sku.toUpperCase());
+                    if (item) pushItem(item, { forced: e.forced });
+                  }}
+                />
               ))}
             </div>
           )}
@@ -256,7 +263,7 @@ function BridgeBadge({ status }) {
   );
 }
 
-function EntryRow({ entry }) {
+function EntryRow({ entry, onRetry }) {
   const { sku, name, variety, price, state, errorMsg, forced } = entry;
   return (
     <div className="px-3 py-2.5">
@@ -275,6 +282,16 @@ function EntryRow({ entry }) {
           {price != null ? `$${price.toFixed(2)}` : '—'}
         </div>
         <StateBadge state={state} errorMsg={errorMsg} />
+        {state === 'failed' && onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 rounded"
+            title="Re-push this item"
+          >
+            <RotateCw className="w-3.5 h-3.5" /> Retry
+          </button>
+        )}
       </div>
       {state === 'failed' && errorMsg && (
         <div className="mt-1 text-xs text-red-700 break-words">
