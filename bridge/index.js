@@ -355,27 +355,27 @@ async function listing({ sku, name, grossCost }) {
     return fields.length >= 2 ? fields : null;
   }
 
-  let editTexts = grabFieldsIfOpen(await dumpUI());
-  if (!editTexts) {
-    editTexts = await openFormAndGrabFields(5000);
-  }
-  if (!editTexts) {
-    // First open-from-scratch attempt didn't get the form to render.
-    // Common cause: a stale form was mid-animation, so our tap on
-    // "Listing" toggled it closed instead of opening it. One retry with
-    // a tighter deadline gets us back on track without burning another
-    // full 5s on a genuinely broken state.
-    console.warn(`[${new Date().toISOString()}] listing form didn't render — retrying once`);
-    editTexts = await openFormAndGrabFields(3500);
-  }
-  if (!editTexts) {
-    // Before raising the generic error, check whether Palmstreet is
-    // even foregrounded. Operators sometimes accidentally push it to
-    // the background and every subsequent scan fails with a cryptic
-    // "node not found" — this surfaces the real cause directly.
+  // Wrap the form-open attempts so any failure (form didn't render,
+  // "node not found: Listing" thrown from tap(), etc.) gets a final
+  // diagnostic pass for Palmstreet being foregrounded. Without this,
+  // a backgrounded app surfaces as a cryptic node-not-found error.
+  async function openOrDiagnose() {
+    try {
+      let fields = grabFieldsIfOpen(await dumpUI());
+      if (!fields) fields = await openFormAndGrabFields(5000);
+      if (!fields) {
+        console.warn(`[${new Date().toISOString()}] listing form didn't render — retrying once`);
+        fields = await openFormAndGrabFields(3500);
+      }
+      if (fields) return fields;
+    } catch (e) {
+      await checkPalmstreetForeground();
+      throw e;
+    }
     await checkPalmstreetForeground();
     throw new Error('listing form did not open (or rendered incompletely)');
   }
+  const editTexts = await openOrDiagnose();
 
   await tapBoundsAttr(editTexts[0].bounds);
   await sleep(220);
