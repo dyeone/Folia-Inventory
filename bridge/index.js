@@ -352,9 +352,16 @@ async function listing({ sku, name, grossCost }) {
   // rather than relying on cached bounds.
   let prefilled = ['title'];
   if (startingPrice) {
-    await sleep(120);  // brief beat for keyboard-dismiss + layout settle
-    const xml2 = await dumpUI();
-    const priceField = findPriceField(xml2);
+    // The label may not be in the dump on the first try — keyboard-dismiss
+    // animation, layout still settling after a wrapped title, or simple
+    // dump-timing race. Retry for up to ~2 s before giving up.
+    let priceField = null;
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      await sleep(120);
+      priceField = findPriceField(await dumpUI());
+      if (priceField) break;
+    }
     if (priceField) {
       await tapBoundsAttr(priceField.bounds);
       await sleep(220);  // keyboard slides up for the price field
