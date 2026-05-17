@@ -1,18 +1,24 @@
 package com.folia.bridgehelper
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -32,9 +38,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -82,8 +90,18 @@ fun HelperScreen() {
     val ctx = LocalContext.current
     var keepAwake by remember { mutableStateOf(true) }
     var ip by remember { mutableStateOf<String?>(null) }
-    var adbPort by remember { mutableStateOf<String?>(null) }
+    var ssid by remember { mutableStateOf<String?>(null) }
+    var tcpPort by remember { mutableStateOf<String?>(null) }
+    var tlsPort by remember { mutableStateOf<String?>(null) }
     var u2Status by remember { mutableStateOf("checking…") }
+    var hasWifiNamePerm by remember { mutableStateOf(hasWifiNamePermission(ctx)) }
+
+    val permLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        hasWifiNamePerm = granted
+        if (granted) ssid = currentWifiSsid(ctx)
+    }
 
     // Keep-screen-on toggle. FLAG_KEEP_SCREEN_ON only takes effect while
     // the window is in foreground, which is exactly what we want during
@@ -99,10 +117,12 @@ fun HelperScreen() {
     }
 
     // Refresh network/adb info every 2 s and u2 status every 3 s.
-    LaunchedEffect(Unit) {
+    LaunchedEffect(hasWifiNamePerm) {
         while (true) {
             ip = currentWifiIp()
-            adbPort = readSysProp("service.adb.tcp.port").takeIf { it.isNotBlank() }
+            ssid = if (hasWifiNamePerm) currentWifiSsid(ctx) else null
+            tcpPort = readSysProp("service.adb.tcp.port").takeIf { it.isNotBlank() }
+            tlsPort = readSysProp("service.adb.tls.port").takeIf { it.isNotBlank() }
             delay(2_000)
         }
     }
@@ -113,7 +133,15 @@ fun HelperScreen() {
         }
     }
 
-    val connectCmd = ip?.let { "adb connect $it:5555" }
+    // Pick the wireless-debugging port that's actually live. Android 11+
+    // Wireless Debugging exposes a dynamic TLS port (service.adb.tls.port);
+    // legacy `adb tcpip 5555` mode exposes service.adb.tcp.port. The Mac
+    // bridge talks to whichever one is open.
+    val activePort = tlsPort ?: tcpPort
+    val wirelessAdbOn = activePort != null
+    val wifiOn = ip != null
+    val readyForMac = wifiOn && wirelessAdbOn
+    val connectCmd = ip?.let { "adb connect $it:${tcpPort ?: "5555"}" }
 
     Column(
         modifier = Modifier
@@ -129,11 +157,51 @@ fun HelperScreen() {
             fontWeight = FontWeight.SemiBold,
         )
 
-        // Network card: WiFi IP + tap-to-copy + QR.
-        InfoCard(title = "WiFi IP") {
+        // Top-level rollup: is the phone reachable from the Mac bridge?
+        // Combines WiFi up + wireless adbd listening into one green/red
+        // line so the operator can tell at a glance.
+        InfoCard(title = "Connection") {
+            StatusRow(
+                ok = readyForMac,
+                text = when {
+                    !wifiOn -> "Not ready — WiFi off"
+                    !wirelessAdbOn -> "Not ready — wireless ADB off"
+                    else -> "Ready for Mac to connect"
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = { openWirelessDebuggingSettings(ctx) },
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryColor),
+            ) { Text("Connect to ADB Server") }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Opens Wireless Debugging. Flip the toggle on, then on the Mac run  ./bridge/reconnect.sh",
+                fontSize = 12.sp,
+                color = MutedColor,
+            )
+        }
+
+        // Network card: WiFi IP + SSID + tap-to-copy + QR.
+        InfoCard(title = "WiFi") {
             if (ip == null) {
                 Text("Not connected to WiFi", color = ErrColor)
             } else {
+                if (ssid != null) {
+                    Text(
+                        ssid!!,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                } else if (!hasWifiNamePerm) {
+                    OutlinedButton(
+                        onClick = { permLauncher.launch(wifiNamePermission()) },
+                        shape = RoundedCornerShape(8.dp),
+                    ) { Text("Show network name") }
+                    Spacer(Modifier.height(10.dp))
+                }
                 Text(
                     ip!!,
                     fontSize = 30.sp,
@@ -159,24 +227,34 @@ fun HelperScreen() {
             }
         }
 
-        // ADB status card.
-        InfoCard(title = "ADB") {
-            val live = adbPort != null
+        // Wireless ADB status card — both legacy TCP and Android 11+ TLS.
+        InfoCard(title = "Wireless ADB") {
             StatusRow(
-                ok = live,
-                text = if (live) "TCP mode on port $adbPort" else "Not in TCP mode",
+                ok = tlsPort != null,
+                text = if (tlsPort != null)
+                    "Wireless Debugging on (port $tlsPort)"
+                else
+                    "Wireless Debugging off",
             )
-            if (!live) {
+            Spacer(Modifier.height(6.dp))
+            StatusRow(
+                ok = tcpPort != null,
+                text = if (tcpPort != null)
+                    "Legacy TCP mode on port $tcpPort"
+                else
+                    "Legacy TCP mode off",
+            )
+            if (!wirelessAdbOn) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Plug into a Mac and run:  adb tcpip 5555",
+                    "Use the Connect button above, or plug into a Mac and run:  adb tcpip 5555",
                     fontSize = 12.sp,
                     color = MutedColor,
                     fontFamily = FontFamily.Monospace,
                 )
             }
             Spacer(Modifier.height(12.dp))
-            Button(
+            OutlinedButton(
                 onClick = { openDeveloperSettings(ctx) },
                 shape = RoundedCornerShape(8.dp),
             ) { Text("Open Developer Options") }
@@ -320,15 +398,32 @@ private fun copyToClipboard(ctx: Context, text: String) {
     Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
 }
 
-private fun openDeveloperSettings(ctx: Context) {
-    // Try the dedicated Wireless Debugging settings panel first (Android
-    // 11+); fall back to Developer Options; fall back to top-level
-    // Settings if Developer Options aren't enabled yet.
-    val intents = listOf(
+private fun openWirelessDebuggingSettings(ctx: Context) {
+    // Direct shortcut to the Wireless Debugging panel (Android 11+).
+    // That screen has the toggle the operator needs to flip and the
+    // "Pair device" entry point. Falls back to Developer Options if
+    // the dedicated action isn't available on this OEM build.
+    launchFirst(
+        ctx,
         Intent("android.settings.WIRELESS_DEBUGGING_SETTINGS"),
         Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
         Intent(Settings.ACTION_SETTINGS),
     )
+}
+
+private fun openDeveloperSettings(ctx: Context) {
+    // Generic Developer Options entry — used as a fallback when the
+    // operator needs to enable Developer Options itself (or the OEM
+    // hides the wireless-debugging deep link).
+    launchFirst(
+        ctx,
+        Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS),
+        Intent("android.settings.WIRELESS_DEBUGGING_SETTINGS"),
+        Intent(Settings.ACTION_SETTINGS),
+    )
+}
+
+private fun launchFirst(ctx: Context, vararg intents: Intent) {
     for (i in intents) {
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         try {
@@ -340,9 +435,33 @@ private fun openDeveloperSettings(ctx: Context) {
     }
 }
 
+private fun wifiNamePermission(): String =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+        Manifest.permission.NEARBY_WIFI_DEVICES
+    else
+        Manifest.permission.ACCESS_FINE_LOCATION
+
+private fun hasWifiNamePermission(ctx: Context): Boolean =
+    ContextCompat.checkSelfPermission(ctx, wifiNamePermission()) ==
+        PackageManager.PERMISSION_GRANTED
+
+private fun currentWifiSsid(ctx: Context): String? {
+    // Best-effort SSID readback. Without the required permission Android
+    // returns the literal string "<unknown ssid>" — we filter that out so
+    // the caller can decide what to show.
+    return try {
+        val wifi = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val raw = wifi.connectionInfo?.ssid?.trim('"') ?: return null
+        if (raw.isBlank() || raw == "<unknown ssid>") null else raw
+    } catch (_: Exception) {
+        null
+    }
+}
+
 private val MutedColor = androidx.compose.ui.graphics.Color(0xFF6B7280)
 private val OkColor = androidx.compose.ui.graphics.Color(0xFF059669)
 private val ErrColor = androidx.compose.ui.graphics.Color(0xFFDC2626)
 private val CardBg = androidx.compose.ui.graphics.Color(0xFFF9FAFB)
+private val PrimaryColor = androidx.compose.ui.graphics.Color(0xFF1F2937)
 
 private fun Int.toUiColor() = androidx.compose.ui.graphics.Color(this)
