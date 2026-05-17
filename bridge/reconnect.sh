@@ -1,73 +1,107 @@
 #!/usr/bin/env bash
-# Folia Bridge — reconnect to a wireless ADB device.
+# Folia Bridge — discover and connect to the phone over wireless ADB.
 #
 # Usage:
-#   ./reconnect.sh                    # use last saved IP
-#   ./reconnect.sh 10.14.41.4         # connect to that IP, save for next time
-#   ./reconnect.sh 10.14.41.4:5555    # explicit port (defaults to 5555)
+#   ./reconnect.sh                    # auto-discover via mDNS (preferred)
+#   ./reconnect.sh 10.14.41.4         # explicit IP (legacy adb-tcpip mode)
+#   ./reconnect.sh 10.14.41.4:5555    # explicit ip:port
 #
-# What it does:
-#   1. Connects to <IP>:<PORT> via adb
-#   2. Saves the address to bridge/.wireless-target so the no-arg form
-#      works next time
-#   3. Re-establishes the tcp:9008 forward so u2 server is reachable
-#   4. Pings u2; if dead, relaunches it on the phone
+# Two paths supported:
 #
-# When you might need to re-run this:
-#   - Phone's WiFi dropped / reconnected (IP may have changed)
-#   - You restarted the Mac
-#   - You restarted the bridge
+# (Preferred) Android 11+ Wireless Debugging — persists across reboots.
+#   One-time setup:
+#     1. On phone: Settings > Developer options > Wireless debugging > On
+#     2. On phone: Tap "Pair device with pairing code". A pairing IP:port
+#        and 6-digit code appear.
+#     3. On Mac:   adb pair <pairing-ip:port> <code>
+#   After that, this script discovers the phone via mDNS each session
+#   (`adb mdns services` — same protocol Android Studio uses) and
+#   reconnects automatically — no IP lookups, no re-pairing.
 #
-# Note: `adb tcpip 5555` resets to USB mode when the phone reboots. If
-# this script fails to connect after a phone reboot, plug the phone in
-# briefly, run `adb tcpip 5555`, unplug, then re-run this script.
-# (Or set up persistent Wireless Debugging via the phone's developer
-# options — Android 11+ remembers paired devices across reboots.)
+# (Legacy) adb tcpip 5555 — does NOT persist across phone reboot.
+#   Plug in via USB, run `adb tcpip 5555`, unplug. Then this script can
+#   reconnect with the saved IP (until the next reboot, when you redo
+#   the USB step).
+#
+# What this script does each run:
+#   1. Discover the phone via mDNS, or fall back to a saved/passed IP
+#   2. `adb connect` to it
+#   3. Re-establish the tcp:9008 forward so u2 server is reachable
+#   4. Verify u2; relaunch if dead
 
 set -euo pipefail
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 TARGET_FILE="$SCRIPT_DIR/.wireless-target"
 
-# Resolve the target address from args, env, or saved file.
-arg="${1:-}"
-if [ -n "$arg" ]; then
-  TARGET="$arg"
+# ─── Resolve target ────────────────────────────────────────────────────────
+TARGET=""
+
+if [ -n "${1:-}" ]; then
+  TARGET="$1"
 elif [ -n "${WIRELESS_TARGET:-}" ]; then
   TARGET="$WIRELESS_TARGET"
-elif [ -f "$TARGET_FILE" ]; then
-  TARGET=$(cat "$TARGET_FILE")
 else
+  echo "→ Discovering phone via mDNS (Android 11+ Wireless Debugging)…"
+  # `adb mdns services` lists devices advertising adb services on the LAN.
+  # `_adb-tls-connect._tcp` is the post-pair connect service; that's the
+  # endpoint we want. Allow a few retries because mDNS can take a moment
+  # after the phone joins WiFi.
+  for i in 1 2 3 4 5 6 7 8; do
+    line=$(adb mdns services 2>/dev/null | awk '/_adb-tls-connect/ {print $3; exit}' || true)
+    if [ -n "$line" ]; then
+      TARGET="$line"
+      echo "  ✓ found $TARGET"
+      break
+    fi
+    sleep 1
+  done
+
+  # Fall back to a previously-saved IP if mDNS turned up nothing.
+  if [ -z "$TARGET" ] && [ -f "$TARGET_FILE" ]; then
+    TARGET=$(cat "$TARGET_FILE")
+    echo "  mDNS came up empty; falling back to saved $TARGET"
+  fi
+fi
+
+if [ -z "$TARGET" ]; then
   cat >&2 <<EOF
-No target IP supplied and no saved one found.
+✗ No phone found and no saved/passed IP.
 
-Find the phone's IP in Settings → About phone → IP address (it's the
-wlan/WiFi one). Then run:
+Most likely Wireless Debugging isn't enabled or the Mac isn't paired
+with this phone yet:
 
-  ./reconnect.sh <IP>
+  1. On phone: Settings > Developer options > Wireless debugging > On
+  2. On phone: Tap "Pair device with pairing code"
+  3. On this Mac, with the pairing IP:port and code shown on the phone:
+       adb pair <pair-ip:port> <code>
+  4. Re-run this script — it'll find the phone via mDNS.
 
-Example:  ./reconnect.sh 10.14.41.4
+Or, for legacy USB-bootstrapped mode:
+  ./reconnect.sh <phone-wifi-ip>
 EOF
   exit 1
 fi
 
-# Default the port to 5555 if not specified.
+# Default the port to 5555 if not specified (legacy tcpip path).
 case "$TARGET" in
   *:*) ;;
   *)   TARGET="$TARGET:5555" ;;
 esac
 
+# ─── Connect ───────────────────────────────────────────────────────────────
 echo "→ Connecting to $TARGET"
-adb connect "$TARGET" >/tmp/folia-adb-connect.log 2>&1
+adb connect "$TARGET" >/tmp/folia-adb-connect.log 2>&1 || true
 if ! adb devices | awk -v t="$TARGET" 'NR>1 && $1==t && $2=="device"' | grep -q .; then
   cat >&2 <<EOF
 ✗ adb couldn't reach $TARGET.
 
 Common causes:
   - Phone isn't on the same WiFi as this Mac
-  - Phone's adb fell out of TCP/IP mode (happens on reboot). Plug
-    USB in briefly, run \`adb tcpip 5555\`, unplug, retry.
-  - Phone's IP changed. Find the new IP and pass it as an arg.
+  - Wireless Debugging was disabled, or the pairing was forgotten
+    (re-pair via Settings > Developer options > Wireless debugging)
+  - Phone's adb fell out of TCP/IP mode (legacy tcpip mode resets on
+    reboot — plug in via USB, run \`adb tcpip 5555\`, unplug, retry)
 
 adb output:
 EOF
@@ -78,13 +112,11 @@ fi
 echo "$TARGET" > "$TARGET_FILE"
 echo "  ✓ connected, saved to $TARGET_FILE"
 
-# Re-establish the u2 forward. Idempotent — `adb forward` replaces any
-# existing forward on the same local port.
+# ─── Forward + u2 ──────────────────────────────────────────────────────────
 echo "→ Setting up adb forward tcp:9008 → phone:9008"
 adb forward tcp:9008 tcp:9008 >/dev/null
 echo "  ✓ forward live"
 
-# Verify u2. If it's not responding, relaunch it on the device.
 echo "→ Pinging u2 server"
 if curl -sSf -m 2 http://localhost:9008/ping >/dev/null 2>&1; then
   echo "  ✓ u2 responding"
