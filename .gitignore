@@ -32,3 +32,9 @@ plant-inventory/
 # leaks. Rotate via /api/bridge?action=generate-token if exposed.
 bridge/.env
 bridge/.wireless-target
+
+# Android build artifacts (per-machine SDK path + Gradle outputs)
+android-helper/local.properties
+android-helper/.gradle/
+android-helper/build/
+android-helper/app/build/
