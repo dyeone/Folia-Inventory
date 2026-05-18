@@ -212,13 +212,15 @@ function TopBar({ onLogout, onRefresh, title, subtitle, onBack }) {
 }
 
 // Scan-box screen — big input that the operator types/scans into.
+//
+// Intentionally NOT autofocused on mount. Auto-focus on a freshly-
+// mounted input causes iOS Safari to pop the on-screen keyboard up
+// every time the operator returns from item view, which is annoying
+// (most operators come back to use the camera button, not to type).
+// Tap the input explicitly if you want to type.
 function BoxScanner({ onScan, onOpenCamera, hint }) {
   const [value, setValue] = useState('');
   const inputRef = useRef(null);
-
-  // Autofocus on mount and after every submit so a hardware barcode
-  // scanner can just shoot codes in sequence without taps.
-  useEffect(() => { inputRef.current?.focus(); }, []);
 
   const submit = (e) => {
     e?.preventDefault();
@@ -226,6 +228,8 @@ function BoxScanner({ onScan, onOpenCamera, hint }) {
     if (!v) return;
     const ok = onScan(v);
     setValue('');
+    // Re-focus AFTER an explicit submit only — the operator's
+    // already typing, so keeping focus is what they expect.
     setTimeout(() => inputRef.current?.focus(), 0);
     return ok;
   };
