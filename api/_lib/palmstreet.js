@@ -59,8 +59,15 @@ async function call(endpoint, token, body) {
   const upstreamDetail = parsed?.message || parsed?.reason || parsed?.error || text || `HTTP ${res.status}`;
 
   if (!res.ok) {
+    // Auth failures are common enough (1-hour token TTL with no refresh
+    // endpoint) that we give the operator the next step inline instead of
+    // making them connect the dots between "Unauthorized" and "go paste
+    // a new token."
+    const hint = res.status === 401 || res.status === 403
+      ? ' — refresh the Palmstreet ops page, copy a new bearer token, and paste it into Shipping Settings.'
+      : '';
     throw new PalmstreetError(
-      `Palmstreet ${endpoint} failed (${res.status}): ${upstreamDetail}`,
+      `Palmstreet ${endpoint} failed (${res.status}): ${upstreamDetail}${hint}`,
       { status: res.status, body: parsed || text || null },
     );
   }
