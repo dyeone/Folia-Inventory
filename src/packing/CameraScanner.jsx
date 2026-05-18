@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { X, Camera } from 'lucide-react';
+import { X, Camera, Keyboard } from 'lucide-react';
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 // Rear-camera barcode scanner using html5-qrcode (wraps ZXing).
@@ -19,6 +19,9 @@ const SCANNER_ELEMENT_ID = 'packer-camera-scanner';
 export function CameraScanner({ onScan, onClose, continuous = false }) {
   const [err, setErr] = useState('');
   const [starting, setStarting] = useState(true);
+  const [scans, setScans] = useState(0); // visible decode counter for sanity-checking
+  const [manualValue, setManualValue] = useState('');
+  const [manualOpen, setManualOpen] = useState(false);
   const scannerRef = useRef(null);
   const recentScans = useRef(new Map());
   const closedRef = useRef(false);
@@ -38,6 +41,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
 
     const onDecoded = (text) => {
       if (closedRef.current) return;
+      setScans(c => c + 1);
       // 2-second per-value debounce so a barcode held in view doesn't
       // fire repeatedly.
       const now = Date.now();
@@ -64,14 +68,21 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
         // gracefully instead of erroring out.
         { facingMode: 'environment' },
         {
-          fps: 10,
-          // Aspect ratio matches CODE128 — wide and short.
-          qrbox: (vw, vh) => {
-            const w = Math.min(vw * 0.9, 400);
-            const h = Math.min(vh * 0.5, 200);
-            return { width: w, height: h };
-          },
-          aspectRatio: 1.7777,
+          // Bumping fps from 10 → 20 to give ZXing more frames to land
+          // a decode on. CODE128 reads better with more attempts when
+          // the camera is slightly out of focus.
+          fps: 20,
+          // Wider, shorter scan window — CODE128 barcodes are long and
+          // narrow, and a tall qrbox often misses them. Filling almost
+          // the entire viewport width gives ZXing the best chance.
+          qrbox: (vw, vh) => ({
+            width: Math.min(vw, 480) - 24,
+            height: Math.min(Math.floor(vh / 3), 220),
+          }),
+          // Drop aspectRatio — letting the library pick the camera's
+          // native ratio avoids the cropped-frame issue where part of
+          // the barcode falls outside the visible feed on iOS Safari.
+          disableFlip: false,
         },
         onDecoded,
         () => { /* decode-miss frames are noisy; ignore */ },
@@ -89,13 +100,35 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [continuous]);
 
+  const handleManualSubmit = (e) => {
+    e?.preventDefault();
+    const v = manualValue.trim();
+    if (!v) return;
+    onScan(v);
+    setManualValue('');
+    if (!continuous) {
+      // Mirror the camera-decode behavior — close after one scan.
+      closedRef.current = true;
+      scannerRef.current?.stop().catch(() => {});
+      onClose?.();
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
       <div className="flex items-center gap-2 px-3 py-3 pt-safe text-white bg-black/60">
         <Camera className="w-5 h-5" />
         <div className="flex-1 text-sm font-medium">
           {continuous ? 'Scan items continuously' : 'Scan box label'}
+          {scans > 0 && <span className="text-xs text-white/60 ml-2">· {scans} read</span>}
         </div>
+        <button
+          onClick={() => setManualOpen(v => !v)}
+          aria-label="Type code manually"
+          className="p-2 rounded-lg hover:bg-white/10 active:bg-white/20"
+        >
+          <Keyboard className="w-5 h-5" />
+        </button>
         <button
           onClick={onClose}
           aria-label="Close camera"
@@ -117,11 +150,39 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
           </div>
         )}
       </div>
-      <div className="px-4 py-3 pb-safe text-center text-xs text-white/70 bg-black/60">
-        {continuous
-          ? 'Point at item barcode. Camera stays open.'
-          : 'Point at the box label. Camera closes after one scan.'}
-      </div>
+      {manualOpen ? (
+        <form onSubmit={handleManualSubmit} className="bg-white p-3 pb-safe">
+          <label className="block text-xs text-gray-600 mb-1">Type code manually</label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              autoFocus
+              value={manualValue}
+              onChange={(e) => setManualValue(e.target.value)}
+              placeholder={continuous ? 'Item SKU' : 'B-XXXXXX'}
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              className="flex-1 px-3 py-2 text-base font-mono uppercase border-2 border-gray-300 rounded-lg focus:outline-none focus:border-emerald-500"
+            />
+            <button
+              type="submit"
+              className="px-4 py-2 text-sm font-semibold bg-emerald-600 text-white rounded-lg"
+            >
+              Send
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="px-4 py-3 pb-safe text-center text-xs text-white/70 bg-black/60">
+          {continuous
+            ? 'Point at item barcode. Camera stays open.'
+            : 'Point at the box label. Camera closes after one scan.'}
+          <div className="mt-1 text-white/50">
+            Tap <Keyboard className="w-3 h-3 inline -mt-0.5" /> to type instead.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
