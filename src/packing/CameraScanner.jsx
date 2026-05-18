@@ -75,13 +75,6 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
       }
     };
 
-    const stopAndClose = () => {
-      if (closedRef.current) return;
-      closedRef.current = true;
-      scanner.stop().catch(() => { /* already stopped */ });
-      onClose?.();
-    };
-
     scanner
       .start(
         // html5-qrcode wants either a plain string or { exact: ... }
