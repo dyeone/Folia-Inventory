@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, Camera } from 'lucide-react';
+import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, Camera, Truck } from 'lucide-react';
 import { api } from '../api.js';
 import { shortBoxCode, normalizeBoxCode } from '../labels/boxCode.js';
 import { CameraScanner } from './CameraScanner.jsx';
@@ -61,6 +61,11 @@ export function PackerView({ onLogout }) {
           buyer: item.buyer || '',
           buyerUsername: item.buyerUsername || '',
           buyerAddress: item.buyerAddress || {},
+          // All items in one box share a carrier (set during Validate
+          // Sales). Take the first non-empty value defensively — falls
+          // back to 'usps' so the badge always renders something
+          // recognizable.
+          carrier: item.shipmentCarrier || 'usps',
           items: [],
         };
         map.set(item.shipmentBoxId, box);
@@ -342,8 +347,9 @@ function ItemScanner({ box, onScan, onOpenCamera, onDone }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-200 bg-white">
-        <div className="flex items-center justify-between text-sm">
-          <div className="text-gray-700">
+        <div className="flex items-center gap-3 text-sm">
+          <CarrierBadge carrier={box.carrier} />
+          <div className="text-gray-700 ml-auto">
             <span className="font-semibold text-gray-900">{packedItems.length}/{totalSold}</span>
             <span className="text-gray-500 ml-1">packed</span>
           </div>
@@ -423,6 +429,23 @@ function ItemScanner({ box, onScan, onOpenCamera, onDone }) {
         </div>
       </form>
     </div>
+  );
+}
+
+// Carrier banner at the top of the items screen. The packer needs to
+// know which postage / handoff bin to use BEFORE they finish packing,
+// so the badge is sized to read across a worktable: bold uppercase
+// label, carrier-flavored color (UPS=amber, USPS=blue), truck glyph.
+function CarrierBadge({ carrier }) {
+  const c = String(carrier || 'usps').toUpperCase();
+  const isUps = c === 'UPS';
+  const cls = isUps
+    ? 'bg-amber-100 text-amber-900 ring-1 ring-amber-300'
+    : 'bg-blue-100 text-blue-900 ring-1 ring-blue-300';
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-base font-bold tracking-wider ${cls}`}>
+      <Truck className="w-5 h-5" /> {c}
+    </span>
   );
 }
 
