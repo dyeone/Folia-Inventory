@@ -660,6 +660,12 @@ function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
 }) {
+  // Box-level pack rollup. unpackedSoldCount = items still 'sold' and
+  // not yet packed; pack-all flips them all to packed in one click.
+  // Hidden when every sold item is already packed (nothing to do).
+  const unpackedSoldCount = box.items.filter(
+    i => i.status === 'sold' && !i.packedAt,
+  ).length;
   const shipped = box.items.filter(i =>
     ['shipped', 'delivered'].includes(i.status)
   ).length;
@@ -713,6 +719,22 @@ function BoxRow({
     }
   };
 
+  const handlePackAll = async (e) => {
+    e?.stopPropagation();
+    if (!onTogglePacked) return;
+    setBusy(true);
+    try {
+      const targets = box.items.filter(i => i.status === 'sold' && !i.packedAt);
+      for (const it of targets) {
+        await onTogglePacked(it.id, true);
+      }
+    } catch (err) {
+      showToast?.(err?.message || 'Pack all failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const stop = (e) => e.stopPropagation();
 
   return (
@@ -751,6 +773,20 @@ function BoxRow({
               ? `${shipped}/${total} shipped`
               : `${total} ${total === 1 ? 'item' : 'items'}`}
           </span>
+          {/* Box-level Pack all — packs every still-unpacked sold item in
+              the box. Hidden when there's nothing to pack. Per-item Pack
+              buttons in the expanded list still work for partial packs. */}
+          {action && onTogglePacked && unpackedSoldCount > 0 && (
+            <button
+              onClick={handlePackAll}
+              disabled={busy}
+              title={`Mark all ${unpackedSoldCount} unpacked item${unpackedSoldCount === 1 ? '' : 's'} as packed`}
+              className="text-xs font-medium px-2.5 py-1 rounded-md border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 disabled:opacity-60 flex items-center gap-1"
+            >
+              <Check className="w-3 h-3" /> Pack all
+              <span className="text-emerald-600">· {unpackedSoldCount}</span>
+            </button>
+          )}
           {/* State-driven secondary actions. Stops propagation so clicking
               doesn't also toggle the row's expanded state. The state-driven
               "Mark shipped" branch is gone — that's now the always-visible
