@@ -768,6 +768,20 @@ function InventorySystem() {
             inventoryItems={items}
             sales={sales}
             setConfirmDialog={setConfirmDialog}
+            onRefreshData={async () => {
+              // Pull items + sales fresh in parallel so the Shipping tab
+              // can show the latest state without a page reload (e.g. after
+              // another operator or the Chrome extension changed things).
+              const [freshItems, freshSales] = await Promise.all([
+                api.getItems(),
+                api.getSales(),
+              ]);
+              applyItemsFresh(freshItems);
+              setSales([...freshSales].sort(
+                (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
+              ));
+              return { itemCount: freshItems.length, saleCount: freshSales.length };
+            }}
             onShipBox={async (saleId, itemIds) => {
               try {
                 const now = new Date().toISOString();

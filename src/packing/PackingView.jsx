@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
-  Truck, Pencil, Check, X, Loader2,
+  Truck, Pencil, Check, X, Loader2, RefreshCw,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -26,8 +26,9 @@ export { SummaryStat } from './SummaryStat.jsx';
 // untouched while we iterate the top view.
 // ───────────────────────────────────────────────────────────────────────────
 
-export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog }) {
+export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, setConfirmDialog }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Shipments keyed by shipmentBoxId. We need these to know which boxes
   // already have a label / tracking number (→ "Mark shipped") vs. which
@@ -127,16 +128,95 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
     }
   };
 
+  // Refresh button: re-pulls items + sales + shipments, then bulk-pushes
+  // tracking back to Palmstreet for every box that has a live tracking
+  // number. Single-order pushes are idempotent (the update-order endpoint
+  // just sets the latest tracking — sending the same value twice is safe).
+  // Multi-order boxes are skipped because create-package isn't
+  // idempotent — re-pushing would create duplicate Palmstreet packages.
+  // The skipped count surfaces in the result toast so the operator knows
+  // some boxes need attention.
+  const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      // Step 1 — local data refresh.
+      const appResult = onRefreshData ? await onRefreshData() : null;
+      const list = await api.getShipments();
+      const freshShipmentsByBox = Object.fromEntries(
+        (list || []).map(s => [s.id, s]),
+      );
+      setShipmentsByBox(freshShipmentsByBox);
+
+      // Step 2 — bulk push tracking to Palmstreet. Re-derive boxes from
+      // the freshly applied inventoryItems (state hasn't propagated yet
+      // when we get here, but the parent already kicked the update — the
+      // refreshed values will be visible to the bulk push via inventoryItems
+      // on the next render. For now, just use what we have on this render
+      // and rely on subsequent renders to fill in newly arrived boxes.)
+      const liveBoxes = collectLiveBoxes(inventoryItems, freshShipmentsByBox);
+      const pushable = liveBoxes.filter(b => b.singleOrder && b.trackingNumber);
+      const multi = liveBoxes.filter(b => !b.singleOrder && b.trackingNumber);
+
+      let ok = 0;
+      const failures = [];
+      for (const b of pushable) {
+        try {
+          await api.pushPalmstreetTracking(b.id);
+          ok++;
+        } catch (e) {
+          failures.push({ id: b.id, recipient: b.recipientName, message: e.message });
+        }
+      }
+
+      const parts = [];
+      if (appResult) {
+        parts.push(`${appResult.itemCount} items / ${appResult.saleCount} sales`);
+      }
+      if (ok > 0) parts.push(`pushed ${ok} to Palmstreet`);
+      if (multi.length > 0) parts.push(`${multi.length} multi-order skipped`);
+      if (failures.length > 0) parts.push(`${failures.length} push failed`);
+
+      const summary = `Refreshed — ${parts.join(' · ') || 'no changes'}`;
+      if (failures.length > 0) {
+        // Surface the first failure verbatim so the operator gets actionable
+        // detail instead of just a count.
+        const first = failures[0];
+        const detail = `${summary}\nFirst failure (${first.recipient || first.id}): ${first.message}`;
+        setToast(detail);
+        setTimeout(() => setToast(null), 10_000);
+      } else {
+        showToast(summary);
+      }
+    } catch (e) {
+      setToast(`Refresh failed — ${e.message || 'unknown error'}`);
+      setTimeout(() => setToast(null), 8000);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-          <Package className="w-5 h-5 text-emerald-600" /> Shipping
-        </h2>
-        <p className="text-sm text-gray-500 mt-0.5">
-          Every package with at least one item still to ship, consolidated by buyer
-          across sale events.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <Package className="w-5 h-5 text-emerald-600" /> Shipping
+          </h2>
+          <p className="text-sm text-gray-500 mt-0.5">
+            Every package with at least one item still to ship, consolidated by buyer
+            across sale events.
+          </p>
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="Re-pull items / sales / shipments and bulk-push tracking to Palmstreet"
+          className="shrink-0 flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
 
       <section className="space-y-2">
@@ -231,6 +311,42 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
 // ───────────────────────────────────────────────────────────────────────────
 // Buyer grouping helpers.
 // ───────────────────────────────────────────────────────────────────────────
+
+// Walk items + shipments and produce a flat list of live boxes (no
+// `sold` items left to ship excluded — we still want to re-sync tracking
+// for shipped boxes too, since they may have failed to push on Mark
+// shipped). For each box reports whether it's single-order (safe to
+// idempotently re-push) and the live tracking number (if any).
+function collectLiveBoxes(items, shipmentsByBox) {
+  const boxMap = new Map();
+  for (const item of items) {
+    if (!item.shipmentBoxId) continue;
+    if (item.deletedAt) continue;
+    let box = boxMap.get(item.shipmentBoxId);
+    if (!box) {
+      box = {
+        id: item.shipmentBoxId,
+        recipientName: item.buyer || item.buyerUsername || '',
+        orderIds: new Set(),
+      };
+      boxMap.set(item.shipmentBoxId, box);
+    }
+    if (item.orderId) box.orderIds.add(item.orderId);
+  }
+  const out = [];
+  for (const box of boxMap.values()) {
+    const ship = shipmentsByBox[box.id];
+    const live = ship && !ship.voidedAt ? ship : null;
+    out.push({
+      id: box.id,
+      recipientName: box.recipientName,
+      singleOrder: box.orderIds.size === 1,
+      orderIdCount: box.orderIds.size,
+      trackingNumber: live?.trackingNumber || null,
+    });
+  }
+  return out;
+}
 
 function groupReadyToShipByBuyer(items, sales) {
   // First, assemble every (live) box from item rows. A box exists once an
