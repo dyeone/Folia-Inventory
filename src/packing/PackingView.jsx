@@ -544,11 +544,10 @@ function BoxRow({
   const partial = shipped > 0 && shipped < total;
   const allShipped = total > 0 && shipped === total;
 
-  // Open boxes default to expanded so the operator sees every item
-  // without an extra click — packing always needs that detail.
-  // Shipped boxes default to collapsed since the archive can be huge
-  // and most rows aren't being looked at.
-  const [expanded, setExpanded] = useState(!allShipped);
+  // Every box defaults to expanded — the operator wants the item
+  // detail visible without an extra click on both Ready and Shipped.
+  // User can still collapse individual rows by clicking the body.
+  const [expanded, setExpanded] = useState(true);
   const [editingTracking, setEditingTracking] = useState(false);
   const [trackingDraft, setTrackingDraft] = useState('');
   const [busy, setBusy] = useState(false);
