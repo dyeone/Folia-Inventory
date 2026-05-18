@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import {
-  ChevronDown, ChevronRight, Truck, MapPin, Check, AlertCircle,
+  ChevronDown, ChevronRight, Truck, MapPin, Check, AlertCircle, SkipForward,
 } from 'lucide-react';
+import { shortBoxCode } from '../labels/boxCode.js';
 
 // Renders the parsed/matched preview of a Palmstreet orders upload.
 // Used by the Validate Sales modal (SalesUploadModal). Each box shows
@@ -14,7 +15,9 @@ export function BoxesList({ boxes }) {
     <div className="space-y-3">
       {boxes.map(box => {
         const isCollapsed = collapsed.has(box.id);
-        const matched = box.items.filter(i => i.match?.item).length;
+        const matched = box.items.filter(
+          i => i.match?.item && !i.match?.alreadyInBox,
+        ).length;
         const a = box;
         return (
           <div key={box.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
@@ -77,9 +80,10 @@ export function BoxesList({ boxes }) {
 }
 
 function BoxItemRow({ item }) {
-  const match = item.match?.item;
+  const matchItem = item.match?.item;
+  const alreadyInBoxId = item.match?.alreadyInBox;
   return (
-    <div className="px-4 py-2.5 flex items-start gap-3">
+    <div className={`px-4 py-2.5 flex items-start gap-3 ${alreadyInBoxId ? 'opacity-60' : ''}`}>
       <div className="flex-1 min-w-0">
         <div className="text-sm text-gray-900 truncate">{item.title}</div>
         <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2 flex-wrap">
@@ -88,12 +92,17 @@ function BoxItemRow({ item }) {
           <span>${item.price.toFixed(2)}</span>
           {item.sku && <><span>·</span><span className="font-mono">SKU {item.sku}</span></>}
         </div>
-        {match ? (
+        {alreadyInBoxId ? (
+          <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded border border-gray-300">
+            <SkipForward className="w-3 h-3" />
+            Already in box <span className="font-mono">{shortBoxCode(alreadyInBoxId)}</span> · skipped
+          </div>
+        ) : matchItem ? (
           <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200">
             <Check className="w-3 h-3" />
-            <span className="font-mono">{match.sku}</span>
+            <span className="font-mono">{matchItem.sku}</span>
             <span className="opacity-70">·</span>
-            <span className="truncate max-w-[200px]">{match.name}{match.variety ? ` · ${match.variety}` : ''}</span>
+            <span className="truncate max-w-[200px]">{matchItem.name}{matchItem.variety ? ` · ${matchItem.variety}` : ''}</span>
           </div>
         ) : (
           <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-amber-50 text-amber-800 px-2 py-0.5 rounded border border-amber-200">

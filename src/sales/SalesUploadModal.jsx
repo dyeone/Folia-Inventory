@@ -71,59 +71,31 @@ export function SalesUploadModal({ items, onApply, onClose }) {
 
   const summary = useMemo(() => {
     if (!resolved) return null;
-    let totalItems = 0, matched = 0, unmatched = 0;
+    let totalItems = 0, matched = 0, alreadyInBox = 0, unmatched = 0;
     for (const box of resolved) {
       for (const it of box.items) {
         totalItems += 1;
-        if (it.match?.item) matched += 1;
+        if (it.match?.alreadyInBox) alreadyInBox += 1;
+        else if (it.match?.item) matched += 1;
         else unmatched += 1;
       }
     }
-    return { totalItems, matched, unmatched };
+    return { totalItems, matched, alreadyInBox, unmatched };
   }, [resolved]);
-
-  // Map a parsed box's recipient+address to the same shape parsePalmstreetOrders
-  // uses for its in-upload group key. Used to find an existing OPEN box
-  // belonging to the same buyer so the new orders merge into it instead
-  // of creating a duplicate.
-  const groupKeyFor = (recipientName, street1, city, state, zip) => [
-    String(recipientName || '').toLowerCase().trim(),
-    String(street1 || '').toLowerCase().trim(),
-    String(city || '').toLowerCase().trim(),
-    String(state || '').toLowerCase().trim(),
-    String(zip || '').toLowerCase().trim(),
-  ].join('|');
-
-  // Walk every live inventory row that currently sits in an open box
-  // (status='sold' = ready to ship, not yet shipped) and index its
-  // shipmentBoxId by buyer+address group key. Items in 'shipped' or
-  // 'delivered' status are history — we never absorb new orders into
-  // them. First match per group wins; sibling sold items in the same
-  // box share an id anyway.
-  const openBoxIdByGroup = useMemo(() => {
-    const m = new Map();
-    for (const item of items) {
-      if (!item.shipmentBoxId) continue;
-      if (item.deletedAt) continue;
-      if (item.status !== 'sold') continue;
-      const addr = item.buyerAddress || {};
-      const key = groupKeyFor(item.buyer, addr.street1, addr.city, addr.state, addr.zip);
-      if (!m.has(key)) m.set(key, item.shipmentBoxId);
-    }
-    return m;
-  }, [items]);
 
   const handleApply = () => {
     if (!resolved) return;
     const updates = [];
     const now = new Date().toISOString();
     for (const box of resolved) {
-      // If the same buyer at the same address already has an OPEN box,
-      // merge the new orders into it (reuse its shipmentBoxId). Otherwise
-      // keep the fresh per-upload id parsePalmstreetOrders generated.
-      // Shipped/delivered boxes are skipped — they're history.
-      const groupKey = groupKeyFor(box.recipientName, box.street1, box.city, box.state, box.zip);
-      const effectiveBoxId = openBoxIdByGroup.get(groupKey) || box.id;
+      // Every upload gets its own fresh shipmentBoxId from
+      // parsePalmstreetOrders (the per-upload nonce). We never merge
+      // into an existing box: actively-packed work shouldn't be
+      // disrupted, and shipped history shouldn't absorb new orders.
+      // Items whose SKU is already in another box are skipped below
+      // (it.match.alreadyInBox), so the new box only ever contains
+      // genuinely-new lines.
+      const effectiveBoxId = box.id;
       // For unmatched items in this box we want to tie them to the same
       // sale event as the matched ones (purely cosmetic — the Shipping
       // tab uses box.saleId from the first item only). Pick the first
@@ -142,6 +114,13 @@ export function SalesUploadModal({ items, onApply, onClose }) {
       };
 
       for (const it of box.items) {
+        if (it.match?.alreadyInBox) {
+          // Inventory row already lives in another box (open or
+          // shipped). Skip entirely — no new placeholder, no
+          // duplicate. The preview's "already in a box" count tells
+          // the operator how many lines were dropped this way.
+          continue;
+        }
         if (it.match?.item) {
           const inv = it.match.item;
           const finalPrice = it.price > 0 ? it.price : parseFloat(inv.listingPrice) || 0;
@@ -208,7 +187,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
               Validate Sales
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Match each Palmstreet order to inventory by exact SKU. Unmatched rows are listed but skipped on apply.
+              Match each Palmstreet order to inventory by exact SKU. Lines whose SKU is already in another box (open or shipped) are skipped — no merges, no duplicates.
             </p>
           </div>
           <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2" aria-label="Close">
@@ -265,12 +244,17 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                 </button>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <SummaryStat label="Boxes" value={resolved.length} tone="emerald" />
                 <SummaryStat
                   label="Will mark sold"
                   value={summary.matched}
                   tone={summary.matched > 0 ? 'blue' : 'gray'}
+                />
+                <SummaryStat
+                  label="Already in a box"
+                  value={summary.alreadyInBox}
+                  tone={summary.alreadyInBox > 0 ? 'gray' : 'gray'}
                 />
                 <SummaryStat
                   label="Unmatched"
@@ -301,6 +285,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             >
               <Check className="w-4 h-4" /> Update Inventory · {summary?.matched || 0} matched
               {summary?.unmatched > 0 && <> + {summary.unmatched} unmatched</>}
+              {summary?.alreadyInBox > 0 && <> · {summary.alreadyInBox} skipped</>}
             </button>
           </div>
         )}
