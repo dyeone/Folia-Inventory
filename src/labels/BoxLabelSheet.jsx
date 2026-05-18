@@ -47,13 +47,24 @@ function Label({ box }) {
   );
 }
 
-// Top line of the label: carrier (UPS / USPS) and the Palmstreet
-// username. Names are intentionally omitted — pack-out only needs the
-// shipping channel and the @id to confirm the right buyer at a glance.
+// Top line of the label: carrier (UPS / USPS), the Palmstreet username,
+// and a match-status marker. Names are intentionally omitted — pack-out
+// only needs the shipping channel, the @id, and whether every line
+// resolved to real inventory.
+//
+//   *  every item in the box is matched real inventory
+//   #  at least one item is an unmatched placeholder (purple in Shipping)
+//
+// '#' tells the packer to double-check the manifest before sealing —
+// the placeholder row didn't tie to a known SKU, so something needs
+// attention before this box ships.
 function displayHeader(box) {
   const carrier = String(box.carrier || 'usps').toUpperCase();
   const username = (box.username || box.buyerUsername || '').trim();
-  return username ? `${carrier} · @${username}` : `${carrier} · (no @id)`;
+  const hasUnmatched = (box.items || []).some(i => i.lotKind === 'unmatched');
+  const marker = hasUnmatched ? '#' : '*';
+  const idPart = username ? `@${username}` : '(no @id)';
+  return `${carrier} · ${idPart} · ${marker}`;
 }
 
 const LABEL_W = 2;
