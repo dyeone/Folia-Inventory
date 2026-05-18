@@ -1,13 +1,14 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
-  Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine,
+  Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
 import { CameraScanner } from './CameraScanner.jsx';
+import { NewBoxModal } from './NewBoxModal.jsx';
 import { shortBoxCode, normalizeBoxCode } from '../labels/boxCode.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
@@ -31,7 +32,13 @@ export function PackingView({
   inventoryItems, sales,
   onShipBox, onDeleteAllOpenBoxes, onPrintBoxLabels, onTogglePacked,
   setConfirmDialog,
+  isAdmin, onRefreshItems,
 }) {
+  // Admin-only modal for creating a box by hand (no Palmstreet upload
+  // involved). Sits next to the existing Print box labels button. The
+  // modal manages its own two-phase flow (form → scan) and stamps each
+  // scanned inventory item with the new shipmentBoxId.
+  const [newBoxOpen, setNewBoxOpen] = useState(false);
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -320,21 +327,33 @@ export function PackingView({
                   · {totalBoxes} {totalBoxes === 1 ? 'box' : 'boxes'} · {groups.length} {groups.length === 1 ? 'buyer' : 'buyers'} · {totalItems} {totalItems === 1 ? 'item' : 'items'}
                 </span>
               </h3>
-              {totalBoxes > 0 && onPrintBoxLabels && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    // Flatten every open box across every buyer group.
-                    const allBoxes = groups.flatMap(g => g.boxes);
-                    onPrintBoxLabels(allBoxes);
-                  }}
-                  className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100"
-                >
-                  <Printer className="w-4 h-4" />
-                  Print box labels
-                  <span className="text-xs text-gray-400 ml-1">· {totalBoxes}</span>
-                </button>
-              )}
+              <div className="flex items-center gap-2 flex-wrap">
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => setNewBoxOpen(true)}
+                    className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800"
+                  >
+                    <Plus className="w-4 h-4" />
+                    New box
+                  </button>
+                )}
+                {totalBoxes > 0 && onPrintBoxLabels && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Flatten every open box across every buyer group.
+                      const allBoxes = groups.flatMap(g => g.boxes);
+                      onPrintBoxLabels(allBoxes);
+                    }}
+                    className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100"
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print box labels
+                    <span className="text-xs text-gray-400 ml-1">· {totalBoxes}</span>
+                  </button>
+                )}
+              </div>
             </div>
             {filteredReady.length === 0 ? (
               <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
@@ -489,6 +508,15 @@ export function PackingView({
             else if (scannerMode === 'item') handleScannedItemSku(text);
           }}
           onClose={() => setScannerMode(null)}
+        />
+      )}
+
+      {newBoxOpen && (
+        <NewBoxModal
+          inventoryItems={inventoryItems}
+          showToast={showToast}
+          onRefreshItems={onRefreshItems}
+          onClose={() => setNewBoxOpen(false)}
         />
       )}
 

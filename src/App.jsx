@@ -880,6 +880,11 @@ function StaffOrAdminInventory() {
           <PackingView
             inventoryItems={items}
             sales={sales}
+            isAdmin={isAdmin}
+            onRefreshItems={async () => {
+              const fresh = await api.getItems();
+              applyItemsFresh(fresh);
+            }}
             setConfirmDialog={setConfirmDialog}
             onPrintBoxLabels={(boxes) => setBoxLabelBoxes(boxes)}
             onTogglePacked={async (itemId, packed) => {
