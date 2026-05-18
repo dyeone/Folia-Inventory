@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, Camera } from 'lucide-react';
 import { api } from '../api.js';
-import { shortBoxCode } from '../labels/boxCode.js';
+import { shortBoxCode, normalizeBoxCode } from '../labels/boxCode.js';
 import { CameraScanner } from './CameraScanner.jsx';
 
 // Full-screen mobile workflow for the 'packer' role. Two screens:
@@ -82,7 +82,7 @@ export function PackerView({ onLogout }) {
   };
 
   const handleScanBox = (raw) => {
-    const code = normalizeCode(raw);
+    const code = normalizeBoxCode(raw);
     if (!code) return false;
     const match = boxesByCode[code];
     if (!match) {
@@ -476,14 +476,4 @@ function Toast({ text }) {
       {text}
     </div>
   );
-}
-
-// Box codes are uppercase alphanumeric with a B- prefix. Normalize
-// operator input so trailing whitespace, case differences, and a
-// missing prefix don't cause a false miss.
-function normalizeCode(raw) {
-  let v = String(raw || '').trim().toUpperCase();
-  if (!v) return '';
-  if (!v.startsWith('B-')) v = `B-${v}`;
-  return v;
 }

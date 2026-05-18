@@ -17,3 +17,14 @@ export function shortBoxCode(shipmentBoxId) {
   const base36 = h.toString(36).toUpperCase().padStart(6, '0');
   return `B-${base36.slice(-6)}`;
 }
+
+// Box codes are uppercase alphanumeric with a B- prefix. Normalize
+// operator input so trailing whitespace, case differences, and a
+// missing prefix don't cause a false miss when looking up a box by
+// scanned/typed code.
+export function normalizeBoxCode(raw) {
+  let v = String(raw || '').trim().toUpperCase();
+  if (!v) return '';
+  if (!v.startsWith('B-')) v = `B-${v}`;
+  return v;
+}

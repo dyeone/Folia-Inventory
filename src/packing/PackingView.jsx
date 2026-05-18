@@ -1,13 +1,14 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
-  Truck, Pencil, Check, X, Loader2, Trash2, Printer,
+  Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
-import { shortBoxCode } from '../labels/boxCode.js';
+import { CameraScanner } from './CameraScanner.jsx';
+import { shortBoxCode, normalizeBoxCode } from '../labels/boxCode.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
 // imports keep working without a churn-y find-and-replace across files.
@@ -36,6 +37,12 @@ export function PackingView({
   // 'shipped' for the archive. Defaults to 'ready' since that's the
   // common operator workflow.
   const [subTab, setSubTab] = useState('ready');
+  // Box-lookup scanner state. When the user taps "Scan box" and a
+  // decode succeeds we set scannedBoxId; the list then filters to
+  // just that one box (across whichever sub-tab it lives in) so the
+  // operator sees its items immediately.
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scannedBoxId, setScannedBoxId] = useState(null);
 
   // Shipments keyed by shipmentBoxId. We need these to know which boxes
   // already have a label / tracking number (→ "Mark shipped") vs. which
@@ -140,17 +147,97 @@ export function PackingView({
     showToast('Tracking saved');
   };
 
+  // Handler for "Scan box" — decodes a B-XXXXXX code and filters the
+  // list down to just that box. Walks the Ready groups first, then the
+  // Shipped archive. On match we also switch sub-tabs so the operator
+  // sees the box in the right context. On miss the toast tells them
+  // the code didn't match anything.
+  const handleScannedBoxCode = (rawText) => {
+    const code = normalizeBoxCode(rawText);
+    if (!code) return;
+    const findIn = (groupArr) => {
+      for (const g of groupArr) {
+        for (const b of g.boxes) {
+          if (shortBoxCode(b.id) === code) return b;
+        }
+      }
+      return null;
+    };
+    const inReady = findIn(groups);
+    if (inReady) {
+      setSubTab('ready');
+      setScannedBoxId(inReady.id);
+      showToast(`Found ${code} in Ready`);
+      return;
+    }
+    const inShipped = findIn(shipped.groups);
+    if (inShipped) {
+      setSubTab('shipped');
+      setScannedBoxId(inShipped.id);
+      showToast(`Found ${code} in Shipped`);
+      return;
+    }
+    showToast(`No box matches ${code}`);
+  };
+
+  // Apply the box-lookup filter when active. Each group's box list is
+  // narrowed to just the scanned box; groups with no surviving boxes
+  // are dropped. Same logic applied to the Shipped archive so the
+  // filter works regardless of which sub-tab the box lives in.
+  const filteredReady = scannedBoxId
+    ? groups
+        .map(g => ({ ...g, boxes: g.boxes.filter(b => b.id === scannedBoxId) }))
+        .filter(g => g.boxes.length > 0)
+    : groups;
+  const filteredShipped = scannedBoxId
+    ? {
+        ...shipped,
+        groups: shipped.groups
+          .map(g => ({ ...g, boxes: g.boxes.filter(b => b.id === scannedBoxId) }))
+          .filter(g => g.boxes.length > 0),
+      }
+    : shipped;
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-          <Package className="w-5 h-5 text-emerald-600" /> Shipping
-        </h2>
-        <p className="text-sm text-gray-500 mt-0.5">
-          Every package with at least one item still to ship, consolidated by buyer
-          across sale events.
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <Package className="w-5 h-5 text-emerald-600" /> Shipping
+          </h2>
+          <p className="text-sm text-gray-500 mt-0.5">
+            Every package with at least one item still to ship, consolidated by buyer
+            across sale events.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setScannerOpen(true)}
+          className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800"
+        >
+          <ScanLine className="w-4 h-4" /> Scan box
+        </button>
       </div>
+
+      {/* Active-filter banner shown when scannedBoxId is set. Dismissing
+          here clears the filter and the list goes back to showing every
+          box. */}
+      {scannedBoxId && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-emerald-900">
+          <ScanLine className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span className="flex-1 truncate">
+            Showing box{' '}
+            <span className="font-mono">{shortBoxCode(scannedBoxId)}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setScannedBoxId(null)}
+            className="text-xs font-medium text-emerald-700 hover:text-emerald-900 px-2 py-1"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* Inner-page sub-tabs. Same chip-tab pattern used elsewhere
           (PackingBoxesPane's carrier filter) so the visual language is
@@ -205,17 +292,18 @@ export function PackingView({
                 </button>
               )}
             </div>
-            {groups.length === 0 ? (
+            {filteredReady.length === 0 ? (
               <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
                 <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
                 <p className="text-sm text-gray-500">
-                  Nothing waiting to ship. When a sale's orders get applied, boxes
-                  show up here.
+                  {scannedBoxId
+                    ? `Scanned box isn't in Ready to ship — check the Shipped tab.`
+                    : `Nothing waiting to ship. When a sale's orders get applied, boxes show up here.`}
                 </p>
               </div>
             ) : (
               <div className="space-y-3">
-                {groups.map(g => (
+                {filteredReady.map(g => (
                   <BuyerGroupCard
                     key={g.key}
                     group={g}
@@ -308,17 +396,18 @@ export function PackingView({
               · {shipped.totalBoxes} {shipped.totalBoxes === 1 ? 'box' : 'boxes'} · {shipped.groups.length} {shipped.groups.length === 1 ? 'buyer' : 'buyers'} · {shipped.totalItems} {shipped.totalItems === 1 ? 'item' : 'items'}
             </span>
           </h3>
-          {shipped.groups.length === 0 ? (
+          {filteredShipped.groups.length === 0 ? (
             <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
               <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
               <p className="text-sm text-gray-500">
-                No boxes have shipped yet. Once you Mark shipped on a row, it
-                moves here.
+                {scannedBoxId
+                  ? `Scanned box isn't in Shipped — check the Ready tab.`
+                  : `No boxes have shipped yet. Once you Mark shipped on a row, it moves here.`}
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              {shipped.groups.map(g => (
+              {filteredShipped.groups.map(g => (
                 <BuyerGroupCard
                   key={g.key}
                   group={g}
@@ -346,6 +435,13 @@ export function PackingView({
             showToast('Label purchased');
           }}
           showToast={showToast}
+        />
+      )}
+
+      {scannerOpen && (
+        <CameraScanner
+          onScan={handleScannedBoxCode}
+          onClose={() => setScannerOpen(false)}
         />
       )}
 

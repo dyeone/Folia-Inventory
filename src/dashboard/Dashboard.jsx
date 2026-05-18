@@ -2,6 +2,14 @@ import { useMemo, useState, useEffect } from 'react';
 import { Archive, Package, DollarSign, TrendingUp, Target, Sparkles, Sprout } from 'lucide-react';
 import { StatCard } from '../ui/StatCard.jsx';
 
+// Dollar formatter — prefixes $ and adds thousand-separators so
+// "1234567" reads as "$1,234,567" instead of as a bare number.
+function formatMoney(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return '$0';
+  return `$${Math.round(v).toLocaleString()}`;
+}
+
 // Compact relative-time formatter — "just now / 5m / 3h / 2d / Aug 12".
 // Avoids a full Intl.RelativeTimeFormat / date-fns dep for one tiny use.
 function timeAgo(iso) {
@@ -118,7 +126,7 @@ export function Dashboard({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard icon={Archive} label="Active SKUs" value={stats.totalActive} sub={`${stats.tcCount} TC · ${stats.plantCount} Plant`} color="emerald" />
         <StatCard icon={Package} label="Sold This Week" value={stats.soldThisWeek} sub={`${stats.totalSold} all-time`} color="blue" />
-        <StatCard icon={DollarSign} label="Revenue / Week" value={`${stats.revenueThisWeek.toFixed(0)}`} sub={`Avg ${stats.avgPrice.toFixed(0)}/sale`} color="violet" />
+        <StatCard icon={DollarSign} label="Revenue / Week" value={formatMoney(stats.revenueThisWeek)} sub={`Avg ${formatMoney(stats.avgPrice)}/sale`} color="violet" />
         <StatCard icon={TrendingUp} label="Listed Now" value={stats.listed} sub={`${stats.shipped} shipped`} color="amber" />
       </div>
 
@@ -143,15 +151,15 @@ export function Dashboard({
           <StatCard
             icon={DollarSign}
             label="Profit This Week"
-            value={`${stats.profitThisWeek.toFixed(0)}`}
-            sub={`Revenue ${stats.revenueThisWeek.toFixed(0)}`}
+            value={formatMoney(stats.profitThisWeek)}
+            sub={`Revenue ${formatMoney(stats.revenueThisWeek)}`}
             color="violet"
           />
           <StatCard
             icon={DollarSign}
             label="Profit All-Time"
-            value={`${stats.totalProfit.toFixed(0)}`}
-            sub={`Revenue ${stats.totalRevenueAllTime.toFixed(0)}`}
+            value={formatMoney(stats.totalProfit)}
+            sub={`Revenue ${formatMoney(stats.totalRevenueAllTime)}`}
             color="emerald"
           />
         </div>
