@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Camera, Keyboard } from 'lucide-react';
+import { X, Camera, Keyboard, Check } from 'lucide-react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 
 // Direct @zxing/browser implementation — replaces the html5-qrcode
@@ -26,6 +26,8 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
   const [scans, setScans] = useState(0);
   const [manualValue, setManualValue] = useState('');
   const [manualOpen, setManualOpen] = useState(false);
+  // Flash-on-decode for visible "we got it" feedback.
+  const [success, setSuccess] = useState(false);
 
   // Tear down everything we own — decoder, stream tracks, video src.
   // Called from the unmount cleanup and from the synchronous part of
@@ -99,16 +101,28 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
             if (now - last < 2000) return;
             recentScans.current.set(text, now);
 
+            // Feedback: vibrate (mobile) + flash the scan area green.
+            try {
+              if (navigator.vibrate) navigator.vibrate(50);
+            } catch { /* iOS Safari doesn't expose vibrate; ignore */ }
+            setSuccess(true);
+
             if (!continuous) {
-              // One-shot: synchronously tear the camera down, then
-              // unmount the modal, then fire onScan. Doing teardown
-              // first means the video element is gone before any
-              // parent state change happens.
+              // Lock further decodes immediately so a second frame
+              // doesn't trigger again while the flash is showing.
               closedRef.current = true;
-              teardown();
-              onClose?.();
-              onScan(text);
+              // Hold the flash visible for ~350ms so the operator
+              // actually sees "we got it" before we tear down the
+              // camera and transition to the items screen.
+              setTimeout(() => {
+                teardown();
+                onClose?.();
+                onScan(text);
+              }, 350);
             } else {
+              // Continuous mode: clear the flash after a moment so the
+              // next scan can flash again.
+              setTimeout(() => setSuccess(false), 450);
               onScan(text);
             }
           },
@@ -171,7 +185,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
           <X className="w-5 h-5" />
         </button>
       </div>
-      <div className="flex-1 relative bg-black">
+      <div className="flex-1 relative bg-black overflow-hidden">
         {/* Own video element — we control its lifecycle, not a wrapper lib. */}
         <video
           ref={videoRef}
@@ -180,6 +194,39 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
           playsInline
           muted
         />
+
+        {/* Scan-target overlay: corner brackets frame the area where
+            the operator should aim the barcode, and a sweeping
+            emerald line moves vertically to suggest "I am actively
+            scanning". Pointer-events-none so it doesn't block
+            interactions with the buttons in the header. */}
+        {!starting && !err && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className={`relative w-[78%] max-w-sm h-32 transition-colors duration-200 ${
+              success ? 'border-2 border-emerald-400 rounded-lg' : ''
+            }`}>
+              {/* Four corner brackets */}
+              <div className="absolute -top-1 -left-1 w-7 h-7 border-t-4 border-l-4 border-emerald-400 rounded-tl-lg" />
+              <div className="absolute -top-1 -right-1 w-7 h-7 border-t-4 border-r-4 border-emerald-400 rounded-tr-lg" />
+              <div className="absolute -bottom-1 -left-1 w-7 h-7 border-b-4 border-l-4 border-emerald-400 rounded-bl-lg" />
+              <div className="absolute -bottom-1 -right-1 w-7 h-7 border-b-4 border-r-4 border-emerald-400 rounded-br-lg" />
+
+              {/* Sweeping laser line — hidden during success flash so
+                  it doesn't compete visually with the checkmark. */}
+              {!success && (
+                <div className="folia-scan-line absolute left-2 right-2 h-[2px] bg-emerald-400 shadow-[0_0_12px_2px_rgba(52,211,153,0.85)]" />
+              )}
+
+              {/* Success: green flood + checkmark pop. */}
+              {success && (
+                <div className="folia-scan-success absolute inset-0 flex items-center justify-center rounded-lg bg-emerald-500/40 backdrop-blur-[1px]">
+                  <Check className="w-16 h-16 text-white drop-shadow-lg" strokeWidth={3} />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {starting && (
           <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
             Starting camera…
@@ -224,6 +271,28 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
           </div>
         </div>
       )}
+      {/* Scoped keyframes for the scan-line sweep + success pop.
+          Inline so the component is self-contained — no global CSS to
+          remember to update when this view is removed. */}
+      <style>{`
+        @keyframes folia-scan-sweep {
+          0%   { top: 0;    opacity: 0; }
+          10%  { opacity: 1; }
+          90%  { opacity: 1; }
+          100% { top: 100%; opacity: 0; }
+        }
+        .folia-scan-line {
+          animation: folia-scan-sweep 1.6s ease-in-out infinite;
+        }
+        @keyframes folia-scan-success-pop {
+          0%   { opacity: 0; transform: scale(0.7); }
+          40%  { opacity: 1; transform: scale(1.05); }
+          100% { opacity: 1; transform: scale(1); }
+        }
+        .folia-scan-success {
+          animation: folia-scan-success-pop 0.25s ease-out;
+        }
+      `}</style>
     </div>,
     document.body,
   );
