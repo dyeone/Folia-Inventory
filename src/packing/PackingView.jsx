@@ -107,6 +107,24 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
     await api.recordPalmstreetTracking(box.id, trackingNumber);
     await refreshShipments();
     showToast('Tracking saved');
+    // Fire-and-forget Palmstreet push so the buyer-side UI shows the
+    // tracking. Errors (token expired, order not found, etc.) are
+    // surfaced verbatim — local tracking row is already saved either way.
+    pushTrackingToPalmstreet(box);
+  };
+
+  const pushTrackingToPalmstreet = async (box) => {
+    try {
+      await api.pushPalmstreetTracking(box.id);
+      showToast('Pushed to Palmstreet');
+    } catch (e) {
+      // The server returns the upstream detail in e.message — surface it
+      // verbatim. Use a longer-lived toast since the operator needs to
+      // read it.
+      const msg = `Palmstreet push failed — ${e.message || 'unknown error'}`;
+      setToast(msg);
+      setTimeout(() => setToast(null), 8000);
+    }
   };
 
   return (
@@ -191,8 +209,11 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
           box={buyingFor}
           onClose={() => setBuyingFor(null)}
           onPurchased={() => {
+            const purchased = buyingFor;
             refreshShipments();
             showToast('Label purchased');
+            // Push the ShipStation tracking up to Palmstreet too.
+            pushTrackingToPalmstreet(purchased);
           }}
           showToast={showToast}
         />
