@@ -38,3 +38,4 @@ android-helper/local.properties
 android-helper/.gradle/
 android-helper/build/
 android-helper/app/build/
+.gstack/
