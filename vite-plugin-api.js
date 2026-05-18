@@ -21,9 +21,16 @@ export function apiPlugin() {
       server.middlewares.use(async (req, res, next) => {
         if (!req.url || !req.url.startsWith('/api/')) return next();
 
-        const pathname = req.url.split('?')[0];
+        const [pathname, qs = ''] = req.url.split('?');
         const rel = pathname.replace(/^\/api\//, '');
         const filePath = path.resolve(process.cwd(), 'api', `${rel}.js`);
+
+        // Vercel auto-parses ?foo=bar into req.query; the dev shim has to do
+        // the same or every GET handler that reads req.query.* sees undefined.
+        const params = new URLSearchParams(qs);
+        const query = {};
+        for (const [k, v] of params) query[k] = v;
+        req.query = query;
 
         try {
           await fs.access(filePath);
