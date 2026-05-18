@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, RefreshCw, Camera } from 'lucide-react';
+import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, Camera } from 'lucide-react';
 import { api } from '../api.js';
 import { shortBoxCode } from '../labels/boxCode.js';
 import { CameraScanner } from './CameraScanner.jsx';
@@ -168,7 +168,6 @@ export function PackerView({ onLogout }) {
     <div className="fixed inset-0 bg-gray-50 flex flex-col">
       <TopBar
         onLogout={onLogout}
-        onRefresh={refresh}
         title={activeBox ? activeBox.code : 'Scan a box'}
         subtitle={activeBox
           ? (activeBox.buyer || `@${activeBox.buyerUsername}` || 'Box')
@@ -203,7 +202,7 @@ export function PackerView({ onLogout }) {
   );
 }
 
-function TopBar({ onLogout, onRefresh, title, subtitle, onBack }) {
+function TopBar({ onLogout, title, subtitle, onBack }) {
   return (
     <div className="bg-emerald-700 text-white px-3 py-3 pt-safe flex items-center gap-2">
       {onBack ? (
@@ -217,9 +216,6 @@ function TopBar({ onLogout, onRefresh, title, subtitle, onBack }) {
         <div className="font-semibold text-base font-mono leading-tight truncate">{title}</div>
         <div className="text-xs text-emerald-100 truncate">{subtitle}</div>
       </div>
-      <button onClick={onRefresh} className="p-2 rounded-lg hover:bg-emerald-800 active:bg-emerald-900" aria-label="Refresh">
-        <RefreshCw className="w-5 h-5" />
-      </button>
       <button onClick={onLogout} className="p-2 -mr-1 rounded-lg hover:bg-emerald-800 active:bg-emerald-900" aria-label="Log out">
         <LogOut className="w-5 h-5" />
       </button>
