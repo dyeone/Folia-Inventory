@@ -33,8 +33,16 @@ const H = {
   footer: 14,
 };
 
-// Convert public/logo.png → data URL once, cached at module scope so a
-// session of repeated prints doesn't re-fetch + re-decode.
+// Convert public/logo.png → 1-bit black-on-transparent data URL,
+// cached at module scope so a session of repeated prints doesn't
+// re-fetch + re-decode.
+//
+// The threshold pass matters because the TSP100III is a 1-bit thermal
+// printer: any grayscale gets dithered into mottled patches that look
+// ugly on a slip. We pre-convert to solid black silhouette + transparent
+// background so the bitmap reaches the driver already binarized and
+// prints as a crisp logo.
+const LOGO_LUMA_THRESHOLD = 160;  // pixels lighter than this → transparent
 let _logoDataUrlCache = null;
 function loadLogoDataUrl() {
   if (_logoDataUrlCache) return Promise.resolve(_logoDataUrlCache);
@@ -47,6 +55,22 @@ function loadLogoDataUrl() {
         canvas.height = img.naturalHeight;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+          // Rec.601 luminance — close enough for a 2-color decision.
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          if (a < 128 || lum > LOGO_LUMA_THRESHOLD) {
+            data[i + 3] = 0;
+          } else {
+            data[i] = 0;
+            data[i + 1] = 0;
+            data[i + 2] = 0;
+            data[i + 3] = 255;
+          }
+        }
+        ctx.putImageData(imageData, 0, 0);
         _logoDataUrlCache = canvas.toDataURL('image/png');
         resolve(_logoDataUrlCache);
       } catch {
@@ -102,18 +126,18 @@ async function buildPdf(box) {
   // FOLIA SOCIETY caption under logo.
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(10);
-  pdf.setTextColor(20);
+  pdf.setTextColor(0);
   pdf.text('FOLIA SOCIETY', SLIP_W_MM / 2, y, { align: 'center' });
   y += H.divider;
 
-  pdf.setDrawColor(180);
+  pdf.setDrawColor(0);
   pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
   y += 4;
 
   // Customer block.
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(7);
-  pdf.setTextColor(120);
+  pdf.setTextColor(0);
   pdf.text('SHIP TO', H.margin, y);
   y += 4;
   pdf.setFont('helvetica', 'bold');
@@ -125,7 +149,7 @@ async function buildPdf(box) {
   if (box.buyerUsername) {
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(9);
-    pdf.setTextColor(70);
+    pdf.setTextColor(0);
     pdf.text(`@${box.buyerUsername}`, H.margin, y);
     y += 5;
   } else {
@@ -135,7 +159,7 @@ async function buildPdf(box) {
   // Box block.
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(7);
-  pdf.setTextColor(120);
+  pdf.setTextColor(0);
   pdf.text('BOX', H.margin, y);
   y += 4;
   const code = shortBoxCode(box.id);
@@ -151,18 +175,18 @@ async function buildPdf(box) {
   y += 5;
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(8);
-  pdf.setTextColor(80);
+  pdf.setTextColor(0);
   pdf.text(formatDate(new Date()), H.margin, y);
   y += 4;
 
-  pdf.setDrawColor(180);
+  pdf.setDrawColor(0);
   pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
   y += 4;
 
   // Items header.
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(8);
-  pdf.setTextColor(20);
+  pdf.setTextColor(0);
   pdf.text(`ITEMS · ${items.length}`, H.margin, y);
   y += H.itemsHeader - 3;
 
@@ -185,7 +209,7 @@ async function buildPdf(box) {
     if (title) {
       pdf.setFont('helvetica', 'normal');
       pdf.setFontSize(8);
-      pdf.setTextColor(70);
+      pdf.setTextColor(0);
       pdf.text(title, H.margin, y, { maxWidth: SLIP_PRINT_W });
       y += 4;
     } else {
@@ -194,14 +218,14 @@ async function buildPdf(box) {
     y += 1.5;
   }
 
-  pdf.setDrawColor(180);
+  pdf.setDrawColor(0);
   pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
   y += 5;
 
   // Footer.
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(9);
-  pdf.setTextColor(60);
+  pdf.setTextColor(0);
   pdf.text('Thank you for shopping with', SLIP_W_MM / 2, y, { align: 'center' });
   y += 4;
   pdf.setFont('helvetica', 'bold');
