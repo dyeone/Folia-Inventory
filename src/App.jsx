@@ -771,6 +771,21 @@ function InventorySystem() {
             sales={sales}
             setConfirmDialog={setConfirmDialog}
             onPrintBoxLabels={(boxes) => setBoxLabelBoxes(boxes)}
+            onTogglePacked={async (itemId, packed) => {
+              // Per-item pack toggle. packed=true stamps packedAt with
+              // the current time so the operator can see when it was
+              // packed; packed=false clears it. Status stays 'sold'
+              // through this flow — Mark shipped is the only thing
+              // that flips status.
+              try {
+                const packedAt = packed ? new Date().toISOString() : null;
+                await api.upsertItems([{ id: itemId, packedAt }]);
+                const fresh = await api.getItems();
+                applyItemsFresh(fresh);
+              } catch (e) {
+                showToast(e.message || 'Pack toggle failed', 'error');
+              }
+            }}
             onDeleteAllOpenBoxes={async () => {
               // "Open box" = at least one item still 'sold' (not shipped).
               // Revert each still-'sold' matched item back to 'listed' and

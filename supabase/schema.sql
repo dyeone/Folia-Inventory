@@ -109,6 +109,10 @@ alter table inventory_items add column if not exists "buyerUsername" text;
 alter table inventory_items add column if not exists "buyerAddress" jsonb;
 alter table inventory_items add column if not exists "shipmentBoxId" text;
 alter table inventory_items add column if not exists "shippedAt" timestamptz;
+-- Per-item packing flag for the Shipping tab. null = unpacked, set =
+-- packed (timestamp = when the operator marked it). Independent of
+-- status, which stays 'sold' through pack-out.
+alter table inventory_items add column if not exists "packedAt" timestamptz;
 -- 'unmatched' is for placeholder rows created by Validate Sales when a
 -- Palmstreet order line's SKU didn't match real inventory — see
 -- migration 0011.

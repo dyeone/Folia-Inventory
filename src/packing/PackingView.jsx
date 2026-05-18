@@ -26,7 +26,11 @@ export { SummaryStat } from './SummaryStat.jsx';
 // untouched while we iterate the top view.
 // ───────────────────────────────────────────────────────────────────────────
 
-export function PackingView({ inventoryItems, sales, onShipBox, onDeleteAllOpenBoxes, onPrintBoxLabels, setConfirmDialog }) {
+export function PackingView({
+  inventoryItems, sales,
+  onShipBox, onDeleteAllOpenBoxes, onPrintBoxLabels, onTogglePacked,
+  setConfirmDialog,
+}) {
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -323,6 +327,7 @@ export function PackingView({ inventoryItems, sales, onShipBox, onDeleteAllOpenB
                   onBuyLabel={(box) => setBuyingFor(box)}
                   onSaveTracking={handleSaveTracking}
                   onMarkShipped={handleMarkShipped}
+                  onTogglePacked={onTogglePacked}
                   showToast={showToast}
                 />
               ))}
@@ -444,7 +449,7 @@ function addressOneLine(addr) {
 
 function BuyerGroupCard({
   group, sales, shipmentsByBox,
-  onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, showToast,
+  onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
 }) {
   const totalItems = group.boxes.reduce((sum, b) => sum + b.items.length, 0);
   const saleCount = new Set(group.boxes.map(b => b.saleId)).size;
@@ -485,6 +490,7 @@ function BuyerGroupCard({
             onBuyLabel={() => onBuyLabel(box)}
             onSaveTracking={(num) => onSaveTracking(box, num)}
             onMarkShipped={() => onMarkShipped(box)}
+            onTogglePacked={onTogglePacked}
             showToast={showToast}
           />
         ))}
@@ -507,7 +513,7 @@ function boxActionState(box, shipment) {
   return { kind: 'enter-tracking', carrier };
 }
 
-function BoxItemsList({ box, salesById }) {
+function BoxItemsList({ box, salesById, onTogglePacked }) {
   // Hide already-shipped items in open boxes — the operator only cares
   // about what's left to pack. Shipped boxes (every item is shipped)
   // skip the filter so the archive view still shows the full contents.
@@ -551,13 +557,32 @@ function BoxItemsList({ box, salesById }) {
           ? 'bg-purple-50 border-l-2 border-purple-300'
           : 'bg-emerald-50 border-l-2 border-emerald-300';
 
+        const isPacked = !!item.packedAt;
+        // The packed checkbox only makes sense for items still in 'sold'
+        // status — once an item is shipped, packed state is moot.
+        const showPackedToggle = item.status === 'sold' && !!onTogglePacked;
+
         return (
           <div
             key={item.id}
-            className={`text-sm flex items-baseline justify-between gap-3 rounded px-2 py-1.5 ${rowBg} ${shippedAlready ? 'opacity-60' : ''}`}
+            className={`text-sm flex items-start justify-between gap-3 rounded px-2 py-1.5 ${rowBg} ${shippedAlready ? 'opacity-60' : ''}`}
           >
+            {showPackedToggle && (
+              <button
+                type="button"
+                onClick={() => onTogglePacked(item.id, !isPacked)}
+                title={isPacked ? 'Mark as unpacked' : 'Mark as packed'}
+                className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center transition ${
+                  isPacked
+                    ? 'bg-emerald-600 border-emerald-700 text-white'
+                    : 'bg-white border-gray-400 hover:border-emerald-500'
+                }`}
+              >
+                {isPacked && <Check className="w-3 h-3" />}
+              </button>
+            )}
             <div className="min-w-0 flex-1">
-              <div className="flex items-baseline gap-2 flex-wrap">
+              <div className={`flex items-baseline gap-2 flex-wrap ${isPacked ? 'line-through text-gray-500' : ''}`}>
                 {item.sku && (
                   <span className="font-mono text-[11px] text-gray-500 shrink-0">{item.sku}</span>
                 )}
@@ -575,13 +600,18 @@ function BoxItemsList({ box, salesById }) {
                 )}
                 <span className="text-xs text-gray-500 shrink-0">×{qty}</span>
                 {shippedAlready && (
-                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 no-underline">
                     shipped
                   </span>
                 )}
                 {isUnmatched && !shippedAlready && (
-                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 no-underline">
                     unmatched
+                  </span>
+                )}
+                {isPacked && !shippedAlready && (
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 no-underline">
+                    packed
                   </span>
                 )}
               </div>
@@ -621,7 +651,7 @@ function BoxItemsList({ box, salesById }) {
 
 function BoxRow({
   box, sale, shipment, salesById,
-  onOpen, onBuyLabel, onSaveTracking, onMarkShipped, showToast,
+  onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
 }) {
   const shipped = box.items.filter(i =>
     ['shipped', 'delivered'].includes(i.status)
@@ -763,7 +793,7 @@ function BoxRow({
       </div>
 
       {expanded && (
-        <BoxItemsList box={box} salesById={salesById} />
+        <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
       )}
 
       {/* Inline tracking-number entry. Click "Enter tracking" → row expands
