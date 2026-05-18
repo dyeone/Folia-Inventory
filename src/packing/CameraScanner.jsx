@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Camera, Keyboard, Check, Plus, Minus } from 'lucide-react';
+import { X, Camera, Keyboard, Check, Plus, Minus, Flashlight, FlashlightOff } from 'lucide-react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 
@@ -53,6 +53,13 @@ export function CameraScanner({ onScan, onClose }) {
   // barcode. Caps is null if the device doesn't expose zoom.
   const [zoomCaps, setZoomCaps] = useState(null);
   const [zoom, setZoom] = useState(1);
+  // Torch (camera flash LED). When the label paper is colored (green
+  // tints especially) the bg luma collapses toward the black barcode
+  // bars and decoding stalls. The torch lifts the bg to near-white and
+  // restores contrast. Only exposed when the device actually supports
+  // the 'torch' constraint — most phones do, most laptops don't.
+  const [torchSupported, setTorchSupported] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
 
   // Latest-callback refs so the decoder callback (set up once on
   // mount) always invokes the most recent version of onScan/onClose
@@ -148,6 +155,12 @@ export function CameraScanner({ onScan, onClose }) {
             });
             setZoom(initial);
           }
+          // Torch capability — only on devices that expose it.
+          // chromium-based phones report `caps.torch = true`; iOS Safari
+          // sometimes reports it on iPhone but not iPad.
+          if (caps?.torch) {
+            setTorchSupported(true);
+          }
           if (advanced.length) {
             await videoTrack.applyConstraints({ advanced });
           }
@@ -229,6 +242,19 @@ export function CameraScanner({ onScan, onClose }) {
     } catch { /* race during teardown; ignore */ }
   };
 
+  // Flip the torch. The constraint sticks until we set it back to false
+  // or tear down the stream; the camera teardown turns the LED off
+  // automatically since releasing the track ends torch state.
+  const toggleTorch = async () => {
+    if (!torchSupported || !streamRef.current) return;
+    const next = !torchOn;
+    try {
+      const track = streamRef.current.getVideoTracks()[0];
+      await track.applyConstraints({ advanced: [{ torch: next }] });
+      setTorchOn(next);
+    } catch { /* device-dependent; ignore */ }
+  };
+
   const handleManualSubmit = (e) => {
     e?.preventDefault();
     const v = manualValue.trim();
@@ -248,6 +274,22 @@ export function CameraScanner({ onScan, onClose }) {
           Scan a barcode
           {scans > 0 && <span className="text-xs text-white/60 ml-2">· {scans} read</span>}
         </div>
+        {torchSupported && (
+          <button
+            onClick={toggleTorch}
+            aria-label={torchOn ? 'Turn torch off' : 'Turn torch on'}
+            title={torchOn
+              ? 'Torch on — turn off to save battery'
+              : 'Turn on the camera light. Helps decode barcodes on tinted (green / colored) label stock.'}
+            className={`p-2 rounded-lg active:bg-white/20 ${
+              torchOn
+                ? 'bg-amber-300 text-gray-900'
+                : 'text-white hover:bg-white/10'
+            }`}
+          >
+            {torchOn ? <Flashlight className="w-5 h-5" /> : <FlashlightOff className="w-5 h-5" />}
+          </button>
+        )}
         <button
           onClick={() => setManualOpen((v) => !v)}
           aria-label="Type code manually"
@@ -374,7 +416,8 @@ export function CameraScanner({ onScan, onClose }) {
         <div className="px-4 py-3 pb-safe text-center text-xs text-white/70 bg-black/60">
           Point at the barcode. Camera closes after one scan.
           <div className="mt-1 text-white/50">
-            Tap <Keyboard className="w-3 h-3 inline -mt-0.5" /> to type instead.
+            Tap <Keyboard className="w-3 h-3 inline -mt-0.5" /> to type instead
+            {torchSupported && <>, <Flashlight className="w-3 h-3 inline -mt-0.5" /> for hard-to-read labels</>}.
           </div>
         </div>
       )}
