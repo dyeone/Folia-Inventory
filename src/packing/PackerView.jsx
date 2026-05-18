@@ -22,6 +22,11 @@ export function PackerView({ onLogout }) {
   const [err, setErr] = useState('');
   const [activeBoxId, setActiveBoxId] = useState(null);
   const [toast, setToast] = useState(null);
+  // Camera lives at PackerView level so its lifecycle is independent
+  // of the BoxScanner ↔ ItemScanner swap. Unmounting the camera at the
+  // same instant the screen swaps was causing a blank-screen flash on
+  // iOS Safari.
+  const [cameraMode, setCameraMode] = useState(null); // 'box' | 'item' | null
 
   const refresh = async () => {
     setErr('');
@@ -91,6 +96,38 @@ export function PackerView({ onLogout }) {
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
 
+  // Shared item-scan handler used by both the text input in ItemScanner
+  // and the camera (when in 'item' mode). Lifted to PackerView so the
+  // camera doesn't need to live inside ItemScanner.
+  const handleScanItem = async (rawText) => {
+    if (!activeBox) return;
+    const sku = String(rawText || '').trim().toUpperCase();
+    if (!sku) return;
+    const candidate = activeBox.items.find(
+      i => String(i.sku || '').toUpperCase() === sku,
+    );
+    if (!candidate) {
+      showToast(`SKU ${sku} isn't in this box`, 3500);
+      return;
+    }
+    if (candidate.status !== 'sold') {
+      showToast(`SKU ${sku} is already ${candidate.status}`, 3500);
+      return;
+    }
+    if (candidate.packedAt) {
+      showToast(`SKU ${sku} already packed`, 2500);
+      return;
+    }
+    try {
+      await api.upsertItems([{ id: candidate.id, packedAt: new Date().toISOString() }]);
+      await refresh();
+      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
+      showToast(`Packed ${sku}`, 1500);
+    } catch (e) {
+      showToast(e.message || 'Pack failed', 3500);
+    }
+  };
+
   if (loading) {
     return <FullScreenMessage>Loading boxes…</FullScreenMessage>;
   }
@@ -116,12 +153,35 @@ export function PackerView({ onLogout }) {
       {activeBox
         ? <ItemScanner
             box={activeBox}
-            onRefresh={refresh}
-            showToast={showToast}
+            onScan={handleScanItem}
+            onOpenCamera={() => setCameraMode('item')}
             onDone={() => setActiveBoxId(null)}
           />
-        : <BoxScanner onScan={handleScanBox} hint="Scan or type the B-XXXXXX code on the box label." />
+        : <BoxScanner
+            onScan={handleScanBox}
+            onOpenCamera={() => setCameraMode('box')}
+            hint="Scan or type the B-XXXXXX code on the box label."
+          />
       }
+      {/* Camera overlay — rendered at PackerView root so its mount /
+          unmount lifecycle is decoupled from the box ↔ item screen
+          swap. Without this, iOS Safari would flash blank when the
+          camera tried to unmount in the same render that swapped
+          screens. */}
+      {cameraMode === 'box' && (
+        <CameraScanner
+          continuous={false}
+          onScan={handleScanBox}
+          onClose={() => setCameraMode(null)}
+        />
+      )}
+      {cameraMode === 'item' && activeBox && (
+        <CameraScanner
+          continuous
+          onScan={handleScanItem}
+          onClose={() => setCameraMode(null)}
+        />
+      )}
       {toast && <Toast text={toast} />}
     </div>
   );
@@ -152,9 +212,8 @@ function TopBar({ onLogout, onRefresh, title, subtitle, onBack }) {
 }
 
 // Scan-box screen — big input that the operator types/scans into.
-function BoxScanner({ onScan, hint }) {
+function BoxScanner({ onScan, onOpenCamera, hint }) {
   const [value, setValue] = useState('');
-  const [cameraOpen, setCameraOpen] = useState(false);
   const inputRef = useRef(null);
 
   // Autofocus on mount and after every submit so a hardware barcode
@@ -167,16 +226,8 @@ function BoxScanner({ onScan, hint }) {
     if (!v) return;
     const ok = onScan(v);
     setValue('');
-    // Keep focus after success or failure — operator probably wants to
-    // try another scan either way.
     setTimeout(() => inputRef.current?.focus(), 0);
     return ok;
-  };
-
-  // Camera path: a successful decode fires the same onScan handler the
-  // text input uses, so box-lookup logic stays in one place.
-  const handleCameraScan = (text) => {
-    onScan(text);
   };
 
   return (
@@ -204,29 +255,22 @@ function BoxScanner({ onScan, hint }) {
         </button>
         <button
           type="button"
-          onClick={() => setCameraOpen(true)}
+          onClick={onOpenCamera}
           className="w-full mt-2 px-4 py-3 text-base font-medium bg-white border-2 border-emerald-600 text-emerald-700 rounded-xl active:bg-emerald-50 flex items-center justify-center gap-2"
         >
           <Camera className="w-5 h-5" /> Use camera
         </button>
       </form>
-      {cameraOpen && (
-        <CameraScanner
-          onScan={handleCameraScan}
-          onClose={() => setCameraOpen(false)}
-          continuous={false}
-        />
-      )}
     </div>
   );
 }
 
 // Items screen — list of unpacked items in the active box + an item
-// scanner that flips matching items to packed.
-function ItemScanner({ box, onRefresh, showToast, onDone }) {
+// scanner that flips matching items to packed. Scan logic lives in
+// PackerView so the camera (also at PackerView level) can share it.
+function ItemScanner({ box, onScan, onOpenCamera, onDone }) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
-  const [cameraOpen, setCameraOpen] = useState(false);
   const inputRef = useRef(null);
   useEffect(() => { inputRef.current?.focus(); }, [box.id]);
 
@@ -241,45 +285,16 @@ function ItemScanner({ box, onRefresh, showToast, onDone }) {
   const totalSold = unpackedItems.length + packedItems.length;
   const allPacked = totalSold > 0 && unpackedItems.length === 0;
 
-  // Shared scan-handler used by both the text input and the camera.
-  // Camera-decoded text often includes whitespace / line breaks — trim
-  // and uppercase before matching.
-  const handleScanText = async (rawText) => {
-    const sku = String(rawText || '').trim().toUpperCase();
-    if (!sku) return;
-    const candidate = box.items.find(
-      i => String(i.sku || '').toUpperCase() === sku,
-    );
-    if (!candidate) {
-      showToast(`SKU ${sku} isn't in this box`, 3500);
-      return;
-    }
-    if (candidate.status !== 'sold') {
-      showToast(`SKU ${sku} is already ${candidate.status}`, 3500);
-      return;
-    }
-    if (candidate.packedAt) {
-      showToast(`SKU ${sku} already packed`, 2500);
-      return;
-    }
-    setBusy(true);
-    try {
-      await api.upsertItems([{ id: candidate.id, packedAt: new Date().toISOString() }]);
-      await onRefresh();
-      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
-      showToast(`Packed ${sku}`, 1500);
-    } catch (err) {
-      showToast(err.message || 'Pack failed', 3500);
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const submit = async (e) => {
     e?.preventDefault();
-    await handleScanText(value);
-    setValue('');
-    setTimeout(() => inputRef.current?.focus(), 0);
+    setBusy(true);
+    try {
+      await onScan(value);
+    } finally {
+      setBusy(false);
+      setValue('');
+      setTimeout(() => inputRef.current?.focus(), 0);
+    }
   };
 
   return (
@@ -335,7 +350,7 @@ function ItemScanner({ box, onRefresh, showToast, onDone }) {
           {!allPacked && (
             <button
               type="button"
-              onClick={() => setCameraOpen(true)}
+              onClick={onOpenCamera}
               aria-label="Open camera scanner"
               className="px-3 py-3 text-base font-semibold border-2 border-emerald-600 text-emerald-700 bg-white rounded-xl active:bg-emerald-50"
             >
@@ -361,13 +376,6 @@ function ItemScanner({ box, onRefresh, showToast, onDone }) {
           )}
         </div>
       </form>
-      {cameraOpen && (
-        <CameraScanner
-          continuous
-          onScan={handleScanText}
-          onClose={() => setCameraOpen(false)}
-        />
-      )}
     </div>
   );
 }
