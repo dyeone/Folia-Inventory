@@ -369,7 +369,8 @@ function BoxItemsList({ box, salesById }) {
     <div className="border-t border-gray-100 bg-gray-50/40 px-3 py-2 space-y-1.5">
       {sortedItems.map(item => {
         const itemSale = salesById?.get(item.saleId);
-        const variety = item.variety || item.name || '—';
+        const name = (item.name || '').trim();
+        const variety = (item.variety || '').trim();
         const qty = item.quantity || 1;
         // salePrice is set at order-apply time (SalesUploadModal). It's
         // stored as a numeric in dollars to match the existing
@@ -391,7 +392,18 @@ function BoxItemsList({ box, salesById }) {
                 {item.sku && (
                   <span className="font-mono text-[11px] text-gray-500 shrink-0">{item.sku}</span>
                 )}
-                <span className="text-gray-900 truncate">{variety}</span>
+                {name && (
+                  <span className="text-gray-900 font-medium truncate">{name}</span>
+                )}
+                {name && variety && (
+                  <span className="text-gray-300 shrink-0">·</span>
+                )}
+                {variety && (
+                  <span className="text-gray-700 truncate">{variety}</span>
+                )}
+                {!name && !variety && (
+                  <span className="text-gray-400">—</span>
+                )}
                 <span className="text-xs text-gray-500 shrink-0">×{qty}</span>
                 {shippedAlready && (
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
