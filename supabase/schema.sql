@@ -109,13 +109,12 @@ alter table inventory_items add column if not exists "buyerUsername" text;
 alter table inventory_items add column if not exists "buyerAddress" jsonb;
 alter table inventory_items add column if not exists "shipmentBoxId" text;
 alter table inventory_items add column if not exists "shippedAt" timestamptz;
-do $$
-begin
-  if not exists (select 1 from pg_constraint where conname = 'inventory_items_lotkind_check') then
-    alter table inventory_items add constraint inventory_items_lotkind_check
-      check ("lotKind" in ('sale','giveaway'));
-  end if;
-end $$;
+-- 'unmatched' is for placeholder rows created by Validate Sales when a
+-- Palmstreet order line's SKU didn't match real inventory — see
+-- migration 0011.
+alter table inventory_items drop constraint if exists inventory_items_lotkind_check;
+alter table inventory_items add constraint inventory_items_lotkind_check
+  check ("lotKind" in ('sale','giveaway','unmatched'));
 
 -- Order-level details captured from the Palmstreet orders file (so we can
 -- reconcile against the cashflow report by Order No), plus refund tracking
