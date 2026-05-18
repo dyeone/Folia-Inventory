@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, Camera, Truck } from 'lucide-react';
 import { api } from '../api.js';
-import { shortBoxCode, normalizeBoxCode } from '../labels/boxCode.js';
+import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { CameraScanner } from './CameraScanner.jsx';
 
 // Full-screen mobile workflow for the 'packer' role. Two screens:
@@ -123,10 +123,10 @@ export function PackerView({ onLogout }) {
   // just this item — other in-flight packs aren't disturbed.
   const handleScanItem = async (rawText) => {
     if (!activeBox) return;
-    const sku = String(rawText || '').trim().toUpperCase();
+    const sku = normalizeSku(rawText);
     if (!sku) return;
     const candidate = activeBox.items.find(
-      i => String(i.sku || '').toUpperCase() === sku,
+      i => normalizeSku(i.sku) === sku,
     );
     if (!candidate) {
       showToast(`SKU ${sku} isn't in this box`, 3500);

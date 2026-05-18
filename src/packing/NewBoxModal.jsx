@@ -4,7 +4,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api.js';
 import { CameraScanner } from './CameraScanner.jsx';
-import { shortBoxCode } from '../labels/boxCode.js';
+import { shortBoxCode, normalizeSku } from '../labels/boxCode.js';
 
 // Admin-only: open an empty box manually, then scan inventory SKUs to
 // drop them into it. Each scan stamps the existing inventory_items row
@@ -76,11 +76,11 @@ export function NewBoxModal({ inventoryItems, onClose, onRefreshItems, showToast
   // every downstream view (Shipping tab, Packer view, labels, etc.).
   const handleScan = async (rawText) => {
     setErr('');
-    const sku = String(rawText || '').trim().toUpperCase();
+    const sku = normalizeSku(rawText);
     if (!sku) return;
 
     const item = inventoryItems.find(i =>
-      !i.deletedAt && String(i.sku || '').toUpperCase() === sku
+      !i.deletedAt && normalizeSku(i.sku) === sku
     );
     if (!item) {
       showToast?.(`No inventory item with SKU ${sku}`, 'error');

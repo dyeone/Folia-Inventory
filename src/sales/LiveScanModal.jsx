@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api.js';
 import { buildLookups, computeIdealPrice } from '../inventory/pricing.js';
+import { normalizeSku } from '../labels/boxCode.js';
 
 const SOLD_STATUSES = new Set(['sold', 'shipped', 'delivered']);
 const POLL_MS = 1500;
@@ -15,7 +16,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
   const lookups = useMemo(() => buildLookups(varieties, species), [varieties, species]);
   const itemsBySku = useMemo(() => {
     const m = new Map();
-    for (const i of items) if (i.sku) m.set(i.sku.toUpperCase(), i);
+    for (const i of items) if (i.sku) m.set(normalizeSku(i.sku), i);
     return m;
   }, [items]);
 
@@ -110,7 +111,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
 
   const handleScan = (rawSku) => {
     setError('');
-    const sku = rawSku.trim().toUpperCase();
+    const sku = normalizeSku(rawSku);
     if (!sku) return;
     const item = itemsBySku.get(sku);
     if (!item) {
@@ -229,7 +230,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
                   key={e.tempId}
                   entry={e}
                   onRetry={() => {
-                    const item = itemsBySku.get(e.sku.toUpperCase());
+                    const item = itemsBySku.get(normalizeSku(e.sku));
                     if (item) pushItem(item, { forced: e.forced });
                   }}
                 />

@@ -9,7 +9,7 @@ import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
-import { shortBoxCode, normalizeBoxCode } from '../labels/boxCode.js';
+import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
 // imports keep working without a churn-y find-and-replace across files.
@@ -193,12 +193,12 @@ export function PackingView({
   // On miss, the toast says the SKU isn't in any active box (likely the
   // item isn't sold yet, or its box has been deleted).
   const handleScannedItemSku = (rawText) => {
-    const sku = String(rawText || '').trim().toUpperCase();
+    const sku = normalizeSku(rawText);
     if (!sku) return;
     const findBoxWithSku = (groupArr) => {
       for (const g of groupArr) {
         for (const b of g.boxes) {
-          if (b.items.some(i => String(i.sku || '').toUpperCase() === sku)) {
+          if (b.items.some(i => normalizeSku(i.sku) === sku)) {
             return b;
           }
         }

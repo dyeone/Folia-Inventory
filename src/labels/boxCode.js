@@ -19,12 +19,29 @@ export function shortBoxCode(shipmentBoxId) {
 }
 
 // Box codes are uppercase alphanumeric with a B- prefix. Normalize
-// operator input so trailing whitespace, case differences, and a
+// operator input so trailing whitespace, case differences, the
+// hyphen-vs-underscore scanner quirk (see normalizeSku below), and a
 // missing prefix don't cause a false miss when looking up a box by
 // scanned/typed code.
 export function normalizeBoxCode(raw) {
-  let v = String(raw || '').trim().toUpperCase();
+  let v = String(raw || '').trim().toUpperCase().replace(/_/g, '-');
   if (!v) return '';
   if (!v.startsWith('B-')) v = `B-${v}`;
   return v;
+}
+
+// Coerce a scanned or typed SKU into the canonical form used in
+// inventory_items.sku. Two things this fixes that would otherwise cause
+// false "no item with SKU X" misses:
+//
+//   1. Some hardware barcode scanners (cheap USB ones running a
+//      non-US keyboard layout, or with the wrong code-page setting)
+//      emit '-' as '_'. The label barcode itself is correct CODE128;
+//      it's the scanner's HID translation that's wrong. SKUs never
+//      legitimately contain '_' (the pattern is [A-Z]{2,4}-\d+), so
+//      coercing _→- is safe and fixes scans without forcing the
+//      operator to reconfigure the scanner.
+//   2. Case differences from autocapitalize / lowercase scanner output.
+export function normalizeSku(raw) {
+  return String(raw || '').trim().toUpperCase().replace(/_/g, '-');
 }
