@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
-  Package, AlertCircle, ArrowLeft, PackageOpen,
+  Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -13,17 +13,39 @@ export { BoxesList } from './BoxesList.jsx';
 export { InventoryPicker } from './InventoryPicker.jsx';
 export { SummaryStat } from './SummaryStat.jsx';
 
+// ───────────────────────────────────────────────────────────────────────────
+// Shipping tab top-level view.
+//
+// Step 1 of the packing rewrite: list every package (box) that hasn't fully
+// shipped yet — label bought or not — grouped by buyer so a single recipient
+// who won lots across multiple sales is consolidated into one card.
+//
+// Tapping a box still drills into the existing per-sale pane (SalePackingPane
+// → PackingBoxesPane → ShipBoxCard) so label-buying / mark-shipped flows are
+// untouched while we iterate the top view.
+// ───────────────────────────────────────────────────────────────────────────
+
 export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
 
-  const pendingSales = useMemo(
-    () => sales.filter(s => s.status === 'packing'),
-    [sales]
+  const { groups, totalBoxes, totalItems } = useMemo(
+    () => groupReadyToShipByBuyer(inventoryItems, sales),
+    [inventoryItems, sales]
   );
 
-  const activeSale = pendingSales.find(s => s.id === activeSaleId)
-    || sales.find(s => s.id === activeSaleId);
+  // Sales in 'packing' status that haven't had their orders uploaded yet —
+  // they don't have boxes to list (no shipmentBoxId assigned), so they need
+  // a separate "awaiting upload" surface to route the operator back to the
+  // Sale tab's validate-orders step.
+  const awaitingUpload = useMemo(
+    () => sales
+      .filter(s => s.status === 'packing')
+      .filter(s => !inventoryItems.some(i => i.saleId === s.id && i.shipmentBoxId))
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
+    [sales, inventoryItems]
+  );
 
+  const activeSale = sales.find(s => s.id === activeSaleId);
   if (activeSale) {
     return (
       <SalePackingPane
@@ -40,80 +62,227 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-          <Package className="w-5 h-5 text-emerald-600" /> Packing
+          <Package className="w-5 h-5 text-emerald-600" /> Shipping
         </h2>
         <p className="text-sm text-gray-500 mt-0.5">
-          Sale events sent to packing show up here, with their boxes ready to ship.
+          Every package with at least one item still to ship, consolidated by buyer
+          across sale events.
         </p>
       </div>
 
       <section className="space-y-2">
         <h3 className="text-sm font-medium text-gray-700">
-          Pending sale events ({pendingSales.length})
+          Ready to ship
+          <span className="text-gray-400 font-normal ml-1">
+            · {totalBoxes} {totalBoxes === 1 ? 'box' : 'boxes'} · {groups.length} {groups.length === 1 ? 'buyer' : 'buyers'} · {totalItems} {totalItems === 1 ? 'item' : 'items'}
+          </span>
         </h3>
-        {pendingSales.length === 0 ? (
+        {groups.length === 0 ? (
           <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
             <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
             <p className="text-sm text-gray-500">
-              No sale events pending. Click "Send to Packing" on a sale event to start packing.
+              Nothing waiting to ship. When a sale's orders get applied, boxes
+              show up here.
             </p>
           </div>
         ) : (
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {pendingSales.map(sale => (
-              <SalePendingCard
-                key={sale.id}
-                sale={sale}
-                inventoryItems={inventoryItems}
-                onOpen={() => setActiveSaleId(sale.id)}
+          <div className="space-y-3">
+            {groups.map(g => (
+              <BuyerGroupCard
+                key={g.key}
+                group={g}
+                sales={sales}
+                onOpenBox={(saleId) => setActiveSaleId(saleId)}
               />
             ))}
           </div>
         )}
       </section>
 
+      {awaitingUpload.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="text-sm font-medium text-gray-700">
+            Awaiting upload
+            <span className="text-gray-400 font-normal ml-1">
+              · {awaitingUpload.length}
+            </span>
+          </h3>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {awaitingUpload.map(sale => (
+              <button
+                key={sale.id}
+                onClick={() => setActiveSaleId(sale.id)}
+                className="text-left bg-amber-50 border border-amber-200 rounded-xl p-4 hover:border-amber-400 hover:shadow-sm active:bg-amber-100 transition"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-gray-900 truncate">{sale.name}</div>
+                    <div className="text-xs text-gray-500">{sale.date}</div>
+                  </div>
+                  <Upload className="w-4 h-4 text-amber-600 shrink-0" />
+                </div>
+                <div className="text-xs text-amber-800 mt-2">
+                  Run "Validate Sales" in the Sale tab to assemble boxes.
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
 
-function SalePendingCard({ sale, inventoryItems, onOpen }) {
-  const saleLots = inventoryItems.filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway');
-  const giveaways = inventoryItems.filter(i => i.saleId === sale.id && i.lotKind === 'giveaway');
-  const sold = saleLots.filter(i => ['sold', 'shipped', 'delivered'].includes(i.status));
-  const shipped = saleLots.filter(i => ['shipped', 'delivered'].includes(i.status));
-  const hasUpload = saleLots.some(i => i.shipmentBoxId);
+// ───────────────────────────────────────────────────────────────────────────
+// Buyer grouping helpers.
+// ───────────────────────────────────────────────────────────────────────────
+
+function groupReadyToShipByBuyer(items, sales) {
+  // First, assemble every (live) box from item rows. A box exists once an
+  // item has a shipmentBoxId — that's what the post-upload apply step
+  // stamps on. Status check: include any box whose items list contains at
+  // least one 'sold' row (i.e. not yet shipped). We deliberately surface
+  // partially shipped boxes too, since the operator may need to act on the
+  // remaining items.
+  const boxMap = new Map();
+  for (const item of items) {
+    if (!item.shipmentBoxId) continue;
+    if (item.deletedAt) continue;
+    if (!['sold', 'shipped', 'delivered'].includes(item.status)) continue;
+    let box = boxMap.get(item.shipmentBoxId);
+    if (!box) {
+      box = {
+        id: item.shipmentBoxId,
+        saleId: item.saleId,
+        buyer: item.buyer || '',
+        buyerUsername: item.buyerUsername || '',
+        buyerAddress: item.buyerAddress || {},
+        carrier: item.shipmentCarrier || 'usps',
+        items: [],
+      };
+      boxMap.set(item.shipmentBoxId, box);
+    }
+    box.items.push(item);
+  }
+
+  const openBoxes = [...boxMap.values()].filter(b =>
+    b.items.some(i => i.status === 'sold')
+  );
+
+  // Group by buyer. Prefer username (canonical across Palmstreet sales),
+  // fall back to display name. The username is what disambiguates two
+  // buyers who happen to share a display name.
+  const groupMap = new Map();
+  for (const box of openBoxes) {
+    const key = (box.buyerUsername || box.buyer || 'unknown').toLowerCase();
+    let group = groupMap.get(key);
+    if (!group) {
+      group = {
+        key,
+        displayName: box.buyer || box.buyerUsername || 'Unknown buyer',
+        username: box.buyerUsername || '',
+        addressSnippet: addressOneLine(box.buyerAddress),
+        boxes: [],
+      };
+      groupMap.set(key, group);
+    }
+    group.boxes.push(box);
+  }
+
+  // Within a group, sort boxes by sale recency (newest sale first). Across
+  // groups, sort alphabetically by display name — operator can scan to find
+  // a specific buyer fast.
+  const saleById = new Map(sales.map(s => [s.id, s]));
+  for (const group of groupMap.values()) {
+    group.boxes.sort((a, b) => {
+      const sa = saleById.get(a.saleId);
+      const sb = saleById.get(b.saleId);
+      return new Date(sb?.createdAt || 0) - new Date(sa?.createdAt || 0);
+    });
+  }
+  const groups = [...groupMap.values()].sort((a, b) =>
+    a.displayName.localeCompare(b.displayName)
+  );
+
+  const totalItems = openBoxes.reduce((sum, b) => sum + b.items.length, 0);
+  return { groups, totalBoxes: openBoxes.length, totalItems };
+}
+
+function addressOneLine(addr) {
+  if (!addr || typeof addr !== 'object') return '';
+  const parts = [addr.city, addr.state, addr.zip || addr.zipCode].filter(Boolean);
+  return parts.join(', ');
+}
+
+function BuyerGroupCard({ group, sales, onOpenBox }) {
+  const totalItems = group.boxes.reduce((sum, b) => sum + b.items.length, 0);
+  const saleCount = new Set(group.boxes.map(b => b.saleId)).size;
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-xl p-4">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="min-w-0 flex-1">
+          <div className="font-medium text-gray-900 truncate">{group.displayName}</div>
+          <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+            {group.username && <span>@{group.username}</span>}
+            {group.addressSnippet && <span className="truncate">· {group.addressSnippet}</span>}
+          </div>
+        </div>
+        <div className="text-right text-xs text-gray-500 shrink-0 leading-tight">
+          <div>
+            {group.boxes.length} {group.boxes.length === 1 ? 'box' : 'boxes'}
+          </div>
+          <div>
+            {totalItems} {totalItems === 1 ? 'item' : 'items'}
+            {saleCount > 1 && <> · {saleCount} sales</>}
+          </div>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        {group.boxes.map(box => (
+          <BoxRow
+            key={box.id}
+            box={box}
+            sale={sales.find(s => s.id === box.saleId)}
+            onOpen={() => onOpenBox(box.saleId)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BoxRow({ box, sale, onOpen }) {
+  const shipped = box.items.filter(i =>
+    ['shipped', 'delivered'].includes(i.status)
+  ).length;
+  const total = box.items.length;
+  const partial = shipped > 0 && shipped < total;
+  const carrierKey = (box.carrier || 'usps').toLowerCase();
+  const carrierLabel = carrierKey.toUpperCase();
+  const carrierClass = carrierKey === 'ups'
+    ? 'bg-amber-100 text-amber-800'
+    : 'bg-blue-100 text-blue-800';
 
   return (
     <button
       onClick={onOpen}
-      className="text-left bg-white border border-gray-200 rounded-xl p-4 hover:border-emerald-400 hover:shadow-sm active:bg-gray-50 transition"
+      className="w-full text-left flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-gray-100 hover:border-emerald-400 hover:bg-emerald-50/30 active:bg-emerald-50 transition"
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="font-medium text-gray-900 truncate">{sale.name}</div>
-          <div className="text-xs text-gray-500">{sale.date}</div>
-        </div>
-        <span className={`text-xs px-2 py-1 rounded-full whitespace-nowrap font-medium ${
-          hasUpload ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'
-        }`}>
-          {hasUpload ? `${shipped.length}/${saleLots.length} shipped` : 'Awaiting upload'}
+      <div className="flex items-center gap-2 min-w-0 flex-1">
+        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${carrierClass}`}>
+          {carrierLabel}
         </span>
+        <span className="text-sm text-gray-900 truncate">{sale?.name || '(unknown sale)'}</span>
+        {sale?.date && <span className="text-xs text-gray-400 shrink-0">{sale.date}</span>}
       </div>
-      <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-        <Mini label="Lots" value={saleLots.length} />
-        <Mini label="Giveaways" value={giveaways.length} />
-        <Mini label="Sold" value={sold.length} />
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={`text-xs ${partial ? 'text-amber-700 font-medium' : 'text-gray-600'}`}>
+          {partial ? `${shipped}/${total} shipped` : `${total} ${total === 1 ? 'item' : 'items'}`}
+        </span>
+        <ChevronRight className="w-4 h-4 text-gray-400" />
       </div>
     </button>
-  );
-}
-
-function Mini({ label, value }) {
-  return (
-    <div className="bg-gray-50 rounded p-2">
-      <div className="text-gray-500">{label}</div>
-      <div className="font-semibold text-gray-900">{value}</div>
-    </div>
   );
 }
 

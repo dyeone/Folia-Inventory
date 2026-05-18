@@ -478,7 +478,7 @@ function InventorySystem() {
     { id: 'dashboard', label: 'Dashboard', icon: TrendingUp },
     { id: 'inventory', label: 'Inventory', icon: Archive },
     { id: 'sales', label: 'Sale', icon: Calendar },
-    { id: 'packing', label: 'Packing', icon: Package },
+    { id: 'packing', label: 'Shipping', icon: Package },
     { id: 'purchasing', label: 'Purchase', icon: ShoppingCart },
     { id: 'financial', label: 'Financial', icon: LineChart },
     {
@@ -737,7 +737,7 @@ function InventorySystem() {
                 await api.upsertSales([{ id: sale.id, status: 'packing' }]);
                 const fresh = await api.getSales();
                 setSales([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
-                showToast(`${sale.name} sent to Packing`);
+                showToast(`${sale.name} sent to Shipping`);
                 setActiveTab('packing');
               } catch (e) {
                 showToast(e.message || 'Failed to send to packing', 'error');
