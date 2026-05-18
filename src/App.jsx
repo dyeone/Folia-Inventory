@@ -797,12 +797,15 @@ function InventorySystem() {
                   orderDate: null,
                 }));
                 if (updates.length > 0) await api.upsertItems(updates);
-                if (unmatched.length > 0) await api.deleteItems(unmatched.map(i => i.id));
+                // Hard-delete unmatched placeholders — they reserve their
+                // deterministic UNMATCHED-... SKU even while soft-deleted,
+                // which would block a re-upload of the same orders file.
+                if (unmatched.length > 0) await api.purgeItems(unmatched.map(i => i.id));
                 const fresh = await api.getItems();
                 applyItemsFresh(fresh);
                 showToast(
                   `Reverted ${matched.length} item${matched.length === 1 ? '' : 's'} to listed${
-                    unmatched.length > 0 ? ` · soft-deleted ${unmatched.length} placeholder${unmatched.length === 1 ? '' : 's'}` : ''
+                    unmatched.length > 0 ? ` · purged ${unmatched.length} placeholder${unmatched.length === 1 ? '' : 's'}` : ''
                   }`,
                 );
               } catch (e) {

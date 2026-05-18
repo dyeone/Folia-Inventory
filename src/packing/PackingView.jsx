@@ -223,7 +223,7 @@ export function PackingView({ inventoryItems, sales, onShipBox, onDeleteAllOpenB
                   setConfirmDialog?.({
                     title: `Delete all open boxes?`,
                     message: deleteSummary.unmatched > 0
-                      ? `Reverts ${deleteSummary.matched} matched item${deleteSummary.matched === 1 ? '' : 's'} back to "listed" and soft-deletes ${deleteSummary.unmatched} unmatched placeholder${deleteSummary.unmatched === 1 ? '' : 's'} (recoverable from Recently Deleted). Already-shipped items aren't touched.`
+                      ? `Reverts ${deleteSummary.matched} matched item${deleteSummary.matched === 1 ? '' : 's'} back to "listed" and permanently deletes ${deleteSummary.unmatched} unmatched placeholder${deleteSummary.unmatched === 1 ? '' : 's'} (so re-uploads don't trip the unique SKU). Already-shipped items aren't touched.`
                       : `Reverts ${deleteSummary.matched} matched item${deleteSummary.matched === 1 ? '' : 's'} back to "listed". Already-shipped items aren't touched.`,
                     confirmLabel: 'Delete all open boxes',
                     danger: true,

@@ -129,6 +129,25 @@ export default wrap(async (req, res) => {
       // Server-generate SKUs for new items that don't have one.
       if (rawInserts.length > 0) await assignMissingSkus(rawInserts);
 
+      // Self-heal Validate-Sales placeholder rows. Each unmatched order
+      // line generates a deterministic UNMATCHED-<boxId>-<rowKey> SKU
+      // (see SalesUploadModal.handleApply). If an earlier upload of the
+      // same file left a row (alive or soft-deleted) with that SKU, the
+      // unique constraint on `sku` would reject the new insert. Hard-
+      // delete any existing row whose SKU collides with an incoming
+      // placeholder insert before proceeding. Placeholders are throwaway
+      // — nothing of value gets lost here.
+      const placeholderSkus = rawInserts
+        .map(i => i.sku)
+        .filter(s => typeof s === 'string' && s.startsWith('UNMATCHED-'));
+      if (placeholderSkus.length > 0) {
+        const { error: delErr } = await supabase
+          .from('inventory_items')
+          .delete()
+          .in('sku', placeholderSkus);
+        if (delErr) { const e = new Error(delErr.message); e.status = 500; throw e; }
+      }
+
       const now = new Date().toISOString();
       const inserts = rawInserts.map(item => ({
         ...item,
