@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
+  Truck, Pencil, Check, X, Loader2,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -27,6 +28,39 @@ export { SummaryStat } from './SummaryStat.jsx';
 
 export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
+
+  // Shipments keyed by shipmentBoxId. We need these to know which boxes
+  // already have a label / tracking number (→ "Mark shipped") vs. which
+  // still need one (→ "Buy label" / "Enter tracking"). Loaded once across
+  // all sales since `GET /api/shipments` with no saleId returns the user's
+  // full shipments table — see api/shipments.js:53.
+  const [shipmentsByBox, setShipmentsByBox] = useState({});
+  const [buyingFor, setBuyingFor] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 2500);
+  };
+
+  const refreshShipments = async () => {
+    try {
+      const list = await api.getShipments();
+      setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+    } catch { /* no-op — rows just won't reflect label state */ }
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await api.getShipments();
+        if (cancelled) return;
+        setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+      } catch { /* no-op */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const { groups, totalBoxes, totalItems } = useMemo(
     () => groupReadyToShipByBuyer(inventoryItems, sales),
@@ -57,6 +91,23 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
       />
     );
   }
+
+  // Inline action handlers. The fast-path is to keep the operator on the
+  // list — drilling into a sale is reserved for label PDFs, voids, and
+  // partial-tracking edits.
+  const handleMarkShipped = async (box) => {
+    const itemIds = box.items.filter(i => i.status === 'sold').map(i => i.id);
+    if (itemIds.length === 0) return;
+    await onShipBox(box.saleId, itemIds);
+    // onShipBox refreshes items at the App level → groups recompute and
+    // this box disappears. No need to refresh shipments here.
+  };
+
+  const handleSaveTracking = async (box, trackingNumber) => {
+    await api.recordPalmstreetTracking(box.id, trackingNumber);
+    await refreshShipments();
+    showToast('Tracking saved');
+  };
 
   return (
     <div className="space-y-6">
@@ -92,7 +143,12 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
                 key={g.key}
                 group={g}
                 sales={sales}
+                shipmentsByBox={shipmentsByBox}
                 onOpenBox={(saleId) => setActiveSaleId(saleId)}
+                onBuyLabel={(box) => setBuyingFor(box)}
+                onSaveTracking={handleSaveTracking}
+                onMarkShipped={handleMarkShipped}
+                showToast={showToast}
               />
             ))}
           </div>
@@ -128,6 +184,24 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
             ))}
           </div>
         </section>
+      )}
+
+      {buyingFor && (
+        <BuyLabelModal
+          box={buyingFor}
+          onClose={() => setBuyingFor(null)}
+          onPurchased={() => {
+            refreshShipments();
+            showToast('Label purchased');
+          }}
+          showToast={showToast}
+        />
+      )}
+
+      {toast && (
+        <div className="fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50">
+          {toast}
+        </div>
       )}
     </div>
   );
@@ -214,7 +288,10 @@ function addressOneLine(addr) {
   return parts.join(', ');
 }
 
-function BuyerGroupCard({ group, sales, onOpenBox }) {
+function BuyerGroupCard({
+  group, sales, shipmentsByBox,
+  onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, showToast,
+}) {
   const totalItems = group.boxes.reduce((sum, b) => sum + b.items.length, 0);
   const saleCount = new Set(group.boxes.map(b => b.saleId)).size;
 
@@ -244,7 +321,12 @@ function BuyerGroupCard({ group, sales, onOpenBox }) {
             key={box.id}
             box={box}
             sale={sales.find(s => s.id === box.saleId)}
+            shipment={shipmentsByBox[box.id]}
             onOpen={() => onOpenBox(box.saleId)}
+            onBuyLabel={() => onBuyLabel(box)}
+            onSaveTracking={(num) => onSaveTracking(box, num)}
+            onMarkShipped={() => onMarkShipped(box)}
+            showToast={showToast}
           />
         ))}
       </div>
@@ -252,7 +334,28 @@ function BuyerGroupCard({ group, sales, onOpenBox }) {
   );
 }
 
-function BoxRow({ box, sale, onOpen }) {
+// Compute the per-box action state. The shipments row is the source of
+// truth for "has label / tracking", but a voided row counts as "no label"
+// so the operator can buy/enter again.
+function boxActionState(box, shipment) {
+  const liveShipment = shipment && !shipment.voidedAt ? shipment : null;
+  const hasLabel = !!liveShipment?.labelStoragePath;
+  const hasTracking = !!liveShipment?.trackingNumber;
+  const carrier = (box.carrier || 'usps').toLowerCase();
+
+  if (hasLabel || hasTracking) return { kind: 'ship', carrier, shipment: liveShipment };
+  if (carrier === 'ups') return { kind: 'buy-label', carrier };
+  return { kind: 'enter-tracking', carrier };
+}
+
+function BoxRow({
+  box, sale, shipment,
+  onOpen, onBuyLabel, onSaveTracking, onMarkShipped, showToast,
+}) {
+  const [editingTracking, setEditingTracking] = useState(false);
+  const [trackingDraft, setTrackingDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+
   const shipped = box.items.filter(i =>
     ['shipped', 'delivered'].includes(i.status)
   ).length;
@@ -264,25 +367,127 @@ function BoxRow({ box, sale, onOpen }) {
     ? 'bg-amber-100 text-amber-800'
     : 'bg-blue-100 text-blue-800';
 
+  const action = boxActionState(box, shipment);
+
+  const handleSaveTracking = async (e) => {
+    e?.stopPropagation();
+    const num = trackingDraft.trim();
+    if (!num) return;
+    setBusy(true);
+    try {
+      await onSaveTracking(num);
+      setEditingTracking(false);
+      setTrackingDraft('');
+    } catch (err) {
+      showToast?.(err?.message || 'Save failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMarkShipped = async (e) => {
+    e?.stopPropagation();
+    setBusy(true);
+    try {
+      await onMarkShipped();
+    } catch (err) {
+      showToast?.(err?.message || 'Ship failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stop = (e) => e.stopPropagation();
+
   return (
-    <button
-      onClick={onOpen}
-      className="w-full text-left flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-gray-100 hover:border-emerald-400 hover:bg-emerald-50/30 active:bg-emerald-50 transition"
-    >
-      <div className="flex items-center gap-2 min-w-0 flex-1">
-        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${carrierClass}`}>
-          {carrierLabel}
-        </span>
-        <span className="text-sm text-gray-900 truncate">{sale?.name || '(unknown sale)'}</span>
-        {sale?.date && <span className="text-xs text-gray-400 shrink-0">{sale.date}</span>}
+    <div className="rounded-lg border border-gray-100 hover:border-emerald-400 transition">
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpen(); }}
+        className="w-full text-left flex items-center justify-between gap-2 px-3 py-2 cursor-pointer hover:bg-emerald-50/30 active:bg-emerald-50"
+      >
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${carrierClass}`}>
+            {carrierLabel}
+          </span>
+          <span className="text-sm text-gray-900 truncate">{sale?.name || '(unknown sale)'}</span>
+          {sale?.date && <span className="text-xs text-gray-400 shrink-0">{sale.date}</span>}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className={`text-xs ${partial ? 'text-amber-700 font-medium' : 'text-gray-600'}`}>
+            {partial ? `${shipped}/${total} shipped` : `${total} ${total === 1 ? 'item' : 'items'}`}
+          </span>
+          {/* Primary action button, state-driven. Stops propagation so
+              clicking it doesn't also drill into the sale. */}
+          {action.kind === 'buy-label' && (
+            <button
+              onClick={(e) => { stop(e); onBuyLabel(); }}
+              className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 flex items-center gap-1"
+            >
+              <Truck className="w-3 h-3" /> Buy label
+            </button>
+          )}
+          {action.kind === 'enter-tracking' && !editingTracking && (
+            <button
+              onClick={(e) => { stop(e); setEditingTracking(true); }}
+              className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 flex items-center gap-1"
+            >
+              <Pencil className="w-3 h-3" /> Enter tracking
+            </button>
+          )}
+          {action.kind === 'ship' && (
+            <button
+              onClick={handleMarkShipped}
+              disabled={busy}
+              className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 flex items-center gap-1"
+            >
+              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+              Mark shipped
+            </button>
+          )}
+          <ChevronRight className="w-4 h-4 text-gray-400" />
+        </div>
       </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <span className={`text-xs ${partial ? 'text-amber-700 font-medium' : 'text-gray-600'}`}>
-          {partial ? `${shipped}/${total} shipped` : `${total} ${total === 1 ? 'item' : 'items'}`}
-        </span>
-        <ChevronRight className="w-4 h-4 text-gray-400" />
-      </div>
-    </button>
+
+      {/* Inline tracking-number entry. Click "Enter tracking" → row expands
+          with a small form; Save fires the API and refreshes shipments,
+          which transitions this row to "Mark shipped". */}
+      {editingTracking && (
+        <div
+          onClick={stop}
+          className="px-3 pb-3 pt-1 flex items-center gap-2 border-t border-gray-100 bg-gray-50/60"
+        >
+          <input
+            type="text"
+            autoFocus
+            value={trackingDraft}
+            onChange={(e) => setTrackingDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleSaveTracking(e);
+              if (e.key === 'Escape') { setEditingTracking(false); setTrackingDraft(''); }
+            }}
+            placeholder="USPS tracking number"
+            className="flex-1 text-sm px-2 py-1 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
+          />
+          <button
+            onClick={handleSaveTracking}
+            disabled={busy || !trackingDraft.trim()}
+            className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 flex items-center gap-1"
+          >
+            {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+            Save
+          </button>
+          <button
+            onClick={(e) => { stop(e); setEditingTracking(false); setTrackingDraft(''); }}
+            className="text-xs font-medium px-2 py-1 rounded-md text-gray-600 hover:bg-gray-200 flex items-center gap-1"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
