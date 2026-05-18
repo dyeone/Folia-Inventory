@@ -82,11 +82,48 @@ export function SalesUploadModal({ items, onApply, onClose }) {
     return { totalItems, matched, unmatched };
   }, [resolved]);
 
+  // Map a parsed box's recipient+address to the same shape parsePalmstreetOrders
+  // uses for its in-upload group key. Used to find an existing OPEN box
+  // belonging to the same buyer so the new orders merge into it instead
+  // of creating a duplicate.
+  const groupKeyFor = (recipientName, street1, city, state, zip) => [
+    String(recipientName || '').toLowerCase().trim(),
+    String(street1 || '').toLowerCase().trim(),
+    String(city || '').toLowerCase().trim(),
+    String(state || '').toLowerCase().trim(),
+    String(zip || '').toLowerCase().trim(),
+  ].join('|');
+
+  // Walk every live inventory row that currently sits in an open box
+  // (status='sold' = ready to ship, not yet shipped) and index its
+  // shipmentBoxId by buyer+address group key. Items in 'shipped' or
+  // 'delivered' status are history — we never absorb new orders into
+  // them. First match per group wins; sibling sold items in the same
+  // box share an id anyway.
+  const openBoxIdByGroup = useMemo(() => {
+    const m = new Map();
+    for (const item of items) {
+      if (!item.shipmentBoxId) continue;
+      if (item.deletedAt) continue;
+      if (item.status !== 'sold') continue;
+      const addr = item.buyerAddress || {};
+      const key = groupKeyFor(item.buyer, addr.street1, addr.city, addr.state, addr.zip);
+      if (!m.has(key)) m.set(key, item.shipmentBoxId);
+    }
+    return m;
+  }, [items]);
+
   const handleApply = () => {
     if (!resolved) return;
     const updates = [];
     const now = new Date().toISOString();
     for (const box of resolved) {
+      // If the same buyer at the same address already has an OPEN box,
+      // merge the new orders into it (reuse its shipmentBoxId). Otherwise
+      // keep the fresh per-upload id parsePalmstreetOrders generated.
+      // Shipped/delivered boxes are skipped — they're history.
+      const groupKey = groupKeyFor(box.recipientName, box.street1, box.city, box.state, box.zip);
+      const effectiveBoxId = openBoxIdByGroup.get(groupKey) || box.id;
       // For unmatched items in this box we want to tie them to the same
       // sale event as the matched ones (purely cosmetic — the Shipping
       // tab uses box.saleId from the first item only). Pick the first
@@ -118,7 +155,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             buyer: box.recipientName,
             buyerUsername: box.username,
             buyerAddress,
-            shipmentBoxId: box.id,
+            shipmentBoxId: effectiveBoxId,
             shipmentCarrier: box.carrier || 'usps',
             orderId: it.orderNumber || null,
             orderDate: it.orderDate || null,
@@ -132,7 +169,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
           // inventory SKUs (the matcher filters to status='available'
           // /'listed' anyway, so a 'sold' UNMATCHED row won't ever be
           // matched against again on a future upload).
-          const placeholderSku = `UNMATCHED-${box.id.slice(0, 12)}-${it.rowKey}`;
+          const placeholderSku = `UNMATCHED-${effectiveBoxId.slice(0, 12)}-${it.rowKey}`;
           updates.push({
             sku: placeholderSku,
             type: 'plant',
@@ -146,7 +183,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             buyer: box.recipientName,
             buyerUsername: box.username,
             buyerAddress,
-            shipmentBoxId: box.id,
+            shipmentBoxId: effectiveBoxId,
             shipmentCarrier: box.carrier || 'usps',
             orderId: it.orderNumber || null,
             orderDate: it.orderDate || null,
