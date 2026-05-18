@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
@@ -13,6 +13,7 @@ import { NewBoxModal } from './NewBoxModal.jsx';
 import { EditBoxItemsModal } from './EditBoxItemsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
+import { useIsMobile } from '../ui/useIsMobile.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
 // imports keep working without a churn-y find-and-replace across files.
@@ -51,6 +52,13 @@ export function PackingView({
   // Per-box shipping-slip preview. Not admin-gated — anyone packing
   // can print the customer-facing manifest.
   const [slipBox, setSlipBox] = useState(null);
+
+  // Desktop: prefer a text-input dialog over the camera for the Scan box
+  // / Scan item buttons. Laptops rarely have a good rear camera, and the
+  // typical desktop workflow uses a USB barcode scanner that emits the
+  // decoded SKU as keystrokes into the focused input. On mobile we keep
+  // the camera flow — phones are why CameraScanner exists.
+  const isMobile = useIsMobile();
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -532,11 +540,23 @@ export function PackingView({
         />
       )}
 
-      {scannerMode && (
+      {scannerMode && isMobile && (
         <CameraScanner
           onScan={(text) => {
             if (scannerMode === 'box') handleScannedBoxCode(text);
             else if (scannerMode === 'item') handleScannedItemSku(text);
+          }}
+          onClose={() => setScannerMode(null)}
+        />
+      )}
+
+      {scannerMode && !isMobile && (
+        <ScanTextInputDialog
+          mode={scannerMode}
+          onSubmit={(text) => {
+            if (scannerMode === 'box') handleScannedBoxCode(text);
+            else if (scannerMode === 'item') handleScannedItemSku(text);
+            setScannerMode(null);
           }}
           onClose={() => setScannerMode(null)}
         />
@@ -1390,6 +1410,76 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, setConfirmDialog
           {actionToast}
         </div>
       )}
+    </div>
+  );
+}
+
+// Desktop counterpart to CameraScanner. Autofocused text input that
+// accepts a USB-barcode-scanner's keystroke burst or a human typing the
+// SKU / box code. Enter submits, Esc cancels. The dialog stays mounted
+// while the operator types so a hardware scanner's CR-suffix triggers
+// onSubmit cleanly — same as a manual Enter press.
+function ScanTextInputDialog({ mode, onSubmit, onClose }) {
+  const [value, setValue] = useState('');
+  const ref = useRef(null);
+  useEffect(() => { ref.current?.focus(); }, []);
+  const submit = (e) => {
+    e?.preventDefault();
+    const v = value.trim();
+    if (!v) return;
+    onSubmit(v);
+  };
+  const isBox = mode === 'box';
+  return (
+    <div className="fixed inset-0 z-40 bg-black/40 flex items-start sm:items-center justify-center p-4 pt-24 sm:pt-4" onClick={onClose}>
+      <div className="bg-white w-full max-w-md rounded-2xl shadow-xl p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="font-semibold text-gray-900 text-base flex items-center gap-2">
+              <ScanLine className="w-5 h-5 text-emerald-600" />
+              {isBox ? 'Scan or type a box code' : 'Scan or type an item SKU'}
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {isBox
+                ? 'B-XXXXXX format. Scanner input fires Enter automatically.'
+                : 'e.g. JWL-1574. Scanner input fires Enter automatically.'}
+            </p>
+          </div>
+          <button onClick={onClose} aria-label="Close" className="p-1.5 -mr-1 text-gray-500 hover:bg-gray-100 rounded-lg">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <form onSubmit={submit}>
+          <input
+            ref={ref}
+            type="text"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder={isBox ? 'B-XXXXXX' : 'JWL-XXXX'}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
+            className="w-full px-4 py-3 text-lg font-mono uppercase border-2 border-emerald-300 bg-emerald-50/40 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+          />
+          <div className="flex items-center justify-end gap-2 mt-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!value.trim()}
+              className="px-4 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-lg disabled:bg-gray-300"
+            >
+              {isBox ? 'Find box' : 'Find item'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
