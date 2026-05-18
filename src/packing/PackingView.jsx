@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
-  Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
-  Truck, Pencil, Check, X, Loader2, RefreshCw,
+  Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, ChevronDown, Upload,
+  Truck, Pencil, Check, X, Loader2,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -26,9 +26,9 @@ export { SummaryStat } from './SummaryStat.jsx';
 // untouched while we iterate the top view.
 // ───────────────────────────────────────────────────────────────────────────
 
-export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, setConfirmDialog }) {
+export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [shippedExpanded, setShippedExpanded] = useState(false);
 
   // Shipments keyed by shipmentBoxId. We need these to know which boxes
   // already have a label / tracking number (→ "Mark shipped") vs. which
@@ -63,8 +63,16 @@ export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, s
     return () => { cancelled = true; };
   }, []);
 
+  // "Ready to ship" = boxes with at least one item still 'sold' (i.e. not
+  // every item has been shipped yet). "Shipped" = boxes where every item
+  // is in 'shipped' or 'delivered'. Both views use the same buyer
+  // grouping for layout consistency.
   const { groups, totalBoxes, totalItems } = useMemo(
-    () => groupReadyToShipByBuyer(inventoryItems, sales),
+    () => groupBoxesByBuyer(inventoryItems, sales, READY_PREDICATE),
+    [inventoryItems, sales]
+  );
+  const shipped = useMemo(
+    () => groupBoxesByBuyer(inventoryItems, sales, SHIPPED_PREDICATE),
     [inventoryItems, sales]
   );
 
@@ -110,50 +118,16 @@ export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, s
     showToast('Tracking saved');
   };
 
-  // Refresh button: re-pulls items + sales + shipments from our DB so
-  // the Shipping list reflects the latest state without a page reload
-  // (e.g. after another operator or the Chrome extension changed things).
-  const handleRefresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      const appResult = onRefreshData ? await onRefreshData() : null;
-      const list = await api.getShipments();
-      setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
-      const parts = [];
-      if (appResult) {
-        parts.push(`${appResult.itemCount} items / ${appResult.saleCount} sales`);
-      }
-      showToast(`Refreshed — ${parts.join(' · ') || 'no changes'}`);
-    } catch (e) {
-      setToast(`Refresh failed — ${e.message || 'unknown error'}`);
-      setTimeout(() => setToast(null), 8000);
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <Package className="w-5 h-5 text-emerald-600" /> Shipping
-          </h2>
-          <p className="text-sm text-gray-500 mt-0.5">
-            Every package with at least one item still to ship, consolidated by buyer
-            across sale events.
-          </p>
-        </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          title="Re-pull items / sales / shipments and bulk-push tracking to Palmstreet"
-          className="shrink-0 flex items-center gap-1.5 text-sm px-3 py-2 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+          <Package className="w-5 h-5 text-emerald-600" /> Shipping
+        </h2>
+        <p className="text-sm text-gray-500 mt-0.5">
+          Every package with at least one item still to ship, consolidated by buyer
+          across sale events.
+        </p>
       </div>
 
       <section className="space-y-2">
@@ -221,6 +195,46 @@ export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, s
         </section>
       )}
 
+      {/* Shipped archive — collapsed by default since these can accumulate
+          unbounded. Same buyer-grouped layout as Ready to ship for visual
+          consistency; BoxRow detects the all-shipped state and hides the
+          per-row action buttons. */}
+      {shipped.totalBoxes > 0 && (
+        <section className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setShippedExpanded(v => !v)}
+            aria-expanded={shippedExpanded}
+            className="w-full flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900"
+          >
+            {shippedExpanded
+              ? <ChevronDown className="w-4 h-4 text-gray-500" />
+              : <ChevronRight className="w-4 h-4 text-gray-500" />}
+            <span>Shipped</span>
+            <span className="text-gray-400 font-normal">
+              · {shipped.totalBoxes} {shipped.totalBoxes === 1 ? 'box' : 'boxes'} · {shipped.groups.length} {shipped.groups.length === 1 ? 'buyer' : 'buyers'} · {shipped.totalItems} {shipped.totalItems === 1 ? 'item' : 'items'}
+            </span>
+          </button>
+          {shippedExpanded && (
+            <div className="space-y-3">
+              {shipped.groups.map(g => (
+                <BuyerGroupCard
+                  key={g.key}
+                  group={g}
+                  sales={sales}
+                  shipmentsByBox={shipmentsByBox}
+                  onOpenBox={(saleId) => setActiveSaleId(saleId)}
+                  onBuyLabel={(box) => setBuyingFor(box)}
+                  onSaveTracking={handleSaveTracking}
+                  onMarkShipped={handleMarkShipped}
+                  showToast={showToast}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {buyingFor && (
         <BuyLabelModal
           box={buyingFor}
@@ -246,13 +260,24 @@ export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, s
 // Buyer grouping helpers.
 // ───────────────────────────────────────────────────────────────────────────
 
-function groupReadyToShipByBuyer(items, sales) {
+// "Ready to ship" — at least one item still 'sold' (not every item has
+// been shipped yet). Partially-shipped boxes show up here too so the
+// operator can finish them.
+const READY_PREDICATE = (box) =>
+  box.items.some(i => i.status === 'sold');
+
+// "Shipped" — every item in the box is shipped/delivered. Used by the
+// archive section so the operator can find historical boxes by buyer.
+const SHIPPED_PREDICATE = (box) =>
+  box.items.length > 0 &&
+  box.items.every(i => ['shipped', 'delivered'].includes(i.status));
+
+function groupBoxesByBuyer(items, sales, predicate) {
   // First, assemble every (live) box from item rows. A box exists once an
   // item has a shipmentBoxId — that's what the post-upload apply step
-  // stamps on. Status check: include any box whose items list contains at
-  // least one 'sold' row (i.e. not yet shipped). We deliberately surface
-  // partially shipped boxes too, since the operator may need to act on the
-  // remaining items.
+  // stamps on. We always consider items in 'sold'/'shipped'/'delivered'
+  // (anything that's been through Validate Sales). The caller-supplied
+  // predicate decides which of the resulting boxes survive to be grouped.
   const boxMap = new Map();
   for (const item of items) {
     if (!item.shipmentBoxId) continue;
@@ -274,9 +299,7 @@ function groupReadyToShipByBuyer(items, sales) {
     box.items.push(item);
   }
 
-  const openBoxes = [...boxMap.values()].filter(b =>
-    b.items.some(i => i.status === 'sold')
-  );
+  const openBoxes = [...boxMap.values()].filter(predicate);
 
   // Group by buyer. Prefer username (canonical across Palmstreet sales),
   // fall back to display name. The username is what disambiguates two
@@ -492,13 +515,17 @@ function BoxRow({
   ).length;
   const total = box.items.length;
   const partial = shipped > 0 && shipped < total;
+  const allShipped = total > 0 && shipped === total;
   const carrierKey = (box.carrier || 'usps').toLowerCase();
   const carrierLabel = carrierKey.toUpperCase();
   const carrierClass = carrierKey === 'ups'
     ? 'bg-amber-100 text-amber-800'
     : 'bg-blue-100 text-blue-800';
 
-  const action = boxActionState(box, shipment);
+  // For shipped boxes there's nothing left to act on — hide the
+  // primary action button and the inline tracking editor. Chevron
+  // drill-in to the per-sale pane is still useful (label PDF download).
+  const action = allShipped ? null : boxActionState(box, shipment);
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
@@ -553,12 +580,17 @@ function BoxRow({
           {sale?.date && <span className="text-xs text-gray-400 shrink-0">{sale.date}</span>}
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className={`text-xs ${partial ? 'text-amber-700 font-medium' : 'text-gray-600'}`}>
-            {partial ? `${shipped}/${total} shipped` : `${total} ${total === 1 ? 'item' : 'items'}`}
+          <span className={`text-xs ${partial ? 'text-amber-700 font-medium' : allShipped ? 'text-emerald-700' : 'text-gray-600'}`}>
+            {allShipped
+              ? `${total} shipped`
+              : partial
+              ? `${shipped}/${total} shipped`
+              : `${total} ${total === 1 ? 'item' : 'items'}`}
           </span>
           {/* Primary action button, state-driven. Stops propagation so
-              clicking it doesn't also toggle the row's expanded state. */}
-          {action.kind === 'buy-label' && (
+              clicking it doesn't also toggle the row's expanded state.
+              Hidden entirely when the box is fully shipped (action===null). */}
+          {action?.kind === 'buy-label' && (
             <button
               onClick={(e) => { stop(e); onBuyLabel(); }}
               className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 flex items-center gap-1"
@@ -566,7 +598,7 @@ function BoxRow({
               <Truck className="w-3 h-3" /> Buy label
             </button>
           )}
-          {action.kind === 'enter-tracking' && !editingTracking && (
+          {action?.kind === 'enter-tracking' && !editingTracking && (
             <button
               onClick={(e) => { stop(e); setEditingTracking(true); }}
               className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 flex items-center gap-1"
@@ -574,7 +606,7 @@ function BoxRow({
               <Pencil className="w-3 h-3" /> Enter tracking
             </button>
           )}
-          {action.kind === 'ship' && (
+          {action?.kind === 'ship' && (
             <button
               onClick={handleMarkShipped}
               disabled={busy}
