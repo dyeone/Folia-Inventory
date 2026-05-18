@@ -490,16 +490,22 @@ function boxActionState(box, shipment) {
 }
 
 function BoxItemsList({ box, salesById }) {
-  // Sort items by SKU for predictable display; fall back to name.
+  // Hide already-shipped items in open boxes — the operator only cares
+  // about what's left to pack. Shipped boxes (every item is shipped)
+  // skip the filter so the archive view still shows the full contents.
+  const isOpenBox = box.items.some(i => i.status === 'sold');
   const sortedItems = useMemo(() => {
-    const copy = [...box.items];
+    let copy = [...box.items];
+    if (isOpenBox) {
+      copy = copy.filter(i => !['shipped', 'delivered'].includes(i.status));
+    }
     copy.sort((a, b) => {
       const sa = (a.sku || a.name || '').toString();
       const sb = (b.sku || b.name || '').toString();
       return sa.localeCompare(sb);
     });
     return copy;
-  }, [box.items]);
+  }, [box.items, isOpenBox]);
 
   return (
     <div className="border-t border-gray-100 bg-gray-50/40 px-3 py-2 space-y-1.5">
