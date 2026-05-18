@@ -63,9 +63,20 @@ function pick(row, ...keys) {
 export function parsePalmstreetOrders(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
 
+  // Per-upload nonce prefixed onto every box id. Without it, re-uploading
+  // the same buyer in a fresh sales report would produce the same
+  // shipmentBoxId as a historical upload — Shipping would silently fold
+  // the new order into the previously-shipped box for that buyer. The
+  // operator's mental model is: each spreadsheet upload is its own batch
+  // of work, never mixed with prior history. The nonce enforces that.
+  // Within a single upload, the recipient+address group key still
+  // collapses multiple orders for the same buyer into one box.
+  const uploadId = `up${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
   // Group key: recipient name + street + city + state + zip (case-insensitive).
   // Rationale: same person may place multiple Palmstreet orders that all
-  // ship to the same physical address — those become one packing box.
+  // ship to the same physical address — those become one packing box
+  // within this upload.
   const boxes = new Map();
 
   rows.forEach((row, idx) => {
@@ -97,17 +108,18 @@ export function parsePalmstreetOrders(rows) {
 
     if (!recipient && !street1) return; // skip empty rows
 
-    const key = [
+    const groupKey = [
       recipient.toLowerCase(),
       street1.toLowerCase(),
       city.toLowerCase(),
       state.toLowerCase(),
       zip.toLowerCase(),
     ].join('|');
+    const boxId = `${uploadId}|${groupKey}`;
 
-    if (!boxes.has(key)) {
-      boxes.set(key, {
-        id: key,
+    if (!boxes.has(boxId)) {
+      boxes.set(boxId, {
+        id: boxId,
         recipientName: recipient,
         username,
         street1,
@@ -126,7 +138,7 @@ export function parsePalmstreetOrders(rows) {
         shippingFee: 0,
       });
     }
-    const box = boxes.get(key);
+    const box = boxes.get(boxId);
 
     if (orderNum && !box.orderNumbers.includes(orderNum)) {
       box.orderNumbers.push(orderNum);
