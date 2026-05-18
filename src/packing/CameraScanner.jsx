@@ -16,6 +16,11 @@ DECODE_HINTS.set(DecodeHintType.POSSIBLE_FORMATS, [
   BarcodeFormat.CODE_128,
   BarcodeFormat.QR_CODE,
 ]);
+// TRY_HARDER costs more CPU per frame but lets ZXing decode angled,
+// slightly-out-of-focus, and partially-occluded barcodes that the
+// fast path would miss. On modern phones the extra CPU is unnoticeable
+// next to the camera pipeline itself — net win for accuracy.
+DECODE_HINTS.set(DecodeHintType.TRY_HARDER, true);
 
 // Direct @zxing/browser implementation — replaces the html5-qrcode
 // wrapper that was hanging iOS Safari on stream release. We own the
@@ -110,6 +115,25 @@ export function CameraScanner({ onScan, onClose }) {
         return;
       }
       streamRef.current = stream;
+
+      // Try to set the camera to continuous autofocus so the barcode
+      // sharpens up as the operator moves the phone. Best-effort —
+      // not every device exposes focusMode through MediaStreamTrack
+      // constraints; on iOS Safari it's usually fine, on some
+      // Androids it isn't. Either way the camera still works.
+      try {
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack?.getCapabilities) {
+          const caps = videoTrack.getCapabilities();
+          const advanced = [];
+          if (caps?.focusMode?.includes?.('continuous')) {
+            advanced.push({ focusMode: 'continuous' });
+          }
+          if (advanced.length) {
+            await videoTrack.applyConstraints({ advanced });
+          }
+        }
+      } catch { /* device-dependent; ignore */ }
 
       const video = videoRef.current;
       if (!video) {

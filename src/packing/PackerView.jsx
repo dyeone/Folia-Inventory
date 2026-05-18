@@ -353,35 +353,39 @@ function ItemScanner({ box, onScan, onOpenCamera, onDone }) {
         )}
         {packedItems.map(item => <ItemRow key={item.id} item={item} />)}
       </div>
-      <form onSubmit={submit} className="border-t border-gray-200 bg-white p-3 pb-safe">
+      <form onSubmit={submit} className="border-t border-gray-200 bg-white p-3 pb-safe space-y-2">
+        {/* Primary action: scan the next plant. Big, full-width,
+            tinted emerald so it's the obvious thing to tap when
+            the operator has the camera in one hand and a plant in
+            the other. Hidden once every item in the box is packed
+            — the Done button takes over. */}
+        {!allPacked && (
+          <button
+            type="button"
+            onClick={onOpenCamera}
+            className="w-full flex items-center justify-center gap-2 px-4 py-4 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800 shadow-sm"
+          >
+            <Camera className="w-6 h-6" /> Scan plant
+          </button>
+        )}
         <div className="flex items-center gap-2">
           <input
             ref={inputRef}
             type="text"
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder="Scan item SKU"
+            placeholder="or type SKU"
             autoComplete="off"
             autoCapitalize="characters"
             spellCheck={false}
             disabled={busy || allPacked}
             className="flex-1 px-4 py-3 text-base font-mono uppercase border-2 border-gray-300 rounded-xl focus:outline-none focus:border-emerald-500 disabled:bg-gray-100"
           />
-          {!allPacked && (
-            <button
-              type="button"
-              onClick={onOpenCamera}
-              aria-label="Open camera scanner"
-              className="px-3 py-3 text-base font-semibold border-2 border-emerald-600 text-emerald-700 bg-white rounded-xl active:bg-emerald-50"
-            >
-              <Camera className="w-5 h-5" />
-            </button>
-          )}
           {allPacked ? (
             <button
               type="button"
               onClick={onDone}
-              className="px-4 py-3 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
+              className="px-6 py-3 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
             >
               Done
             </button>
