@@ -14,7 +14,7 @@ import { shortBoxCode } from './boxCode.js';
 function Label({ box }) {
   const svgRef = useRef(null);
   const code = shortBoxCode(box.id);
-  const customer = displayCustomer(box);
+  const header = displayHeader(box);
 
   useEffect(() => {
     if (svgRef.current && code) {
@@ -37,7 +37,7 @@ function Label({ box }) {
       style={{ width: '2in', height: '1in', padding: '0.08in', boxSizing: 'border-box' }}
     >
       <div className="text-[9pt] leading-tight text-gray-900 font-medium truncate w-full">
-        {customer}
+        {header}
       </div>
       <div className="font-mono font-bold text-gray-900 tracking-wider leading-none" style={{ fontSize: '12pt' }}>
         {code}
@@ -47,15 +47,13 @@ function Label({ box }) {
   );
 }
 
-// Show the customer's primary identifier on the label. Prefer the
-// recipient name (most recognizable during pack-out); fall back to
-// @username when no name is set.
-function displayCustomer(box) {
-  const name = (box.recipientName || box.buyer || '').trim();
+// Top line of the label: carrier (UPS / USPS) and the Palmstreet
+// username. Names are intentionally omitted — pack-out only needs the
+// shipping channel and the @id to confirm the right buyer at a glance.
+function displayHeader(box) {
+  const carrier = String(box.carrier || 'usps').toUpperCase();
   const username = (box.username || box.buyerUsername || '').trim();
-  if (name) return username ? `${name} (@${username})` : name;
-  if (username) return `@${username}`;
-  return '(no customer)';
+  return username ? `${carrier} · @${username}` : `${carrier} · (no @id)`;
 }
 
 const LABEL_W = 2;
@@ -87,13 +85,13 @@ function buildPdf(boxes) {
   boxes.forEach((box, idx) => {
     if (idx > 0) pdf.addPage([LABEL_W, LABEL_H], 'landscape');
     const code = shortBoxCode(box.id);
-    const customer = displayCustomer(box);
+    const header = displayHeader(box);
 
-    // Top: customer name/username — 9pt, centered, truncated to fit.
+    // Top: carrier · @username — 9pt, centered, truncated to fit.
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(9);
     pdf.setTextColor(0);
-    pdf.text(customer, LABEL_W / 2, 0.2, { align: 'center', maxWidth: LABEL_W - 0.15 });
+    pdf.text(header, LABEL_W / 2, 0.2, { align: 'center', maxWidth: LABEL_W - 0.15 });
 
     // Middle: box code — 12pt bold mono.
     pdf.setFont('courier', 'bold');
