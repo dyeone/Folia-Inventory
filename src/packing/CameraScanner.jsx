@@ -43,6 +43,19 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
   // Flash-on-decode for visible "we got it" feedback.
   const [success, setSuccess] = useState(false);
 
+  // Latest-callback refs. The decoder callback is set up once in the
+  // useEffect below ([continuous] is its only dep). Without refs, every
+  // scan after the first in continuous mode calls the STALE onScan
+  // captured at mount time — i.e. with the parent's activeBox snapshot
+  // at mount, not the current one. That made the "already packed"
+  // guard fail to detect items packed in this same session.
+  const onScanRef = useRef(onScan);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onScanRef.current = onScan;
+    onCloseRef.current = onClose;
+  });
+
   // Tear down everything we own — decoder, stream tracks, video src.
   // Called from the unmount cleanup and from the synchronous part of
   // the decode callback in one-shot mode. Idempotent.
@@ -145,14 +158,14 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
               // camera and transition to the items screen.
               setTimeout(() => {
                 teardown();
-                onClose?.();
-                onScan(text);
+                onCloseRef.current?.();
+                onScanRef.current(text);
               }, 350);
             } else {
               // Continuous mode: clear the flash after a moment so the
               // next scan can flash again.
               setTimeout(() => setSuccess(false), 450);
-              onScan(text);
+              onScanRef.current(text);
             }
           },
         );
@@ -175,7 +188,6 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
       closedRef.current = true;
       teardown();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [continuous]);
 
   const handleManualSubmit = (e) => {
@@ -185,9 +197,9 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
     if (!continuous) {
       closedRef.current = true;
       teardown();
-      onClose?.();
+      onCloseRef.current?.();
     }
-    onScan(v);
+    onScanRef.current(v);
     setManualValue('');
   };
 
@@ -207,7 +219,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
           <Keyboard className="w-5 h-5" />
         </button>
         <button
-          onClick={() => { closedRef.current = true; teardown(); onClose?.(); }}
+          onClick={() => { closedRef.current = true; teardown(); onCloseRef.current?.(); }}
           aria-label="Close camera"
           className="p-2 -mr-1 rounded-lg hover:bg-white/10 active:bg-white/20"
         >

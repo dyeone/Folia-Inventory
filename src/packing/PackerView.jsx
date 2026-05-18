@@ -108,6 +108,12 @@ export function PackerView({ onLogout }) {
   // Shared item-scan handler used by both the text input in ItemScanner
   // and the camera (when in 'item' mode). Lifted to PackerView so the
   // camera doesn't need to live inside ItemScanner.
+  //
+  // Optimistic update: flip the local item to packed BEFORE the
+  // network round-trip lands, so the UI reflects the change
+  // immediately and the operator can scan the next plant without
+  // waiting on a full refetch. If the upsert fails we roll back
+  // just this item — other in-flight packs aren't disturbed.
   const handleScanItem = async (rawText) => {
     if (!activeBox) return;
     const sku = String(rawText || '').trim().toUpperCase();
@@ -127,13 +133,21 @@ export function PackerView({ onLogout }) {
       showToast(`SKU ${sku} already packed`, 2500);
       return;
     }
+    const now = new Date().toISOString();
+    setItems(prev => prev.map(i =>
+      i.id === candidate.id ? { ...i, packedAt: now } : i
+    ));
+    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
+    showToast(`Packed ${sku}`, 1500);
     try {
-      await api.upsertItems([{ id: candidate.id, packedAt: new Date().toISOString() }]);
-      await refresh();
-      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
-      showToast(`Packed ${sku}`, 1500);
+      await api.upsertItems([{ id: candidate.id, packedAt: now }]);
     } catch (e) {
-      showToast(e.message || 'Pack failed', 3500);
+      // Roll back just THIS item — leave the other items alone in
+      // case the operator has scanned several in quick succession.
+      setItems(prev => prev.map(i =>
+        i.id === candidate.id ? { ...i, packedAt: null } : i
+      ));
+      showToast(`Pack failed for ${sku}: ${e.message || 'unknown'}`, 4000);
     }
   };
 
