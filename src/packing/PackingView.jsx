@@ -20,10 +20,11 @@ import { useIsMobile } from '../ui/useIsMobile.js';
 export { BoxesList } from './BoxesList.jsx';
 export { SummaryStat } from './SummaryStat.jsx';
 
-// Short relative-ish date for box timestamps. Recent dates show as
-// "today" / "yesterday"; older ones show as "May 18" or "May 18, 2025"
-// for year-old entries. Keeps row headers short while still giving the
-// operator a sense of how stale the box is.
+// Short timestamp for box / item events. Recent dates collapse to
+// "today HH:MM" / "yesterday HH:MM"; older ones show "May 18 HH:MM"
+// (or include the year if it's not the current one). The HH:MM is
+// rendered in the user's locale (12h on most Mac/iOS, 24h on most
+// Linux), which keeps timestamps consistent with the rest of the OS.
 function fmtShortDate(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -31,12 +32,13 @@ function fmtShortDate(iso) {
   const now = new Date();
   const startOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const dayDiff = Math.floor((startOf(now) - startOf(d)) / 86400000);
-  if (dayDiff === 0) return 'today';
-  if (dayDiff === 1) return 'yesterday';
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  if (dayDiff === 0) return `today ${time}`;
+  if (dayDiff === 1) return `yesterday ${time}`;
   const opts = d.getFullYear() === now.getFullYear()
     ? { month: 'short', day: 'numeric' }
     : { year: 'numeric', month: 'short', day: 'numeric' };
-  return d.toLocaleDateString(undefined, opts);
+  return `${d.toLocaleDateString(undefined, opts)} ${time}`;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
