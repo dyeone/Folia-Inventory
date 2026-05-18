@@ -121,7 +121,12 @@ export function Dashboard({
   }, [items]);
 
   return (
-    <div className="space-y-6">
+    // overflow-x-hidden keeps the dashboard from horizontal-swiping on
+    // mobile. Even one child that ignores its container's width (e.g. a
+    // long unsplittable number, an inline element with whitespace:nowrap)
+    // can push the page wider than the viewport otherwise. Clipping here
+    // is the defensive choice rather than chasing every truncate site.
+    <div className="space-y-6 overflow-x-hidden">
       {/* Primary stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard icon={Archive} label="Active SKUs" value={stats.totalActive} sub={`${stats.tcCount} TC · ${stats.plantCount} Plant`} color="emerald" />

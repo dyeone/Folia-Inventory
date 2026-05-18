@@ -37,11 +37,12 @@ export function PackingView({
   // 'shipped' for the archive. Defaults to 'ready' since that's the
   // common operator workflow.
   const [subTab, setSubTab] = useState('ready');
-  // Box-lookup scanner state. When the user taps "Scan box" and a
-  // decode succeeds we set scannedBoxId; the list then filters to
-  // just that one box (across whichever sub-tab it lives in) so the
-  // operator sees its items immediately.
-  const [scannerOpen, setScannerOpen] = useState(false);
+  // Scanner state. scannerMode picks which lookup path the next decode
+  // runs through: 'box' resolves a B-XXXXXX code to a box, 'item' looks
+  // up which open/shipped box contains a given item SKU. Either way,
+  // a successful match sets scannedBoxId which then filters the list
+  // to that one box.
+  const [scannerMode, setScannerMode] = useState(null); // 'box' | 'item' | null
   const [scannedBoxId, setScannedBoxId] = useState(null);
 
   // Shipments keyed by shipmentBoxId. We need these to know which boxes
@@ -180,6 +181,40 @@ export function PackingView({
     showToast(`No box matches ${code}`);
   };
 
+  // Handler for "Scan item" — decodes an inventory SKU and surfaces the
+  // box that contains it. Walks both Ready and Shipped to find the box.
+  // On miss, the toast says the SKU isn't in any active box (likely the
+  // item isn't sold yet, or its box has been deleted).
+  const handleScannedItemSku = (rawText) => {
+    const sku = String(rawText || '').trim().toUpperCase();
+    if (!sku) return;
+    const findBoxWithSku = (groupArr) => {
+      for (const g of groupArr) {
+        for (const b of g.boxes) {
+          if (b.items.some(i => String(i.sku || '').toUpperCase() === sku)) {
+            return b;
+          }
+        }
+      }
+      return null;
+    };
+    const inReady = findBoxWithSku(groups);
+    if (inReady) {
+      setSubTab('ready');
+      setScannedBoxId(inReady.id);
+      showToast(`${sku} is in box ${shortBoxCode(inReady.id)}`);
+      return;
+    }
+    const inShipped = findBoxWithSku(shipped.groups);
+    if (inShipped) {
+      setSubTab('shipped');
+      setScannedBoxId(inShipped.id);
+      showToast(`${sku} is in shipped box ${shortBoxCode(inShipped.id)}`);
+      return;
+    }
+    showToast(`SKU ${sku} isn't in any active box`);
+  };
+
   // Apply the box-lookup filter when active. Each group's box list is
   // narrowed to just the scanned box; groups with no surviving boxes
   // are dropped. Same logic applied to the Shipped archive so the
@@ -210,13 +245,22 @@ export function PackingView({
             across sale events.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setScannerOpen(true)}
-          className="shrink-0 inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800"
-        >
-          <ScanLine className="w-4 h-4" /> Scan box
-        </button>
+        <div className="shrink-0 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setScannerMode('box')}
+            className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800"
+          >
+            <ScanLine className="w-4 h-4" /> Scan box
+          </button>
+          <button
+            type="button"
+            onClick={() => setScannerMode('item')}
+            className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-emerald-600 text-emerald-700 bg-white hover:bg-emerald-50 active:bg-emerald-100"
+          >
+            <ScanLine className="w-4 h-4" /> Scan item
+          </button>
+        </div>
       </div>
 
       {/* Active-filter banner shown when scannedBoxId is set. Dismissing
@@ -438,10 +482,13 @@ export function PackingView({
         />
       )}
 
-      {scannerOpen && (
+      {scannerMode && (
         <CameraScanner
-          onScan={handleScannedBoxCode}
-          onClose={() => setScannerOpen(false)}
+          onScan={(text) => {
+            if (scannerMode === 'box') handleScannedBoxCode(text);
+            else if (scannerMode === 'item') handleScannedItemSku(text);
+          }}
+          onClose={() => setScannerMode(null)}
         />
       )}
 
