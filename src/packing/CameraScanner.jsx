@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X, Camera, Keyboard } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
 
@@ -47,7 +48,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
     });
     scannerRef.current = scanner;
 
-    const onDecoded = async (text) => {
+    const onDecoded = (text) => {
       if (closedRef.current) return;
       setScans(c => c + 1);
       // 2-second per-value debounce so a barcode held in view doesn't
@@ -58,25 +59,26 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
       recentScans.current.set(text, now);
 
       if (!continuous) {
-        // Tear down the camera BEFORE firing onScan. Otherwise the
-        // camera modal (fixed inset-0 z-50) stays in the DOM for the
-        // frame between setActiveBoxId and setCameraMode(null), which
-        // looks like a blank screen on iOS Safari while the
-        // MediaStream releases. Awaiting stop() guarantees the camera
-        // overlay is gone before the parent state change lands.
-        await stopAndClose();
-        // Defer one tick so the unmount render flushes before the new
-        // active-box state triggers the next render.
-        setTimeout(() => onScan(text), 0);
+        // Close the camera and fire onScan in one synchronous batch
+        // so React processes both state changes in the same render.
+        // Don't await scanner.stop() — iOS Safari has been observed
+        // hanging on that promise after a getUserMedia release, which
+        // leaves the whole React tree blank waiting for an .await that
+        // never resolves. Fire-and-forget the stop instead; the
+        // unmount alone removes the video element from the DOM.
+        closedRef.current = true;
+        scanner.stop().catch(() => { /* tear-down race; ignore */ });
+        onClose?.();
+        onScan(text);
       } else {
         onScan(text);
       }
     };
 
-    const stopAndClose = async () => {
+    const stopAndClose = () => {
       if (closedRef.current) return;
       closedRef.current = true;
-      try { await scanner.stop(); } catch { /* already stopped */ }
+      scanner.stop().catch(() => { /* already stopped */ });
       onClose?.();
     };
 
@@ -135,7 +137,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
     }
   };
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 bg-black flex flex-col">
       <div className="flex items-center gap-2 px-3 py-3 pt-safe text-white bg-black/60">
         <Camera className="w-5 h-5" />
@@ -204,7 +206,8 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }
 
