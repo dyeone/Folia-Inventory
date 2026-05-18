@@ -568,18 +568,25 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
             className={`text-sm flex items-start justify-between gap-3 rounded px-2 py-1.5 ${rowBg} ${shippedAlready ? 'opacity-60' : ''}`}
           >
             {showPackedToggle && (
-              <button
-                type="button"
-                onClick={() => onTogglePacked(item.id, !isPacked)}
-                title={isPacked ? 'Mark as unpacked' : 'Mark as packed'}
-                className={`mt-0.5 shrink-0 w-4 h-4 rounded border flex items-center justify-center transition ${
-                  isPacked
-                    ? 'bg-emerald-600 border-emerald-700 text-white'
-                    : 'bg-white border-gray-400 hover:border-emerald-500'
-                }`}
-              >
-                {isPacked && <Check className="w-3 h-3" />}
-              </button>
+              isPacked ? (
+                <button
+                  type="button"
+                  onClick={() => onTogglePacked(item.id, false)}
+                  title="Mark as unpacked"
+                  className="shrink-0 text-[11px] font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
+                >
+                  <X className="w-3 h-3" /> Unpack
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onTogglePacked(item.id, true)}
+                  title="Mark as packed"
+                  className="shrink-0 text-[11px] font-medium px-2 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 flex items-center gap-1"
+                >
+                  <Check className="w-3 h-3" /> Pack
+                </button>
+              )
             )}
             <div className="min-w-0 flex-1">
               <div className={`flex items-baseline gap-2 flex-wrap ${isPacked ? 'line-through text-gray-500' : ''}`}>
