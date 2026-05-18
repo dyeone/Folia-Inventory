@@ -57,7 +57,12 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
 
     scanner
       .start(
-        { facingMode: { ideal: 'environment' } },
+        // html5-qrcode wants either a plain string or { exact: ... }
+        // for facingMode — { ideal: ... } trips its validator with
+        // "'facingMode' should be string or object with exact as key".
+        // Use the plain string so phones with no rear camera fall back
+        // gracefully instead of erroring out.
+        { facingMode: 'environment' },
         {
           fps: 10,
           // Aspect ratio matches CODE128 — wide and short.
