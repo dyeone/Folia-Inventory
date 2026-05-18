@@ -619,13 +619,14 @@ function BoxRow({
               ? `${shipped}/${total} shipped`
               : `${total} ${total === 1 ? 'item' : 'items'}`}
           </span>
-          {/* Primary action button, state-driven. Stops propagation so
-              clicking it doesn't also toggle the row's expanded state.
-              Hidden entirely when the box is fully shipped (action===null). */}
+          {/* State-driven secondary actions. Stops propagation so clicking
+              doesn't also toggle the row's expanded state. The state-driven
+              "Mark shipped" branch is gone — that's now the always-visible
+              button below, available even without a label or tracking row. */}
           {action?.kind === 'buy-label' && (
             <button
               onClick={(e) => { stop(e); onBuyLabel(); }}
-              className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 flex items-center gap-1"
+              className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
             >
               <Truck className="w-3 h-3" /> Buy label
             </button>
@@ -633,12 +634,16 @@ function BoxRow({
           {action?.kind === 'enter-tracking' && !editingTracking && (
             <button
               onClick={(e) => { stop(e); setEditingTracking(true); }}
-              className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 flex items-center gap-1"
+              className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
             >
               <Pencil className="w-3 h-3" /> Enter tracking
             </button>
           )}
-          {action?.kind === 'ship' && (
+          {/* Always-visible Mark shipped on open boxes — operators can ship
+              a box without first buying a label / entering tracking when
+              they're tracked outside Folia. Hidden only on fully-shipped
+              boxes (action===null). */}
+          {action && (
             <button
               onClick={handleMarkShipped}
               disabled={busy}
