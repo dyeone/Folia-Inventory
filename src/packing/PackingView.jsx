@@ -738,6 +738,17 @@ function BoxRow({
 
   const stop = (e) => e.stopPropagation();
 
+  const statusLabel = allShipped
+    ? `${total} shipped`
+    : partial
+    ? `${shipped}/${total} shipped`
+    : `${total} ${total === 1 ? 'item' : 'items'}`;
+  const statusClass = partial
+    ? 'text-amber-700 font-medium'
+    : allShipped
+    ? 'text-emerald-700'
+    : 'text-gray-600';
+
   return (
     <div className="rounded-lg border border-gray-100 hover:border-emerald-400 transition">
       <div
@@ -751,89 +762,81 @@ function BoxRow({
             setExpanded((v) => !v);
           }
         }}
-        className="w-full text-left flex items-center justify-between gap-2 px-3 py-2 cursor-pointer hover:bg-emerald-50/30 active:bg-emerald-50"
+        className="w-full text-left px-3 py-2.5 cursor-pointer hover:bg-emerald-50/30 active:bg-emerald-50"
       >
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${carrierClass}`}>
+        {/* Row 1 — identity. Carrier badge + box code on the left, item-
+            count + chevron drill-in on the right. Single line, never
+            wraps; sale info moves to row 2 below. */}
+        <div className="flex items-center gap-2">
+          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${carrierClass}`}>
             {carrierLabel}
           </span>
-          {/* Short, deterministic box code — same value that gets printed
-              + barcoded on the physical box label. Visible on the row so
-              the operator can cross-reference when packing. */}
           <span className="font-mono text-[11px] text-gray-600 shrink-0">
             {shortBoxCode(box.id)}
           </span>
-          <span className="text-sm text-gray-900 truncate">{sale?.name || '(unknown sale)'}</span>
-          {sale?.date && <span className="text-xs text-gray-400 shrink-0">{sale.date}</span>}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className={`text-xs ${partial ? 'text-amber-700 font-medium' : allShipped ? 'text-emerald-700' : 'text-gray-600'}`}>
-            {allShipped
-              ? `${total} shipped`
-              : partial
-              ? `${shipped}/${total} shipped`
-              : `${total} ${total === 1 ? 'item' : 'items'}`}
-          </span>
-          {/* Box-level Pack all — packs every still-unpacked sold item in
-              the box. Hidden when there's nothing to pack. Per-item Pack
-              buttons in the expanded list still work for partial packs. */}
-          {action && onTogglePacked && unpackedSoldCount > 0 && (
-            <button
-              onClick={handlePackAll}
-              disabled={busy}
-              title={`Mark all ${unpackedSoldCount} unpacked item${unpackedSoldCount === 1 ? '' : 's'} as packed`}
-              className="text-xs font-medium px-2.5 py-1 rounded-md border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 disabled:opacity-60 flex items-center gap-1"
-            >
-              <Check className="w-3 h-3" /> Pack all
-              <span className="text-emerald-600">· {unpackedSoldCount}</span>
-            </button>
-          )}
-          {/* State-driven secondary actions. Stops propagation so clicking
-              doesn't also toggle the row's expanded state. The state-driven
-              "Mark shipped" branch is gone — that's now the always-visible
-              button below, available even without a label or tracking row. */}
-          {action?.kind === 'buy-label' && (
-            <button
-              onClick={(e) => { stop(e); onBuyLabel(); }}
-              className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
-            >
-              <Truck className="w-3 h-3" /> Buy label
-            </button>
-          )}
-          {action?.kind === 'enter-tracking' && !editingTracking && (
-            <button
-              onClick={(e) => { stop(e); setEditingTracking(true); }}
-              className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
-            >
-              <Pencil className="w-3 h-3" /> Enter tracking
-            </button>
-          )}
-          {/* Always-visible Mark shipped on open boxes — operators can ship
-              a box without first buying a label / entering tracking when
-              they're tracked outside Folia. Hidden only on fully-shipped
-              boxes (action===null). */}
-          {action && (
-            <button
-              onClick={handleMarkShipped}
-              disabled={busy}
-              className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 flex items-center gap-1"
-            >
-              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-              Mark shipped
-            </button>
-          )}
-          {/* Drill-in to the per-sale pane for label PDFs / void / clear
-              tracking. Kept distinct from the row toggle so the operator
-              can still get to the full ShipBoxCard UI. */}
+          <div className="flex-1" />
+          <span className={`text-xs shrink-0 ${statusClass}`}>{statusLabel}</span>
           <button
             type="button"
             onClick={(e) => { stop(e); onOpen(); }}
             title="Open in sale view"
-            className="p-1 -mr-1 text-gray-400 hover:text-emerald-700 hover:bg-emerald-50 rounded"
+            className="p-1 -mr-1 text-gray-400 hover:text-emerald-700 hover:bg-emerald-50 rounded shrink-0"
           >
             <ChevronRight className="w-4 h-4" />
           </button>
         </div>
+
+        {/* Row 2 — sale info. Plenty of room to display the full sale
+            name + date on its own line; truncates on overflow. */}
+        {(sale?.name || sale?.date) && (
+          <div className="mt-0.5 flex items-baseline gap-2 text-sm">
+            <span className="text-gray-900 truncate">{sale?.name || '(unknown sale)'}</span>
+            {sale?.date && <span className="text-xs text-gray-400 shrink-0">{sale.date}</span>}
+          </div>
+        )}
+
+        {/* Row 3 — actions. Hidden when no actionable state (e.g. shipped
+            box). Wraps on overflow so action buttons can't get pushed off
+            screen on narrow viewports. */}
+        {action && (
+          <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+            {onTogglePacked && unpackedSoldCount > 0 && (
+              <button
+                onClick={handlePackAll}
+                disabled={busy}
+                title={`Mark all ${unpackedSoldCount} unpacked item${unpackedSoldCount === 1 ? '' : 's'} as packed`}
+                className="text-xs font-medium px-2.5 py-1 rounded-md border border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 active:bg-emerald-200 disabled:opacity-60 flex items-center gap-1"
+              >
+                <Check className="w-3 h-3" /> Pack all
+                <span className="text-emerald-600">· {unpackedSoldCount}</span>
+              </button>
+            )}
+            {action.kind === 'buy-label' && (
+              <button
+                onClick={(e) => { stop(e); onBuyLabel(); }}
+                className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
+              >
+                <Truck className="w-3 h-3" /> Buy label
+              </button>
+            )}
+            {action.kind === 'enter-tracking' && !editingTracking && (
+              <button
+                onClick={(e) => { stop(e); setEditingTracking(true); }}
+                className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
+              >
+                <Pencil className="w-3 h-3" /> Enter tracking
+              </button>
+            )}
+            <button
+              onClick={handleMarkShipped}
+              disabled={busy}
+              className="ml-auto text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 flex items-center gap-1"
+            >
+              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+              Mark shipped
+            </button>
+          </div>
+        )}
       </div>
 
       {expanded && (
