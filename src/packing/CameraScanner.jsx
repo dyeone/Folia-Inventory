@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Camera, Keyboard, Check } from 'lucide-react';
+import { X, Camera, Keyboard, Check, Plus, Minus } from 'lucide-react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 
@@ -47,6 +47,12 @@ export function CameraScanner({ onScan, onClose }) {
   const [manualOpen, setManualOpen] = useState(false);
   // Flash-on-decode for visible "we got it" feedback.
   const [success, setSuccess] = useState(false);
+  // Zoom controls. Phones can't focus closer than ~4 inches; zooming
+  // in lets the operator hold the phone further from the label
+  // (where focus actually locks) and still fill the frame with the
+  // barcode. Caps is null if the device doesn't expose zoom.
+  const [zoomCaps, setZoomCaps] = useState(null);
+  const [zoom, setZoom] = useState(1);
 
   // Latest-callback refs so the decoder callback (set up once on
   // mount) always invokes the most recent version of onScan/onClose
@@ -116,11 +122,14 @@ export function CameraScanner({ onScan, onClose }) {
       }
       streamRef.current = stream;
 
-      // Try to set the camera to continuous autofocus so the barcode
-      // sharpens up as the operator moves the phone. Best-effort —
-      // not every device exposes focusMode through MediaStreamTrack
-      // constraints; on iOS Safari it's usually fine, on some
-      // Androids it isn't. Either way the camera still works.
+      // Best-effort camera tuning. Two things we try to set if the
+      // device exposes them:
+      //   - focusMode='continuous' so the barcode sharpens up as the
+      //     operator moves the phone
+      //   - zoom around 2x as a starting point — phones can't focus
+      //     closer than ~4 inches, so zooming in lets the operator
+      //     hold the phone further from the label (where focus actually
+      //     locks) and still fill the frame
       try {
         const videoTrack = stream.getVideoTracks()[0];
         if (videoTrack?.getCapabilities) {
@@ -128,6 +137,16 @@ export function CameraScanner({ onScan, onClose }) {
           const advanced = [];
           if (caps?.focusMode?.includes?.('continuous')) {
             advanced.push({ focusMode: 'continuous' });
+          }
+          if (caps?.zoom) {
+            const initial = Math.min(2, caps.zoom.max ?? 2);
+            advanced.push({ zoom: initial });
+            setZoomCaps({
+              min: caps.zoom.min ?? 1,
+              max: caps.zoom.max ?? initial,
+              step: caps.zoom.step ?? 0.5,
+            });
+            setZoom(initial);
           }
           if (advanced.length) {
             await videoTrack.applyConstraints({ advanced });
@@ -197,6 +216,18 @@ export function CameraScanner({ onScan, onClose }) {
       teardown();
     };
   }, []);
+
+  // Apply a new zoom level to the live MediaStream. Clamp to the
+  // device's reported [min, max] so we don't trigger an OverconstrainedError.
+  const applyZoom = async (next) => {
+    if (!zoomCaps || !streamRef.current) return;
+    const clamped = Math.max(zoomCaps.min, Math.min(zoomCaps.max, next));
+    try {
+      const track = streamRef.current.getVideoTracks()[0];
+      await track.applyConstraints({ advanced: [{ zoom: clamped }] });
+      setZoom(clamped);
+    } catch { /* race during teardown; ignore */ }
+  };
 
   const handleManualSubmit = (e) => {
     e?.preventDefault();
@@ -271,6 +302,37 @@ export function CameraScanner({ onScan, onClose }) {
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* Zoom controls — vertical column on the right side of the
+            video. Phone cameras can't focus closer than ~4 inches;
+            zooming in lets the operator hold the phone farther from
+            the barcode (where focus locks) and still fill the frame.
+            Only shown when the device exposes the zoom capability. */}
+        {zoomCaps && zoomCaps.max > zoomCaps.min && (
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex flex-col items-center gap-1 bg-black/50 rounded-full px-1.5 py-2">
+            <button
+              type="button"
+              onClick={() => applyZoom(zoom + (zoomCaps.step || 0.5))}
+              disabled={zoom >= zoomCaps.max}
+              aria-label="Zoom in"
+              className="w-9 h-9 rounded-full bg-white/15 text-white flex items-center justify-center active:bg-white/30 disabled:opacity-40"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+            <div className="text-white text-xs font-mono py-0.5 tabular-nums">
+              {zoom.toFixed(1)}×
+            </div>
+            <button
+              type="button"
+              onClick={() => applyZoom(zoom - (zoomCaps.step || 0.5))}
+              disabled={zoom <= zoomCaps.min}
+              aria-label="Zoom out"
+              className="w-9 h-9 rounded-full bg-white/15 text-white flex items-center justify-center active:bg-white/30 disabled:opacity-40"
+            >
+              <Minus className="w-4 h-4" />
+            </button>
           </div>
         )}
 
