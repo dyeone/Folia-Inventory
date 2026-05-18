@@ -121,6 +121,31 @@ export function PackerView({ onLogout }) {
   // immediately and the operator can scan the next plant without
   // waiting on a full refetch. If the upsert fails we roll back
   // just this item — other in-flight packs aren't disturbed.
+  // Optimistic pack-by-id. Flips the local item to packed before the
+  // network call lands, rolls back just that item on failure. Used by
+  // both the scan handler (after SKU lookup) and the per-row 'Mark
+  // packed' button (for unmatched placeholders that have a synthetic
+  // SKU and can't be scanned).
+  const packById = async (itemId, displayLabel) => {
+    const now = new Date().toISOString();
+    setItems(prev => prev.map(i =>
+      i.id === itemId ? { ...i, packedAt: now } : i
+    ));
+    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
+    showToast(`Packed ${displayLabel}`, 1500);
+    try {
+      await api.upsertItems([{ id: itemId, packedAt: now }]);
+    } catch (e) {
+      setItems(prev => prev.map(i =>
+        i.id === itemId ? { ...i, packedAt: null } : i
+      ));
+      showToast(`Pack failed for ${displayLabel}: ${e.message || 'unknown'}`, 4000);
+    }
+  };
+
+  // Shared item-scan handler used by both the text input in ItemScanner
+  // and the camera (when in 'item' mode). Lifted to PackerView so the
+  // camera doesn't need to live inside ItemScanner.
   const handleScanItem = async (rawText) => {
     if (!activeBox) return;
     const sku = normalizeSku(rawText);
@@ -140,22 +165,18 @@ export function PackerView({ onLogout }) {
       showToast(`SKU ${sku} already packed`, 2500);
       return;
     }
-    const now = new Date().toISOString();
-    setItems(prev => prev.map(i =>
-      i.id === candidate.id ? { ...i, packedAt: now } : i
-    ));
-    if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
-    showToast(`Packed ${sku}`, 1500);
-    try {
-      await api.upsertItems([{ id: candidate.id, packedAt: now }]);
-    } catch (e) {
-      // Roll back just THIS item — leave the other items alone in
-      // case the operator has scanned several in quick succession.
-      setItems(prev => prev.map(i =>
-        i.id === candidate.id ? { ...i, packedAt: null } : i
-      ));
-      showToast(`Pack failed for ${sku}: ${e.message || 'unknown'}`, 4000);
-    }
+    await packById(candidate.id, sku);
+  };
+
+  // Per-row manual pack for unmatched placeholders. They have a
+  // synthetic SKU (UNMATCHED-...) that doesn't appear on a real
+  // barcode, so scanning can never pack them. The packer taps the
+  // 'Mark packed' button on the row directly.
+  const handleMarkPacked = async (item) => {
+    if (item.packedAt) return;
+    if (item.status !== 'sold') return;
+    const label = item.name?.trim() || item.sku || 'item';
+    await packById(item.id, label.slice(0, 30));
   };
 
   if (loading) {
@@ -183,6 +204,7 @@ export function PackerView({ onLogout }) {
         ? <ItemScanner
             box={activeBox}
             onScan={handleScanItem}
+            onMarkPacked={handleMarkPacked}
             onOpenCamera={() => setCameraMode('item')}
             onDone={() => goToBox(null)}
           />
@@ -315,7 +337,7 @@ function BoxScanner({ onScan, onOpenCamera, hint }) {
 // Items screen — list of unpacked items in the active box + an item
 // scanner that flips matching items to packed. Scan logic lives in
 // PackerView so the camera (also at PackerView level) can share it.
-function ItemScanner({ box, onScan, onOpenCamera, onDone }) {
+function ItemScanner({ box, onScan, onMarkPacked, onOpenCamera, onDone }) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const inputRef = useRef(null);
@@ -373,7 +395,9 @@ function ItemScanner({ box, onScan, onOpenCamera, onDone }) {
             No items in this box.
           </div>
         )}
-        {unpackedItems.map(item => <ItemRow key={item.id} item={item} />)}
+        {unpackedItems.map(item => (
+          <ItemRow key={item.id} item={item} onMarkPacked={onMarkPacked} />
+        ))}
         {packedItems.length > 0 && unpackedItems.length > 0 && (
           <div className="pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400 font-semibold">
             Packed
@@ -449,11 +473,15 @@ function CarrierBadge({ carrier }) {
   );
 }
 
-function ItemRow({ item }) {
+function ItemRow({ item, onMarkPacked }) {
   const isPacked = !!item.packedAt;
   const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
   const variety = (item.variety || '').trim();
+  // Unmatched placeholders have a synthetic SKU (UNMATCHED-...) that
+  // can't be scanned off a barcode label. Show a manual 'Mark packed'
+  // button on the row so the packer can flip its status without a scan.
+  const showManualPack = isUnmatched && !isPacked && !!onMarkPacked;
 
   // Color family by match status, mirroring the Shipping tab so the
   // packer sees the same emerald/purple convention the admin sees:
@@ -498,6 +526,16 @@ function ItemRow({ item }) {
         </div>
         {item.quantity > 1 && (
           <span className={`text-xs ${family.accent} shrink-0`}>×{item.quantity}</span>
+        )}
+        {showManualPack && (
+          <button
+            type="button"
+            onClick={() => onMarkPacked(item)}
+            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-md bg-purple-600 text-white hover:bg-purple-700 active:bg-purple-800 flex items-center gap-1"
+            title="No scannable barcode — mark packed manually"
+          >
+            <Check className="w-3.5 h-3.5" /> Pack
+          </button>
         )}
       </div>
     </div>
