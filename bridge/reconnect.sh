@@ -42,25 +42,34 @@ if [ -n "${1:-}" ]; then
 elif [ -n "${WIRELESS_TARGET:-}" ]; then
   TARGET="$WIRELESS_TARGET"
 else
-  echo "→ Discovering phone via mDNS (Android 11+ Wireless Debugging)…"
-  # `adb mdns services` lists devices advertising adb services on the LAN.
-  # `_adb-tls-connect._tcp` is the post-pair connect service; that's the
-  # endpoint we want. Allow a few retries because mDNS can take a moment
-  # after the phone joins WiFi.
-  for i in 1 2 3 4 5 6 7 8; do
-    line=$(adb mdns services 2>/dev/null | awk '/_adb-tls-connect/ {print $3; exit}' || true)
-    if [ -n "$line" ]; then
-      TARGET="$line"
-      echo "  ✓ found $TARGET"
-      break
-    fi
-    sleep 1
-  done
+  # 0. Already connected? If `adb devices` already shows an ip:port entry
+  # marked "device", we're done — no discovery or reconnect needed. This
+  # is the common case after the daemon survives across runs.
+  existing=$(adb devices 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:/ && $2=="device" {print $1; exit}')
+  if [ -n "$existing" ]; then
+    TARGET="$existing"
+    echo "→ Already connected: $TARGET"
+  else
+    echo "→ Discovering phone via mDNS (Android 11+ Wireless Debugging)…"
+    # `adb mdns services` lists devices advertising adb services on the LAN.
+    # `_adb-tls-connect._tcp` is the post-pair connect service; that's the
+    # endpoint we want. Allow a few retries because mDNS can take a moment
+    # after the phone joins WiFi.
+    for i in 1 2 3 4 5 6 7 8; do
+      line=$(adb mdns services 2>/dev/null | awk '/_adb-tls-connect/ {print $3; exit}' || true)
+      if [ -n "$line" ]; then
+        TARGET="$line"
+        echo "  ✓ found $TARGET"
+        break
+      fi
+      sleep 1
+    done
 
-  # Fall back to a previously-saved IP if mDNS turned up nothing.
-  if [ -z "$TARGET" ] && [ -f "$TARGET_FILE" ]; then
-    TARGET=$(cat "$TARGET_FILE")
-    echo "  mDNS came up empty; falling back to saved $TARGET"
+    # Fall back to a previously-saved IP if mDNS turned up nothing.
+    if [ -z "$TARGET" ] && [ -f "$TARGET_FILE" ]; then
+      TARGET=$(cat "$TARGET_FILE")
+      echo "  mDNS came up empty; falling back to saved $TARGET"
+    fi
   fi
 fi
 
@@ -93,6 +102,22 @@ esac
 echo "→ Connecting to $TARGET"
 adb connect "$TARGET" >/tmp/folia-adb-connect.log 2>&1 || true
 if ! adb devices | awk -v t="$TARGET" 'NR>1 && $1==t && $2=="device"' | grep -q .; then
+  # Stale-port fallback: when the saved target was a Wireless Debugging
+  # TLS port from a previous session but the phone has since rebooted
+  # into legacy `adb tcpip 5555` mode, the saved :43xxx connect fails.
+  # Try :5555 on the same IP before giving up.
+  TARGET_IP="${TARGET%:*}"
+  TARGET_PORT="${TARGET##*:}"
+  if [ "$TARGET_PORT" != "5555" ] && [ -n "$TARGET_IP" ]; then
+    LEGACY="$TARGET_IP:5555"
+    echo "  $TARGET refused; trying legacy $LEGACY"
+    adb connect "$LEGACY" >>/tmp/folia-adb-connect.log 2>&1 || true
+    if adb devices | awk -v t="$LEGACY" 'NR>1 && $1==t && $2=="device"' | grep -q .; then
+      TARGET="$LEGACY"
+    fi
+  fi
+fi
+if ! adb devices | awk -v t="$TARGET" 'NR>1 && $1==t && $2=="device"' | grep -q .; then
   cat >&2 <<EOF
 ✗ adb couldn't reach $TARGET.
 
@@ -113,8 +138,10 @@ echo "$TARGET" > "$TARGET_FILE"
 echo "  ✓ connected, saved to $TARGET_FILE"
 
 # ─── Forward + u2 ──────────────────────────────────────────────────────────
+# Pin every adb call to $TARGET — when both USB and the wireless device
+# are connected, plain `adb` errors with "more than one device/emulator".
 echo "→ Setting up adb forward tcp:9008 → phone:9008"
-adb forward tcp:9008 tcp:9008 >/dev/null
+adb -s "$TARGET" forward tcp:9008 tcp:9008 >/dev/null
 echo "  ✓ forward live"
 
 echo "→ Pinging u2 server"
@@ -122,9 +149,9 @@ if curl -sSf -m 2 http://localhost:9008/ping >/dev/null 2>&1; then
   echo "  ✓ u2 responding"
 else
   echo "  u2 dead — relaunching"
-  adb shell pkill -f 'com.wetest.uia2' >/dev/null 2>&1 || true
+  adb -s "$TARGET" shell pkill -f 'com.wetest.uia2' >/dev/null 2>&1 || true
   sleep 1
-  adb shell "nohup sh -c 'CLASSPATH=/data/local/tmp/u2.jar app_process / com.wetest.uia2.Main' > /sdcard/u2.log 2>&1 &" >/dev/null
+  adb -s "$TARGET" shell "nohup sh -c 'CLASSPATH=/data/local/tmp/u2.jar app_process / com.wetest.uia2.Main' > /sdcard/u2.log 2>&1 &" >/dev/null
   for i in 1 2 3 4 5 6 7 8; do
     sleep 1
     if curl -sSf -m 2 http://localhost:9008/ping >/dev/null 2>&1; then
