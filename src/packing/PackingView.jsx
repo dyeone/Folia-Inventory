@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
-  Truck, Pencil, Check, X, Loader2,
+  Truck, Pencil, Check, X, Loader2, Trash2,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -25,7 +25,7 @@ export { SummaryStat } from './SummaryStat.jsx';
 // untouched while we iterate the top view.
 // ───────────────────────────────────────────────────────────────────────────
 
-export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog }) {
+export function PackingView({ inventoryItems, sales, onShipBox, onDeleteAllOpenBoxes, setConfirmDialog }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -89,6 +89,21 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
       .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)),
     [sales, inventoryItems]
   );
+
+  // Pre-compute the open-box delete summary so the confirm dialog can
+  // show what will actually happen ("Revert N items / soft-delete M
+  // placeholders") instead of a generic "are you sure?" prompt.
+  const deleteSummary = useMemo(() => {
+    let matched = 0;
+    let unmatched = 0;
+    for (const item of inventoryItems) {
+      if (item.deletedAt) continue;
+      if (item.status !== 'sold') continue;
+      if (!item.shipmentBoxId) continue;
+      if (item.lotKind === 'unmatched') unmatched++; else matched++;
+    }
+    return { matched, unmatched, total: matched + unmatched };
+  }, [inventoryItems]);
 
   const activeSale = sales.find(s => s.id === activeSaleId);
   if (activeSale) {
@@ -194,6 +209,37 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
               </div>
             )}
           </section>
+
+          {/* Danger zone — wipe every open box in one click. Reverts
+              matched items back to 'listed' and soft-deletes unmatched
+              placeholders. Used to recover after an upload that went
+              wrong (wrong file, bad SKUs, etc.) so the operator can
+              clean up and re-apply. */}
+          {deleteSummary.total > 0 && onDeleteAllOpenBoxes && (
+            <section>
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmDialog?.({
+                    title: `Delete all open boxes?`,
+                    message: deleteSummary.unmatched > 0
+                      ? `Reverts ${deleteSummary.matched} matched item${deleteSummary.matched === 1 ? '' : 's'} back to "listed" and soft-deletes ${deleteSummary.unmatched} unmatched placeholder${deleteSummary.unmatched === 1 ? '' : 's'} (recoverable from Recently Deleted). Already-shipped items aren't touched.`
+                      : `Reverts ${deleteSummary.matched} matched item${deleteSummary.matched === 1 ? '' : 's'} back to "listed". Already-shipped items aren't touched.`,
+                    confirmLabel: 'Delete all open boxes',
+                    danger: true,
+                    onConfirm: () => onDeleteAllOpenBoxes(),
+                  });
+                }}
+                className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-red-200 text-red-700 bg-white hover:bg-red-50 active:bg-red-100"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete all open boxes
+                <span className="text-xs text-red-500 font-normal ml-1">
+                  · {deleteSummary.matched} revert{deleteSummary.unmatched > 0 ? ` + ${deleteSummary.unmatched} placeholder${deleteSummary.unmatched === 1 ? '' : 's'}` : ''}
+                </span>
+              </button>
+            </section>
+          )}
 
           {awaitingUpload.length > 0 && (
             <section className="space-y-2">

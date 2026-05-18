@@ -768,6 +768,47 @@ function InventorySystem() {
             inventoryItems={items}
             sales={sales}
             setConfirmDialog={setConfirmDialog}
+            onDeleteAllOpenBoxes={async () => {
+              // "Open box" = at least one item still 'sold' (not shipped).
+              // Revert each still-'sold' matched item back to 'listed' and
+              // clear sale/buyer/shipment fields so the item is re-saleable.
+              // Soft-delete unmatched placeholder rows (lotKind='unmatched')
+              // since there's nothing to revert them to. Items already
+              // shipped within a partially-shipped box are left alone.
+              try {
+                const candidates = items.filter(i =>
+                  !i.deletedAt &&
+                  i.status === 'sold' &&
+                  i.shipmentBoxId,
+                );
+                const matched = candidates.filter(i => i.lotKind !== 'unmatched');
+                const unmatched = candidates.filter(i => i.lotKind === 'unmatched');
+                const updates = matched.map(i => ({
+                  id: i.id,
+                  status: 'listed',
+                  salePrice: null,
+                  soldAt: null,
+                  buyer: null,
+                  buyerUsername: null,
+                  buyerAddress: null,
+                  shipmentBoxId: null,
+                  shipmentCarrier: null,
+                  orderId: null,
+                  orderDate: null,
+                }));
+                if (updates.length > 0) await api.upsertItems(updates);
+                if (unmatched.length > 0) await api.deleteItems(unmatched.map(i => i.id));
+                const fresh = await api.getItems();
+                applyItemsFresh(fresh);
+                showToast(
+                  `Reverted ${matched.length} item${matched.length === 1 ? '' : 's'} to listed${
+                    unmatched.length > 0 ? ` · soft-deleted ${unmatched.length} placeholder${unmatched.length === 1 ? '' : 's'}` : ''
+                  }`,
+                );
+              } catch (e) {
+                showToast(e.message || 'Delete failed', 'error');
+              }
+            }}
             onShipBox={async (saleId, itemIds) => {
               try {
                 const now = new Date().toISOString();
