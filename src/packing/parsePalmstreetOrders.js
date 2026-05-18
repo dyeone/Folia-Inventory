@@ -158,8 +158,8 @@ export function parsePalmstreetOrders(rows) {
     // bundled row; emit one virtual item per SKU with even price split.
     // One SKU ⇒ override Palmstreet's (often empty) sku column with the
     // one parsed from the title. Zero ⇒ fall back to whatever Palmstreet
-    // gave us; the matcher will return null and the operator can link
-    // manually via the InventoryPicker.
+    // gave us; the matcher will return null and the row stays unmatched
+    // in the preview (manual linking has been removed by design).
     const skusInTitle = extractAllSkus(title);
 
     if (skusInTitle.length > 1) {

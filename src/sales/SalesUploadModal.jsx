@@ -5,14 +5,21 @@ import {
 import * as XLSX from 'xlsx';
 import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
 import { matchInventory } from '../packing/matchInventory.js';
-import { BoxesList, InventoryPicker, SummaryStat } from '../packing/PackingView.jsx';
+import { BoxesList, SummaryStat } from '../packing/PackingView.jsx';
 
 // Validate Sales modal — global, not per-sale-event.
 //
 // Upload a Palmstreet orders file → match each order line to an
-// inventory item by SKU (anywhere in the inventory, regardless of which
-// sale it was originally part of) → click Update Inventory to mark
-// matched items sold and persist buyer / order / shipment-box info.
+// inventory item by exact SKU (anywhere in the inventory, regardless
+// of which sale it was originally part of) → click Update Inventory
+// to mark matched items sold and persist buyer / order / shipment-box
+// info.
+//
+// Matching is exact-SKU-only — no fuzzy, no lot-number guessing, no
+// manual override. Unmatched rows are still listed in the preview so
+// the operator can see them, but they're skipped on apply. The fix is
+// to correct the SKU at source (inventory or the order file) and
+// re-upload, not to patch it in the UI.
 //
 // Sale-event association is preserved automatically because items keep
 // their `saleId` from when they were assigned to a lineup; this modal
@@ -22,8 +29,6 @@ export function SalesUploadModal({ items, onApply, onClose }) {
   const [boxes, setBoxes] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
-  const [overrides, setOverrides] = useState({}); // `${boxId}::${rowKey}` → invItemId | null
-  const [pickerFor, setPickerFor] = useState(null);
 
   const handleFile = async (file) => {
     setErr('');
@@ -48,29 +53,19 @@ export function SalesUploadModal({ items, onApply, onClose }) {
     setLoading(false);
   };
 
-  // Match each order line against the entire inventory. Manual override
-  // (set via the InventoryPicker) takes precedence; null override means
-  // the operator explicitly cleared a match.
+  // Match each order line against the entire inventory by exact SKU.
+  // No fallbacks, no overrides — unmatched rows surface in the preview
+  // and the operator fixes the source SKU before re-uploading.
   const resolved = useMemo(() => {
     if (!boxes) return null;
     return boxes.map(box => ({
       ...box,
-      items: box.items.map(item => {
-        const key = `${box.id}::${item.rowKey}`;
-        const override = overrides[key];
-        let match = null;
-        if (override === null) {
-          match = null;
-        } else if (override) {
-          const inv = items.find(i => i.id === override);
-          match = inv ? { item: inv, confidence: 'manual' } : null;
-        } else {
-          match = matchInventory(item, items);
-        }
-        return { ...item, match, manual: override !== undefined };
-      }),
+      items: box.items.map(item => ({
+        ...item,
+        match: matchInventory(item, items),
+      })),
     }));
-  }, [boxes, overrides, items]);
+  }, [boxes, items]);
 
   const summary = useMemo(() => {
     if (!resolved) return null;
@@ -136,7 +131,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
               Validate Sales
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Match each Palmstreet order to its inventory item by SKU, then update inventory.
+              Match each Palmstreet order to inventory by exact SKU. Unmatched rows are listed but skipped on apply.
             </p>
           </div>
           <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2" aria-label="Close">
@@ -170,9 +165,10 @@ export function SalesUploadModal({ items, onApply, onClose }) {
               <div className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3">
                 <div className="font-medium text-gray-900 mb-1">What this does:</div>
                 <ul className="space-y-0.5 list-disc list-inside">
-                  <li>Matches each order row against the full inventory by SKU</li>
+                  <li>Matches each order row against the full inventory by <em>exact SKU</em> (case-insensitive)</li>
                   <li>Marks matched items <em>sold</em> with the buyer's price, order ID, and address</li>
-                  <li>Groups items by buyer so the Packing tab can ship them</li>
+                  <li>Lists unmatched rows in the preview but skips them — fix the SKU at source and re-upload</li>
+                  <li>Groups items by buyer so the Shipping tab can ship them</li>
                 </ul>
               </div>
             </>
@@ -185,7 +181,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                   <span className="text-gray-500"> · {summary.totalItems} order rows</span>
                 </div>
                 <button
-                  onClick={() => { setBoxes(null); setFileName(''); setOverrides({}); }}
+                  onClick={() => { setBoxes(null); setFileName(''); }}
                   className="text-xs text-gray-600 hover:text-gray-900 flex items-center gap-1"
                 >
                   <ArrowLeft className="w-3 h-3" /> Different file
@@ -206,14 +202,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                 />
               </div>
 
-              <BoxesList
-                boxes={resolved}
-                onPick={(boxId, rowKey, title) => setPickerFor({ boxId, rowKey, title })}
-                onClearOverride={(boxId, rowKey) => {
-                  const key = `${boxId}::${rowKey}`;
-                  setOverrides(prev => ({ ...prev, [key]: null }));
-                }}
-              />
+              <BoxesList boxes={resolved} />
             </>
           )}
         </div>
@@ -236,19 +225,6 @@ export function SalesUploadModal({ items, onApply, onClose }) {
               <Check className="w-4 h-4" /> Update Inventory · {summary?.matched || 0} item{summary?.matched === 1 ? '' : 's'}
             </button>
           </div>
-        )}
-
-        {pickerFor && (
-          <InventoryPicker
-            title={pickerFor.title}
-            inventoryItems={items}
-            onPick={(invId) => {
-              const key = `${pickerFor.boxId}::${pickerFor.rowKey}`;
-              setOverrides(prev => ({ ...prev, [key]: invId }));
-              setPickerFor(null);
-            }}
-            onClose={() => setPickerFor(null)}
-          />
         )}
       </div>
     </div>

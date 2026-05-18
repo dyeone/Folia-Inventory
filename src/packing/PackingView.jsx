@@ -11,7 +11,6 @@ import { SummaryStat } from './SummaryStat.jsx';
 // Re-export the shared building blocks so SalesUploadModal's existing
 // imports keep working without a churn-y find-and-replace across files.
 export { BoxesList } from './BoxesList.jsx';
-export { InventoryPicker } from './InventoryPicker.jsx';
 export { SummaryStat } from './SummaryStat.jsx';
 
 // ───────────────────────────────────────────────────────────────────────────

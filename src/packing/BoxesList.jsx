@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import {
-  ChevronDown, ChevronRight, Truck, MapPin, Check, AlertCircle, Link2,
+  ChevronDown, ChevronRight, Truck, MapPin, Check, AlertCircle,
 } from 'lucide-react';
 
 // Renders the parsed/matched preview of a Palmstreet orders upload.
 // Used by the Validate Sales modal (SalesUploadModal). Each box shows
-// its items + match confidence; "Link" / "Reset" buttons let the user
-// override the match.
-export function BoxesList({ boxes, onPick, onClearOverride }) {
+// its items along with whether the row's SKU exactly matches a row in
+// inventory. Manual linking is intentionally not offered — the SKU
+// must match exactly, by design.
+export function BoxesList({ boxes }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
   return (
     <div className="space-y-3">
@@ -59,12 +60,7 @@ export function BoxesList({ boxes, onPick, onClearOverride }) {
             {!isCollapsed && (
               <div className="border-t border-gray-100 divide-y divide-gray-100">
                 {box.items.map(item => (
-                  <BoxItemRow
-                    key={item.rowKey}
-                    item={item}
-                    onPick={() => onPick(box.id, item.rowKey, item.title)}
-                    onClear={() => onClearOverride(box.id, item.rowKey)}
-                  />
+                  <BoxItemRow key={item.rowKey} item={item} />
                 ))}
                 {box.notes?.length > 0 && (
                   <div className="px-4 py-2 bg-amber-50 text-xs text-amber-900">
@@ -80,9 +76,8 @@ export function BoxesList({ boxes, onPick, onClearOverride }) {
   );
 }
 
-function BoxItemRow({ item, onPick, onClear }) {
+function BoxItemRow({ item }) {
   const match = item.match?.item;
-  const confidence = item.match?.confidence;
   return (
     <div className="px-4 py-2.5 flex items-start gap-3">
       <div className="flex-1 min-w-0">
@@ -99,35 +94,14 @@ function BoxItemRow({ item, onPick, onClear }) {
             <span className="font-mono">{match.sku}</span>
             <span className="opacity-70">·</span>
             <span className="truncate max-w-[200px]">{match.name}{match.variety ? ` · ${match.variety}` : ''}</span>
-            <span className="opacity-60 ml-1">({confidenceLabel(confidence)})</span>
           </div>
         ) : (
           <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-amber-50 text-amber-800 px-2 py-0.5 rounded border border-amber-200">
-            <AlertCircle className="w-3 h-3" /> No inventory match
+            <AlertCircle className="w-3 h-3" />
+            {item.sku ? `No inventory item with SKU ${item.sku}` : 'No SKU on this order line'}
           </div>
-        )}
-      </div>
-      <div className="flex flex-col gap-1 flex-shrink-0">
-        <button
-          onClick={onPick}
-          className="text-xs px-3 py-1.5 text-gray-700 bg-white border border-gray-200 hover:bg-gray-100 active:bg-gray-200 rounded-lg inline-flex items-center gap-1 font-medium"
-        >
-          <Link2 className="w-3.5 h-3.5" /> {match ? 'Change' : 'Link'}
-        </button>
-        {item.manual && (
-          <button onClick={onClear} className="text-xs px-2 py-1 text-gray-500 hover:text-gray-900">
-            Reset
-          </button>
         )}
       </div>
     </div>
   );
-}
-
-function confidenceLabel(c) {
-  if (c === 'sku') return 'SKU';
-  if (c === 'lot') return 'lot #';
-  if (c === 'fuzzy') return 'fuzzy';
-  if (c === 'manual') return 'manual';
-  return c;
 }
