@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, RefreshCw } from 'lucide-react';
+import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, RefreshCw, Camera } from 'lucide-react';
 import { api } from '../api.js';
 import { shortBoxCode } from '../labels/boxCode.js';
+import { CameraScanner } from './CameraScanner.jsx';
 
 // Full-screen mobile workflow for the 'packer' role. Two screens:
 //   1. Scan-box → operator scans/types a box code (B-XXXXXX). On valid
@@ -153,6 +154,7 @@ function TopBar({ onLogout, onRefresh, title, subtitle, onBack }) {
 // Scan-box screen — big input that the operator types/scans into.
 function BoxScanner({ onScan, hint }) {
   const [value, setValue] = useState('');
+  const [cameraOpen, setCameraOpen] = useState(false);
   const inputRef = useRef(null);
 
   // Autofocus on mount and after every submit so a hardware barcode
@@ -169,6 +171,12 @@ function BoxScanner({ onScan, hint }) {
     // try another scan either way.
     setTimeout(() => inputRef.current?.focus(), 0);
     return ok;
+  };
+
+  // Camera path: a successful decode fires the same onScan handler the
+  // text input uses, so box-lookup logic stays in one place.
+  const handleCameraScan = (text) => {
+    onScan(text);
   };
 
   return (
@@ -194,7 +202,21 @@ function BoxScanner({ onScan, hint }) {
         >
           Open box
         </button>
+        <button
+          type="button"
+          onClick={() => setCameraOpen(true)}
+          className="w-full mt-2 px-4 py-3 text-base font-medium bg-white border-2 border-emerald-600 text-emerald-700 rounded-xl active:bg-emerald-50 flex items-center justify-center gap-2"
+        >
+          <Camera className="w-5 h-5" /> Use camera
+        </button>
       </form>
+      {cameraOpen && (
+        <CameraScanner
+          onScan={handleCameraScan}
+          onClose={() => setCameraOpen(false)}
+          continuous={false}
+        />
+      )}
     </div>
   );
 }
@@ -204,6 +226,7 @@ function BoxScanner({ onScan, hint }) {
 function ItemScanner({ box, onRefresh, showToast, onDone }) {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
   const inputRef = useRef(null);
   useEffect(() => { inputRef.current?.focus(); }, [box.id]);
 
@@ -218,33 +241,43 @@ function ItemScanner({ box, onRefresh, showToast, onDone }) {
   const totalSold = unpackedItems.length + packedItems.length;
   const allPacked = totalSold > 0 && unpackedItems.length === 0;
 
-  const submit = async (e) => {
-    e?.preventDefault();
-    const sku = value.trim().toUpperCase();
+  // Shared scan-handler used by both the text input and the camera.
+  // Camera-decoded text often includes whitespace / line breaks — trim
+  // and uppercase before matching.
+  const handleScanText = async (rawText) => {
+    const sku = String(rawText || '').trim().toUpperCase();
     if (!sku) return;
     const candidate = box.items.find(
       i => String(i.sku || '').toUpperCase() === sku,
     );
     if (!candidate) {
       showToast(`SKU ${sku} isn't in this box`, 3500);
-    } else if (candidate.status !== 'sold') {
-      showToast(`SKU ${sku} is already ${candidate.status}`, 3500);
-    } else if (candidate.packedAt) {
-      showToast(`SKU ${sku} already packed`, 2500);
-    } else {
-      setBusy(true);
-      try {
-        await api.upsertItems([{ id: candidate.id, packedAt: new Date().toISOString() }]);
-        await onRefresh();
-        // Light haptic feedback if the platform offers it.
-        if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
-        showToast(`Packed ${sku}`, 1500);
-      } catch (err) {
-        showToast(err.message || 'Pack failed', 3500);
-      } finally {
-        setBusy(false);
-      }
+      return;
     }
+    if (candidate.status !== 'sold') {
+      showToast(`SKU ${sku} is already ${candidate.status}`, 3500);
+      return;
+    }
+    if (candidate.packedAt) {
+      showToast(`SKU ${sku} already packed`, 2500);
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.upsertItems([{ id: candidate.id, packedAt: new Date().toISOString() }]);
+      await onRefresh();
+      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
+      showToast(`Packed ${sku}`, 1500);
+    } catch (err) {
+      showToast(err.message || 'Pack failed', 3500);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    await handleScanText(value);
     setValue('');
     setTimeout(() => inputRef.current?.focus(), 0);
   };
@@ -299,6 +332,16 @@ function ItemScanner({ box, onRefresh, showToast, onDone }) {
             disabled={busy || allPacked}
             className="flex-1 px-4 py-3 text-base font-mono uppercase border-2 border-gray-300 rounded-xl focus:outline-none focus:border-emerald-500 disabled:bg-gray-100"
           />
+          {!allPacked && (
+            <button
+              type="button"
+              onClick={() => setCameraOpen(true)}
+              aria-label="Open camera scanner"
+              className="px-3 py-3 text-base font-semibold border-2 border-emerald-600 text-emerald-700 bg-white rounded-xl active:bg-emerald-50"
+            >
+              <Camera className="w-5 h-5" />
+            </button>
+          )}
           {allPacked ? (
             <button
               type="button"
@@ -318,6 +361,13 @@ function ItemScanner({ box, onRefresh, showToast, onDone }) {
           )}
         </div>
       </form>
+      {cameraOpen && (
+        <CameraScanner
+          continuous
+          onScan={handleScanText}
+          onClose={() => setCameraOpen(false)}
+        />
+      )}
     </div>
   );
 }
