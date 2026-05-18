@@ -24,7 +24,10 @@ const SLIP_PRINT_W = SLIP_W_MM - SLIP_MARGIN * 2; // 72mm
 // pre-calculation and as the y-cursor advance after each block.
 const H = {
   margin: SLIP_MARGIN,
-  logo: 24,
+  // Vertical budget for the logo block (logo image height + gap before
+  // the caption). Bump this together with LOGO_SIZE_MM below or the
+  // caption will collide with the logo.
+  logo: 44,
   divider: 4,
   customerBlock: 22,
   boxBlock: 18,
@@ -32,6 +35,10 @@ const H = {
   itemRow: 9,
   footer: 14,
 };
+
+// Logo image is drawn centered at this size (mm). H.logo above must be
+// >= this + a few mm of breathing room for the caption below.
+const LOGO_SIZE_MM = 40;
 
 // Convert public/logo.png → 1-bit black-on-transparent data URL,
 // cached at module scope so a session of repeated prints doesn't
@@ -116,10 +123,9 @@ async function buildPdf(box) {
 
   let y = H.margin;
 
-  // Logo — centered, ~20mm square.
+  // Logo — centered, LOGO_SIZE_MM square.
   if (logo) {
-    const logoSize = 20;
-    pdf.addImage(logo, 'PNG', (SLIP_W_MM - logoSize) / 2, y, logoSize, logoSize);
+    pdf.addImage(logo, 'PNG', (SLIP_W_MM - LOGO_SIZE_MM) / 2, y, LOGO_SIZE_MM, LOGO_SIZE_MM);
   }
   y += H.logo;
 
