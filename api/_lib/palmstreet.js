@@ -52,17 +52,26 @@ async function call(endpoint, token, body) {
   let parsed = null;
   try { parsed = text ? JSON.parse(text) : null; } catch { /* keep raw text */ }
 
+  // Palmstreet uses both `message` and `reason` for human-readable failure
+  // detail across endpoints; check both before falling back to the raw
+  // body so the operator sees "order number is not exists" verbatim
+  // instead of a JSON blob.
+  const upstreamDetail = parsed?.message || parsed?.reason || parsed?.error || text || `HTTP ${res.status}`;
+
   if (!res.ok) {
-    const detail = parsed?.message || parsed?.error || text || `HTTP ${res.status}`;
     throw new PalmstreetError(
-      `Palmstreet ${endpoint} failed (${res.status}): ${detail}`,
+      `Palmstreet ${endpoint} failed (${res.status}): ${upstreamDetail}`,
       { status: res.status, body: parsed || text || null },
     );
   }
+  // 2xx with status='fail' / 'error' — Palmstreet's convention for
+  // "auth was fine, but the request couldn't be satisfied" (e.g. order
+  // not found). Treat as a logical 422 so the client UI surfaces it
+  // distinctly from network or auth failures.
   if (parsed?.status && parsed.status !== 'success') {
     throw new PalmstreetError(
-      `Palmstreet ${endpoint} returned status='${parsed.status}': ${parsed.message || JSON.stringify(parsed)}`,
-      { status: 200, body: parsed },
+      `Palmstreet ${endpoint} returned status='${parsed.status}': ${upstreamDetail}`,
+      { status: 422, body: parsed },
     );
   }
   return parsed?.data ?? parsed;
