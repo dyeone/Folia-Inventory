@@ -1,133 +1,136 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Camera, Keyboard } from 'lucide-react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { BrowserMultiFormatReader } from '@zxing/browser';
 
-// Rear-camera barcode scanner using html5-qrcode (wraps ZXing).
-// Supports CODE128 (our box + item labels) and QR for future use.
+// Direct @zxing/browser implementation — replaces the html5-qrcode
+// wrapper that was hanging iOS Safari on stream release. We own the
+// video element, the MediaStream, and the decoder loop so the
+// teardown order is predictable.
 //
-// continuous=false  → scanner stops after the first successful decode
-//                      (good for box scan — operator scans one and moves on)
-// continuous=true   → scanner stays open, decoded codes are debounced so
-//                      the same value isn't fired twice within 2s
-//                      (good for item scan — rapid-fire many items)
-//
-// onScan(text) is called once per decode (after debouncing in continuous
-// mode). Errors during start surface as inline text, not toasts.
-
-const SCANNER_ELEMENT_ID = 'packer-camera-scanner';
+// continuous=false → stop after first decode (box-scan flow)
+// continuous=true  → keep scanning with a 2-second per-value debounce
+//                    so the same barcode held in view doesn't fire
+//                    repeatedly (item-scan flow)
 
 export function CameraScanner({ onScan, onClose, continuous = false }) {
+  const videoRef = useRef(null);
+  const readerRef = useRef(null);
+  const controlsRef = useRef(null);
+  const streamRef = useRef(null);
+  const closedRef = useRef(false);
+  const recentScans = useRef(new Map());
+
   const [err, setErr] = useState('');
   const [starting, setStarting] = useState(true);
-  const [scans, setScans] = useState(0); // visible decode counter for sanity-checking
+  const [scans, setScans] = useState(0);
   const [manualValue, setManualValue] = useState('');
   const [manualOpen, setManualOpen] = useState(false);
-  // 'closing' hides the camera modal via CSS the instant a scan
-  // succeeds so iOS Safari isn't holding a stale MediaStream-backed
-  // video element on screen while React works through the unmount.
-  const [closing, setClosing] = useState(false);
-  const scannerRef = useRef(null);
-  const recentScans = useRef(new Map());
-  const closedRef = useRef(false);
+
+  // Tear down everything we own — decoder, stream tracks, video src.
+  // Called from the unmount cleanup and from the synchronous part of
+  // the decode callback in one-shot mode. Idempotent.
+  const teardown = () => {
+    try { controlsRef.current?.stop(); } catch { /* already stopped */ }
+    controlsRef.current = null;
+    if (streamRef.current) {
+      for (const track of streamRef.current.getTracks()) {
+        try { track.stop(); } catch { /* */ }
+      }
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      try { videoRef.current.pause(); } catch { /* */ }
+      videoRef.current.srcObject = null;
+    }
+  };
 
   useEffect(() => {
     closedRef.current = false;
-    // Two reliability tweaks based on "0 read" observation:
-    //   - Drop the formatsToSupport whitelist. ZXing's general decoder
-    //     handles many formats; restricting it sometimes prevents it
-    //     from locking on at all if frame quality is borderline. Same
-    //     formats still decode, plus DataMatrix / UPC variants.
-    //   - Enable useBarCodeDetectorIfSupported. On Android Chrome this
-    //     swaps the JS ZXing decoder for the native BarcodeDetector
-    //     API which is dramatically faster and more accurate. iOS
-    //     Safari doesn't ship BarcodeDetector yet, so iPhones still
-    //     use ZXing.
-    const scanner = new Html5Qrcode(SCANNER_ELEMENT_ID, {
-      formatsToSupport: undefined,
-      experimentalFeatures: {
-        useBarCodeDetectorIfSupported: true,
-      },
-      verbose: false,
-    });
-    scannerRef.current = scanner;
+    let cancelled = false;
 
-    const onDecoded = (text) => {
-      if (closedRef.current) return;
-      setScans(c => c + 1);
-      // 2-second per-value debounce so a barcode held in view doesn't
-      // fire repeatedly.
-      const now = Date.now();
-      const last = recentScans.current.get(text) || 0;
-      if (now - last < 2000) return;
-      recentScans.current.set(text, now);
+    const reader = new BrowserMultiFormatReader();
+    readerRef.current = reader;
 
-      if (!continuous) {
-        // Three-step sequence that's survived iOS Safari testing:
-        //   1. Hide the modal via CSS immediately so the dead video
-        //      element isn't visible.
-        //   2. Stop + clear the html5-qrcode scanner async (fire and
-        //      forget — awaiting it hangs on iOS).
-        //   3. After a short delay (long enough for iOS to release
-        //      the MediaStream), unmount the modal AND fire onScan.
-        //      The delay also forces a paint by reading offsetHeight
-        //      which iOS Safari sometimes skips after a getUserMedia
-        //      stop.
-        closedRef.current = true;
-        setClosing(true);
-        scanner.stop().then(() => {
-          try { scanner.clear(); } catch { /* tear-down race; ignore */ }
-        }).catch(() => { /* already stopped */ });
-        setTimeout(() => {
-          if (typeof document !== 'undefined') {
-            // Force a synchronous layout flush so iOS Safari repaints.
-            void document.body.offsetHeight;
-          }
-          onClose?.();
-          onScan(text);
-        }, 150);
-      } else {
-        onScan(text);
-      }
-    };
-
-    scanner
-      .start(
-        // html5-qrcode wants either a plain string or { exact: ... }
-        // for facingMode — { ideal: ... } trips its validator with
-        // "'facingMode' should be string or object with exact as key".
-        // Use the plain string so phones with no rear camera fall back
-        // gracefully instead of erroring out.
-        { facingMode: 'environment' },
-        {
-          // Bumping fps from 10 → 20 to give ZXing more frames to land
-          // a decode on. CODE128 reads better with more attempts when
-          // the camera is slightly out of focus.
-          fps: 20,
-          // Wider, shorter scan window — CODE128 barcodes are long and
-          // narrow, and a tall qrbox often misses them. Filling almost
-          // the entire viewport width gives ZXing the best chance.
-          qrbox: (vw, vh) => ({
-            width: Math.min(vw, 480) - 24,
-            height: Math.min(Math.floor(vh / 3), 220),
-          }),
-          // Drop aspectRatio — letting the library pick the camera's
-          // native ratio avoids the cropped-frame issue where part of
-          // the barcode falls outside the visible feed on iOS Safari.
-          disableFlip: false,
-        },
-        onDecoded,
-        () => { /* decode-miss frames are noisy; ignore */ },
-      )
-      .then(() => setStarting(false))
-      .catch((e) => {
+    (async () => {
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false,
+        });
+      } catch (e) {
         setErr(humanize(e?.message || e || 'Camera unavailable'));
         setStarting(false);
-      });
+        return;
+      }
+      if (cancelled) {
+        for (const t of stream.getTracks()) t.stop();
+        return;
+      }
+      streamRef.current = stream;
+
+      const video = videoRef.current;
+      if (!video) {
+        for (const t of stream.getTracks()) t.stop();
+        return;
+      }
+
+      // iOS Safari requires playsinline + muted to autoplay a stream.
+      video.setAttribute('playsinline', 'true');
+      video.setAttribute('webkit-playsinline', 'true');
+      video.muted = true;
+      video.srcObject = stream;
+      try { await video.play(); } catch { /* iOS sometimes rejects until user gesture */ }
+
+      try {
+        // decodeFromVideoElement attaches its own decode loop on the
+        // already-playing video. Returns IScannerControls with stop().
+        const controls = await reader.decodeFromVideoElement(
+          video,
+          (result) => {
+            if (closedRef.current || !result) return;
+            const text = result.getText();
+            setScans((c) => c + 1);
+
+            // Debounce identical decodes within 2s.
+            const now = Date.now();
+            const last = recentScans.current.get(text) || 0;
+            if (now - last < 2000) return;
+            recentScans.current.set(text, now);
+
+            if (!continuous) {
+              // One-shot: synchronously tear the camera down, then
+              // unmount the modal, then fire onScan. Doing teardown
+              // first means the video element is gone before any
+              // parent state change happens.
+              closedRef.current = true;
+              teardown();
+              onClose?.();
+              onScan(text);
+            } else {
+              onScan(text);
+            }
+          },
+        );
+        if (cancelled) {
+          try { controls.stop(); } catch { /* */ }
+          return;
+        }
+        controlsRef.current = controls;
+        setStarting(false);
+      } catch (e) {
+        if (!cancelled) {
+          setErr(humanize(e?.message || e || 'Decoder failed to start'));
+          setStarting(false);
+        }
+      }
+    })();
 
     return () => {
+      cancelled = true;
       closedRef.current = true;
-      scanner.stop().catch(() => {});
+      teardown();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [continuous]);
@@ -136,22 +139,17 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
     e?.preventDefault();
     const v = manualValue.trim();
     if (!v) return;
-    onScan(v);
-    setManualValue('');
     if (!continuous) {
-      // Mirror the camera-decode behavior — close after one scan.
       closedRef.current = true;
-      scannerRef.current?.stop().catch(() => {});
+      teardown();
       onClose?.();
     }
+    onScan(v);
+    setManualValue('');
   };
 
   return createPortal(
-    <div
-      className={`fixed inset-0 z-50 bg-black flex flex-col transition-opacity duration-100 ${
-        closing ? 'opacity-0 pointer-events-none' : ''
-      }`}
-    >
+    <div className="fixed inset-0 z-50 bg-black flex flex-col">
       <div className="flex items-center gap-2 px-3 py-3 pt-safe text-white bg-black/60">
         <Camera className="w-5 h-5" />
         <div className="flex-1 text-sm font-medium">
@@ -159,22 +157,29 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
           {scans > 0 && <span className="text-xs text-white/60 ml-2">· {scans} read</span>}
         </div>
         <button
-          onClick={() => setManualOpen(v => !v)}
+          onClick={() => setManualOpen((v) => !v)}
           aria-label="Type code manually"
           className="p-2 rounded-lg hover:bg-white/10 active:bg-white/20"
         >
           <Keyboard className="w-5 h-5" />
         </button>
         <button
-          onClick={onClose}
+          onClick={() => { closedRef.current = true; teardown(); onClose?.(); }}
           aria-label="Close camera"
           className="p-2 -mr-1 rounded-lg hover:bg-white/10 active:bg-white/20"
         >
           <X className="w-5 h-5" />
         </button>
       </div>
-      <div className="flex-1 relative">
-        <div id={SCANNER_ELEMENT_ID} className="w-full h-full" />
+      <div className="flex-1 relative bg-black">
+        {/* Own video element — we control its lifecycle, not a wrapper lib. */}
+        <video
+          ref={videoRef}
+          className="w-full h-full object-cover"
+          autoPlay
+          playsInline
+          muted
+        />
         {starting && (
           <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
             Starting camera…
@@ -224,9 +229,6 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
   );
 }
 
-// html5-qrcode surfaces the raw browser error which is opaque on a phone
-// ("NotAllowedError" etc.). Translate the common ones to something a
-// warehouse operator can act on.
 function humanize(msg) {
   const m = String(msg);
   if (/NotAllowed|Permission/i.test(m)) {
