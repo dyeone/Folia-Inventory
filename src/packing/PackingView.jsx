@@ -470,12 +470,21 @@ function BoxItemsList({ box, salesById }) {
           ? `$${priceRaw.toFixed(2)}`
           : null;
         const isGiveaway = item.lotKind === 'giveaway';
+        const isUnmatched = item.lotKind === 'unmatched';
         const shippedAlready = ['shipped', 'delivered'].includes(item.status);
+
+        // Visual treatment: matched lots get an emerald accent, unmatched
+        // placeholders get a purple accent so they stand out for the
+        // operator (they're a flag — the order line couldn't be linked
+        // to real inventory at apply time).
+        const rowBg = isUnmatched
+          ? 'bg-purple-50 border-l-2 border-purple-300'
+          : 'bg-emerald-50 border-l-2 border-emerald-300';
 
         return (
           <div
             key={item.id}
-            className={`text-sm flex items-baseline justify-between gap-3 ${shippedAlready ? 'opacity-60' : ''}`}
+            className={`text-sm flex items-baseline justify-between gap-3 rounded px-2 py-1.5 ${rowBg} ${shippedAlready ? 'opacity-60' : ''}`}
           >
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline gap-2 flex-wrap">
@@ -500,10 +509,17 @@ function BoxItemsList({ box, salesById }) {
                     shipped
                   </span>
                 )}
+                {isUnmatched && !shippedAlready && (
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-100 text-purple-800">
+                    unmatched
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1.5 text-[11px] text-gray-500 flex-wrap mt-0.5">
                 {isGiveaway ? (
                   <span className="text-amber-700 font-medium">giveaway</span>
+                ) : isUnmatched ? (
+                  <span className="text-purple-700 font-medium">no inventory link</span>
                 ) : (
                   <span>regular</span>
                 )}

@@ -16,10 +16,12 @@ import { BoxesList, SummaryStat } from '../packing/PackingView.jsx';
 // info.
 //
 // Matching is exact-SKU-only — no fuzzy, no lot-number guessing, no
-// manual override. Unmatched rows are still listed in the preview so
-// the operator can see them, but they're skipped on apply. The fix is
-// to correct the SKU at source (inventory or the order file) and
-// re-upload, not to patch it in the UI.
+// manual override. Unmatched rows still flow through: on apply we
+// insert placeholder inventory_items rows for them (lotKind=
+// 'unmatched', synthetic SKU) so the box stays whole in the Shipping
+// tab. They render purple there to flag that they're not linked to
+// real inventory; fix the SKU at source and re-upload if you need a
+// proper link.
 //
 // Sale-event association is preserved automatically because items keep
 // their `saleId` from when they were assigned to a lineup; this modal
@@ -85,37 +87,75 @@ export function SalesUploadModal({ items, onApply, onClose }) {
     const updates = [];
     const now = new Date().toISOString();
     for (const box of resolved) {
+      // For unmatched items in this box we want to tie them to the same
+      // sale event as the matched ones (purely cosmetic — the Shipping
+      // tab uses box.saleId from the first item only). Pick the first
+      // matched item's saleId as the borrow.
+      const fallbackSaleId =
+        box.items.find(i => i.match?.item)?.match?.item?.saleId || null;
+
+      const buyerAddress = {
+        street1: box.street1,
+        street2: box.street2,
+        city: box.city,
+        state: box.state,
+        zip: box.zip,
+        country: box.country,
+        shipmentMethod: box.shipmentMethod,
+      };
+
       for (const it of box.items) {
-        if (!it.match?.item) continue;
-        const inv = it.match.item;
-        const finalPrice = it.price > 0 ? it.price : parseFloat(inv.listingPrice) || 0;
-        // Profit / margin are computed at display time from salePrice
-        // and grossCost; nothing to persist beyond the sale price itself.
-        updates.push({
-          id: inv.id,
-          status: 'sold',
-          salePrice: finalPrice,
-          soldAt: now,
-          buyer: box.recipientName,
-          buyerUsername: box.username,
-          buyerAddress: {
-            street1: box.street1,
-            street2: box.street2,
-            city: box.city,
-            state: box.state,
-            zip: box.zip,
-            country: box.country,
-            shipmentMethod: box.shipmentMethod,
-          },
-          shipmentBoxId: box.id,
-          shipmentCarrier: box.carrier || 'usps',
-          orderId: it.orderNumber || null,
-          orderDate: it.orderDate || null,
-        });
+        if (it.match?.item) {
+          const inv = it.match.item;
+          const finalPrice = it.price > 0 ? it.price : parseFloat(inv.listingPrice) || 0;
+          // Profit / margin are computed at display time from salePrice
+          // and grossCost; nothing to persist beyond the sale price itself.
+          updates.push({
+            id: inv.id,
+            status: 'sold',
+            salePrice: finalPrice,
+            soldAt: now,
+            buyer: box.recipientName,
+            buyerUsername: box.username,
+            buyerAddress,
+            shipmentBoxId: box.id,
+            shipmentCarrier: box.carrier || 'usps',
+            orderId: it.orderNumber || null,
+            orderDate: it.orderDate || null,
+          });
+        } else {
+          // No matching inventory row — emit a placeholder insert so the
+          // box still includes this line in the Shipping tab (colored
+          // purple to flag it). No `id` field so api.upsertItems takes
+          // the INSERT path and the server assigns one. SKU is a
+          // deterministic UNMATCHED-... that won't collide with real
+          // inventory SKUs (the matcher filters to status='available'
+          // /'listed' anyway, so a 'sold' UNMATCHED row won't ever be
+          // matched against again on a future upload).
+          const placeholderSku = `UNMATCHED-${box.id.slice(0, 12)}-${it.rowKey}`;
+          updates.push({
+            sku: placeholderSku,
+            type: 'plant',
+            name: (it.title || 'Unmatched item').slice(0, 200),
+            quantity: it.quantity || 1,
+            status: 'sold',
+            lotKind: 'unmatched',
+            saleId: fallbackSaleId,
+            salePrice: it.price > 0 ? it.price : 0,
+            soldAt: now,
+            buyer: box.recipientName,
+            buyerUsername: box.username,
+            buyerAddress,
+            shipmentBoxId: box.id,
+            shipmentCarrier: box.carrier || 'usps',
+            orderId: it.orderNumber || null,
+            orderDate: it.orderDate || null,
+          });
+        }
       }
     }
     if (updates.length === 0) {
-      setErr('No matched items to apply. Link items first or pick a different file.');
+      setErr('No items to apply. Pick a different file.');
       return;
     }
     onApply(updates);
@@ -167,7 +207,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                 <ul className="space-y-0.5 list-disc list-inside">
                   <li>Matches each order row against the full inventory by <em>exact SKU</em> (case-insensitive)</li>
                   <li>Marks matched items <em>sold</em> with the buyer's price, order ID, and address</li>
-                  <li>Lists unmatched rows in the preview but skips them — fix the SKU at source and re-upload</li>
+                  <li>Unmatched rows still flow to the Shipping tab as <em>placeholder</em> items (purple) so nothing gets dropped — fix the SKU at source and re-upload if you need them re-linked to real inventory</li>
                   <li>Groups items by buyer so the Shipping tab can ship them</li>
                 </ul>
               </div>
@@ -219,10 +259,11 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             </button>
             <button
               onClick={handleApply}
-              disabled={!summary || summary.matched === 0}
+              disabled={!summary || summary.totalItems === 0}
               className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-gray-300 text-white rounded-lg flex items-center gap-1.5"
             >
-              <Check className="w-4 h-4" /> Update Inventory · {summary?.matched || 0} item{summary?.matched === 1 ? '' : 's'}
+              <Check className="w-4 h-4" /> Update Inventory · {summary?.matched || 0} matched
+              {summary?.unmatched > 0 && <> + {summary.unmatched} unmatched</>}
             </button>
           </div>
         )}
