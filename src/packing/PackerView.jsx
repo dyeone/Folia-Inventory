@@ -96,6 +96,16 @@ export function PackerView({ onLogout }) {
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
 
+  // Auto-open the item camera as soon as the operator enters a box.
+  // The packer's workflow once a box is on screen is "scan plant after
+  // plant," so opening the camera by default removes one tap per box.
+  // Continuous mode keeps the camera alive until the operator
+  // explicitly closes it (via the X in the camera header).
+  useEffect(() => {
+    if (activeBoxId) setCameraMode('item');
+    else setCameraMode(null);
+  }, [activeBoxId]);
+
   // Shared item-scan handler used by both the text input in ItemScanner
   // and the camera (when in 'item' mode). Lifted to PackerView so the
   // camera doesn't need to live inside ItemScanner.
