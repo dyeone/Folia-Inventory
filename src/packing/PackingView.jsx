@@ -225,6 +225,7 @@ export function PackingView({
                     onBuyLabel={(box) => setBuyingFor(box)}
                     onSaveTracking={handleSaveTracking}
                     onMarkShipped={handleMarkShipped}
+                    onTogglePacked={onTogglePacked}
                     showToast={showToast}
                   />
                 ))}
