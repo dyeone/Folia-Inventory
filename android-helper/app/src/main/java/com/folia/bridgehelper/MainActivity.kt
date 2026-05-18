@@ -159,7 +159,10 @@ fun HelperScreen() {
 
         // Top-level rollup: is the phone reachable from the Mac bridge?
         // Combines WiFi up + wireless adbd listening into one green/red
-        // line so the operator can tell at a glance.
+        // line so the operator can tell at a glance. When the rollup is
+        // red we expand step-by-step instructions so the user can't miss
+        // that they have to flip the Wireless Debugging toggle themselves
+        // — Android won't let any non-system app do it.
         InfoCard(title = "Connection") {
             StatusRow(
                 ok = readyForMac,
@@ -169,18 +172,60 @@ fun HelperScreen() {
                     else -> "Ready for Mac to connect"
                 },
             )
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = { openWirelessDebuggingSettings(ctx) },
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryColor),
-            ) { Text("Connect to ADB Server") }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Opens Wireless Debugging. Flip the toggle on, then on the Mac run  ./bridge/reconnect.sh",
-                fontSize = 12.sp,
-                color = MutedColor,
-            )
+
+            if (!readyForMac) {
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "How to connect:",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(6.dp))
+                if (!wifiOn) {
+                    NumberedStep(1, "Connect this phone to WiFi.")
+                    NumberedStep(2, "Tap “Open Wireless Debugging” below.")
+                    NumberedStep(3, "Turn the “Use wireless debugging” toggle ON.")
+                    NumberedStep(4, "Come back here — the status above should turn green.")
+                } else {
+                    NumberedStep(1, "Tap “Open Wireless Debugging” below.")
+                    NumberedStep(
+                        2,
+                        "On that screen, turn the “Use wireless debugging” toggle ON.",
+                        emphasis = true,
+                    )
+                    NumberedStep(3, "Press the back button to return here.")
+                    NumberedStep(4, "Status above should turn green within 2 seconds.")
+                }
+            } else {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "On the Mac, run:  ./bridge/reconnect.sh",
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = MutedColor,
+                )
+            }
+
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = { openWirelessDebuggingSettings(ctx) },
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryColor),
+                ) { Text("Open Wireless Debugging") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        // Force an immediate re-read of the system props so the
+                        // user gets instant feedback after coming back from the
+                        // settings panel, without waiting for the 2 s poll.
+                        tcpPort = readSysProp("service.adb.tcp.port").takeIf { it.isNotBlank() }
+                        tlsPort = readSysProp("service.adb.tls.port").takeIf { it.isNotBlank() }
+                        ip = currentWifiIp()
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                ) { Text("Refresh") }
+            }
         }
 
         // Network card: WiFi IP + SSID + tap-to-copy + QR.
@@ -321,6 +366,24 @@ private fun StatusRow(ok: Boolean, text: String) {
         )
         Spacer(Modifier.width(10.dp))
         Text(text, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun NumberedStep(n: Int, text: String, emphasis: Boolean = false) {
+    Row(modifier = Modifier.padding(vertical = 3.dp)) {
+        Text(
+            "$n.",
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.width(20.dp),
+        )
+        Text(
+            text,
+            fontSize = 13.sp,
+            fontWeight = if (emphasis) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (emphasis) ErrColor else androidx.compose.ui.graphics.Color.Black,
+        )
     }
 }
 
