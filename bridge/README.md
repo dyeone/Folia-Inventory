@@ -88,12 +88,29 @@ a time** to avoid jobs racing between them.
    ```
    Test with `curl http://localhost:9008/ping` — should print `pong`.
 
-## Run
+## Run (wireless, one command)
+
+After first-time setup, this is the only command you need each session:
 
 ```bash
-cd bridge
-npm start
+cd bridge && npm start
 ```
+
+`npm start` runs `./start.sh`, which:
+
+1. **Reconnects wirelessly** — short-circuits when `adb devices`
+   already shows an `ip:port device`, falls back to mDNS discovery,
+   then to the saved target (with a `:5555` legacy-mode retry).
+2. **Sets up the `tcp:9008` forward** so the bridge can talk to the
+   on-device u2 server, and verifies u2 is responding (relaunches
+   it if it crashed since the last session).
+3. **Pins `BRIDGE_DEVICE` to the wireless target** — without this
+   every adb call would fail with "more than one device/emulator"
+   when the phone is also plugged in via USB.
+4. **Starts the bridge poller** (`node index.js`).
+
+If the phone is plugged into USB and you'd rather skip the wireless
+dance, run `npm run serve` (pure `node index.js`) instead.
 
 Output looks like:
 

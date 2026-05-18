@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Local ADB poller that drives the Palmstreet Android app from Folia. Polls Vercel for jobs (no inbound port, no tunnel).",
   "scripts": {
-    "start": "node index.js"
+    "start": "./start.sh",
+    "serve": "node index.js"
   }
 }
