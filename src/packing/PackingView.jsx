@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
-  Receipt,
+  Receipt, Search,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -59,6 +59,12 @@ export function PackingView({
   // decoded SKU as keystrokes into the focused input. On mobile we keep
   // the camera flow — phones are why CameraScanner exists.
   const isMobile = useIsMobile();
+
+  // Live search box (desktop-only). Matches against box code, buyer,
+  // @username, and any item SKU/name/variety inside the box. Combines
+  // with scannedBoxId so a scan can still narrow further from a typed
+  // query. Empty string = no filter.
+  const [searchQuery, setSearchQuery] = useState('');
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -242,20 +248,37 @@ export function PackingView({
     showToast(`SKU ${sku} isn't in any active box`);
   };
 
-  // Apply the box-lookup filter when active. Each group's box list is
-  // narrowed to just the scanned box; groups with no surviving boxes
-  // are dropped. Same logic applied to the Shipped archive so the
+  // Combined filter: scannedBoxId (from Scan box / Scan item lookup)
+  // and the desktop search query. A box must pass both to survive. Each
+  // group's box list is narrowed accordingly; groups with no surviving
+  // boxes are dropped. Same logic applied to the Shipped archive so the
   // filter works regardless of which sub-tab the box lives in.
-  const filteredReady = scannedBoxId
+  const searchLower = searchQuery.trim().toLowerCase();
+  const matchSearch = (box) => {
+    if (!searchLower) return true;
+    if (shortBoxCode(box.id).toLowerCase().includes(searchLower)) return true;
+    if (box.buyer && box.buyer.toLowerCase().includes(searchLower)) return true;
+    if (box.buyerUsername && box.buyerUsername.toLowerCase().includes(searchLower)) return true;
+    for (const i of box.items) {
+      if (i.sku && i.sku.toLowerCase().includes(searchLower)) return true;
+      if (i.name && i.name.toLowerCase().includes(searchLower)) return true;
+      if (i.variety && i.variety.toLowerCase().includes(searchLower)) return true;
+    }
+    return false;
+  };
+  const filterBoxes = (boxes) =>
+    boxes.filter(b => (!scannedBoxId || b.id === scannedBoxId) && matchSearch(b));
+  const anyFilter = !!(scannedBoxId || searchLower);
+  const filteredReady = anyFilter
     ? groups
-        .map(g => ({ ...g, boxes: g.boxes.filter(b => b.id === scannedBoxId) }))
+        .map(g => ({ ...g, boxes: filterBoxes(g.boxes) }))
         .filter(g => g.boxes.length > 0)
     : groups;
-  const filteredShipped = scannedBoxId
+  const filteredShipped = anyFilter
     ? {
         ...shipped,
         groups: shipped.groups
-          .map(g => ({ ...g, boxes: g.boxes.filter(b => b.id === scannedBoxId) }))
+          .map(g => ({ ...g, boxes: filterBoxes(g.boxes) }))
           .filter(g => g.boxes.length > 0),
       }
     : shipped;
@@ -287,6 +310,33 @@ export function PackingView({
           >
             <ScanLine className="w-4 h-4" /> Scan item
           </button>
+        </div>
+      </div>
+
+      {/* Desktop-only live search. Filters across box code, buyer name,
+          @username, and item SKU/name/variety. Stacks with the scan
+          filter — both must pass. Hidden on mobile because the Scan
+          buttons already serve the find-this-box need on phones. */}
+      <div className="hidden sm:block">
+        <div className="relative">
+          <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search by box code, buyer, @username, SKU, or plant name..."
+            className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent bg-white"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -379,7 +429,9 @@ export function PackingView({
               <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
                 <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
                 <p className="text-sm text-gray-500">
-                  {scannedBoxId
+                  {searchLower
+                    ? `No Ready boxes match "${searchQuery.trim()}".`
+                    : scannedBoxId
                     ? `Scanned box isn't in Ready to ship — check the Shipped tab.`
                     : `Nothing waiting to ship. When a sale's orders get applied, boxes show up here.`}
                 </p>
@@ -502,7 +554,9 @@ export function PackingView({
             <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
               <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
               <p className="text-sm text-gray-500">
-                {scannedBoxId
+                {searchLower
+                  ? `No Shipped boxes match "${searchQuery.trim()}".`
+                  : scannedBoxId
                   ? `Scanned box isn't in Shipped — check the Ready tab.`
                   : `No boxes have shipped yet. Once you Mark shipped on a row, it moves here.`}
               </p>
