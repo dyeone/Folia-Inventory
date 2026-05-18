@@ -225,9 +225,12 @@ export function ShippingSlipSheet({ box, onClose }) {
   const [busy, setBusy] = useState(false);
 
   // Preview iframe — we re-render the PDF blob on mount so the operator
-  // can sanity-check before printing.
+  // can sanity-check before printing. We ALSO print directly through
+  // this iframe (iframe.contentWindow.print()) so no popup tab opens
+  // when the operator hits Print.
   const [previewUrl, setPreviewUrl] = useState(null);
   const urlRef = useRef(null);
+  const iframeRef = useRef(null);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -249,6 +252,20 @@ export function ShippingSlipSheet({ box, onClose }) {
   const handlePrint = async () => {
     setBusy(true);
     try {
+      // Prefer printing through the already-loaded preview iframe —
+      // no new tab. If the iframe isn't ready (rare race or a browser
+      // that won't render PDFs inline), fall back to opening the blob
+      // in a new tab with the autoPrint flag.
+      const frame = iframeRef.current;
+      if (frame?.contentWindow) {
+        try {
+          frame.contentWindow.focus();
+          frame.contentWindow.print();
+          return;
+        } catch {
+          // fall through to the popup fallback
+        }
+      }
       const pdf = await buildPdf(box);
       pdf.autoPrint();
       const url = pdf.output('bloburl');
@@ -300,6 +317,7 @@ export function ShippingSlipSheet({ box, onClose }) {
       <div className="flex justify-center py-6 px-3">
         {previewUrl ? (
           <iframe
+            ref={iframeRef}
             src={previewUrl}
             title="Shipping slip preview"
             className="bg-white shadow-xl border border-gray-200 rounded-lg"
