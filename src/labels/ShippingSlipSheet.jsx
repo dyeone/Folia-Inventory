@@ -1,0 +1,307 @@
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Printer, Download, X, Loader2 } from 'lucide-react';
+import { jsPDF } from 'jspdf';
+import { shortBoxCode } from './boxCode.js';
+
+// Per-box shipping slip — what goes inside the package so the customer
+// sees a manifest of what they ordered.
+//
+// Target printer: Star TSP100III thermal receipt printer.
+//   paper width:   80mm
+//   printable:     72mm (4mm margin each side, ~576 dots at 203 dpi)
+//   length:        continuous roll (variable)
+//
+// jsPDF is set to mm units with a pre-calculated total height from the
+// item count, so the receipt is auto-sized and the cutter trims cleanly
+// without a long blank tail.
+
+const SLIP_W_MM = 80;
+const SLIP_MARGIN = 4;
+const SLIP_PRINT_W = SLIP_W_MM - SLIP_MARGIN * 2; // 72mm
+
+// Height budget per section (mm). Used both for total-height
+// pre-calculation and as the y-cursor advance after each block.
+const H = {
+  margin: SLIP_MARGIN,
+  logo: 24,
+  divider: 4,
+  customerBlock: 22,
+  boxBlock: 18,
+  itemsHeader: 7,
+  itemRow: 9,
+  footer: 14,
+};
+
+// Convert public/logo.png → data URL once, cached at module scope so a
+// session of repeated prints doesn't re-fetch + re-decode.
+let _logoDataUrlCache = null;
+function loadLogoDataUrl() {
+  if (_logoDataUrlCache) return Promise.resolve(_logoDataUrlCache);
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        _logoDataUrlCache = canvas.toDataURL('image/png');
+        resolve(_logoDataUrlCache);
+      } catch {
+        resolve(null);
+      }
+    };
+    // Fall through with a null logo rather than blocking the print. The
+    // slip is still readable without the brand mark on top.
+    img.onerror = () => resolve(null);
+    img.src = '/logo.png';
+  });
+}
+
+function formatDate(d) {
+  try {
+    return new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  } catch {
+    return '';
+  }
+}
+
+async function buildPdf(box) {
+  const visibleItems = box.items.filter(i => !i.deletedAt);
+  // Order: still-sold (about to ship) first, then already-shipped.
+  // Same intent as the on-screen packing list.
+  const itemOrder = (i) => (i.status === 'sold' ? 0 : 1);
+  const items = [...visibleItems].sort((a, b) => itemOrder(a) - itemOrder(b));
+
+  const totalH =
+    H.margin * 2 +
+    H.logo +
+    H.divider +
+    H.customerBlock +
+    H.boxBlock +
+    H.divider +
+    H.itemsHeader +
+    items.length * H.itemRow +
+    H.divider +
+    H.footer;
+
+  const pdf = new jsPDF({ unit: 'mm', format: [SLIP_W_MM, totalH], orientation: 'portrait' });
+  const logo = await loadLogoDataUrl();
+
+  let y = H.margin;
+
+  // Logo — centered, ~20mm square.
+  if (logo) {
+    const logoSize = 20;
+    pdf.addImage(logo, 'PNG', (SLIP_W_MM - logoSize) / 2, y, logoSize, logoSize);
+  }
+  y += H.logo;
+
+  // FOLIA SOCIETY caption under logo.
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(10);
+  pdf.setTextColor(20);
+  pdf.text('FOLIA SOCIETY', SLIP_W_MM / 2, y, { align: 'center' });
+  y += H.divider;
+
+  pdf.setDrawColor(180);
+  pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
+  y += 4;
+
+  // Customer block.
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(7);
+  pdf.setTextColor(120);
+  pdf.text('SHIP TO', H.margin, y);
+  y += 4;
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(13);
+  pdf.setTextColor(0);
+  const name = (box.buyer || '(no name)').slice(0, 40);
+  pdf.text(name, H.margin, y);
+  y += 6;
+  if (box.buyerUsername) {
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(9);
+    pdf.setTextColor(70);
+    pdf.text(`@${box.buyerUsername}`, H.margin, y);
+    y += 5;
+  } else {
+    y += 5;
+  }
+
+  // Box block.
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(7);
+  pdf.setTextColor(120);
+  pdf.text('BOX', H.margin, y);
+  y += 4;
+  const code = shortBoxCode(box.id);
+  pdf.setFont('courier', 'bold');
+  pdf.setFontSize(11);
+  pdf.setTextColor(0);
+  pdf.text(code, H.margin, y);
+  // Carrier on the right of the box code line.
+  const carrierLabel = String(box.carrier || 'usps').toUpperCase();
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(9);
+  pdf.text(carrierLabel, SLIP_W_MM - H.margin, y, { align: 'right' });
+  y += 5;
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(8);
+  pdf.setTextColor(80);
+  pdf.text(formatDate(new Date()), H.margin, y);
+  y += 4;
+
+  pdf.setDrawColor(180);
+  pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
+  y += 4;
+
+  // Items header.
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(8);
+  pdf.setTextColor(20);
+  pdf.text(`ITEMS · ${items.length}`, H.margin, y);
+  y += H.itemsHeader - 3;
+
+  // Items list.
+  for (const item of items) {
+    const sku = item.sku || '';
+    const titleParts = [item.name, item.variety].filter(Boolean);
+    const title = titleParts.join(' · ').slice(0, 40);
+
+    pdf.setFont('courier', 'bold');
+    pdf.setFontSize(9);
+    pdf.setTextColor(0);
+    pdf.text(sku, H.margin, y);
+    if (item.quantity > 1) {
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      pdf.text(`x${item.quantity}`, SLIP_W_MM - H.margin, y, { align: 'right' });
+    }
+    y += 3.5;
+    if (title) {
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      pdf.setTextColor(70);
+      pdf.text(title, H.margin, y, { maxWidth: SLIP_PRINT_W });
+      y += 4;
+    } else {
+      y += 1;
+    }
+    y += 1.5;
+  }
+
+  pdf.setDrawColor(180);
+  pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
+  y += 5;
+
+  // Footer.
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(9);
+  pdf.setTextColor(60);
+  pdf.text('Thank you for shopping with', SLIP_W_MM / 2, y, { align: 'center' });
+  y += 4;
+  pdf.setFont('helvetica', 'bold');
+  pdf.setTextColor(0);
+  pdf.text('Folia Society', SLIP_W_MM / 2, y, { align: 'center' });
+
+  return pdf;
+}
+
+export function ShippingSlipSheet({ box, onClose }) {
+  const [busy, setBusy] = useState(false);
+
+  // Preview iframe — we re-render the PDF blob on mount so the operator
+  // can sanity-check before printing.
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const urlRef = useRef(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const pdf = await buildPdf(box);
+      const url = pdf.output('bloburl');
+      if (cancelled) { URL.revokeObjectURL(url); return; }
+      urlRef.current = url;
+      setPreviewUrl(url);
+    })();
+    return () => {
+      cancelled = true;
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+        urlRef.current = null;
+      }
+    };
+  }, [box]);
+
+  const handlePrint = async () => {
+    setBusy(true);
+    try {
+      const pdf = await buildPdf(box);
+      pdf.autoPrint();
+      const url = pdf.output('bloburl');
+      const win = window.open(url, '_blank');
+      if (!win) window.print();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleDownload = async () => {
+    setBusy(true);
+    try {
+      const pdf = await buildPdf(box);
+      pdf.save(`folia-slip-${shortBoxCode(box.id)}.pdf`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 bg-gray-100 overflow-auto">
+      <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-2">
+        <h2 className="text-base font-semibold text-gray-900">
+          Shipping slip <span className="text-gray-400 font-normal">· {shortBoxCode(box.id)} · 80mm</span>
+        </h2>
+        <div className="ml-auto flex gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700 flex items-center gap-1">
+            <X className="w-4 h-4" /> Close
+          </button>
+          <button
+            onClick={handlePrint}
+            disabled={busy}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 disabled:opacity-60"
+          >
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+            Print
+          </button>
+          <button
+            onClick={handleDownload}
+            disabled={busy}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-60"
+          >
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            Download PDF
+          </button>
+        </div>
+      </div>
+      <div className="flex justify-center py-6 px-3">
+        {previewUrl ? (
+          <iframe
+            src={previewUrl}
+            title="Shipping slip preview"
+            className="bg-white shadow-xl border border-gray-200 rounded-lg"
+            style={{ width: '320px', height: '720px' }}
+          />
+        ) : (
+          <div className="text-sm text-gray-500 flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" /> Building preview...
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}

@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
+  Receipt,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -10,6 +11,7 @@ import { SummaryStat } from './SummaryStat.jsx';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
 import { EditBoxItemsModal } from './EditBoxItemsModal.jsx';
+import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
@@ -45,6 +47,10 @@ export function PackingView({
   // to add, trash icon per row to remove. State holds the box being
   // edited; mirrors how Validate Sales / BuyLabel modals work.
   const [editingBox, setEditingBox] = useState(null);
+
+  // Per-box shipping-slip preview. Not admin-gated — anyone packing
+  // can print the customer-facing manifest.
+  const [slipBox, setSlipBox] = useState(null);
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -385,6 +391,7 @@ export function PackingView({
                     onTogglePacked={onTogglePacked}
                     showToast={showToast}
                     isAdmin={isAdmin}
+                    onPrintSlip={(box) => setSlipBox(box)}
                     onEditItems={(box) => setEditingBox(box)}
                     onDeleteBox={(box) => {
                       // Confirm before nuking. Mirrors the existing
@@ -563,6 +570,13 @@ export function PackingView({
         />
       )}
 
+      {slipBox && (
+        <ShippingSlipSheet
+          box={slipBox}
+          onClose={() => setSlipBox(null)}
+        />
+      )}
+
       {toast && (
         <div className="fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50">
           {toast}
@@ -665,7 +679,7 @@ function addressOneLine(addr) {
 function BuyerGroupCard({
   group, sales, shipmentsByBox,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
-  isAdmin, onEditItems, onDeleteBox,
+  isAdmin, onEditItems, onDeleteBox, onPrintSlip,
 }) {
   const totalItems = group.boxes.reduce((sum, b) => sum + b.items.length, 0);
   const saleCount = new Set(group.boxes.map(b => b.saleId)).size;
@@ -711,6 +725,7 @@ function BuyerGroupCard({
             isAdmin={isAdmin}
             onEditItems={onEditItems ? () => onEditItems(box) : null}
             onDeleteBox={onDeleteBox ? () => onDeleteBox(box) : null}
+            onPrintSlip={onPrintSlip ? () => onPrintSlip(box) : null}
           />
         ))}
       </div>
@@ -878,7 +893,7 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
-  isAdmin, onEditItems, onDeleteBox,
+  isAdmin, onEditItems, onDeleteBox, onPrintSlip,
 }) {
   // Box-level pack rollup. unpackedSoldCount = items still 'sold' and
   // not yet packed; pack-all flips them all to packed in one click.
@@ -1064,6 +1079,15 @@ function BoxRow({
                 className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
               >
                 <Pencil className="w-3 h-3" /> Enter tracking
+              </button>
+            )}
+            {onPrintSlip && (
+              <button
+                onClick={(e) => { stop(e); onPrintSlip(); }}
+                title="Print the customer-facing shipping slip"
+                className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
+              >
+                <Receipt className="w-3 h-3" /> Print slip
               </button>
             )}
             <button
