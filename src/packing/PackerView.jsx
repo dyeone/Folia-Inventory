@@ -88,7 +88,7 @@ export function PackerView({ onLogout }) {
       showToast(`No open box with code ${code}`, 3500);
       return false;
     }
-    setActiveBoxId(match.id);
+    goToBox(match.id);
     return true;
   };
 
@@ -96,16 +96,14 @@ export function PackerView({ onLogout }) {
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
 
-  // Auto-open the item camera as soon as the operator enters a box.
-  // The packer's workflow once a box is on screen is "scan plant after
-  // plant," so opening the camera by default removes one tap per box.
-  // Continuous mode keeps the camera alive until the operator
-  // explicitly closes it (via the X in the camera header).
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => {
-    if (activeBoxId) setCameraMode('item');
-    else setCameraMode(null);
-  }, [activeBoxId]);
+  // Centralized box-enter / box-leave: also flips the camera into
+  // continuous item-scan mode on enter (the packer's typical workflow
+  // is "scan plant after plant," so the camera should already be live
+  // when they land on the items screen) and closes it on leave.
+  const goToBox = (boxId) => {
+    setActiveBoxId(boxId);
+    setCameraMode(boxId ? 'item' : null);
+  };
 
   // Shared item-scan handler used by both the text input in ItemScanner
   // and the camera (when in 'item' mode). Lifted to PackerView so the
@@ -159,14 +157,14 @@ export function PackerView({ onLogout }) {
         subtitle={activeBox
           ? (activeBox.buyer || `@${activeBox.buyerUsername}` || 'Box')
           : `${Object.keys(boxesByCode).length} open boxes`}
-        onBack={activeBox ? () => setActiveBoxId(null) : null}
+        onBack={activeBox ? () => goToBox(null) : null}
       />
       {activeBox
         ? <ItemScanner
             box={activeBox}
             onScan={handleScanItem}
             onOpenCamera={() => setCameraMode('item')}
-            onDone={() => setActiveBoxId(null)}
+            onDone={() => goToBox(null)}
           />
         : <BoxScanner
             onScan={handleScanBox}
