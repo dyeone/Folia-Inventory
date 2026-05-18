@@ -1,12 +1,13 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
-  Truck, Pencil, Check, X, Loader2, Trash2,
+  Truck, Pencil, Check, X, Loader2, Trash2, Printer,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
+import { shortBoxCode } from '../labels/boxCode.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
 // imports keep working without a churn-y find-and-replace across files.
@@ -25,7 +26,7 @@ export { SummaryStat } from './SummaryStat.jsx';
 // untouched while we iterate the top view.
 // ───────────────────────────────────────────────────────────────────────────
 
-export function PackingView({ inventoryItems, sales, onShipBox, onDeleteAllOpenBoxes, setConfirmDialog }) {
+export function PackingView({ inventoryItems, sales, onShipBox, onDeleteAllOpenBoxes, onPrintBoxLabels, setConfirmDialog }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -177,12 +178,29 @@ export function PackingView({ inventoryItems, sales, onShipBox, onDeleteAllOpenB
       {subTab === 'ready' && (
         <>
           <section className="space-y-2">
-            <h3 className="text-sm font-medium text-gray-700">
-              Ready to ship
-              <span className="text-gray-400 font-normal ml-1">
-                · {totalBoxes} {totalBoxes === 1 ? 'box' : 'boxes'} · {groups.length} {groups.length === 1 ? 'buyer' : 'buyers'} · {totalItems} {totalItems === 1 ? 'item' : 'items'}
-              </span>
-            </h3>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <h3 className="text-sm font-medium text-gray-700">
+                Ready to ship
+                <span className="text-gray-400 font-normal ml-1">
+                  · {totalBoxes} {totalBoxes === 1 ? 'box' : 'boxes'} · {groups.length} {groups.length === 1 ? 'buyer' : 'buyers'} · {totalItems} {totalItems === 1 ? 'item' : 'items'}
+                </span>
+              </h3>
+              {totalBoxes > 0 && onPrintBoxLabels && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Flatten every open box across every buyer group.
+                    const allBoxes = groups.flatMap(g => g.boxes);
+                    onPrintBoxLabels(allBoxes);
+                  }}
+                  className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100"
+                >
+                  <Printer className="w-4 h-4" />
+                  Print box labels
+                  <span className="text-xs text-gray-400 ml-1">· {totalBoxes}</span>
+                </button>
+              )}
+            </div>
             {groups.length === 0 ? (
               <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
                 <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
@@ -678,6 +696,12 @@ function BoxRow({
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${carrierClass}`}>
             {carrierLabel}
+          </span>
+          {/* Short, deterministic box code — same value that gets printed
+              + barcoded on the physical box label. Visible on the row so
+              the operator can cross-reference when packing. */}
+          <span className="font-mono text-[11px] text-gray-600 shrink-0">
+            {shortBoxCode(box.id)}
           </span>
           <span className="text-sm text-gray-900 truncate">{sale?.name || '(unknown sale)'}</span>
           {sale?.date && <span className="text-xs text-gray-400 shrink-0">{sale.date}</span>}

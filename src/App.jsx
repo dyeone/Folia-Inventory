@@ -39,6 +39,7 @@ const SalesUploadModal = lazyNamed(() => import('./sales/SalesUploadModal.jsx'),
 const LiveScanModal = lazyNamed(() => import('./sales/LiveScanModal.jsx'), 'LiveScanModal');
 const LiveModal = lazyNamed(() => import('./sales/LiveModal.jsx'), 'LiveModal');
 const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
+const BoxLabelSheet = lazyNamed(() => import('./labels/BoxLabelSheet.jsx'), 'BoxLabelSheet');
 const ShippingSettingsModal = lazyNamed(() => import('./packing/ShippingSettingsModal.jsx'), 'ShippingSettingsModal');
 
 // Lightweight fallback for Suspense boundaries — modals and tab transitions
@@ -167,6 +168,7 @@ function InventorySystem() {
   const [filterSale, setFilterSale] = useState('all');
   const [toast, setToast] = useState(null);
   const [labelItems, setLabelItems] = useState(null);
+  const [boxLabelBoxes, setBoxLabelBoxes] = useState(null);
   // { items: [...], title: 'Added N items' } — summary dialog after creation
   const [addSummary, setAddSummary] = useState(null);
 
@@ -768,6 +770,7 @@ function InventorySystem() {
             inventoryItems={items}
             sales={sales}
             setConfirmDialog={setConfirmDialog}
+            onPrintBoxLabels={(boxes) => setBoxLabelBoxes(boxes)}
             onDeleteAllOpenBoxes={async () => {
               // "Open box" = at least one item still 'sold' (not shipped).
               // Revert each still-'sold' matched item back to 'listed' and
@@ -1149,6 +1152,9 @@ function InventorySystem() {
         />
       )}
 
+      {boxLabelBoxes && boxLabelBoxes.length > 0 && (
+        <BoxLabelSheet boxes={boxLabelBoxes} onClose={() => setBoxLabelBoxes(null)} />
+      )}
       {labelItems && labelItems.length > 0 && (
         <LabelSheet items={labelItems} onClose={() => setLabelItems(null)} />
       )}
