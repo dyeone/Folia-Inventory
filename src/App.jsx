@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense }
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
+  MoreHorizontal, X as XIcon,
 } from 'lucide-react';
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -176,6 +177,10 @@ function StaffOrAdminInventory() {
     localStorage.setItem('acclimated-profit-rate', String(next));
   };
   const [showUserMenu, setShowUserMenu] = useState(false);
+  // Mobile-nav overflow sheet. 8 tabs squished into the bottom bar were
+  // unreadable at 375px — primary 4 stay visible, the rest live in a
+  // bottom sheet behind a "More" button.
+  const [showMoreNav, setShowMoreNav] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showShippingSettings, setShowShippingSettings] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -602,25 +607,115 @@ function StaffOrAdminInventory() {
         </div>
       </header>
 
-      {/* Mobile bottom navigation — pb-safe pads past the iPhone home indicator. */}
-      <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-gray-200 flex pb-safe">
-        {tabs.map(tab => {
-          const Icon = tab.icon;
-          const shortLabel = tab.id === 'trash' ? 'Trash' : tab.label;
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 text-xs font-medium transition ${
-                activeTab === tab.id ? 'text-emerald-700' : 'text-gray-500'
-              }`}
-            >
-              <Icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-emerald-600' : 'text-gray-400'}`} />
-              {shortLabel}
-            </button>
-          );
-        })}
-      </nav>
+      {/* Mobile bottom navigation. 5+ tabs split into a fixed bottom
+          bar of 4 primary + a More button; remaining tabs live in a
+          sheet behind More. pb-safe pads past the iPhone home
+          indicator. */}
+      {(() => {
+        const PRIMARY_LIMIT = 5;
+        const showOverflow = tabs.length > PRIMARY_LIMIT;
+        const primary = showOverflow ? tabs.slice(0, PRIMARY_LIMIT - 1) : tabs;
+        const overflow = showOverflow ? tabs.slice(PRIMARY_LIMIT - 1) : [];
+        const overflowActive = overflow.some(t => t.id === activeTab);
+        const overflowBadgeTotal = overflow.reduce(
+          (n, t) => n + (typeof t.badge === 'number' ? t.badge : 0),
+          0,
+        );
+        const navTabs = [
+          ...primary,
+          ...(showOverflow ? [{
+            id: '__more__',
+            label: 'More',
+            icon: MoreHorizontal,
+            isMore: true,
+            badge: overflowBadgeTotal || null,
+          }] : []),
+        ];
+        return (
+          <>
+            <nav className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-gray-200 flex pb-safe">
+              {navTabs.map(tab => {
+                const Icon = tab.icon;
+                const shortLabel = tab.id === 'trash' ? 'Trash' : tab.label;
+                const isActive = tab.isMore
+                  ? overflowActive
+                  : activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      if (tab.isMore) setShowMoreNav(true);
+                      else setActiveTab(tab.id);
+                    }}
+                    className={`flex-1 flex flex-col items-center justify-center gap-0.5 py-2 text-xs font-medium transition relative ${
+                      isActive ? 'text-emerald-700' : 'text-gray-500'
+                    }`}
+                  >
+                    <Icon className={`w-5 h-5 ${isActive ? 'text-emerald-600' : 'text-gray-400'}`} />
+                    <span className="truncate max-w-full px-1">{shortLabel}</span>
+                    {tab.badge != null && (
+                      <span className="absolute top-1 right-1/2 translate-x-3 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                        {tab.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </nav>
+
+            {/* Overflow sheet. Slides up from the bottom; tap a row to
+                jump to that tab and close. Backdrop dismiss too. */}
+            {showMoreNav && (
+              <div
+                className="sm:hidden fixed inset-0 z-40 bg-black/40 flex items-end"
+                onClick={() => setShowMoreNav(false)}
+              >
+                <div
+                  className="w-full bg-white rounded-t-2xl pb-safe"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+                    <h3 className="text-base font-semibold text-gray-900">More</h3>
+                    <button
+                      onClick={() => setShowMoreNav(false)}
+                      aria-label="Close"
+                      className="p-1.5 -mr-1 rounded-lg text-gray-500 hover:bg-gray-100"
+                    >
+                      <XIcon className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <div className="py-2">
+                    {overflow.map(tab => {
+                      const Icon = tab.icon;
+                      const isActive = activeTab === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          onClick={() => {
+                            setActiveTab(tab.id);
+                            setShowMoreNav(false);
+                          }}
+                          className={`w-full flex items-center gap-3 px-4 py-3 text-left ${
+                            isActive ? 'bg-emerald-50 text-emerald-700' : 'text-gray-800 hover:bg-gray-50'
+                          }`}
+                        >
+                          <Icon className={`w-5 h-5 ${isActive ? 'text-emerald-600' : 'text-gray-500'}`} />
+                          <span className="flex-1 font-medium">{tab.label}</span>
+                          {tab.badge != null && (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                              {tab.badge}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       <main className="max-w-7xl mx-auto px-4 pt-4 pb-24 sm:py-6">
         <Suspense fallback={<LazyFallback />}>
