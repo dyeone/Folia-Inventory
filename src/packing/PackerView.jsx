@@ -428,30 +428,53 @@ function ItemScanner({ box, onScan, onOpenCamera, onDone }) {
 
 function ItemRow({ item }) {
   const isPacked = !!item.packedAt;
+  const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
   const variety = (item.variety || '').trim();
+
+  // Color family by match status, mirroring the Shipping tab so the
+  // packer sees the same emerald/purple convention the admin sees:
+  //   matched real inventory  → emerald
+  //   unmatched placeholder   → purple (something to double-check)
+  //
+  // Bg intensifies (50 → 100) when the item flips to packed, so the
+  // packed/unpacked split stays visible even though color is now
+  // carrying match status too. Check icon + strikethrough still
+  // signal packed.
+  const family = isUnmatched
+    ? {
+        bg: isPacked ? 'bg-purple-100' : 'bg-purple-50',
+        border: 'border-purple-200',
+        accent: 'text-purple-700',
+        icon: 'text-purple-600',
+        ring: 'border-purple-300',
+      }
+    : {
+        bg: isPacked ? 'bg-emerald-100' : 'bg-emerald-50',
+        border: 'border-emerald-200',
+        accent: 'text-emerald-700',
+        icon: 'text-emerald-600',
+        ring: 'border-emerald-300',
+      };
+
   return (
-    <div className={`px-3 py-2 rounded-lg border ${
-      isPacked
-        ? 'bg-emerald-50 border-emerald-200'
-        : 'bg-white border-gray-200'
-    }`}>
+    <div className={`px-3 py-2 rounded-lg border ${family.bg} ${family.border}`}>
       <div className="flex items-center gap-2">
         {isPacked
-          ? <Check className="w-5 h-5 text-emerald-600 shrink-0" />
-          : <div className="w-5 h-5 rounded-full border-2 border-gray-300 shrink-0" />}
+          ? <Check className={`w-5 h-5 ${family.icon} shrink-0`} />
+          : <div className={`w-5 h-5 rounded-full border-2 ${family.ring} shrink-0`} />}
         <div className="flex-1 min-w-0">
-          <div className={`text-sm font-mono ${isPacked ? 'text-emerald-700' : 'text-gray-900 font-medium'}`}>
+          <div className={`text-sm font-mono ${family.accent} ${isPacked ? '' : 'font-medium'}`}>
             {item.sku || '(no SKU)'}
           </div>
           {(name || variety) && (
-            <div className={`text-xs truncate ${isPacked ? 'text-emerald-600 line-through' : 'text-gray-600'}`}>
+            <div className={`text-xs truncate ${family.accent} ${isPacked ? 'line-through opacity-70' : 'opacity-80'}`}>
               {[name, variety].filter(Boolean).join(' · ')}
             </div>
           )}
         </div>
         {item.quantity > 1 && (
-          <span className="text-xs text-gray-500 shrink-0">×{item.quantity}</span>
+          <span className={`text-xs ${family.accent} shrink-0`}>×{item.quantity}</span>
         )}
       </div>
     </div>
