@@ -2,6 +2,20 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Camera, Keyboard, Check } from 'lucide-react';
 import { BrowserMultiFormatReader } from '@zxing/browser';
+import { DecodeHintType, BarcodeFormat } from '@zxing/library';
+
+// ZXing decode hints — only look for the formats we actually print
+// (CODE128 for both box and item labels, QR as a fallback for future
+// use). Limiting POSSIBLE_FORMATS is the single biggest win for scan
+// speed: by default ZXing tries every format it knows, which on a
+// phone CPU is the main reason for the laggy decode the operator
+// reported. TRY_HARDER intentionally left off — it's the opposite of
+// speed.
+const DECODE_HINTS = new Map();
+DECODE_HINTS.set(DecodeHintType.POSSIBLE_FORMATS, [
+  BarcodeFormat.CODE_128,
+  BarcodeFormat.QR_CODE,
+]);
 
 // Direct @zxing/browser implementation — replaces the html5-qrcode
 // wrapper that was hanging iOS Safari on stream release. We own the
@@ -51,14 +65,29 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
     closedRef.current = false;
     let cancelled = false;
 
-    const reader = new BrowserMultiFormatReader();
+    // Constructor takes (hints, options). Setting
+    // timeBetweenScansMillis low makes decode attempts happen more
+    // often per second — combined with the format whitelist above,
+    // CODE128 locks on noticeably faster.
+    const reader = new BrowserMultiFormatReader(DECODE_HINTS, {
+      delayBetweenScanAttempts: 100,
+      delayBetweenScanSuccess: 100,
+    });
     readerRef.current = reader;
 
     (async () => {
       let stream;
       try {
+        // 720p is plenty for CODE128 / QR at typical phone-to-label
+        // distance and decodes meaningfully faster than the default
+        // (often 1080p / 4K on modern iPhones) because each frame is
+        // ~4× smaller for ZXing to chew through.
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
           audio: false,
         });
       } catch (e) {
