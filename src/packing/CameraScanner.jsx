@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { X, Camera, Keyboard } from 'lucide-react';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import { Html5Qrcode } from 'html5-qrcode';
 
 // Rear-camera barcode scanner using html5-qrcode (wraps ZXing).
 // Supports CODE128 (our box + item labels) and QR for future use.
@@ -28,13 +28,21 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
 
   useEffect(() => {
     closedRef.current = false;
+    // Two reliability tweaks based on "0 read" observation:
+    //   - Drop the formatsToSupport whitelist. ZXing's general decoder
+    //     handles many formats; restricting it sometimes prevents it
+    //     from locking on at all if frame quality is borderline. Same
+    //     formats still decode, plus DataMatrix / UPC variants.
+    //   - Enable useBarCodeDetectorIfSupported. On Android Chrome this
+    //     swaps the JS ZXing decoder for the native BarcodeDetector
+    //     API which is dramatically faster and more accurate. iOS
+    //     Safari doesn't ship BarcodeDetector yet, so iPhones still
+    //     use ZXing.
     const scanner = new Html5Qrcode(SCANNER_ELEMENT_ID, {
-      formatsToSupport: [
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.QR_CODE,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.EAN_13,
-      ],
+      formatsToSupport: undefined,
+      experimentalFeatures: {
+        useBarCodeDetectorIfSupported: true,
+      },
       verbose: false,
     });
     scannerRef.current = scanner;
