@@ -23,6 +23,10 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
   const [scans, setScans] = useState(0); // visible decode counter for sanity-checking
   const [manualValue, setManualValue] = useState('');
   const [manualOpen, setManualOpen] = useState(false);
+  // 'closing' hides the camera modal via CSS the instant a scan
+  // succeeds so iOS Safari isn't holding a stale MediaStream-backed
+  // video element on screen while React works through the unmount.
+  const [closing, setClosing] = useState(false);
   const scannerRef = useRef(null);
   const recentScans = useRef(new Map());
   const closedRef = useRef(false);
@@ -59,17 +63,29 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
       recentScans.current.set(text, now);
 
       if (!continuous) {
-        // Close the camera and fire onScan in one synchronous batch
-        // so React processes both state changes in the same render.
-        // Don't await scanner.stop() — iOS Safari has been observed
-        // hanging on that promise after a getUserMedia release, which
-        // leaves the whole React tree blank waiting for an .await that
-        // never resolves. Fire-and-forget the stop instead; the
-        // unmount alone removes the video element from the DOM.
+        // Three-step sequence that's survived iOS Safari testing:
+        //   1. Hide the modal via CSS immediately so the dead video
+        //      element isn't visible.
+        //   2. Stop + clear the html5-qrcode scanner async (fire and
+        //      forget — awaiting it hangs on iOS).
+        //   3. After a short delay (long enough for iOS to release
+        //      the MediaStream), unmount the modal AND fire onScan.
+        //      The delay also forces a paint by reading offsetHeight
+        //      which iOS Safari sometimes skips after a getUserMedia
+        //      stop.
         closedRef.current = true;
-        scanner.stop().catch(() => { /* tear-down race; ignore */ });
-        onClose?.();
-        onScan(text);
+        setClosing(true);
+        scanner.stop().then(() => {
+          try { scanner.clear(); } catch { /* tear-down race; ignore */ }
+        }).catch(() => { /* already stopped */ });
+        setTimeout(() => {
+          if (typeof document !== 'undefined') {
+            // Force a synchronous layout flush so iOS Safari repaints.
+            void document.body.offsetHeight;
+          }
+          onClose?.();
+          onScan(text);
+        }, 150);
       } else {
         onScan(text);
       }
@@ -131,7 +147,11 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-50 bg-black flex flex-col">
+    <div
+      className={`fixed inset-0 z-50 bg-black flex flex-col transition-opacity duration-100 ${
+        closing ? 'opacity-0 pointer-events-none' : ''
+      }`}
+    >
       <div className="flex items-center gap-2 px-3 py-3 pt-safe text-white bg-black/60">
         <Camera className="w-5 h-5" />
         <div className="flex-1 text-sm font-medium">
