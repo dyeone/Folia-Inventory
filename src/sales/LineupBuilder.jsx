@@ -261,7 +261,7 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
 
   return (
     <div className="fixed inset-0 z-40 bg-black/40 flex items-stretch sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-      <div className="bg-white w-full max-w-6xl h-full sm:h-[92vh] sm:rounded-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white w-full max-w-3xl md:max-w-6xl h-full sm:h-[92vh] sm:rounded-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="border-b border-gray-200 px-4 sm:px-5 py-3 sm:py-4 flex items-center justify-between flex-shrink-0">
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-gray-900 text-base sm:text-lg flex items-center gap-2">
@@ -273,7 +273,7 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
               {sale.itemTypes && sale.itemTypes !== 'both' && ` · ${sale.itemTypes.toUpperCase()} only`}
             </p>
           </div>
-          <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2">
+          <button onClick={onClose} aria-label="Close lineup builder" className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2">
             <X className="w-5 h-5" />
           </button>
         </div>
