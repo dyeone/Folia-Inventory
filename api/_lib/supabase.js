@@ -21,10 +21,18 @@ export const stripUser = (u) => {
 
 // Verify a request came from a currently-active admin user.
 // Returns the admin row on success, or throws an Error with .status.
+//
+// Missing-id behavior matches requireUser: 401 "Not authenticated"
+// rather than 400 "adminUserId required". The admin gate is a layered
+// check on top of authentication — if no id is present, the right
+// response is "you're not signed in," not "you sent a malformed body."
+// Keeping the parameter name out of the error message also avoids
+// leaking that the client should have sent `adminUserId` (it doesn't —
+// it sends `userId`, which the handler forwards).
 export async function requireAdmin(adminUserId) {
   if (!adminUserId) {
-    const e = new Error('adminUserId required');
-    e.status = 400;
+    const e = new Error('Not authenticated');
+    e.status = 401;
     throw e;
   }
   const { data } = await supabase
