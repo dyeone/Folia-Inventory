@@ -1,32 +1,19 @@
 // Parse rows from a Palmstreet orders export and group them into boxes.
 // One box = one recipient at one address (a single buyer with multiple
 // orders ships in one box).
-
-const SERVICE_TITLE_PATTERNS = [
-  /^📦/,
-  /vacation hold/i,
-  /^free\s+(usps|ups|shipping)/i,
-  /shipping/i,
-];
+//
+// Every row in the file makes it through to the parsed output — including
+// coupons, free-shipping lines, and the UPS-upgrade row — so the operator
+// sees the upload exactly as it came from Palmstreet.
 
 // Buyers who paid for the UPS upgrade have an extra line item with this
 // title in their order. We detect it on any line in the box → flip the
-// whole box's carrier from the default 'usps' to 'ups', then drop the row
-// (it's a service charge, not a shippable item).
+// whole box's carrier from the default 'usps' to 'ups'. The row itself
+// still passes through into box.items.
 const UPS_UPGRADE_PATTERN = /ups\s*2[\s-]*day\s*upgrade/i;
 
 function isUpsUpgradeLine(title) {
   return !!title && UPS_UPGRADE_PATTERN.test(title.trim());
-}
-
-function isServiceLine(title, price) {
-  if (!title) return true;
-  const t = title.trim();
-  if (SERVICE_TITLE_PATTERNS.some(re => re.test(t))) return true;
-  if (UPS_UPGRADE_PATTERN.test(t)) return true;
-  // Defensive: zero-priced rows with no real plant name.
-  if ((!price || price === 0) && t.length < 3) return true;
-  return false;
 }
 
 // Pull every SKU pattern out of an order title. The matcher resolves
@@ -148,11 +135,12 @@ export function parsePalmstreetOrders(rows) {
     if (sellerNote && !box.notes.includes(sellerNote)) box.notes.push(sellerNote);
     if (buyerNote && !box.notes.includes(buyerNote)) box.notes.push(buyerNote);
 
-    // Carrier classification happens before service-line filtering so the
-    // upgrade row sets the carrier even though it isn't itself shippable.
+    // Detect the UPS 2-Day Upgrade row to flip the whole box's carrier
+    // — this is a side effect of seeing the row, not a reason to drop it.
+    // The row itself stays in box.items so the operator sees every line
+    // exactly as it came from Palmstreet (coupons, free-shipping rows,
+    // upgrade lines, all of it).
     if (isUpsUpgradeLine(title)) box.carrier = 'ups';
-
-    if (isServiceLine(title, price)) return;
 
     // Find every SKU mentioned in the title. Two SKUs ⇒ this is a
     // bundled row; emit one virtual item per SKU with even price split.
@@ -190,7 +178,8 @@ export function parsePalmstreetOrders(rows) {
     });
   });
 
-  // Drop boxes that ended up with no shippable items (e.g. only had a
-  // service line like "Vacation Hold").
+  // Return every box that had at least one row — including boxes whose
+  // only row is a coupon / free-shipping line. The operator asked to see
+  // every uploaded line, no skips.
   return [...boxes.values()].filter(b => b.items.length > 0);
 }
