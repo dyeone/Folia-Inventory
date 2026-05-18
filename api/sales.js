@@ -1,4 +1,4 @@
-import { supabase, requireUser, newId } from './_lib/supabase.js';
+import { supabase, requireUser, requireAdmin, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 const SERVER_OWNED = ['createdAt', 'createdBy'];
@@ -48,6 +48,7 @@ export default wrap(async (req, res) => {
       return res.status(200).json({ ok: true, inserted: inserts.length, updated: rawUpdates.length });
     }
     case 'DELETE': {
+      await requireAdmin(userId);
       const { ids } = req.body || {};
       if (!Array.isArray(ids) || ids.length === 0) {
         const e = new Error('ids required'); e.status = 400; throw e;

@@ -143,11 +143,17 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
   // submit anyway. A real human typing pauses longer between characters,
   // so this rarely fires mid-type — and if it does, the SKU is already
   // valid so submitting early is harmless.
+  //
+  // handleScan closes over items/idealRate which change between renders;
+  // route through a ref so the timeout always calls the freshest version
+  // without re-firing the effect on every keystroke render.
+  const handleScanRef = useRef(handleScan);
+  handleScanRef.current = handleScan;
   useEffect(() => {
     if (!scanInput || forcePush) return;
     if (!/^[A-Za-z]{2,4}-\d+$/.test(scanInput.trim())) return;
     const id = setTimeout(() => {
-      handleScan(scanInput);
+      handleScanRef.current(scanInput);
       setScanInput('');
     }, 200);
     return () => clearTimeout(id);

@@ -36,10 +36,15 @@ async function register(req, res) {
   const { username, password, displayName, registrationPassword } = req.body || {};
 
   // Gate new registrations behind a shared secret so random visitors
-  // can't sign themselves up. Configurable via REGISTRATION_PASSWORD
-  // on the deployment; falls back to a default if the env var isn't
-  // set, so a freshly cloned repo works without extra setup.
-  const expected = process.env.REGISTRATION_PASSWORD || 'foliafolialove';
+  // can't sign themselves up. REGISTRATION_PASSWORD must be set on the
+  // deployment — fail closed if it's missing rather than fall back to
+  // a hardcoded default, which would silently leave registration open
+  // on a misconfigured environment.
+  const expected = process.env.REGISTRATION_PASSWORD;
+  if (!expected) {
+    const e = new Error('Registration is disabled on this deployment');
+    e.status = 503; throw e;
+  }
   if (!registrationPassword || registrationPassword !== expected) {
     const e = new Error('Invalid registration password');
     e.status = 401; throw e;

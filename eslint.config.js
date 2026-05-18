@@ -40,4 +40,13 @@ export default defineConfig([
       },
     },
   },
+  {
+    files: ['extension/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        chrome: 'readonly',
+      },
+    },
+  },
 ])

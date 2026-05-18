@@ -1,4 +1,4 @@
-import { supabase, requireUser, newId } from './_lib/supabase.js';
+import { supabase, requireUser, requireAdmin, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { randomBytes } from 'node:crypto';
 
@@ -57,9 +57,13 @@ export default wrap(async (req, res) => {
 // Mint (or rotate) a bridge token for the calling user. Returns the
 // plaintext token once — there's no way to recover it later, since we
 // don't store anything alongside it that would let us re-derive it.
+//
+// Admin-only: a bridge token grants ADB-level control over the
+// operator's phone, which can drive Palmstreet on behalf of the user.
+// Staff and packer roles should never be able to mint one.
 async function generateToken(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
-  const user = await requireUser(req.body?.userId);
+  const user = await requireAdmin(req.body?.userId);
   const token = randomBytes(32).toString('hex');
   const { error } = await supabase
     .from('users')
