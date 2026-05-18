@@ -294,6 +294,10 @@ function BuyerGroupCard({
 }) {
   const totalItems = group.boxes.reduce((sum, b) => sum + b.items.length, 0);
   const saleCount = new Set(group.boxes.map(b => b.saleId)).size;
+  const salesById = useMemo(
+    () => new Map(sales.map(s => [s.id, s])),
+    [sales],
+  );
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl p-4">
@@ -320,7 +324,8 @@ function BuyerGroupCard({
           <BoxRow
             key={box.id}
             box={box}
-            sale={sales.find(s => s.id === box.saleId)}
+            sale={salesById.get(box.saleId)}
+            salesById={salesById}
             shipment={shipmentsByBox[box.id]}
             onOpen={() => onOpenBox(box.saleId)}
             onBuyLabel={() => onBuyLabel(box)}
@@ -348,10 +353,89 @@ function boxActionState(box, shipment) {
   return { kind: 'enter-tracking', carrier };
 }
 
+function BoxItemsList({ box, salesById }) {
+  // Sort items by SKU for predictable display; fall back to name.
+  const sortedItems = useMemo(() => {
+    const copy = [...box.items];
+    copy.sort((a, b) => {
+      const sa = (a.sku || a.name || '').toString();
+      const sb = (b.sku || b.name || '').toString();
+      return sa.localeCompare(sb);
+    });
+    return copy;
+  }, [box.items]);
+
+  return (
+    <div className="border-t border-gray-100 bg-gray-50/40 px-3 py-2 space-y-1.5">
+      {sortedItems.map(item => {
+        const itemSale = salesById?.get(item.saleId);
+        const variety = item.variety || item.name || '—';
+        const qty = item.quantity || 1;
+        // salePrice is set at order-apply time (SalesUploadModal). It's
+        // stored as a numeric in dollars to match the existing
+        // ShipBoxCard / SalesView display convention.
+        const priceRaw = item.salePrice != null ? parseFloat(item.salePrice) : NaN;
+        const priceStr = Number.isFinite(priceRaw) && priceRaw > 0
+          ? `$${priceRaw.toFixed(2)}`
+          : null;
+        const isGiveaway = item.lotKind === 'giveaway';
+        const shippedAlready = ['shipped', 'delivered'].includes(item.status);
+
+        return (
+          <div
+            key={item.id}
+            className={`text-sm flex items-baseline justify-between gap-3 ${shippedAlready ? 'opacity-60' : ''}`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2 flex-wrap">
+                {item.sku && (
+                  <span className="font-mono text-[11px] text-gray-500 shrink-0">{item.sku}</span>
+                )}
+                <span className="text-gray-900 truncate">{variety}</span>
+                <span className="text-xs text-gray-500 shrink-0">×{qty}</span>
+                {shippedAlready && (
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800">
+                    shipped
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px] text-gray-500 flex-wrap mt-0.5">
+                {isGiveaway ? (
+                  <span className="text-amber-700 font-medium">giveaway</span>
+                ) : (
+                  <span>regular</span>
+                )}
+                {item.orderId && (
+                  <>
+                    <span className="text-gray-300">·</span>
+                    <span className="font-mono">{item.orderId}</span>
+                  </>
+                )}
+                {itemSale?.name && (
+                  <>
+                    <span className="text-gray-300">·</span>
+                    <span className="truncate">{itemSale.name}</span>
+                  </>
+                )}
+              </div>
+            </div>
+            {priceStr && (
+              <span className="text-sm text-gray-700 font-medium shrink-0 tabular-nums">
+                {priceStr}
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function BoxRow({
-  box, sale, shipment,
+  box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, showToast,
 }) {
+  const [expanded, setExpanded] = useState(false);
   const [editingTracking, setEditingTracking] = useState(false);
   const [trackingDraft, setTrackingDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -404,8 +488,14 @@ function BoxRow({
       <div
         role="button"
         tabIndex={0}
-        onClick={onOpen}
-        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpen(); }}
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setExpanded((v) => !v);
+          }
+        }}
         className="w-full text-left flex items-center justify-between gap-2 px-3 py-2 cursor-pointer hover:bg-emerald-50/30 active:bg-emerald-50"
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -420,7 +510,7 @@ function BoxRow({
             {partial ? `${shipped}/${total} shipped` : `${total} ${total === 1 ? 'item' : 'items'}`}
           </span>
           {/* Primary action button, state-driven. Stops propagation so
-              clicking it doesn't also drill into the sale. */}
+              clicking it doesn't also toggle the row's expanded state. */}
           {action.kind === 'buy-label' && (
             <button
               onClick={(e) => { stop(e); onBuyLabel(); }}
@@ -447,9 +537,23 @@ function BoxRow({
               Mark shipped
             </button>
           )}
-          <ChevronRight className="w-4 h-4 text-gray-400" />
+          {/* Drill-in to the per-sale pane for label PDFs / void / clear
+              tracking. Kept distinct from the row toggle so the operator
+              can still get to the full ShipBoxCard UI. */}
+          <button
+            type="button"
+            onClick={(e) => { stop(e); onOpen(); }}
+            title="Open in sale view"
+            className="p-1 -mr-1 text-gray-400 hover:text-emerald-700 hover:bg-emerald-50 rounded"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
         </div>
       </div>
+
+      {expanded && (
+        <BoxItemsList box={box} salesById={salesById} />
+      )}
 
       {/* Inline tracking-number entry. Click "Enter tracking" → row expands
           with a small form; Save fires the API and refreshes shipments,
