@@ -104,6 +104,39 @@ export function PackingView({
     return next;
   });
   const clearSelection = () => setSelectedBoxIds(new Set());
+
+  // Always-on scan strip (desktop only). A persistent autofocused text
+  // input at the top of the tab so a USB barcode scanner can fire
+  // back-to-back scans without the operator ever clicking. Each scan's
+  // CR routes through submitScan, which auto-classifies B-XXXXXX as a
+  // box code and everything else as an item SKU.
+  const scanInputRef = useRef(null);
+  const [scanInput, setScanInput] = useState('');
+  const [scanFeedback, setScanFeedback] = useState(null); // { kind, text } for the green flash
+  useEffect(() => {
+    if (isMobile) return;
+    // Autofocus on first mount of the tab. We don't fight the user for
+    // focus afterward — only re-focus right after a successful scan.
+    scanInputRef.current?.focus();
+  }, [isMobile]);
+  const submitScan = (raw) => {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) return;
+    const upper = trimmed.toUpperCase().replace(/_/g, '-');
+    if (/^B-/.test(upper)) {
+      handleScannedBoxCode(trimmed);
+      setScanFeedback({ kind: 'box', text: upper });
+    } else {
+      handleScannedItemSku(trimmed);
+      setScanFeedback({ kind: 'item', text: upper });
+    }
+    setScanInput('');
+    // Clear the flash after a moment, then re-grab focus for the next
+    // scan. setTimeout(0) ensures the focus lands after React commits
+    // the input clear.
+    setTimeout(() => scanInputRef.current?.focus(), 0);
+    setTimeout(() => setScanFeedback(null), 1200);
+  };
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -382,7 +415,10 @@ export function PackingView({
             across sale events.
           </p>
         </div>
-        <div className="shrink-0 flex items-center gap-2">
+        {/* Camera-based scan buttons — mobile only. Desktop uses the
+            always-on scan strip below; the modal these open is
+            redundant with that strip. */}
+        <div className="shrink-0 flex items-center gap-2 sm:hidden">
           <button
             type="button"
             onClick={() => setScannerMode('box')}
@@ -400,19 +436,60 @@ export function PackingView({
         </div>
       </div>
 
-      {/* Desktop-only live search. Filters across box code, buyer name,
-          @username, and item SKU/name/variety. Stacks with the scan
-          filter — both must pass. Hidden on mobile because the Scan
-          buttons already serve the find-this-box need on phones. */}
-      <div className="hidden sm:block">
-        <div className="relative">
+      {/* Desktop-only scan + search row.
+          - Scan strip: always-on autofocused input. A USB scanner can
+            emit codes back-to-back; each CR fires submitScan which
+            auto-routes (B-... → box code, else → item SKU), clears,
+            and refocuses. The strip takes ~2/3 width to telegraph
+            that scanning is the primary path.
+          - Search: filters the visible list (box code / buyer /
+            @username / SKU / plant name).
+          Both hidden on mobile — phones use the Scan buttons (camera)
+          in the header above. */}
+      <div className="hidden sm:flex items-stretch gap-3">
+        <div className="relative flex-[2]">
+          <ScanLine className={`w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none ${
+            scanFeedback ? 'text-emerald-600' : 'text-emerald-500'
+          }`} />
+          <input
+            ref={scanInputRef}
+            type="text"
+            value={scanInput}
+            onChange={(e) => setScanInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitScan(scanInput);
+              }
+            }}
+            placeholder="Scan a box (B-…) or an item SKU — Enter to submit"
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            className={`w-full pl-11 pr-32 py-3 text-base font-mono uppercase border-2 rounded-xl focus:outline-none focus:ring-2 transition ${
+              scanFeedback
+                ? 'border-emerald-500 bg-emerald-50 ring-emerald-500/30'
+                : 'border-emerald-300 bg-emerald-50/40 focus:border-emerald-500 focus:ring-emerald-500/30'
+            }`}
+          />
+          {scanFeedback ? (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-emerald-700 bg-white px-2 py-1 rounded-md border border-emerald-300 shadow-sm">
+              ✓ {scanFeedback.kind === 'box' ? 'box' : 'item'} · <span className="font-mono">{scanFeedback.text}</span>
+            </span>
+          ) : (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] text-emerald-700/70 hidden md:inline">
+              auto-routes by prefix
+            </span>
+          )}
+        </div>
+        <div className="relative flex-1">
           <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by box code, buyer, @username, SKU, or plant name..."
-            className="w-full pl-9 pr-9 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent bg-white"
+            placeholder="Search boxes..."
+            className="w-full pl-9 pr-9 py-3 text-sm border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent bg-white"
           />
           {searchQuery && (
             <button
