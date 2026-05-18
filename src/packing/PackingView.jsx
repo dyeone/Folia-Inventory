@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
-  Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, ChevronDown, Upload,
+  Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2,
 } from 'lucide-react';
 import { api } from '../api.js';
@@ -28,7 +28,10 @@ export { SummaryStat } from './SummaryStat.jsx';
 
 export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog }) {
   const [activeSaleId, setActiveSaleId] = useState(null);
-  const [shippedExpanded, setShippedExpanded] = useState(false);
+  // Sub-tab inside the Shipping page: 'ready' for active boxes,
+  // 'shipped' for the archive. Defaults to 'ready' since that's the
+  // common operator workflow.
+  const [subTab, setSubTab] = useState('ready');
 
   // Shipments keyed by shipmentBoxId. We need these to know which boxes
   // already have a label / tracking number (→ "Mark shipped") vs. which
@@ -130,92 +133,122 @@ export function PackingView({ inventoryItems, sales, onShipBox, setConfirmDialog
         </p>
       </div>
 
-      <section className="space-y-2">
-        <h3 className="text-sm font-medium text-gray-700">
-          Ready to ship
-          <span className="text-gray-400 font-normal ml-1">
-            · {totalBoxes} {totalBoxes === 1 ? 'box' : 'boxes'} · {groups.length} {groups.length === 1 ? 'buyer' : 'buyers'} · {totalItems} {totalItems === 1 ? 'item' : 'items'}
-          </span>
-        </h3>
-        {groups.length === 0 ? (
-          <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
-            <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-            <p className="text-sm text-gray-500">
-              Nothing waiting to ship. When a sale's orders get applied, boxes
-              show up here.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {groups.map(g => (
-              <BuyerGroupCard
-                key={g.key}
-                group={g}
-                sales={sales}
-                shipmentsByBox={shipmentsByBox}
-                onOpenBox={(saleId) => setActiveSaleId(saleId)}
-                onBuyLabel={(box) => setBuyingFor(box)}
-                onSaveTracking={handleSaveTracking}
-                onMarkShipped={handleMarkShipped}
-                showToast={showToast}
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      {/* Inner-page sub-tabs. Same chip-tab pattern used elsewhere
+          (PackingBoxesPane's carrier filter) so the visual language is
+          consistent. Counts live in the tab labels so the operator can
+          see the workload split before clicking. */}
+      <div className="bg-white rounded-xl border border-gray-200 px-1 py-1 flex gap-0.5 overflow-x-auto">
+        {[
+          { value: 'ready', label: 'Ready to ship', count: totalBoxes },
+          { value: 'shipped', label: 'Shipped', count: shipped.totalBoxes },
+        ].map(tab => {
+          const active = subTab === tab.value;
+          return (
+            <button
+              key={tab.value}
+              onClick={() => setSubTab(tab.value)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition ${
+                active ? 'bg-emerald-600 text-white font-medium' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+            >
+              {tab.label}
+              <span className={`text-xs ${active ? 'text-emerald-100' : 'text-gray-400'}`}>
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
-      {awaitingUpload.length > 0 && (
-        <section className="space-y-2">
-          <h3 className="text-sm font-medium text-gray-700">
-            Awaiting upload
-            <span className="text-gray-400 font-normal ml-1">
-              · {awaitingUpload.length}
-            </span>
-          </h3>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {awaitingUpload.map(sale => (
-              <button
-                key={sale.id}
-                onClick={() => setActiveSaleId(sale.id)}
-                className="text-left bg-amber-50 border border-amber-200 rounded-xl p-4 hover:border-amber-400 hover:shadow-sm active:bg-amber-100 transition"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-gray-900 truncate">{sale.name}</div>
-                    <div className="text-xs text-gray-500">{sale.date}</div>
-                  </div>
-                  <Upload className="w-4 h-4 text-amber-600 shrink-0" />
-                </div>
-                <div className="text-xs text-amber-800 mt-2">
-                  Run "Validate Sales" in the Sale tab to assemble boxes.
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
+      {subTab === 'ready' && (
+        <>
+          <section className="space-y-2">
+            <h3 className="text-sm font-medium text-gray-700">
+              Ready to ship
+              <span className="text-gray-400 font-normal ml-1">
+                · {totalBoxes} {totalBoxes === 1 ? 'box' : 'boxes'} · {groups.length} {groups.length === 1 ? 'buyer' : 'buyers'} · {totalItems} {totalItems === 1 ? 'item' : 'items'}
+              </span>
+            </h3>
+            {groups.length === 0 ? (
+              <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
+                <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                <p className="text-sm text-gray-500">
+                  Nothing waiting to ship. When a sale's orders get applied, boxes
+                  show up here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {groups.map(g => (
+                  <BuyerGroupCard
+                    key={g.key}
+                    group={g}
+                    sales={sales}
+                    shipmentsByBox={shipmentsByBox}
+                    onOpenBox={(saleId) => setActiveSaleId(saleId)}
+                    onBuyLabel={(box) => setBuyingFor(box)}
+                    onSaveTracking={handleSaveTracking}
+                    onMarkShipped={handleMarkShipped}
+                    showToast={showToast}
+                  />
+                ))}
+              </div>
+            )}
+          </section>
+
+          {awaitingUpload.length > 0 && (
+            <section className="space-y-2">
+              <h3 className="text-sm font-medium text-gray-700">
+                Awaiting upload
+                <span className="text-gray-400 font-normal ml-1">
+                  · {awaitingUpload.length}
+                </span>
+              </h3>
+              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                {awaitingUpload.map(sale => (
+                  <button
+                    key={sale.id}
+                    onClick={() => setActiveSaleId(sale.id)}
+                    className="text-left bg-amber-50 border border-amber-200 rounded-xl p-4 hover:border-amber-400 hover:shadow-sm active:bg-amber-100 transition"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-gray-900 truncate">{sale.name}</div>
+                        <div className="text-xs text-gray-500">{sale.date}</div>
+                      </div>
+                      <Upload className="w-4 h-4 text-amber-600 shrink-0" />
+                    </div>
+                    <div className="text-xs text-amber-800 mt-2">
+                      Run "Validate Sales" in the Sale tab to assemble boxes.
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+        </>
       )}
 
-      {/* Shipped archive — collapsed by default since these can accumulate
-          unbounded. Same buyer-grouped layout as Ready to ship for visual
-          consistency; BoxRow detects the all-shipped state and hides the
-          per-row action buttons. */}
-      {shipped.totalBoxes > 0 && (
+      {/* Shipped archive — BoxRow detects the all-shipped state and hides
+          the per-row action buttons (nothing left to act on), but the
+          chevron drill-in still works for label-PDF retrieval. */}
+      {subTab === 'shipped' && (
         <section className="space-y-2">
-          <button
-            type="button"
-            onClick={() => setShippedExpanded(v => !v)}
-            aria-expanded={shippedExpanded}
-            className="w-full flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900"
-          >
-            {shippedExpanded
-              ? <ChevronDown className="w-4 h-4 text-gray-500" />
-              : <ChevronRight className="w-4 h-4 text-gray-500" />}
-            <span>Shipped</span>
-            <span className="text-gray-400 font-normal">
+          <h3 className="text-sm font-medium text-gray-700">
+            Shipped
+            <span className="text-gray-400 font-normal ml-1">
               · {shipped.totalBoxes} {shipped.totalBoxes === 1 ? 'box' : 'boxes'} · {shipped.groups.length} {shipped.groups.length === 1 ? 'buyer' : 'buyers'} · {shipped.totalItems} {shipped.totalItems === 1 ? 'item' : 'items'}
             </span>
-          </button>
-          {shippedExpanded && (
+          </h3>
+          {shipped.groups.length === 0 ? (
+            <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
+              <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+              <p className="text-sm text-gray-500">
+                No boxes have shipped yet. Once you Mark shipped on a row, it
+                moves here.
+              </p>
+            </div>
+          ) : (
             <div className="space-y-3">
               {shipped.groups.map(g => (
                 <BuyerGroupCard
