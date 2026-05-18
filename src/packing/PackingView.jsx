@@ -537,17 +537,21 @@ function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, showToast,
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [editingTracking, setEditingTracking] = useState(false);
-  const [trackingDraft, setTrackingDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-
   const shipped = box.items.filter(i =>
     ['shipped', 'delivered'].includes(i.status)
   ).length;
   const total = box.items.length;
   const partial = shipped > 0 && shipped < total;
   const allShipped = total > 0 && shipped === total;
+
+  // Open boxes default to expanded so the operator sees every item
+  // without an extra click — packing always needs that detail.
+  // Shipped boxes default to collapsed since the archive can be huge
+  // and most rows aren't being looked at.
+  const [expanded, setExpanded] = useState(!allShipped);
+  const [editingTracking, setEditingTracking] = useState(false);
+  const [trackingDraft, setTrackingDraft] = useState('');
+  const [busy, setBusy] = useState(false);
   const carrierKey = (box.carrier || 'usps').toLowerCase();
   const carrierLabel = carrierKey.toUpperCase();
   const carrierClass = carrierKey === 'ups'
