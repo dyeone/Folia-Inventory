@@ -47,7 +47,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
     });
     scannerRef.current = scanner;
 
-    const onDecoded = (text) => {
+    const onDecoded = async (text) => {
       if (closedRef.current) return;
       setScans(c => c + 1);
       // 2-second per-value debounce so a barcode held in view doesn't
@@ -56,8 +56,21 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
       const last = recentScans.current.get(text) || 0;
       if (now - last < 2000) return;
       recentScans.current.set(text, now);
-      onScan(text);
-      if (!continuous) stopAndClose();
+
+      if (!continuous) {
+        // Tear down the camera BEFORE firing onScan. Otherwise the
+        // camera modal (fixed inset-0 z-50) stays in the DOM for the
+        // frame between setActiveBoxId and setCameraMode(null), which
+        // looks like a blank screen on iOS Safari while the
+        // MediaStream releases. Awaiting stop() guarantees the camera
+        // overlay is gone before the parent state change lands.
+        await stopAndClose();
+        // Defer one tick so the unmount render flushes before the new
+        // active-box state triggers the next render.
+        setTimeout(() => onScan(text), 0);
+      } else {
+        onScan(text);
+      }
     };
 
     const stopAndClose = async () => {
