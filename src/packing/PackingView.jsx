@@ -108,86 +108,23 @@ export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, s
     await api.recordPalmstreetTracking(box.id, trackingNumber);
     await refreshShipments();
     showToast('Tracking saved');
-    // Fire-and-forget Palmstreet push so the buyer-side UI shows the
-    // tracking. Errors (token expired, order not found, etc.) are
-    // surfaced verbatim — local tracking row is already saved either way.
-    pushTrackingToPalmstreet(box);
   };
 
-  const pushTrackingToPalmstreet = async (box) => {
-    try {
-      await api.pushPalmstreetTracking(box.id);
-      showToast('Pushed to Palmstreet');
-    } catch (e) {
-      // The server returns the upstream detail in e.message — surface it
-      // verbatim. Use a longer-lived toast since the operator needs to
-      // read it.
-      const msg = `Palmstreet push failed — ${e.message || 'unknown error'}`;
-      setToast(msg);
-      setTimeout(() => setToast(null), 8000);
-    }
-  };
-
-  // Refresh button: re-pulls items + sales + shipments, then bulk-pushes
-  // tracking back to Palmstreet for every box that has a live tracking
-  // number. Single-order pushes are idempotent (the update-order endpoint
-  // just sets the latest tracking — sending the same value twice is safe).
-  // Multi-order boxes are skipped because create-package isn't
-  // idempotent — re-pushing would create duplicate Palmstreet packages.
-  // The skipped count surfaces in the result toast so the operator knows
-  // some boxes need attention.
+  // Refresh button: re-pulls items + sales + shipments from our DB so
+  // the Shipping list reflects the latest state without a page reload
+  // (e.g. after another operator or the Chrome extension changed things).
   const handleRefresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      // Step 1 — local data refresh.
       const appResult = onRefreshData ? await onRefreshData() : null;
       const list = await api.getShipments();
-      const freshShipmentsByBox = Object.fromEntries(
-        (list || []).map(s => [s.id, s]),
-      );
-      setShipmentsByBox(freshShipmentsByBox);
-
-      // Step 2 — bulk push tracking to Palmstreet. Re-derive boxes from
-      // the freshly applied inventoryItems (state hasn't propagated yet
-      // when we get here, but the parent already kicked the update — the
-      // refreshed values will be visible to the bulk push via inventoryItems
-      // on the next render. For now, just use what we have on this render
-      // and rely on subsequent renders to fill in newly arrived boxes.)
-      const liveBoxes = collectLiveBoxes(inventoryItems, freshShipmentsByBox);
-      const pushable = liveBoxes.filter(b => b.singleOrder && b.trackingNumber);
-      const multi = liveBoxes.filter(b => !b.singleOrder && b.trackingNumber);
-
-      let ok = 0;
-      const failures = [];
-      for (const b of pushable) {
-        try {
-          await api.pushPalmstreetTracking(b.id);
-          ok++;
-        } catch (e) {
-          failures.push({ id: b.id, recipient: b.recipientName, message: e.message });
-        }
-      }
-
+      setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
       const parts = [];
       if (appResult) {
         parts.push(`${appResult.itemCount} items / ${appResult.saleCount} sales`);
       }
-      if (ok > 0) parts.push(`pushed ${ok} to Palmstreet`);
-      if (multi.length > 0) parts.push(`${multi.length} multi-order skipped`);
-      if (failures.length > 0) parts.push(`${failures.length} push failed`);
-
-      const summary = `Refreshed — ${parts.join(' · ') || 'no changes'}`;
-      if (failures.length > 0) {
-        // Surface the first failure verbatim so the operator gets actionable
-        // detail instead of just a count.
-        const first = failures[0];
-        const detail = `${summary}\nFirst failure (${first.recipient || first.id}): ${first.message}`;
-        setToast(detail);
-        setTimeout(() => setToast(null), 10_000);
-      } else {
-        showToast(summary);
-      }
+      showToast(`Refreshed — ${parts.join(' · ') || 'no changes'}`);
     } catch (e) {
       setToast(`Refresh failed — ${e.message || 'unknown error'}`);
       setTimeout(() => setToast(null), 8000);
@@ -289,11 +226,8 @@ export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, s
           box={buyingFor}
           onClose={() => setBuyingFor(null)}
           onPurchased={() => {
-            const purchased = buyingFor;
             refreshShipments();
             showToast('Label purchased');
-            // Push the ShipStation tracking up to Palmstreet too.
-            pushTrackingToPalmstreet(purchased);
           }}
           showToast={showToast}
         />
@@ -311,42 +245,6 @@ export function PackingView({ inventoryItems, sales, onShipBox, onRefreshData, s
 // ───────────────────────────────────────────────────────────────────────────
 // Buyer grouping helpers.
 // ───────────────────────────────────────────────────────────────────────────
-
-// Walk items + shipments and produce a flat list of live boxes (no
-// `sold` items left to ship excluded — we still want to re-sync tracking
-// for shipped boxes too, since they may have failed to push on Mark
-// shipped). For each box reports whether it's single-order (safe to
-// idempotently re-push) and the live tracking number (if any).
-function collectLiveBoxes(items, shipmentsByBox) {
-  const boxMap = new Map();
-  for (const item of items) {
-    if (!item.shipmentBoxId) continue;
-    if (item.deletedAt) continue;
-    let box = boxMap.get(item.shipmentBoxId);
-    if (!box) {
-      box = {
-        id: item.shipmentBoxId,
-        recipientName: item.buyer || item.buyerUsername || '',
-        orderIds: new Set(),
-      };
-      boxMap.set(item.shipmentBoxId, box);
-    }
-    if (item.orderId) box.orderIds.add(item.orderId);
-  }
-  const out = [];
-  for (const box of boxMap.values()) {
-    const ship = shipmentsByBox[box.id];
-    const live = ship && !ship.voidedAt ? ship : null;
-    out.push({
-      id: box.id,
-      recipientName: box.recipientName,
-      singleOrder: box.orderIds.size === 1,
-      orderIdCount: box.orderIds.size,
-      trackingNumber: live?.trackingNumber || null,
-    });
-  }
-  return out;
-}
 
 function groupReadyToShipByBuyer(items, sales) {
   // First, assemble every (live) box from item rows. A box exists once an

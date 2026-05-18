@@ -1,11 +1,5 @@
 import { supabase, requireUser } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
-import {
-  updateOrderTracking,
-  createPackageByOrderNumbers,
-  updatePackageTracking,
-  PalmstreetError,
-} from './_lib/palmstreet.js';
 
 // Routes:
 //   GET  /api/shipments?saleId=X
@@ -23,13 +17,6 @@ import {
 //       to the shipping-labels Storage bucket.
 //   POST /api/shipments  body: { action: 'clear-tracking', shipmentBoxId }
 //     → deletes a manual Palmstreet row (refuses to touch ShipStation rows).
-//   POST /api/shipments  body: { action: 'push-palmstreet-tracking',
-//                                 shipmentBoxId }
-//     → pushes the local tracking + carrier on a shipment back to
-//       Palmstreet OMS so the buyer-side UI shows it. Single-order boxes
-//       use the per-order tracking endpoint; multi-order boxes create a
-//       Palmstreet package first, then set its tracking. Token comes
-//       from app_settings.id='shipping' → data.palmstreet.token.
 
 const SIGNED_URL_TTL_SECONDS = 300;
 const PALMSTREET_CARRIER_CODE = 'palmstreet';
@@ -51,7 +38,6 @@ export default wrap(async (req, res) => {
       const action = req.body?.action;
       if (action === 'record-tracking') return recordTracking(req, res, userId);
       if (action === 'clear-tracking') return clearTracking(req, res);
-      if (action === 'push-palmstreet-tracking') return pushPalmstreetTracking(req, res);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
     default:
@@ -281,115 +267,3 @@ function logUploadErr(kind) {
   };
 }
 
-// ─── Palmstreet push ────────────────────────────────────────────────────────
-
-// Push the saved tracking + carrier on a shipment up to Palmstreet OMS so
-// the buyer-side UI shows the tracking. Best-effort: the caller is
-// expected to have already saved the local tracking row; this is the
-// downstream notification.
-async function pushPalmstreetTracking(req, res) {
-  const { shipmentBoxId } = req.body || {};
-  if (!shipmentBoxId) {
-    const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
-  }
-
-  const { data: shipment, error: shipErr } = await supabase
-    .from('shipments')
-    .select('id, carrier, "trackingNumber", "voidedAt"')
-    .eq('id', shipmentBoxId)
-    .maybeSingle();
-  if (shipErr) { const e = new Error(shipErr.message); e.status = 500; throw e; }
-  if (!shipment) { const e = new Error('Shipment not found'); e.status = 404; throw e; }
-  if (shipment.voidedAt) { const e = new Error('Shipment is voided'); e.status = 409; throw e; }
-  if (!shipment.trackingNumber) {
-    const e = new Error('Shipment has no tracking number to push'); e.status = 400; throw e;
-  }
-
-  // Palmstreet only supports UPS / USPS today (user-confirmed). Normalize
-  // and reject anything else loudly so the operator catches the mismatch.
-  const carrier = normalizePalmstreetCarrier(shipment.carrier);
-  if (!carrier) {
-    const e = new Error(
-      `Palmstreet only accepts UPS or USPS carriers; got '${shipment.carrier}'.`,
-    );
-    e.status = 400; throw e;
-  }
-
-  // Distinct orderIds across the items in this box. Single-order box →
-  // endpoint #1 per order; multi-order box → endpoint #2 (create
-  // package) + endpoint #3 (set tracking on package). The package path
-  // lets one tracking number cover every order in a combined shipment.
-  const { data: itemRows, error: itErr } = await supabase
-    .from('inventory_items')
-    .select('id, "orderId"')
-    .eq('shipmentBoxId', shipmentBoxId);
-  if (itErr) { const e = new Error(itErr.message); e.status = 500; throw e; }
-  const orderNumbers = [...new Set(
-    (itemRows || []).map(i => i.orderId).filter(Boolean),
-  )];
-  if (orderNumbers.length === 0) {
-    const e = new Error(
-      'No Palmstreet orderIds on items in this box — orders may not have been applied via SalesUploadModal.',
-    );
-    e.status = 422; throw e;
-  }
-
-  const { data: settingsRow } = await supabase
-    .from('app_settings')
-    .select('data')
-    .eq('id', 'shipping')
-    .maybeSingle();
-  const token = settingsRow?.data?.palmstreet?.token;
-
-  try {
-    if (orderNumbers.length === 1) {
-      const data = await updateOrderTracking(token, {
-        orderNumber: orderNumbers[0],
-        trackingNumber: shipment.trackingNumber,
-        carrier,
-      });
-      return res.status(200).json({
-        ok: true,
-        mode: 'single',
-        orderNumber: orderNumbers[0],
-        palmstreet: data,
-      });
-    }
-    // Multi-order combined shipping: create the package, then set its tracking.
-    const pkg = await createPackageByOrderNumbers(token, orderNumbers);
-    const packageId = pkg?.package_id || pkg?.packageId;
-    if (!packageId) {
-      const e = new Error(
-        `Palmstreet returned no package_id from create-package call: ${JSON.stringify(pkg)}`,
-      );
-      e.status = 502; throw e;
-    }
-    const updated = await updatePackageTracking(token, packageId, {
-      trackingNumber: shipment.trackingNumber,
-      carrier,
-    });
-    return res.status(200).json({
-      ok: true,
-      mode: 'package',
-      packageId,
-      orderNumbers,
-      palmstreet: updated,
-    });
-  } catch (e) {
-    if (e instanceof PalmstreetError) {
-      const httpErr = new Error(e.message);
-      httpErr.status = e.status === 401 ? 401 : (e.status >= 400 && e.status < 600 ? e.status : 502);
-      httpErr.body = e.body;
-      throw httpErr;
-    }
-    throw e;
-  }
-}
-
-function normalizePalmstreetCarrier(carrier) {
-  if (!carrier) return null;
-  const c = String(carrier).toLowerCase();
-  if (c === 'ups') return 'UPS';
-  if (c === 'usps') return 'USPS';
-  return null;
-}

@@ -123,12 +123,6 @@ export const api = {
     request('/shipments', { method: 'POST', body: { action: 'record-tracking', shipmentBoxId, trackingNumber } }).then(r => r.shipment),
   clearPalmstreetTracking: (shipmentBoxId) =>
     request('/shipments', { method: 'POST', body: { action: 'clear-tracking', shipmentBoxId } }),
-  // Push the local tracking + carrier on a shipment back to Palmstreet
-  // OMS so the buyer-side UI shows it. Resolves to {ok, mode, ...} on
-  // success; rejects with the upstream error detail (token expired,
-  // order not found, etc.) so the caller can surface it verbatim.
-  pushPalmstreetTracking: (shipmentBoxId) =>
-    request('/shipments', { method: 'POST', body: { action: 'push-palmstreet-tracking', shipmentBoxId } }),
   buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation }) =>
     request('/shipstation', { method: 'POST', body: { action: 'buy-label', shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation } }).then(r => r.shipment),
   voidLabel: (shipmentBoxId) =>

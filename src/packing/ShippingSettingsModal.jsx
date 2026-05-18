@@ -1,10 +1,6 @@
 import { useEffect, useState } from 'react';
-import { X, Save, Truck, MapPin, Package, AlertCircle, FlaskConical, KeyRound } from 'lucide-react';
+import { X, Save, Truck, MapPin, Package, AlertCircle, FlaskConical } from 'lucide-react';
 import { api } from '../api.js';
-
-// Palmstreet OMS bearer tokens live for ~1 hour. Show "expires in N min"
-// once they're at most this old; show "expired" once past 60 min.
-const PALMSTREET_TOKEN_TTL_MIN = 60;
 
 // Edits the id='shipping' row of app_settings. Holds:
 //   - shipFrom: the warehouse address that ShipStation prints as "From"
@@ -35,9 +31,6 @@ const EMPTY = {
   },
   defaultPackage: { weightOz: 32, length: 12, width: 9, height: 6 },
   testMode: true,
-  // Palmstreet OMS bearer token (write-only, server-side). The server
-  // strips `token` on GET so we only ever see tokenSetAt here.
-  palmstreet: { tokenSetAt: null },
 };
 
 export function ShippingSettingsModal({ onClose }) {
@@ -45,10 +38,6 @@ export function ShippingSettingsModal({ onClose }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
-  // Held separately from `data` so an empty string means "user cleared
-  // the field" (sent to server as "" → clear) vs. "user didn't touch
-  // it" (undefined → server preserves existing).
-  const [palmstreetTokenInput, setPalmstreetTokenInput] = useState(undefined);
 
   useEffect(() => {
     (async () => {
@@ -61,7 +50,6 @@ export function ShippingSettingsModal({ onClose }) {
             ups: { ...EMPTY.carriers.ups, ...(row?.data?.carriers?.ups || {}) },
           },
           defaultPackage: { ...EMPTY.defaultPackage, ...(row?.data?.defaultPackage || {}) },
-          palmstreet: { ...EMPTY.palmstreet, ...(row?.data?.palmstreet || {}) },
         });
       } catch (e) {
         setErr(e.message || 'Failed to load settings');
@@ -82,22 +70,13 @@ export function ShippingSettingsModal({ onClose }) {
     setErr('');
     setSaving(true);
     try {
-      // Only attach `palmstreet.token` to the PUT body when the operator
-      // actually edited it. The server preserves the existing token when
-      // the field is absent, and clears it when set to "".
-      const payload = { ...data };
-      if (palmstreetTokenInput !== undefined) {
-        payload.palmstreet = { ...data.palmstreet, token: palmstreetTokenInput };
-      }
-      await api.putSettings('shipping', payload);
+      await api.putSettings('shipping', data);
       onClose();
     } catch (e) {
       setErr(e.message || 'Save failed');
     }
     setSaving(false);
   };
-
-  const palmstreetTokenStatus = describePalmstreetToken(data.palmstreet?.tokenSetAt);
 
   return (
     <div className="fixed inset-0 z-40 bg-black/40 flex items-stretch sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
@@ -193,55 +172,6 @@ export function ShippingSettingsModal({ onClose }) {
                 </div>
               </Section>
 
-              <Section
-                icon={KeyRound}
-                title="Palmstreet OMS token"
-                subtitle={
-                  <>
-                    Pasted bearer token used to push tracking back to Palmstreet
-                    after Mark shipped. Tokens last ~1 hour — refresh the
-                    Palmstreet ops page to get a new one.
-                  </>
-                }
-              >
-                <div className={`rounded-xl border p-3 mb-3 flex items-start gap-3 ${
-                  palmstreetTokenStatus.tone === 'ok' ? 'bg-emerald-50 border-emerald-200'
-                  : palmstreetTokenStatus.tone === 'warn' ? 'bg-amber-50 border-amber-200'
-                  : palmstreetTokenStatus.tone === 'expired' ? 'bg-red-50 border-red-200'
-                  : 'bg-gray-50 border-gray-200'
-                }`}>
-                  <AlertCircle className={`w-5 h-5 mt-0.5 ${
-                    palmstreetTokenStatus.tone === 'ok' ? 'text-emerald-600'
-                    : palmstreetTokenStatus.tone === 'warn' ? 'text-amber-600'
-                    : palmstreetTokenStatus.tone === 'expired' ? 'text-red-600'
-                    : 'text-gray-500'
-                  }`} />
-                  <div className="text-xs text-gray-700">{palmstreetTokenStatus.text}</div>
-                </div>
-                <label className="block">
-                  <div className="text-xs font-medium text-gray-700 mb-1">
-                    New token (paste here to replace)
-                  </div>
-                  <textarea
-                    value={palmstreetTokenInput ?? ''}
-                    onChange={(e) => setPalmstreetTokenInput(e.target.value)}
-                    placeholder="eyJhbGciOi... (leave blank to keep current; clear & save to remove)"
-                    rows={3}
-                    spellCheck={false}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                </label>
-                {palmstreetTokenInput !== undefined && (
-                  <button
-                    type="button"
-                    onClick={() => setPalmstreetTokenInput(undefined)}
-                    className="mt-2 text-xs text-gray-500 hover:text-gray-700 underline"
-                  >
-                    Discard change
-                  </button>
-                )}
-              </Section>
-
               {err && (
                 <div className="flex items-start gap-2 bg-red-50 text-red-700 text-sm px-3 py-2 rounded-lg">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" /> {err}
@@ -264,37 +194,6 @@ export function ShippingSettingsModal({ onClose }) {
       </div>
     </div>
   );
-}
-
-function describePalmstreetToken(tokenSetAt) {
-  if (!tokenSetAt) {
-    return {
-      tone: 'none',
-      text: 'No token set. Tracking won\'t push to Palmstreet until you paste one.',
-    };
-  }
-  const setAt = new Date(tokenSetAt);
-  if (Number.isNaN(setAt.getTime())) {
-    return { tone: 'none', text: 'Token set, but timestamp unreadable.' };
-  }
-  const ageMin = Math.floor((Date.now() - setAt.getTime()) / 60_000);
-  const remaining = PALMSTREET_TOKEN_TTL_MIN - ageMin;
-  if (remaining <= 0) {
-    return {
-      tone: 'expired',
-      text: `Token likely expired (set ${ageMin} min ago). Refresh the Palmstreet ops page and paste a new one.`,
-    };
-  }
-  if (remaining <= 10) {
-    return {
-      tone: 'warn',
-      text: `Token expires in ~${remaining} min. Refresh soon to avoid mid-session failures.`,
-    };
-  }
-  return {
-    tone: 'ok',
-    text: `Token set ${ageMin} min ago — expires in ~${remaining} min.`,
-  };
 }
 
 function Section({ icon: Icon, title, subtitle, children }) {
