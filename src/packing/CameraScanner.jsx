@@ -22,18 +22,18 @@ DECODE_HINTS.set(DecodeHintType.POSSIBLE_FORMATS, [
 // video element, the MediaStream, and the decoder loop so the
 // teardown order is predictable.
 //
-// continuous=false → stop after first decode (box-scan flow)
-// continuous=true  → keep scanning with a 2-second per-value debounce
-//                    so the same barcode held in view doesn't fire
-//                    repeatedly (item-scan flow)
+// Always one-shot: camera opens, decodes one barcode, fires onScan
+// with the text, and closes. The packer taps the Camera button again
+// to scan the next item. Removing continuous mode removes the
+// per-scan state-sync complexity (stale closures, debounce timing,
+// auto-close UX) that was misbehaving on iPhones.
 
-export function CameraScanner({ onScan, onClose, continuous = false }) {
+export function CameraScanner({ onScan, onClose }) {
   const videoRef = useRef(null);
   const readerRef = useRef(null);
   const controlsRef = useRef(null);
   const streamRef = useRef(null);
   const closedRef = useRef(false);
-  const recentScans = useRef(new Map());
 
   const [err, setErr] = useState('');
   const [starting, setStarting] = useState(true);
@@ -43,12 +43,9 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
   // Flash-on-decode for visible "we got it" feedback.
   const [success, setSuccess] = useState(false);
 
-  // Latest-callback refs. The decoder callback is set up once in the
-  // useEffect below ([continuous] is its only dep). Without refs, every
-  // scan after the first in continuous mode calls the STALE onScan
-  // captured at mount time — i.e. with the parent's activeBox snapshot
-  // at mount, not the current one. That made the "already packed"
-  // guard fail to detect items packed in this same session.
+  // Latest-callback refs so the decoder callback (set up once on
+  // mount) always invokes the most recent version of onScan/onClose
+  // when the parent re-renders.
   const onScanRef = useRef(onScan);
   const onCloseRef = useRef(onClose);
   useEffect(() => {
@@ -137,36 +134,23 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
             const text = result.getText();
             setScans((c) => c + 1);
 
-            // Debounce identical decodes within 2s.
-            const now = Date.now();
-            const last = recentScans.current.get(text) || 0;
-            if (now - last < 2000) return;
-            recentScans.current.set(text, now);
-
             // Feedback: vibrate (mobile) + flash the scan area green.
             try {
               if (navigator.vibrate) navigator.vibrate(50);
             } catch { /* iOS Safari doesn't expose vibrate; ignore */ }
             setSuccess(true);
 
-            if (!continuous) {
-              // Lock further decodes immediately so a second frame
-              // doesn't trigger again while the flash is showing.
-              closedRef.current = true;
-              // Hold the flash visible for ~350ms so the operator
-              // actually sees "we got it" before we tear down the
-              // camera and transition to the items screen.
-              setTimeout(() => {
-                teardown();
-                onCloseRef.current?.();
-                onScanRef.current(text);
-              }, 350);
-            } else {
-              // Continuous mode: clear the flash after a moment so the
-              // next scan can flash again.
-              setTimeout(() => setSuccess(false), 450);
+            // Lock further decodes immediately so a second frame
+            // doesn't trigger again while the flash is showing.
+            closedRef.current = true;
+            // Hold the flash visible for ~350ms so the operator
+            // actually sees "we got it" before we tear down the
+            // camera and fire the scan callback.
+            setTimeout(() => {
+              teardown();
+              onCloseRef.current?.();
               onScanRef.current(text);
-            }
+            }, 350);
           },
         );
         if (cancelled) {
@@ -188,17 +172,15 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
       closedRef.current = true;
       teardown();
     };
-  }, [continuous]);
+  }, []);
 
   const handleManualSubmit = (e) => {
     e?.preventDefault();
     const v = manualValue.trim();
     if (!v) return;
-    if (!continuous) {
-      closedRef.current = true;
-      teardown();
-      onCloseRef.current?.();
-    }
+    closedRef.current = true;
+    teardown();
+    onCloseRef.current?.();
     onScanRef.current(v);
     setManualValue('');
   };
@@ -208,7 +190,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
       <div className="flex items-center gap-2 px-3 py-3 pt-safe text-white bg-black/60">
         <Camera className="w-5 h-5" />
         <div className="flex-1 text-sm font-medium">
-          {continuous ? 'Scan items continuously' : 'Scan box label'}
+          Scan a barcode
           {scans > 0 && <span className="text-xs text-white/60 ml-2">· {scans} read</span>}
         </div>
         <button
@@ -288,7 +270,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
               autoFocus
               value={manualValue}
               onChange={(e) => setManualValue(e.target.value)}
-              placeholder={continuous ? 'Item SKU' : 'B-XXXXXX'}
+              placeholder="Code or SKU"
               autoComplete="off"
               autoCapitalize="characters"
               spellCheck={false}
@@ -304,9 +286,7 @@ export function CameraScanner({ onScan, onClose, continuous = false }) {
         </form>
       ) : (
         <div className="px-4 py-3 pb-safe text-center text-xs text-white/70 bg-black/60">
-          {continuous
-            ? 'Point at item barcode. Camera stays open.'
-            : 'Point at the box label. Camera closes after one scan.'}
+          Point at the barcode. Camera closes after one scan.
           <div className="mt-1 text-white/50">
             Tap <Keyboard className="w-3 h-3 inline -mt-0.5" /> to type instead.
           </div>

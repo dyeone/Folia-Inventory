@@ -25,7 +25,8 @@ export function PackerView({ onLogout }) {
   // Camera lives at PackerView level so its lifecycle is independent
   // of the BoxScanner ↔ ItemScanner swap. Unmounting the camera at the
   // same instant the screen swaps was causing a blank-screen flash on
-  // iOS Safari.
+  // iOS Safari. Mode is 'box' or 'item' so the same CameraScanner
+  // routes its single decode to the right handler.
   const [cameraMode, setCameraMode] = useState(null); // 'box' | 'item' | null
 
   const refresh = async () => {
@@ -96,13 +97,14 @@ export function PackerView({ onLogout }) {
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
 
-  // Centralized box-enter / box-leave: also flips the camera into
-  // continuous item-scan mode on enter (the packer's typical workflow
-  // is "scan plant after plant," so the camera should already be live
-  // when they land on the items screen) and closes it on leave.
+  // Centralized box-enter / box-leave. The camera no longer auto-
+  // opens on box enter — each scan is one-shot, so auto-opening
+  // would just close again 350ms later and confuse the operator.
+  // They tap the Camera button on the items screen explicitly when
+  // ready to scan the next plant.
   const goToBox = (boxId) => {
     setActiveBoxId(boxId);
-    setCameraMode(boxId ? 'item' : null);
+    setCameraMode(null);
   };
 
   // Shared item-scan handler used by both the text input in ItemScanner
@@ -188,20 +190,11 @@ export function PackerView({ onLogout }) {
       }
       {/* Camera overlay — rendered at PackerView root so its mount /
           unmount lifecycle is decoupled from the box ↔ item screen
-          swap. Without this, iOS Safari would flash blank when the
-          camera tried to unmount in the same render that swapped
-          screens. */}
-      {cameraMode === 'box' && (
+          swap. Single instance now; the active mode just decides
+          which handler the one-shot decode fires. */}
+      {cameraMode && (cameraMode === 'box' || activeBox) && (
         <CameraScanner
-          continuous={false}
-          onScan={handleScanBox}
-          onClose={() => setCameraMode(null)}
-        />
-      )}
-      {cameraMode === 'item' && activeBox && (
-        <CameraScanner
-          continuous
-          onScan={handleScanItem}
+          onScan={cameraMode === 'box' ? handleScanBox : handleScanItem}
           onClose={() => setCameraMode(null)}
         />
       )}
