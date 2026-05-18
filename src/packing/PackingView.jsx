@@ -20,6 +20,25 @@ import { useIsMobile } from '../ui/useIsMobile.js';
 export { BoxesList } from './BoxesList.jsx';
 export { SummaryStat } from './SummaryStat.jsx';
 
+// Short relative-ish date for box timestamps. Recent dates show as
+// "today" / "yesterday"; older ones show as "May 18" or "May 18, 2025"
+// for year-old entries. Keeps row headers short while still giving the
+// operator a sense of how stale the box is.
+function fmtShortDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const now = new Date();
+  const startOf = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dayDiff = Math.floor((startOf(now) - startOf(d)) / 86400000);
+  if (dayDiff === 0) return 'today';
+  if (dayDiff === 1) return 'yesterday';
+  const opts = d.getFullYear() === now.getFullYear()
+    ? { month: 'short', day: 'numeric' }
+    : { year: 'numeric', month: 'short', day: 'numeric' };
+  return d.toLocaleDateString(undefined, opts);
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Shipping tab top-level view.
 //
@@ -65,6 +84,24 @@ export function PackingView({
   // with scannedBoxId so a scan can still narrow further from a typed
   // query. Empty string = no filter.
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Header controls for the Ready section. readySort drives the order
+  // boxes are listed; readyCarrierFilter narrows by carrier so the
+  // operator can batch UPS-only or USPS-only work.
+  const [readySort, setReadySort] = useState('created-desc');
+  const [readyCarrierFilter, setReadyCarrierFilter] = useState('all'); // 'all' | 'usps' | 'ups'
+
+  // Multi-select for batch label printing. Selected box ids are
+  // accumulated as the operator clicks the per-row checkboxes; the
+  // "Print box labels" button uses this set if non-empty, else falls
+  // back to "print every open box".
+  const [selectedBoxIds, setSelectedBoxIds] = useState(() => new Set());
+  const toggleBoxSelected = (id) => setSelectedBoxIds(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const clearSelection = () => setSelectedBoxIds(new Set());
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -266,14 +303,62 @@ export function PackingView({
     }
     return false;
   };
-  const filterBoxes = (boxes) =>
-    boxes.filter(b => (!scannedBoxId || b.id === scannedBoxId) && matchSearch(b));
+  const filterBoxes = (boxes, applyCarrierFilter) =>
+    boxes.filter(b =>
+      (!scannedBoxId || b.id === scannedBoxId) &&
+      matchSearch(b) &&
+      (!applyCarrierFilter ||
+        readyCarrierFilter === 'all' ||
+        (b.carrier || 'usps').toLowerCase() === readyCarrierFilter),
+    );
   const anyFilter = !!(scannedBoxId || searchLower);
-  const filteredReady = anyFilter
-    ? groups
-        .map(g => ({ ...g, boxes: filterBoxes(g.boxes) }))
-        .filter(g => g.boxes.length > 0)
-    : groups;
+  // Sort boxes within a group, then groups across the page, by the
+  // operator's chosen mode. Tie-breakers fall back to buyer name and
+  // box code so the order is deterministic.
+  const boxSortKey = (b) => {
+    switch (readySort) {
+      case 'created-asc':
+      case 'created-desc': return b.openedAt || '';
+      case 'items-asc':
+      case 'items-desc': return b.items.length;
+      case 'carrier-usps': return (b.carrier || 'usps').toLowerCase() === 'usps' ? 0 : 1;
+      case 'carrier-ups': return (b.carrier || 'usps').toLowerCase() === 'ups' ? 0 : 1;
+      case 'customer':
+      default: return (b.buyer || '').toLowerCase();
+    }
+  };
+  const sortDir = readySort.endsWith('-desc') ? -1 : 1;
+  const sortBoxes = (arr) => [...arr].sort((a, b) => {
+    const ka = boxSortKey(a), kb = boxSortKey(b);
+    if (ka < kb) return -1 * sortDir;
+    if (ka > kb) return 1 * sortDir;
+    return shortBoxCode(a.id).localeCompare(shortBoxCode(b.id));
+  });
+  const sortGroups = (arr) => [...arr].sort((a, b) => {
+    if (readySort === 'customer') {
+      return a.displayName.localeCompare(b.displayName);
+    }
+    if (readySort === 'items-asc' || readySort === 'items-desc') {
+      const ai = a.boxes.reduce((s, b) => s + b.items.length, 0);
+      const bi = b.boxes.reduce((s, b) => s + b.items.length, 0);
+      return (ai - bi) * (readySort === 'items-desc' ? -1 : 1);
+    }
+    if (readySort === 'created-asc' || readySort === 'created-desc') {
+      const ao = a.boxes.reduce((m, b) => (!m || (b.openedAt && b.openedAt < m)) ? b.openedAt : m, null) || '';
+      const bo = b.boxes.reduce((m, b) => (!m || (b.openedAt && b.openedAt < m)) ? b.openedAt : m, null) || '';
+      if (ao < bo) return -1 * (readySort === 'created-desc' ? -1 : 1);
+      if (ao > bo) return 1 * (readySort === 'created-desc' ? -1 : 1);
+      return 0;
+    }
+    // carrier-* sorts keep groups alphabetical (carrier is per-box, not group)
+    return a.displayName.localeCompare(b.displayName);
+  });
+  const filteredReady = (() => {
+    const filtered = groups
+      .map(g => ({ ...g, boxes: filterBoxes(g.boxes, true) }))
+      .filter(g => g.boxes.length > 0);
+    return sortGroups(filtered.map(g => ({ ...g, boxes: sortBoxes(g.boxes) })));
+  })();
   const filteredShipped = anyFilter
     ? {
         ...shipped,
@@ -338,6 +423,71 @@ export function PackingView({
             </button>
           )}
         </div>
+      </div>
+
+      {/* Sort + carrier controls for the Ready section. Affect grouping
+          order and box visibility. Selection state is global to all
+          open boxes (visible after filters), so the "Print N labels"
+          summary in the Ready header reflects whatever's selected. */}
+      <div className="flex items-center gap-3 flex-wrap text-xs">
+        <div className="flex items-center gap-1.5">
+          <span className="text-gray-500 font-medium">Sort</span>
+          <select
+            value={readySort}
+            onChange={(e) => setReadySort(e.target.value)}
+            className="text-xs border border-gray-300 rounded-md py-1 px-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+          >
+            <option value="created-desc">Created · newest</option>
+            <option value="created-asc">Created · oldest</option>
+            <option value="customer">Customer · A–Z</option>
+            <option value="items-desc">Items · most</option>
+            <option value="items-asc">Items · fewest</option>
+            <option value="carrier-usps">Carrier · USPS first</option>
+            <option value="carrier-ups">Carrier · UPS first</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-gray-500 font-medium mr-1">Carrier</span>
+          {[
+            { v: 'all', label: 'All' },
+            { v: 'usps', label: 'USPS' },
+            { v: 'ups', label: 'UPS' },
+          ].map(c => {
+            const active = readyCarrierFilter === c.v;
+            return (
+              <button
+                key={c.v}
+                type="button"
+                onClick={() => setReadyCarrierFilter(c.v)}
+                className={`px-2.5 py-1 rounded-md font-medium transition ${
+                  active
+                    ? c.v === 'ups'
+                      ? 'bg-amber-100 text-amber-900 ring-1 ring-amber-300'
+                      : c.v === 'usps'
+                      ? 'bg-blue-100 text-blue-900 ring-1 ring-blue-300'
+                      : 'bg-gray-900 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
+        {selectedBoxIds.size > 0 && (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-emerald-700 font-medium">
+              {selectedBoxIds.size} selected
+            </span>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100"
+            >
+              Clear
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Active-filter banner shown when scannedBoxId is set. Dismissing
@@ -412,15 +562,22 @@ export function PackingView({
                   <button
                     type="button"
                     onClick={() => {
-                      // Flatten every open box across every buyer group.
+                      // If the operator picked specific boxes via the
+                      // checkboxes, print only those. Otherwise print
+                      // every open box across every buyer group.
                       const allBoxes = groups.flatMap(g => g.boxes);
-                      onPrintBoxLabels(allBoxes);
+                      const targets = selectedBoxIds.size > 0
+                        ? allBoxes.filter(b => selectedBoxIds.has(b.id))
+                        : allBoxes;
+                      onPrintBoxLabels(targets);
                     }}
                     className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100"
                   >
                     <Printer className="w-4 h-4" />
                     Print box labels
-                    <span className="text-xs text-gray-400 ml-1">· {totalBoxes}</span>
+                    <span className="text-xs text-gray-400 ml-1">
+                      · {selectedBoxIds.size > 0 ? selectedBoxIds.size : totalBoxes}
+                    </span>
                   </button>
                 )}
               </div>
@@ -451,6 +608,8 @@ export function PackingView({
                     onTogglePacked={onTogglePacked}
                     showToast={showToast}
                     isAdmin={isAdmin}
+                    selectedBoxIds={selectedBoxIds}
+                    onToggleBoxSelected={toggleBoxSelected}
                     onPrintSlip={(box) => setSlipBox(box)}
                     onEditItems={(box) => setEditingBox(box)}
                     onDeleteBox={(box) => {
@@ -703,6 +862,17 @@ function groupBoxesByBuyer(items, sales, predicate) {
     box.items.push(item);
   }
 
+  // Box openedAt = earliest soldAt across its items. The system has no
+  // explicit "box opened" event since a box exists once any item gets
+  // a shipmentBoxId stamped; the first soldAt is when that happened.
+  for (const box of boxMap.values()) {
+    let earliest = null;
+    for (const i of box.items) {
+      if (i.soldAt && (!earliest || i.soldAt < earliest)) earliest = i.soldAt;
+    }
+    box.openedAt = earliest;
+  }
+
   const openBoxes = [...boxMap.values()].filter(predicate);
 
   // Group by buyer. Prefer username (canonical across Palmstreet sales),
@@ -754,6 +924,7 @@ function BuyerGroupCard({
   group, sales, shipmentsByBox,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
+  selectedBoxIds, onToggleBoxSelected,
 }) {
   const totalItems = group.boxes.reduce((sum, b) => sum + b.items.length, 0);
   const saleCount = new Set(group.boxes.map(b => b.saleId)).size;
@@ -800,6 +971,8 @@ function BuyerGroupCard({
             onEditItems={onEditItems ? () => onEditItems(box) : null}
             onDeleteBox={onDeleteBox ? () => onDeleteBox(box) : null}
             onPrintSlip={onPrintSlip ? () => onPrintSlip(box) : null}
+            isSelected={selectedBoxIds ? selectedBoxIds.has(box.id) : false}
+            onToggleSelected={onToggleBoxSelected ? () => onToggleBoxSelected(box.id) : null}
           />
         ))}
       </div>
@@ -950,6 +1123,16 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
                     <span className="truncate">{itemSale.name}</span>
                   </>
                 )}
+                {item.soldAt && (
+                  <>
+                    <span className="text-gray-300">·</span>
+                    <span
+                      title={`Sold ${new Date(item.soldAt).toLocaleString()}`}
+                    >
+                      sold {fmtShortDate(item.soldAt)}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
             {priceStr && (
@@ -968,6 +1151,7 @@ function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
+  isSelected, onToggleSelected,
 }) {
   // Box-level pack rollup. unpackedSoldCount = items still 'sold' and
   // not yet packed; pack-all flips them all to packed in one click.
@@ -1058,7 +1242,11 @@ function BoxRow({
     : 'text-gray-600';
 
   return (
-    <div className="rounded-lg border border-gray-100 hover:border-emerald-400 transition">
+    <div className={`rounded-lg border transition ${
+      isSelected
+        ? 'border-emerald-500 ring-1 ring-emerald-200'
+        : 'border-gray-100 hover:border-emerald-400'
+    }`}>
       <div
         role="button"
         tabIndex={0}
@@ -1072,16 +1260,35 @@ function BoxRow({
         }}
         className="w-full text-left px-3 py-2.5 cursor-pointer hover:bg-emerald-50/30 active:bg-emerald-50"
       >
-        {/* Row 1 — identity. Carrier badge + box code on the left, item-
-            count + chevron drill-in on the right. Single line, never
-            wraps; sale info moves to row 2 below. */}
+        {/* Row 1 — identity. Optional select checkbox + carrier badge +
+            box code on the left, opened-time + item-count + chevron on
+            the right. Single line, never wraps; sale info moves to row
+            2 below. */}
         <div className="flex items-center gap-2">
+          {onToggleSelected && (
+            <input
+              type="checkbox"
+              checked={!!isSelected}
+              onClick={(e) => e.stopPropagation()}
+              onChange={onToggleSelected}
+              aria-label={isSelected ? 'Deselect box' : 'Select box'}
+              className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 shrink-0 cursor-pointer"
+            />
+          )}
           <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${carrierClass}`}>
             {carrierLabel}
           </span>
           <span className="font-mono text-[11px] text-gray-600 shrink-0">
             {shortBoxCode(box.id)}
           </span>
+          {box.openedAt && (
+            <span
+              className="text-[11px] text-gray-400 shrink-0"
+              title={`Opened ${new Date(box.openedAt).toLocaleString()}`}
+            >
+              · {fmtShortDate(box.openedAt)}
+            </span>
+          )}
           <div className="flex-1" />
           <span className={`text-xs shrink-0 ${statusClass}`}>{statusLabel}</span>
           <button
