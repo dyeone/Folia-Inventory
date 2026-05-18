@@ -47,10 +47,9 @@ function Label({ box }) {
   );
 }
 
-// Top line of the label: carrier (UPS / USPS), the Palmstreet username,
-// and a match-status marker. Names are intentionally omitted — pack-out
-// only needs the shipping channel, the @id, and whether every line
-// resolved to real inventory.
+// Top line of the label: carrier (UPS / USPS) and a match-status marker.
+// Names and @ids are intentionally omitted — the label exists to identify
+// the box at the carrier-handoff station, not to identify the buyer.
 //
 //   *  every item in the box is matched real inventory
 //   #  at least one item is an unmatched placeholder (purple in Shipping)
@@ -60,11 +59,9 @@ function Label({ box }) {
 // attention before this box ships.
 function displayHeader(box) {
   const carrier = String(box.carrier || 'usps').toUpperCase();
-  const username = (box.username || box.buyerUsername || '').trim();
   const hasUnmatched = (box.items || []).some(i => i.lotKind === 'unmatched');
   const marker = hasUnmatched ? '#' : '*';
-  const idPart = username ? `@${username}` : '(no @id)';
-  return `${carrier} · ${idPart} · ${marker}`;
+  return `${carrier} · ${marker}`;
 }
 
 const LABEL_W = 2;
