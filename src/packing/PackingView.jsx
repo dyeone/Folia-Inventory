@@ -935,10 +935,21 @@ function groupBoxesByBuyer(items, sales, predicate) {
         buyerAddress: item.buyerAddress || {},
         carrier: item.shipmentCarrier || 'usps',
         items: [],
+        // Union of distinct notes across the box's items. Persisted on
+        // each item as a ' · '-joined string at upload time; here we
+        // split and dedupe so the Shipping tab can render each line
+        // separately if the operator left multiple notes.
+        notes: [],
       };
       boxMap.set(item.shipmentBoxId, box);
     }
     box.items.push(item);
+    if (item.notes) {
+      for (const n of String(item.notes).split(' · ')) {
+        const t = n.trim();
+        if (t && !box.notes.includes(t)) box.notes.push(t);
+      }
+    }
   }
 
   // Box openedAt = earliest soldAt across its items. The system has no
@@ -1512,6 +1523,12 @@ function BoxRow({
 
       {expanded && (
         <>
+          {box.notes && box.notes.length > 0 && (
+            <div className="px-3 py-2 border-t border-amber-200 bg-amber-50 text-xs text-amber-900">
+              <span className="font-semibold uppercase tracking-wide text-[10px] mr-1">Notes</span>
+              {box.notes.join(' · ')}
+            </div>
+          )}
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
         </>

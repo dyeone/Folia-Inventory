@@ -137,6 +137,14 @@ export function SalesUploadModal({ items, onApply, onClose }) {
         country: box.country,
         shipmentMethod: box.shipmentMethod,
       };
+      // Persist the buyer/seller notes from the Palmstreet file on
+      // every item in this box. inventory_items already has a notes
+      // text column; previously these were only shown in the upload
+      // preview and then discarded. Joining with ' · ' so the Shipping
+      // tab can display all notes for the box without parsing JSON.
+      const joinedNotes = box.notes && box.notes.length
+        ? box.notes.join(' · ')
+        : null;
 
       for (const it of box.items) {
         if (it.match?.alreadyInBox) {
@@ -163,6 +171,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             shipmentCarrier: box.carrier || 'usps',
             orderId: it.orderNumber || null,
             orderDate: it.orderDate || null,
+            notes: joinedNotes,
           });
         } else {
           // No matching inventory row — emit a placeholder insert so the
@@ -191,6 +200,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             shipmentCarrier: box.carrier || 'usps',
             orderId: it.orderNumber || null,
             orderDate: it.orderDate || null,
+            notes: joinedNotes,
           });
         }
       }
