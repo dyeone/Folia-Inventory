@@ -946,6 +946,46 @@ function StaffOrAdminInventory() {
                 showToast(e.message || 'Delete failed', 'error');
               }
             }}
+            onDeleteBox={async (boxId) => {
+              // Per-box delete. Same revert/purge semantics as the
+              // "Delete all open boxes" action, scoped to one
+              // shipmentBoxId. Already-shipped items inside the box
+              // (e.g. a partially-shipped box) are left alone — only
+              // still-'sold' items get reverted or purged.
+              try {
+                const candidates = items.filter(i =>
+                  !i.deletedAt &&
+                  i.status === 'sold' &&
+                  i.shipmentBoxId === boxId,
+                );
+                const matched = candidates.filter(i => i.lotKind !== 'unmatched');
+                const unmatched = candidates.filter(i => i.lotKind === 'unmatched');
+                const updates = matched.map(i => ({
+                  id: i.id,
+                  status: 'listed',
+                  salePrice: null,
+                  soldAt: null,
+                  buyer: null,
+                  buyerUsername: null,
+                  buyerAddress: null,
+                  shipmentBoxId: null,
+                  shipmentCarrier: null,
+                  orderId: null,
+                  orderDate: null,
+                }));
+                if (updates.length > 0) await api.upsertItems(updates);
+                if (unmatched.length > 0) await api.purgeItems(unmatched.map(i => i.id));
+                const fresh = await api.getItems();
+                applyItemsFresh(fresh);
+                showToast(
+                  `Box deleted · reverted ${matched.length} item${matched.length === 1 ? '' : 's'}${
+                    unmatched.length > 0 ? ` + purged ${unmatched.length} placeholder${unmatched.length === 1 ? '' : 's'}` : ''
+                  }`,
+                );
+              } catch (e) {
+                showToast(e.message || 'Delete box failed', 'error');
+              }
+            }}
             onShipBox={async (saleId, itemIds) => {
               try {
                 const now = new Date().toISOString();

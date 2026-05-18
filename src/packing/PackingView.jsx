@@ -9,6 +9,7 @@ import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
+import { EditBoxItemsModal } from './EditBoxItemsModal.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
@@ -30,7 +31,7 @@ export { SummaryStat } from './SummaryStat.jsx';
 
 export function PackingView({
   inventoryItems, sales,
-  onShipBox, onDeleteAllOpenBoxes, onPrintBoxLabels, onTogglePacked,
+  onShipBox, onDeleteAllOpenBoxes, onDeleteBox, onPrintBoxLabels, onTogglePacked,
   setConfirmDialog,
   isAdmin, onRefreshItems,
 }) {
@@ -39,6 +40,11 @@ export function PackingView({
   // modal manages its own two-phase flow (form → scan) and stamps each
   // scanned inventory item with the new shipmentBoxId.
   const [newBoxOpen, setNewBoxOpen] = useState(false);
+
+  // Admin-only modal for editing items in an existing open box: scan
+  // to add, trash icon per row to remove. State holds the box being
+  // edited; mirrors how Validate Sales / BuyLabel modals work.
+  const [editingBox, setEditingBox] = useState(null);
   const [activeSaleId, setActiveSaleId] = useState(null);
   // Sub-tab inside the Shipping page: 'ready' for active boxes,
   // 'shipped' for the archive. Defaults to 'ready' since that's the
@@ -378,6 +384,24 @@ export function PackingView({
                     onMarkShipped={handleMarkShipped}
                     onTogglePacked={onTogglePacked}
                     showToast={showToast}
+                    isAdmin={isAdmin}
+                    onEditItems={(box) => setEditingBox(box)}
+                    onDeleteBox={(box) => {
+                      // Confirm before nuking. Mirrors the existing
+                      // "Delete all open boxes" confirm dialog style.
+                      const sold = box.items.filter(i => i.status === 'sold');
+                      const matched = sold.filter(i => i.lotKind !== 'unmatched').length;
+                      const unmatched = sold.filter(i => i.lotKind === 'unmatched').length;
+                      setConfirmDialog?.({
+                        title: `Delete this box?`,
+                        message: unmatched > 0
+                          ? `Reverts ${matched} matched item${matched === 1 ? '' : 's'} back to "listed" and permanently deletes ${unmatched} unmatched placeholder${unmatched === 1 ? '' : 's'}. Already-shipped items in this box aren't touched.`
+                          : `Reverts ${matched} matched item${matched === 1 ? '' : 's'} back to "listed". Already-shipped items in this box aren't touched.`,
+                        confirmLabel: 'Delete box',
+                        danger: true,
+                        onConfirm: () => onDeleteBox?.(box.id),
+                      });
+                    }}
                   />
                 ))}
               </div>
@@ -520,6 +544,25 @@ export function PackingView({
         />
       )}
 
+      {editingBox && (
+        <EditBoxItemsModal
+          box={(() => {
+            // Always read the freshest version of this box from the
+            // current groups so adds/removes reflect immediately when
+            // onRefreshItems lands. Falls back to the captured prop if
+            // the box just emptied out (handle close-on-disappear).
+            const fresh = [...groups, ...shipped.groups]
+              .flatMap(g => g.boxes)
+              .find(b => b.id === editingBox.id);
+            return fresh || editingBox;
+          })()}
+          inventoryItems={inventoryItems}
+          showToast={showToast}
+          onRefreshItems={onRefreshItems}
+          onClose={() => setEditingBox(null)}
+        />
+      )}
+
       {toast && (
         <div className="fixed bottom-20 sm:bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50">
           {toast}
@@ -622,6 +665,7 @@ function addressOneLine(addr) {
 function BuyerGroupCard({
   group, sales, shipmentsByBox,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
+  isAdmin, onEditItems, onDeleteBox,
 }) {
   const totalItems = group.boxes.reduce((sum, b) => sum + b.items.length, 0);
   const saleCount = new Set(group.boxes.map(b => b.saleId)).size;
@@ -664,6 +708,9 @@ function BuyerGroupCard({
             onMarkShipped={() => onMarkShipped(box)}
             onTogglePacked={onTogglePacked}
             showToast={showToast}
+            isAdmin={isAdmin}
+            onEditItems={onEditItems ? () => onEditItems(box) : null}
+            onDeleteBox={onDeleteBox ? () => onDeleteBox(box) : null}
           />
         ))}
       </div>
@@ -831,6 +878,7 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
+  isAdmin, onEditItems, onDeleteBox,
 }) {
   // Box-level pack rollup. unpackedSoldCount = items still 'sold' and
   // not yet packed; pack-all flips them all to packed in one click.
@@ -971,6 +1019,26 @@ function BoxRow({
             screen on narrow viewports. */}
         {action && (
           <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+            {isAdmin && onEditItems && (
+              <button
+                onClick={(e) => { stop(e); onEditItems(); }}
+                title="Add or remove items in this box"
+                aria-label="Edit items"
+                className="text-xs font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
+              >
+                <Pencil className="w-3 h-3" /> Edit
+              </button>
+            )}
+            {isAdmin && onDeleteBox && (
+              <button
+                onClick={(e) => { stop(e); onDeleteBox(); }}
+                title="Delete this box (reverts matched items, purges placeholders)"
+                aria-label="Delete box"
+                className="text-xs font-medium px-2 py-1 rounded-md border border-red-200 text-red-700 bg-white hover:bg-red-50 active:bg-red-100 flex items-center gap-1"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            )}
             {onTogglePacked && unpackedSoldCount > 0 && (
               <button
                 onClick={handlePackAll}
