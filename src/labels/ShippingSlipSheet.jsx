@@ -24,20 +24,24 @@ const SLIP_PRINT_W = SLIP_W_MM - SLIP_MARGIN * 2; // 72mm
 // pre-calculation and as the y-cursor advance after each block.
 const H = {
   margin: SLIP_MARGIN,
-  // Vertical budget for the logo block (logo image height + gap before
-  // the caption). Bump this together with LOGO_SIZE_MM below or the
-  // caption will collide with the logo.
-  logo: 44,
-  divider: 4,
-  customerBlock: 22,
-  boxBlock: 18,
-  itemsHeader: 7,
-  itemRow: 9,
-  footer: 14,
+  // Logo image height + a small bottom gap. No separate caption beneath
+  // — the logo already carries the brand mark, the line of text under it
+  // was redundant and ate vertical space on a thermal slip.
+  logo: 42,
+  divider: 3,
+  customerBlock: 14,
+  // Box code + carrier + date now share one line, so the block is one
+  // text line tall plus a small bottom gap.
+  boxBlock: 8,
+  itemsHeader: 5,
+  // SKU + name + qty on two tight rows.
+  itemRow: 7,
+  // Single-line footer (was two lines).
+  footer: 7,
 };
 
 // Logo image is drawn centered at this size (mm). H.logo above must be
-// >= this + a few mm of breathing room for the caption below.
+// >= this + a few mm of breathing room.
 const LOGO_SIZE_MM = 40;
 
 // Convert public/logo.png → 1-bit black-on-transparent data URL,
@@ -123,80 +127,60 @@ async function buildPdf(box) {
 
   let y = H.margin;
 
-  // Logo — centered, LOGO_SIZE_MM square.
+  // Logo — centered, LOGO_SIZE_MM square. No separate text caption.
   if (logo) {
     pdf.addImage(logo, 'PNG', (SLIP_W_MM - LOGO_SIZE_MM) / 2, y, LOGO_SIZE_MM, LOGO_SIZE_MM);
   }
   y += H.logo;
 
-  // FOLIA SOCIETY caption under logo.
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(10);
-  pdf.setTextColor(0);
-  pdf.text('FOLIA SOCIETY', SLIP_W_MM / 2, y, { align: 'center' });
-  y += H.divider;
-
   pdf.setDrawColor(0);
   pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
-  y += 4;
+  y += 3;
 
-  // Customer block.
+  // Customer block — SHIP TO label + name + @username, tighter spacing.
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(7);
   pdf.setTextColor(0);
   pdf.text('SHIP TO', H.margin, y);
-  y += 4;
+  y += 3.5;
   pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(13);
+  pdf.setFontSize(12);
   pdf.setTextColor(0);
   const name = (box.buyer || '(no name)').slice(0, 40);
   pdf.text(name, H.margin, y);
-  y += 6;
+  y += 5;
   if (box.buyerUsername) {
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(9);
     pdf.setTextColor(0);
     pdf.text(`@${box.buyerUsername}`, H.margin, y);
-    y += 5;
-  } else {
-    y += 5;
+    y += 4;
   }
 
-  // Box block.
-  pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(7);
-  pdf.setTextColor(0);
-  pdf.text('BOX', H.margin, y);
-  y += 4;
+  // Box block — code + carrier + date on a single line.
   const code = shortBoxCode(box.id);
+  const carrierLabel = String(box.carrier || 'usps').toUpperCase();
   pdf.setFont('courier', 'bold');
-  pdf.setFontSize(11);
+  pdf.setFontSize(10);
   pdf.setTextColor(0);
   pdf.text(code, H.margin, y);
-  // Carrier on the right of the box code line.
-  const carrierLabel = String(box.carrier || 'usps').toUpperCase();
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(9);
-  pdf.text(carrierLabel, SLIP_W_MM - H.margin, y, { align: 'right' });
-  y += 5;
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(8);
-  pdf.setTextColor(0);
-  pdf.text(formatDate(new Date()), H.margin, y);
+  pdf.text(`${carrierLabel}  ·  ${formatDate(new Date())}`, SLIP_W_MM - H.margin, y, { align: 'right' });
   y += 4;
 
   pdf.setDrawColor(0);
   pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
-  y += 4;
+  y += 3;
 
   // Items header.
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(8);
   pdf.setTextColor(0);
   pdf.text(`ITEMS · ${items.length}`, H.margin, y);
-  y += H.itemsHeader - 3;
+  y += H.itemsHeader - 2;
 
-  // Items list.
+  // Items list — SKU on top, title below, tight spacing.
   for (const item of items) {
     const sku = item.sku || '';
     const titleParts = [item.name, item.variety].filter(Boolean);
@@ -211,32 +195,28 @@ async function buildPdf(box) {
       pdf.setFontSize(8);
       pdf.text(`x${item.quantity}`, SLIP_W_MM - H.margin, y, { align: 'right' });
     }
-    y += 3.5;
+    y += 3;
     if (title) {
       pdf.setFont('helvetica', 'normal');
       pdf.setFontSize(8);
       pdf.setTextColor(0);
       pdf.text(title, H.margin, y, { maxWidth: SLIP_PRINT_W });
-      y += 4;
+      y += 3.5;
     } else {
-      y += 1;
+      y += 0.5;
     }
-    y += 1.5;
+    y += 0.5;
   }
 
   pdf.setDrawColor(0);
   pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
-  y += 5;
+  y += 4;
 
-  // Footer.
-  pdf.setFont('helvetica', 'normal');
+  // Footer — single line.
+  pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(9);
   pdf.setTextColor(0);
-  pdf.text('Thank you for shopping with', SLIP_W_MM / 2, y, { align: 'center' });
-  y += 4;
-  pdf.setFont('helvetica', 'bold');
-  pdf.setTextColor(0);
-  pdf.text('Folia Society', SLIP_W_MM / 2, y, { align: 'center' });
+  pdf.text('Thank you  ·  Folia Society', SLIP_W_MM / 2, y, { align: 'center' });
 
   return pdf;
 }
