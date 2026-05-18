@@ -203,22 +203,48 @@ export function PackerView({ onLogout }) {
 }
 
 function TopBar({ onLogout, title, subtitle, onBack }) {
+  // Box codes look right in mono ("B-3K8F2A"); regular titles like
+  // "Scan a box" don't. Pick the font per-title instead of forcing one.
+  const isCodeTitle = /^B-/.test(title || '');
   return (
-    <div className="bg-emerald-700 text-white px-3 py-3 pt-safe flex items-center gap-2">
-      {onBack ? (
-        <button onClick={onBack} className="p-2 -ml-1 rounded-lg hover:bg-emerald-800 active:bg-emerald-900" aria-label="Back">
-          <ArrowLeft className="w-5 h-5" />
+    <div className="bg-emerald-700 text-white pt-safe">
+      <div className="h-14 px-3 flex items-center gap-3">
+        {/* Left slot: back button when in a box, app icon otherwise.
+            Same 40×40 visual footprint so the layout doesn't shift
+            between screens. */}
+        {onBack ? (
+          <button
+            onClick={onBack}
+            aria-label="Back"
+            className="w-10 h-10 -ml-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+        ) : (
+          <div className="w-10 h-10 -ml-2 rounded-full flex items-center justify-center">
+            <Package className="w-5 h-5" />
+          </div>
+        )}
+
+        <div className="flex-1 min-w-0">
+          <div className={`font-semibold text-base leading-tight truncate ${isCodeTitle ? 'font-mono tracking-wide' : ''}`}>
+            {title}
+          </div>
+          {subtitle && (
+            <div className="text-xs text-emerald-100 leading-tight truncate mt-0.5">
+              {subtitle}
+            </div>
+          )}
+        </div>
+
+        <button
+          onClick={onLogout}
+          aria-label="Log out"
+          className="w-10 h-10 -mr-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"
+        >
+          <LogOut className="w-5 h-5" />
         </button>
-      ) : (
-        <Package className="w-5 h-5 mx-2" />
-      )}
-      <div className="flex-1 min-w-0">
-        <div className="font-semibold text-base font-mono leading-tight truncate">{title}</div>
-        <div className="text-xs text-emerald-100 truncate">{subtitle}</div>
       </div>
-      <button onClick={onLogout} className="p-2 -mr-1 rounded-lg hover:bg-emerald-800 active:bg-emerald-900" aria-label="Log out">
-        <LogOut className="w-5 h-5" />
-      </button>
     </div>
   );
 }
