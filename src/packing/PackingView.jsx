@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
-  Receipt, Search,
+  Receipt, Search, Copy,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -1073,6 +1073,54 @@ function boxActionState(box, shipment) {
   return { kind: 'enter-tracking', carrier };
 }
 
+// Copy-to-clipboard chips for the buyer's shipping address. The
+// operator buys USPS labels off-site (Pirate Ship, etc.) and pastes
+// these fields one-by-one into the carrier's form. Each chip shows
+// the field label + the actual value (truncated if long) and copies
+// the full value on click. Hover to see the full untruncated value.
+function AddressCopyStrip({ box, showToast }) {
+  const a = box.buyerAddress || {};
+  const fields = [
+    { label: 'Name', value: (box.buyer || '').trim() },
+    { label: 'Street 1', value: (a.street1 || '').trim() },
+    { label: 'Street 2', value: (a.street2 || '').trim() },
+    { label: 'City', value: (a.city || '').trim() },
+    { label: 'State', value: (a.state || '').trim() },
+    { label: 'Zip', value: (a.zip || '').trim() },
+  ].filter(f => f.value);
+  if (fields.length === 0) return null;
+
+  const copy = async (value, label) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast?.(`Copied ${label}`);
+    } catch {
+      // Older Safari / non-HTTPS fallback — most modern setups go
+      // through navigator.clipboard fine, but keep a soft failure
+      // message rather than crashing the row.
+      showToast?.('Copy failed — try again');
+    }
+  };
+
+  return (
+    <div className="px-3 py-2 bg-gray-50/70 border-t border-gray-100 flex flex-wrap gap-1.5">
+      {fields.map(f => (
+        <button
+          key={f.label}
+          type="button"
+          onClick={(e) => { e.stopPropagation(); copy(f.value, f.label); }}
+          title={`Copy ${f.label}: ${f.value}`}
+          className="inline-flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-emerald-50 hover:border-emerald-300 hover:text-emerald-700 active:bg-emerald-100"
+        >
+          <span className="font-medium text-gray-500 uppercase tracking-wide text-[9px]">{f.label}</span>
+          <span className="font-mono truncate max-w-[160px]">{f.value}</span>
+          <Copy className="w-3 h-3 text-gray-400" />
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function BoxItemsList({ box, salesById, onTogglePacked }) {
   // Hide already-shipped items in open boxes — the operator only cares
   // about what's left to pack. Shipped boxes (every item is shipped)
@@ -1463,7 +1511,10 @@ function BoxRow({
       </div>
 
       {expanded && (
-        <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
+        <>
+          <AddressCopyStrip box={box} showToast={showToast} />
+          <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
+        </>
       )}
 
       {/* Inline tracking-number entry. Click "Enter tracking" → row expands
