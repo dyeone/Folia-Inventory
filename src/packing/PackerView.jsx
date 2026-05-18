@@ -101,6 +101,7 @@ export function PackerView({ onLogout }) {
   // plant," so opening the camera by default removes one tap per box.
   // Continuous mode keeps the camera alive until the operator
   // explicitly closes it (via the X in the camera header).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
     if (activeBoxId) setCameraMode('item');
     else setCameraMode(null);
