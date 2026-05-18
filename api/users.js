@@ -24,8 +24,8 @@ export default wrap(async (req, res) => {
       if (password.length < 6) {
         const e = new Error('Password must be at least 6 characters'); e.status = 400; throw e;
       }
-      if (role !== 'admin' && role !== 'staff') {
-        const e = new Error('Role must be admin or staff'); e.status = 400; throw e;
+      if (!['admin', 'staff', 'packer'].includes(role)) {
+        const e = new Error('Role must be admin, staff, or packer'); e.status = 400; throw e;
       }
 
       const normalized = username.trim().toLowerCase();
@@ -55,7 +55,12 @@ export default wrap(async (req, res) => {
 
       const update = {};
       if (patch && typeof patch === 'object') {
-        if ('role' in patch) update.role = patch.role;
+        if ('role' in patch) {
+          if (!['admin', 'staff', 'packer'].includes(patch.role)) {
+            const e = new Error('Role must be admin, staff, or packer'); e.status = 400; throw e;
+          }
+          update.role = patch.role;
+        }
         if ('active' in patch) update.active = patch.active;
       }
       if (newPassword) {
@@ -69,7 +74,7 @@ export default wrap(async (req, res) => {
       }
 
       // Prevent demoting or deactivating the last active admin.
-      if (update.role === 'staff' || update.active === false) {
+      if ((update.role && update.role !== 'admin') || update.active === false) {
         const { data: admins } = await supabase
           .from('users')
           .select('id')

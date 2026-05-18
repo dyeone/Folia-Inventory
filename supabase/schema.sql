@@ -13,7 +13,7 @@ create table if not exists users (
   username      text        unique not null,
   "displayName" text,
   "passwordHash" text       not null,
-  role          text        not null default 'staff' check (role in ('admin','staff')),
+  role          text        not null default 'staff' check (role in ('admin','staff','packer')),
   active        boolean     not null default true,
   "createdAt"   timestamptz not null default now()
 );

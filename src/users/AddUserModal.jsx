@@ -48,6 +48,7 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
           <select value={role} onChange={(e) => setRole(e.target.value)} className="input">
             <option value="staff">Staff — view/edit inventory</option>
             <option value="admin">Admin — full access</option>
+            <option value="packer">Packer — Shipping tab only, pack workflow</option>
           </select>
         </Field>
         <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-2">

@@ -40,6 +40,7 @@ const LiveScanModal = lazyNamed(() => import('./sales/LiveScanModal.jsx'), 'Live
 const LiveModal = lazyNamed(() => import('./sales/LiveModal.jsx'), 'LiveModal');
 const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
 const BoxLabelSheet = lazyNamed(() => import('./labels/BoxLabelSheet.jsx'), 'BoxLabelSheet');
+const PackerView = lazyNamed(() => import('./packing/PackerView.jsx'), 'PackerView');
 const ShippingSettingsModal = lazyNamed(() => import('./packing/ShippingSettingsModal.jsx'), 'ShippingSettingsModal');
 
 // Lightweight fallback for Suspense boundaries — modals and tab transitions
@@ -101,6 +102,21 @@ export default function InventoryApp() {
 }
 
 function InventorySystem() {
+  // Packers get a totally separate mobile-first UI — they only need
+  // the box / item scan workflow, none of the inventory / sales /
+  // financial chrome. Route them off before the regular layout's
+  // bulky useState/useEffect chain even runs.
+  const { currentUser } = useContext(AuthContext);
+  if (currentUser.role === 'packer') return <PackerRoute />;
+  return <StaffOrAdminInventory />;
+}
+
+function PackerRoute() {
+  const { logout } = useContext(AuthContext);
+  return <PackerView onLogout={logout} />;
+}
+
+function StaffOrAdminInventory() {
   const { currentUser, logout } = useContext(AuthContext);
   const isAdmin = currentUser.role === 'admin';
 
