@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, Camera, Truck } from 'lucide-react';
 import { api } from '../api.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
@@ -86,16 +86,40 @@ export function PackerView({ onLogout }) {
     setTimeout(() => setToast(null), durationMs);
   };
 
+  // Dual-purpose landing scanner. The packer can either scan a box
+  // label (B-XXXXXX) to open it, OR scan an item SKU and we resolve
+  // which box that item belongs to and open that box. Saves a step
+  // when the packer pulls a plant off the shelf — they don't need to
+  // look up the box first.
   const handleScanBox = (raw) => {
-    const code = normalizeBoxCode(raw);
-    if (!code) return false;
-    const match = boxesByCode[code];
-    if (!match) {
-      showToast(`No open box with code ${code}`, 3500);
-      return false;
+    const upper = String(raw || '').trim().toUpperCase().replace(/_/g, '-');
+    if (!upper) return false;
+
+    // Box-code path: scanned a label that looks like B-XXXXXX.
+    if (upper.startsWith('B-')) {
+      const code = normalizeBoxCode(raw);
+      const match = boxesByCode[code];
+      if (!match) {
+        showToast(`No open box with code ${code}`, 3500);
+        return false;
+      }
+      goToBox(match.id);
+      return true;
     }
-    goToBox(match.id);
-    return true;
+
+    // Item-SKU path: walk every open box and find the one carrying
+    // this SKU. First match wins (an item shouldn't ever be in two
+    // open boxes — see the upload dedupe).
+    const sku = normalizeSku(raw);
+    for (const box of Object.values(boxesByCode)) {
+      if (box.items.some(i => normalizeSku(i.sku) === sku)) {
+        showToast(`${sku} → box ${box.code}`, 2500);
+        goToBox(box.id);
+        return true;
+      }
+    }
+    showToast(`Nothing matches ${raw}`, 3500);
+    return false;
   };
 
   const activeBox = activeBoxId
@@ -203,15 +227,13 @@ export function PackerView({ onLogout }) {
       {activeBox
         ? <ItemScanner
             box={activeBox}
-            onScan={handleScanItem}
             onMarkPacked={handleMarkPacked}
             onOpenCamera={() => setCameraMode('item')}
             onDone={() => goToBox(null)}
           />
         : <BoxScanner
-            onScan={handleScanBox}
             onOpenCamera={() => setCameraMode('box')}
-            hint="Scan or type the B-XXXXXX code on the box label."
+            hint="Scan a box label (B-…) to open it, or scan an item to jump straight to its box."
           />
       }
       {/* Camera overlay — rendered at PackerView root so its mount /
@@ -276,60 +298,23 @@ function TopBar({ onLogout, title, subtitle, onBack }) {
   );
 }
 
-// Scan-box screen — big input that the operator types/scans into.
-//
-// Intentionally NOT autofocused on mount. Auto-focus on a freshly-
-// mounted input causes iOS Safari to pop the on-screen keyboard up
-// every time the operator returns from item view, which is annoying
-// (most operators come back to use the camera button, not to type).
-// Tap the input explicitly if you want to type.
-function BoxScanner({ onScan, onOpenCamera, hint }) {
-  const [value, setValue] = useState('');
-  const inputRef = useRef(null);
-
-  const submit = (e) => {
-    e?.preventDefault();
-    const v = value.trim();
-    if (!v) return;
-    const ok = onScan(v);
-    setValue('');
-    // Re-focus AFTER an explicit submit only — the operator's
-    // already typing, so keeping focus is what they expect.
-    setTimeout(() => inputRef.current?.focus(), 0);
-    return ok;
-  };
-
+// Landing screen — scan-only. The text input was removed by request:
+// the packer workflow is barcode-driven end to end. They scan either a
+// box label (B-XXXXXX) or an item label (SKU); handleScanBox routes
+// both. Camera is the single tap to action.
+function BoxScanner({ onOpenCamera, hint }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 pb-safe">
       <ScanLine className="w-16 h-16 text-emerald-600 mb-4" />
-      <h2 className="text-lg font-semibold text-gray-900 mb-1">Scan box label</h2>
+      <h2 className="text-lg font-semibold text-gray-900 mb-1">Scan to start</h2>
       <p className="text-sm text-gray-500 text-center mb-6 max-w-xs">{hint}</p>
-      <form onSubmit={submit} className="w-full max-w-sm">
-        <input
-          ref={inputRef}
-          type="text"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          placeholder="B-XXXXXX"
-          autoComplete="off"
-          autoCapitalize="characters"
-          spellCheck={false}
-          className="w-full px-4 py-4 text-lg font-mono uppercase border-2 border-gray-300 rounded-xl focus:outline-none focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/20 text-center"
-        />
-        <button
-          type="submit"
-          className="w-full mt-3 px-4 py-3 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
-        >
-          Open box
-        </button>
-        <button
-          type="button"
-          onClick={onOpenCamera}
-          className="w-full mt-2 px-4 py-3 text-base font-medium bg-white border-2 border-emerald-600 text-emerald-700 rounded-xl active:bg-emerald-50 flex items-center justify-center gap-2"
-        >
-          <Camera className="w-5 h-5" /> Use camera
-        </button>
-      </form>
+      <button
+        type="button"
+        onClick={onOpenCamera}
+        className="w-full max-w-sm px-4 py-4 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800 flex items-center justify-center gap-2"
+      >
+        <Camera className="w-5 h-5" /> Open camera
+      </button>
     </div>
   );
 }
@@ -337,12 +322,7 @@ function BoxScanner({ onScan, onOpenCamera, hint }) {
 // Items screen — list of unpacked items in the active box + an item
 // scanner that flips matching items to packed. Scan logic lives in
 // PackerView so the camera (also at PackerView level) can share it.
-function ItemScanner({ box, onScan, onMarkPacked, onOpenCamera, onDone }) {
-  const [value, setValue] = useState('');
-  const [busy, setBusy] = useState(false);
-  const inputRef = useRef(null);
-  useEffect(() => { inputRef.current?.focus(); }, [box.id]);
-
+function ItemScanner({ box, onMarkPacked, onOpenCamera, onDone }) {
   // Two buckets so the unpacked items rise to the top — the operator
   // sees what's left before everything that's already packed.
   const unpackedItems = box.items.filter(
@@ -353,18 +333,6 @@ function ItemScanner({ box, onScan, onMarkPacked, onOpenCamera, onDone }) {
   );
   const totalSold = unpackedItems.length + packedItems.length;
   const allPacked = totalSold > 0 && unpackedItems.length === 0;
-
-  const submit = async (e) => {
-    e?.preventDefault();
-    setBusy(true);
-    try {
-      await onScan(value);
-    } finally {
-      setBusy(false);
-      setValue('');
-      setTimeout(() => inputRef.current?.focus(), 0);
-    }
-  };
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -405,13 +373,22 @@ function ItemScanner({ box, onScan, onMarkPacked, onOpenCamera, onDone }) {
         )}
         {packedItems.map(item => <ItemRow key={item.id} item={item} />)}
       </div>
-      <form onSubmit={submit} className="border-t border-gray-200 bg-white p-3 pb-safe space-y-2">
-        {/* Primary action: scan the next plant. Big, full-width,
-            tinted emerald so it's the obvious thing to tap when
-            the operator has the camera in one hand and a plant in
-            the other. Hidden once every item in the box is packed
-            — the Done button takes over. */}
-        {!allPacked && (
+      {/* Footer is scan-only. Either the Scan plant button (camera) while
+          the box still has unpacked items, or a prominent Done button
+          once everything's flipped to packed. The 'or type SKU' field
+          was removed by request — the packer flow is barcode-driven
+          end to end. Unmatched placeholders (no real barcode) still
+          have their per-row 'Pack' button. */}
+      <div className="border-t border-gray-200 bg-white p-3 pb-safe">
+        {allPacked ? (
+          <button
+            type="button"
+            onClick={onDone}
+            className="w-full px-4 py-4 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
+          >
+            Done
+          </button>
+        ) : (
           <button
             type="button"
             onClick={onOpenCamera}
@@ -420,38 +397,7 @@ function ItemScanner({ box, onScan, onMarkPacked, onOpenCamera, onDone }) {
             <Camera className="w-6 h-6" /> Scan plant
           </button>
         )}
-        <div className="flex items-center gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="or type SKU"
-            autoComplete="off"
-            autoCapitalize="characters"
-            spellCheck={false}
-            disabled={busy || allPacked}
-            className="flex-1 px-4 py-3 text-base font-mono uppercase border-2 border-gray-300 rounded-xl focus:outline-none focus:border-emerald-500 disabled:bg-gray-100"
-          />
-          {allPacked ? (
-            <button
-              type="button"
-              onClick={onDone}
-              className="px-6 py-3 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
-            >
-              Done
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={busy || !value.trim()}
-              className="px-4 py-3 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800 disabled:bg-gray-300"
-            >
-              <Check className="w-5 h-5" />
-            </button>
-          )}
-        </div>
-      </form>
+      </div>
     </div>
   );
 }
