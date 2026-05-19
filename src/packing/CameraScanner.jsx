@@ -39,6 +39,12 @@ export function CameraScanner({ onScan, onClose }) {
   const controlsRef = useRef(null);
   const streamRef = useRef(null);
   const closedRef = useRef(false);
+  // Native BarcodeDetector + its requestAnimationFrame loop id. When
+  // present, this path is ~10-30x faster than the JS @zxing decoder
+  // because the browser hands the frame to the OS's hardware-accelerated
+  // detector instead of running ZXing in JS on every frame.
+  const detectorRef = useRef(null);
+  const rafIdRef = useRef(0);
 
   const [err, setErr] = useState('');
   const [starting, setStarting] = useState(true);
@@ -71,10 +77,16 @@ export function CameraScanner({ onScan, onClose }) {
     onCloseRef.current = onClose;
   });
 
-  // Tear down everything we own — decoder, stream tracks, video src.
-  // Called from the unmount cleanup and from the synchronous part of
-  // the decode callback in one-shot mode. Idempotent.
+  // Tear down everything we own — decoder, RAF loop, stream tracks,
+  // video src. Called from the unmount cleanup and from the
+  // synchronous part of the decode callback in one-shot mode.
+  // Idempotent.
   const teardown = () => {
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = 0;
+    }
+    detectorRef.current = null;
     try { controlsRef.current?.stop(); } catch { /* already stopped */ }
     controlsRef.current = null;
     if (streamRef.current) {
@@ -180,45 +192,78 @@ export function CameraScanner({ onScan, onClose }) {
       video.srcObject = stream;
       try { await video.play(); } catch { /* iOS sometimes rejects until user gesture */ }
 
-      try {
-        // decodeFromVideoElement attaches its own decode loop on the
-        // already-playing video. Returns IScannerControls with stop().
-        const controls = await reader.decodeFromVideoElement(
-          video,
-          (result) => {
-            if (closedRef.current || !result) return;
-            const text = result.getText();
-            setScans((c) => c + 1);
+      // Shared "we got a code" handler — wired by both decoder paths.
+      const handleResult = (text) => {
+        if (closedRef.current || !text) return;
+        setScans((c) => c + 1);
+        try {
+          if (navigator.vibrate) navigator.vibrate(50);
+        } catch { /* iOS Safari doesn't expose vibrate; ignore */ }
+        setSuccess(true);
+        closedRef.current = true;
+        setTimeout(() => {
+          teardown();
+          onCloseRef.current?.();
+          onScanRef.current(text);
+        }, 350);
+      };
 
-            // Feedback: vibrate (mobile) + flash the scan area green.
-            try {
-              if (navigator.vibrate) navigator.vibrate(50);
-            } catch { /* iOS Safari doesn't expose vibrate; ignore */ }
-            setSuccess(true);
+      // Try the native BarcodeDetector first. Hardware-accelerated,
+      // typically 10-30x faster than running @zxing in JS. Available on
+      // Chrome (Android + desktop) and Safari iOS 17+. Firefox + older
+      // browsers fall through to the @zxing path below.
+      const supportsNative = typeof window !== 'undefined' && 'BarcodeDetector' in window;
+      let nativeReady = false;
+      if (supportsNative) {
+        try {
+          const supportedFormats = await window.BarcodeDetector.getSupportedFormats();
+          const useFormats = ['code_128', 'qr_code'].filter(f => supportedFormats.includes(f));
+          if (useFormats.length > 0) {
+            const detector = new window.BarcodeDetector({ formats: useFormats });
+            detectorRef.current = detector;
+            // requestAnimationFrame loop runs at display refresh rate
+            // (~60Hz) but detect() backpressures naturally — the next
+            // frame only schedules after the current detect resolves.
+            // Net: as fast as the device can decode, never overlapping.
+            const loop = async () => {
+              if (closedRef.current || cancelled) return;
+              if (video.readyState >= 2) {
+                try {
+                  const codes = await detector.detect(video);
+                  if (codes && codes.length > 0 && codes[0].rawValue) {
+                    handleResult(codes[0].rawValue);
+                    return;
+                  }
+                } catch { /* per-frame errors are non-fatal; keep looping */ }
+              }
+              rafIdRef.current = requestAnimationFrame(loop);
+            };
+            rafIdRef.current = requestAnimationFrame(loop);
+            nativeReady = true;
+            setStarting(false);
+          }
+        } catch { /* fall through to @zxing */ }
+      }
 
-            // Lock further decodes immediately so a second frame
-            // doesn't trigger again while the flash is showing.
-            closedRef.current = true;
-            // Hold the flash visible for ~350ms so the operator
-            // actually sees "we got it" before we tear down the
-            // camera and fire the scan callback.
-            setTimeout(() => {
-              teardown();
-              onCloseRef.current?.();
-              onScanRef.current(text);
-            }, 350);
-          },
-        );
-        if (cancelled) {
-          try { controls.stop(); } catch { /* */ }
-          return;
-        }
-        controlsRef.current = controls;
-        setStarting(false);
-      } catch (e) {
-        if (!cancelled) {
-          setErr(humanize(e?.message || e || 'Decoder failed to start'));
+      // @zxing fallback path. Runs entirely in JS; slower per frame
+      // but works in every browser with getUserMedia.
+      if (!nativeReady) {
+        try {
+          const controls = await reader.decodeFromVideoElement(
+            video,
+            (result) => { if (result) handleResult(result.getText()); },
+          );
+          if (cancelled) {
+            try { controls.stop(); } catch { /* */ }
+            return;
+          }
+          controlsRef.current = controls;
           setStarting(false);
+        } catch (e) {
+          if (!cancelled) {
+            setErr(humanize(e?.message || e || 'Decoder failed to start'));
+            setStarting(false);
+          }
         }
       }
     })();
