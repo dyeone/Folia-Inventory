@@ -252,21 +252,28 @@ export function ShippingSlipSheet({ box, onClose }) {
   const handlePrint = async () => {
     setBusy(true);
     try {
-      // Open the PDF in a brand-new browser tab with the print dialog
-      // pre-triggered (pdf.autoPrint sets a /JS action that fires on
-      // open). Plain window.open(url, '_blank') — no features arg —
-      // gets a regular tab in every modern browser; passing
-      // 'width=...,height=...' would make it a popup window instead,
-      // which we explicitly don't want here.
+      // Open the PDF in a separate browser WINDOW (not a tab). Passing
+      // explicit width/height + toolbar features is what tips most
+      // browsers from "new tab" mode into "new window / popup" mode.
+      // pdf.autoPrint adds a /JS open-action so the print dialog fires
+      // automatically in that new window.
       const pdf = await buildPdf(box);
       pdf.autoPrint();
       const url = pdf.output('bloburl');
-      const win = window.open(url, '_blank');
+      const win = window.open(
+        url,
+        '_blank',
+        'popup=yes,width=820,height=980,toolbar=yes,scrollbars=yes,resizable=yes',
+      );
       if (!win) {
-        // Popup blocker hit. As a last resort use the in-page print
-        // dialog — the preview iframe is on screen, so the operator
-        // can still print, just in the current tab.
-        window.print();
+        // Popup blocker fired. Don't silently fall back to
+        // window.print() — that prints the slip modal in the current
+        // page, which is exactly the inline behavior we're trying to
+        // avoid. Surface it so the operator allows popups for the
+        // site once and never sees this again.
+        alert(
+          'Your browser blocked the print window. Allow popups for this site (address-bar permission menu) and try Print again.',
+        );
       }
     } finally {
       setBusy(false);
