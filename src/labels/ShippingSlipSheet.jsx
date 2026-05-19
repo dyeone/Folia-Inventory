@@ -252,29 +252,23 @@ export function ShippingSlipSheet({ box, onClose }) {
   const handlePrint = async () => {
     setBusy(true);
     try {
-      // Open the PDF in a separate browser WINDOW (not a tab). Passing
-      // explicit width/height + toolbar features is what tips most
-      // browsers from "new tab" mode into "new window / popup" mode.
-      // pdf.autoPrint adds a /JS open-action so the print dialog fires
-      // automatically in that new window.
+      // Open the PDF in a new browser tab via a synthetic anchor click.
+      // window.open(url, '_blank') sometimes gets caught by popup
+      // blockers when the call sits behind an async await; anchor
+      // clicks fired inside the original user-gesture stack are
+      // treated as direct navigations and reliably open as a tab.
+      // pdf.autoPrint() sets a /JS action that fires the print dialog
+      // automatically once the browser's PDF viewer loads the file.
       const pdf = await buildPdf(box);
       pdf.autoPrint();
       const url = pdf.output('bloburl');
-      const win = window.open(
-        url,
-        '_blank',
-        'popup=yes,width=820,height=980,toolbar=yes,scrollbars=yes,resizable=yes',
-      );
-      if (!win) {
-        // Popup blocker fired. Don't silently fall back to
-        // window.print() — that prints the slip modal in the current
-        // page, which is exactly the inline behavior we're trying to
-        // avoid. Surface it so the operator allows popups for the
-        // site once and never sees this again.
-        alert(
-          'Your browser blocked the print window. Allow popups for this site (address-bar permission menu) and try Print again.',
-        );
-      }
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
     } finally {
       setBusy(false);
     }
