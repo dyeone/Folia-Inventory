@@ -90,20 +90,21 @@ export function PackingView({
 
   // When the operator alt-tabs away and comes back, browsers don't
   // restore focus to the input that was active before — they hand it
-  // off to <body>. Refocus the search bar on every wake-up so the
-  // operator can resume typing immediately. Scoped to desktop; the
-  // search bar doesn't exist on mobile.
+  // off to <body>. Refocus the scan strip on every wake-up so a USB
+  // barcode scanner aimed at the page immediately works again without
+  // a click. Scoped to desktop; the scan strip doesn't exist on
+  // mobile (camera-based scanning instead).
   useEffect(() => {
     if (isMobile) return;
-    const focusSearch = () => {
+    const focusScan = () => {
       if (document.visibilityState === 'hidden') return;
-      searchInputRef.current?.focus();
+      scanInputRef.current?.focus();
     };
-    window.addEventListener('focus', focusSearch);
-    document.addEventListener('visibilitychange', focusSearch);
+    window.addEventListener('focus', focusScan);
+    document.addEventListener('visibilitychange', focusScan);
     return () => {
-      window.removeEventListener('focus', focusSearch);
-      document.removeEventListener('visibilitychange', focusSearch);
+      window.removeEventListener('focus', focusScan);
+      document.removeEventListener('visibilitychange', focusScan);
     };
   }, [isMobile]);
 
