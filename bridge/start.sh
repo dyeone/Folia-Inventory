@@ -12,6 +12,13 @@ set -euo pipefail
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 
+# Make BRIDGE_URL + BRIDGE_TOKEN available to reconnect.sh so it can
+# pull the helper-reported target from Vercel before falling back to
+# mDNS. Both live in bridge/.env (untracked) per the existing setup.
+if [ -f "$DIR/.env" ]; then
+  set -a; . "$DIR/.env"; set +a
+fi
+
 ./reconnect.sh
 
 TARGET_FILE="$DIR/.wireless-target"

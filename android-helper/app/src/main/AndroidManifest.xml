@@ -6,15 +6,21 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
-    <!-- SSID readback. Android 12 and below: ACCESS_FINE_LOCATION.
-         Android 13+: NEARBY_WIFI_DEVICES with neverForLocation so we
-         don't need Location Services turned on just to read the network
-         name on the connection card. -->
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation"
-        tools:targetApi="33" />
+    <!-- NSD multicast — some OEMs require this to receive mDNS
+         responses on the WiFi NIC; without it the _adb-tls-connect._tcp
+         service browse returns nothing on those builds. Harmless on
+         OEMs that ignore the flag. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- Programmatic enable of wireless debugging. Signature-only; must
+         be granted once via ADB over USB:
+           adb shell pm grant com.folia.bridgehelper \
+             android.permission.WRITE_SECURE_SETTINGS
+         If not granted, the helper falls back to opening the wireless
+         debugging settings panel and asking the operator to flip the
+         toggle manually. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
 
     <application
         android:allowBackup="false"

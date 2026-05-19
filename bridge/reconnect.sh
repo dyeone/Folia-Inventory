@@ -50,6 +50,41 @@ else
     TARGET="$existing"
     echo "→ Already connected: $TARGET"
   else
+    # 1. Helper-reported target via Vercel. The Android Bridge Helper
+    #    POSTs {deviceIp, debugPort} every 10s while wireless debug is
+    #    on. Pulling that here avoids depending on local-LAN mDNS,
+    #    which some routers / corporate WiFi filter aggressively. Only
+    #    accept targets seen in the last 60s so we don't connect to a
+    #    stale IP from a previous WiFi network.
+    if [ -n "${BRIDGE_URL:-}" ] && [ -n "${BRIDGE_TOKEN:-}" ]; then
+      echo "→ Checking Vercel for the latest helper-reported target…"
+      api_resp=$(curl -fsS -m 4 \
+        -H "Authorization: Bearer $BRIDGE_TOKEN" \
+        "$BRIDGE_URL/api/bridge?action=phone-target" 2>/dev/null || true)
+      ip=$(echo "$api_resp"   | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p')
+      port=$(echo "$api_resp" | sed -n 's/.*"port":\([0-9]*\).*/\1/p')
+      last=$(echo "$api_resp" | sed -n 's/.*"lastSeen":"\([^"]*\)".*/\1/p')
+      if [ -n "$ip" ] && [ -n "$port" ]; then
+        # Freshness check: only use if seen in the last 60s.
+        age_ok=1
+        if [ -n "$last" ]; then
+          last_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "${last%.*}" "+%s" 2>/dev/null \
+                    || date -u -d "$last" "+%s" 2>/dev/null || echo 0)
+          now_epoch=$(date -u "+%s")
+          age=$(( now_epoch - last_epoch ))
+          [ "$age" -gt 60 ] && age_ok=0
+        fi
+        if [ "$age_ok" = "1" ]; then
+          TARGET="$ip:$port"
+          echo "  ✓ helper said $TARGET"
+        else
+          echo "  helper target is stale (>60s); falling through to mDNS"
+        fi
+      fi
+    fi
+  fi
+
+  if [ -z "$TARGET" ]; then
     echo "→ Discovering phone via mDNS (Android 11+ Wireless Debugging)…"
     # `adb mdns services` lists devices advertising adb services on the LAN.
     # `_adb-tls-connect._tcp` is the post-pair connect service; that's the
