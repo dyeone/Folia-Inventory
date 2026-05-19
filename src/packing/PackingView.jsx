@@ -86,6 +86,26 @@ export function PackingView({
   // with scannedBoxId so a scan can still narrow further from a typed
   // query. Empty string = no filter.
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef(null);
+
+  // When the operator alt-tabs away and comes back, browsers don't
+  // restore focus to the input that was active before — they hand it
+  // off to <body>. Refocus the search bar on every wake-up so the
+  // operator can resume typing immediately. Scoped to desktop; the
+  // search bar doesn't exist on mobile.
+  useEffect(() => {
+    if (isMobile) return;
+    const focusSearch = () => {
+      if (document.visibilityState === 'hidden') return;
+      searchInputRef.current?.focus();
+    };
+    window.addEventListener('focus', focusSearch);
+    document.addEventListener('visibilitychange', focusSearch);
+    return () => {
+      window.removeEventListener('focus', focusSearch);
+      document.removeEventListener('visibilitychange', focusSearch);
+    };
+  }, [isMobile]);
 
   // Header controls for the Ready section. readySort drives the order
   // boxes are listed; readyCarrierFilter narrows by carrier so the
@@ -485,6 +505,7 @@ export function PackingView({
         <div className="relative flex-1">
           <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
+            ref={searchInputRef}
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
