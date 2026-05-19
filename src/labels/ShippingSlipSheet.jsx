@@ -252,25 +252,22 @@ export function ShippingSlipSheet({ box, onClose }) {
   const handlePrint = async () => {
     setBusy(true);
     try {
-      // Prefer printing through the already-loaded preview iframe —
-      // no new tab. If the iframe isn't ready (rare race or a browser
-      // that won't render PDFs inline), fall back to opening the blob
-      // in a new tab with the autoPrint flag.
-      const frame = iframeRef.current;
-      if (frame?.contentWindow) {
-        try {
-          frame.contentWindow.focus();
-          frame.contentWindow.print();
-          return;
-        } catch {
-          // fall through to the popup fallback
-        }
-      }
+      // Open the PDF in a brand-new browser tab with the print dialog
+      // pre-triggered (pdf.autoPrint sets a /JS action that fires on
+      // open). Plain window.open(url, '_blank') — no features arg —
+      // gets a regular tab in every modern browser; passing
+      // 'width=...,height=...' would make it a popup window instead,
+      // which we explicitly don't want here.
       const pdf = await buildPdf(box);
       pdf.autoPrint();
       const url = pdf.output('bloburl');
       const win = window.open(url, '_blank');
-      if (!win) window.print();
+      if (!win) {
+        // Popup blocker hit. As a last resort use the in-page print
+        // dialog — the preview iframe is on screen, so the operator
+        // can still print, just in the current tab.
+        window.print();
+      }
     } finally {
       setBusy(false);
     }
