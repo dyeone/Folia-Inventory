@@ -208,6 +208,39 @@ function StaffOrAdminInventory() {
     setDeletedItems(sorted.filter(i => i.deletedAt));
   };
 
+  // Background refresh while the Shipping tab is open. The packer is
+  // marking items packed on a separate device; the admin should see
+  // those changes without a manual page reload. Polls every 8s,
+  // pauses when the tab isn't visible or when the admin has switched
+  // sections. Triggers an immediate fetch whenever the tab returns
+  // to visible so coming back from a phone glance is instant.
+  useEffect(() => {
+    if (activeTab !== 'packing') return;
+    let cancelled = false;
+    const refetch = async () => {
+      if (cancelled || document.visibilityState === 'hidden') return;
+      try {
+        const fresh = await api.getItems();
+        if (cancelled) return;
+        const sorted = [...fresh].sort(
+          (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
+        );
+        setItems(sorted.filter(i => !i.deletedAt));
+        setDeletedItems(sorted.filter(i => i.deletedAt));
+      } catch { /* keep last good state — single failed poll is fine */ }
+    };
+    const id = setInterval(refetch, 8000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refetch();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [activeTab]);
+
   useEffect(() => {
     (async () => {
       try {
