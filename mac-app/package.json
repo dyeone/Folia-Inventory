@@ -27,7 +27,15 @@
     ],
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": "dmg"
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["universal"]
+        }
+      ],
+      "identity": null,
+      "gatekeeperAssess": false,
+      "hardenedRuntime": false
     }
   },
   "devDependencies": {
