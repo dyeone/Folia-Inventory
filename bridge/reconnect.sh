@@ -56,11 +56,11 @@ else
     #    which some routers / corporate WiFi filter aggressively. Only
     #    accept targets seen in the last 60s so we don't connect to a
     #    stale IP from a previous WiFi network.
-    if [ -n "${BRIDGE_URL:-}" ] && [ -n "${BRIDGE_TOKEN:-}" ]; then
+    if [ -n "${FOLIA_API_URL:-}" ] && [ -n "${BRIDGE_TOKEN:-}" ]; then
       echo "→ Checking Vercel for the latest helper-reported target…"
       api_resp=$(curl -fsS -m 4 \
         -H "Authorization: Bearer $BRIDGE_TOKEN" \
-        "$BRIDGE_URL/api/bridge?action=phone-target" 2>/dev/null || true)
+        "$FOLIA_API_URL/api/bridge?action=phone-target" 2>/dev/null || true)
       ip=$(echo "$api_resp"   | sed -n 's/.*"ip":"\([^"]*\)".*/\1/p')
       port=$(echo "$api_resp" | sed -n 's/.*"port":\([0-9]*\).*/\1/p')
       last=$(echo "$api_resp" | sed -n 's/.*"lastSeen":"\([^"]*\)".*/\1/p')

@@ -57,7 +57,11 @@ function applyState(s) {
 }
 
 function applyConfig(cfg) {
-  els.cfgUrl.textContent    = cfg.BRIDGE_URL    || '—';
+  // Tolerate both keys for one rev — the very first mac-app build wrote
+  // BRIDGE_URL into bridge/.env, but the bridge subprocess looks for
+  // FOLIA_API_URL. Prefer the canonical name; fall back if a stale
+  // .env from that build is still on disk.
+  els.cfgUrl.textContent    = cfg.FOLIA_API_URL || cfg.BRIDGE_URL || '—';
   els.cfgToken.textContent  = maskToken(cfg.BRIDGE_TOKEN);
   els.cfgDevice.textContent = cfg.BRIDGE_DEVICE || '(auto)';
 }
@@ -91,8 +95,8 @@ els.btnReconnect.addEventListener('click', async () => {
 
 els.btnEditCfg.addEventListener('click', async () => {
   const cfg = await window.bridge.getConfig();
-  els.inUrl.value   = cfg.BRIDGE_URL   || '';
-  els.inToken.value = cfg.BRIDGE_TOKEN || '';
+  els.inUrl.value   = cfg.FOLIA_API_URL || cfg.BRIDGE_URL || '';
+  els.inToken.value = cfg.BRIDGE_TOKEN  || '';
   els.cfgView.classList.add('hidden');
   els.cfgEdit.classList.remove('hidden');
 });
@@ -101,9 +105,16 @@ els.btnCancelCfg.addEventListener('click', () => {
   els.cfgEdit.classList.add('hidden');
 });
 els.btnSaveCfg.addEventListener('click', async () => {
+  // Merge with the existing .env so other keys (BRIDGE_DEVICE,
+  // U2_URL, POLL_MS) survive a save. Also explicitly null out the
+  // legacy BRIDGE_URL key so old-build .env files don't sit alongside
+  // the new FOLIA_API_URL forever.
+  const existing = await window.bridge.getConfig();
   const cfg = await window.bridge.saveConfig({
-    BRIDGE_URL:   els.inUrl.value.trim(),
-    BRIDGE_TOKEN: els.inToken.value.trim(),
+    ...existing,
+    FOLIA_API_URL: els.inUrl.value.trim(),
+    BRIDGE_TOKEN:  els.inToken.value.trim(),
+    BRIDGE_URL:    '',
   });
   applyConfig(cfg);
   els.cfgView.classList.remove('hidden');
