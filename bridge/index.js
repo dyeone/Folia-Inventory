@@ -51,6 +51,37 @@ if (!API_URL || !TOKEN) {
   process.exit(1);
 }
 
+// Multi-device guard. Without BRIDGE_DEVICE set, every adb call falls
+// back to "use the only connected device" — which silently breaks the
+// moment USB + Wireless ADB are both attached (a very common setup
+// because operators plug in for charging). Detect that up front and
+// fail loudly instead of letting downstream `input tap` calls error
+// with the cryptic "more than one device/emulator" message.
+{
+  const devices = (() => {
+    try {
+      const out = require('node:child_process')
+        .execFileSync('adb', ['devices'], { encoding: 'utf8' });
+      return out.split('\n')
+        .slice(1)
+        .map(l => l.split('\t')[0])
+        .filter(s => s && /\S/.test(s));
+    } catch { return []; }
+  })();
+  if (devices.length > 1 && !DEVICE) {
+    console.error(
+      `✗ ${devices.length} adb devices connected and BRIDGE_DEVICE not set.\n` +
+      `  Connected: ${devices.join(', ')}\n` +
+      `  Set BRIDGE_DEVICE=<ip:port> in bridge/.env or run bridge/start.sh\n` +
+      `  (which exports BRIDGE_DEVICE from .wireless-target automatically).`,
+    );
+    process.exit(1);
+  }
+  if (DEVICE) {
+    console.log(`→ Bridge pinned to device ${DEVICE}`);
+  }
+}
+
 const exec = promisify(execFile);
 
 // ─── ADB wrappers ───────────────────────────────────────────────────────────
