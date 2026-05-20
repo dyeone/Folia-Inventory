@@ -71,6 +71,28 @@ class BridgeRunner extends EventEmitter {
     this._setState({ lastLogAt: new Date().toISOString() });
   }
 
+  // Build the env for spawned children. macOS GUI apps inherit a
+  // stripped PATH (no /opt/homebrew/bin, no /usr/local/bin), so `node`
+  // and `adb` aren't reachable from the bridge subprocess unless we
+  // prepend the common Homebrew + system paths ourselves. Without this
+  // patch the bridge dies with exit 127 (command not found) from the
+  // very first call.
+  _childEnv() {
+    const extra = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+    const seen = new Set();
+    const cur = (process.env.PATH || '').split(':').filter(Boolean);
+    const merged = [...extra, ...cur].filter(p => {
+      if (seen.has(p)) return false;
+      seen.add(p);
+      return true;
+    });
+    return {
+      ...process.env,
+      PATH: merged.join(':'),
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --unhandled-rejections=warn`.trim(),
+    };
+  }
+
   // Start the bridge subprocess. If already running, no-op.
   start() {
     if (this.proc) return { ok: true, already: true };
@@ -82,11 +104,7 @@ class BridgeRunner extends EventEmitter {
     try {
       this.proc = spawn(cmd, args, {
         cwd: this.bridgeDir,
-        env: {
-          ...process.env,
-          // Force unbuffered output so we get lines in real time.
-          NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --unhandled-rejections=warn`.trim(),
-        },
+        env: this._childEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (e) {
@@ -137,7 +155,7 @@ class BridgeRunner extends EventEmitter {
       this._line('→ Running reconnect.sh');
       this.reconnectProc = spawn('bash', [script], {
         cwd: this.bridgeDir,
-        env: process.env,
+        env: this._childEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       this._wireLines(this.reconnectProc.stdout, false);
