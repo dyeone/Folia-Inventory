@@ -124,7 +124,12 @@ class BridgeRunner extends EventEmitter {
   }
 
   stop() {
-    if (!this.proc) return { ok: true, already: true };
+    if (!this.proc) {
+      // No running bridge, but still clean up any lingering wireless
+      // adb handles so a subsequent start gets a fresh device list.
+      this.disconnectAllAdb();
+      return { ok: true, already: true };
+    }
     this._line('→ Stopping bridge');
     try {
       // SIGTERM gives the bridge a chance to flush its current job;
@@ -136,7 +141,35 @@ class BridgeRunner extends EventEmitter {
       this._line(`✗ Stop failed: ${e.message}`, true);
       return { ok: false, error: e.message };
     }
+    // Fire-and-forget: clean up wireless adb connections so the next
+    // `adb devices` shows just whatever's actually plugged in. Without
+    // this, mDNS-re-discovered duplicates and stale ip:port entries
+    // accumulate every session and a fresh start hits the multi-device
+    // guard the bridge added in this commit.
+    this.disconnectAllAdb();
     return { ok: true };
+  }
+
+  // Run `adb disconnect` (no args = disconnect all wireless devices).
+  // Async / fire-and-forget; logs the result so the operator can see
+  // it landed. USB connections aren't affected — `adb disconnect`
+  // only touches TCP/IP transports.
+  disconnectAllAdb() {
+    try {
+      const child = spawn('adb', ['disconnect'], {
+        env: this._childEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      this._line('→ Running `adb disconnect` to clear wireless devices');
+      this._wireLines(child.stdout, false);
+      this._wireLines(child.stderr, true);
+      child.on('exit', (code) => {
+        this._line(`→ adb disconnect exited (code=${code ?? 0})`);
+        this._setState({ phoneConnected: false, phoneTarget: null });
+      });
+    } catch (e) {
+      this._line(`✗ adb disconnect failed to spawn: ${e.message}`, true);
+    }
   }
 
   // Re-run bridge/reconnect.sh — discovers + adb-connects the phone

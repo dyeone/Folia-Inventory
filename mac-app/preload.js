@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('bridge', {
   stop:         () => ipcRenderer.invoke('bridge:stop'),
   restart:      () => ipcRenderer.invoke('bridge:restart'),
   reconnectPhone: () => ipcRenderer.invoke('bridge:reconnect-phone'),
+  disconnectAll:  () => ipcRenderer.invoke('bridge:disconnect-all'),
   getState:     () => ipcRenderer.invoke('bridge:get-state'),
   getConfig:    () => ipcRenderer.invoke('bridge:get-config'),
   saveConfig:   (cfg) => ipcRenderer.invoke('bridge:save-config', cfg),
