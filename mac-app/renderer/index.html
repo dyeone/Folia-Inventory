@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>Folia Bridge</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="title">Folia Bridge</div>
+    <div class="muted small" id="bridge-dir-label"></div>
+  </header>
+
+  <main>
+    <section class="card">
+      <div class="card-head">
+        <h2>Status</h2>
+        <span id="state-pill" class="pill pill-gray">idle</span>
+      </div>
+      <div class="status-grid">
+        <div class="status-cell">
+          <div class="status-label">Bridge</div>
+          <div id="status-bridge" class="status-value">stopped</div>
+        </div>
+        <div class="status-cell">
+          <div class="status-label">Phone</div>
+          <div id="status-phone" class="status-value">—</div>
+        </div>
+        <div class="status-cell">
+          <div class="status-label">Queue</div>
+          <div id="status-queue" class="status-value">0</div>
+        </div>
+        <div class="status-cell">
+          <div class="status-label">Last error</div>
+          <div id="status-error" class="status-value">none</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button id="btn-start"     class="btn btn-primary">Start bridge</button>
+        <button id="btn-stop"      class="btn">Stop</button>
+        <button id="btn-restart"   class="btn">Restart</button>
+        <button id="btn-reconnect" class="btn">Reconnect phone</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Configuration</h2>
+        <button id="btn-edit-cfg" class="btn btn-text">Edit</button>
+      </div>
+      <div id="cfg-view" class="cfg-view">
+        <div class="kv"><div class="k">BRIDGE_URL</div>      <div class="v" id="cfg-url">—</div></div>
+        <div class="kv"><div class="k">BRIDGE_TOKEN</div>    <div class="v" id="cfg-token">—</div></div>
+        <div class="kv"><div class="k">BRIDGE_DEVICE</div>   <div class="v" id="cfg-device">—</div></div>
+      </div>
+      <div id="cfg-edit" class="cfg-edit hidden">
+        <label>BRIDGE_URL<input id="in-url" placeholder="https://your-app.vercel.app" /></label>
+        <label>BRIDGE_TOKEN<input id="in-token" type="password" placeholder="paste token" /></label>
+        <div class="actions">
+          <button id="btn-save-cfg"   class="btn btn-primary">Save</button>
+          <button id="btn-cancel-cfg" class="btn">Cancel</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <h2>Live log</h2>
+        <div class="row gap-sm">
+          <button id="btn-open-log"    class="btn btn-text">Open file</button>
+          <button id="btn-clear-log"   class="btn btn-text">Clear</button>
+          <label class="row gap-sm small muted">
+            <input id="chk-autoscroll" type="checkbox" checked /> autoscroll
+          </label>
+        </div>
+      </div>
+      <pre id="log" class="log"></pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

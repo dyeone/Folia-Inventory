@@ -1,0 +1,37 @@
+{
+  "name": "folia-bridge-mac",
+  "version": "0.1.0",
+  "private": true,
+  "description": "macOS helper app — wraps the Folia Bridge Node service in a window UI and manages the ADB connection to the operator's Android phone.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --mac --dir",
+    "dist": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.folia.bridge.mac",
+    "productName": "Folia Bridge",
+    "files": [
+      "main.js",
+      "preload.js",
+      "bridge-runner.js",
+      "renderer/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../bridge",
+        "to": "bridge",
+        "filter": ["**/*", "!.env", "!.wireless-target", "!node_modules/**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": "dmg"
+    }
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}
