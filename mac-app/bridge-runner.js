@@ -93,9 +93,33 @@ class BridgeRunner extends EventEmitter {
     };
   }
 
+  // Sniff for stale `node .../bridge/index.js` processes that aren't
+  // owned by this mac-app (e.g., one the operator launched from a
+  // terminal a week ago and forgot about). Two competing bridges
+  // race for jobs on Vercel — the stale one usually has no
+  // BRIDGE_DEVICE set and fails every job it claims with the
+  // dreaded 'more than one device/emulator' error. Kill them before
+  // starting our own.
+  _killStaleBridges() {
+    try {
+      const out = require('node:child_process')
+        .execFileSync('pgrep', ['-f', 'node.*bridge/index\\.js'], { encoding: 'utf8' });
+      const pids = out.split('\n').map(s => s.trim()).filter(Boolean)
+        .map(s => parseInt(s, 10))
+        .filter(p => Number.isFinite(p) && p !== process.pid);
+      for (const pid of pids) {
+        try {
+          process.kill(pid, 'SIGTERM');
+          this._line(`→ Killed stale bridge process pid=${pid}`);
+        } catch { /* permission / already dead */ }
+      }
+    } catch { /* pgrep returns 1 when no matches — normal */ }
+  }
+
   // Start the bridge subprocess. If already running, no-op.
   start() {
     if (this.proc) return { ok: true, already: true };
+    this._killStaleBridges();
     const startScript = path.join(this.bridgeDir, 'start.sh');
     const indexJs = path.join(this.bridgeDir, 'index.js');
     const cmd = fs.existsSync(startScript) ? 'bash' : 'node';
