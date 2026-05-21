@@ -51,12 +51,10 @@ a time** to avoid jobs racing between them.
    number" 7 times → back → Developer Options → USB debugging.
 3. **Plug in the phone**, run `adb devices`, accept the auth prompt on
    the phone screen.
-4. **(Optional but recommended) Wireless ADB** so you can ditch the
-   cable during a live:
-   ```bash
-   adb tcpip 5555
-   adb connect <phone-ip>:5555
-   ```
+4. **Keep the phone plugged in via USB during a live session.**
+   Wireless ADB is disabled in the current bridge — the cable doubles
+   as power and as the ADB transport. (Wireless previously caused
+   mid-sale dropouts when WiFi got crowded.)
 5. **Generate a bridge token.** Open the Folia web app, sign in, and
    POST to `/api/bridge?action=generate-token` (this gets wired into a
    settings button in Phase 3). The response contains a one-time
@@ -88,29 +86,34 @@ a time** to avoid jobs racing between them.
    ```
    Test with `curl http://localhost:9008/ping` — should print `pong`.
 
-## Run (wireless, one command)
+## Run (USB, one command)
 
-After first-time setup, this is the only command you need each session:
+After first-time setup, this is the only command you need each session
+(or click "Start bridge" in the mac-app, which runs the same script):
 
 ```bash
 cd bridge && npm start
 ```
 
-`npm start` runs `./start.sh`, which:
+`npm start` runs `./start.sh`, which calls `./reconnect.sh` to prep the
+USB-tethered phone, then execs the bridge:
 
-1. **Reconnects wirelessly** — short-circuits when `adb devices`
-   already shows an `ip:port device`, falls back to mDNS discovery,
-   then to the saved target (with a `:5555` legacy-mode retry).
-2. **Sets up the `tcp:9008` forward** so the bridge can talk to the
+1. **Clears any wireless transports** (`adb disconnect`) — operators
+   sometimes leave wireless debugging toggled on, which trips the
+   multi-device guard in `index.js`.
+2. **Finds the USB device serial** from `adb devices` (the entry
+   without an `ip:port`).
+3. **Sets up the `tcp:9008` forward** so the bridge can talk to the
    on-device u2 server, and verifies u2 is responding (relaunches
    it if it crashed since the last session).
-3. **Pins `BRIDGE_DEVICE` to the wireless target** — without this
-   every adb call would fail with "more than one device/emulator"
-   when the phone is also plugged in via USB.
-4. **Starts the bridge poller** (`node index.js`).
+4. **Pins `BRIDGE_DEVICE`** to that USB serial so every adb call is
+   unambiguous even if a wireless device reappears mid-session.
+5. **Starts the bridge poller** (`node index.js`).
 
-If the phone is plugged into USB and you'd rather skip the wireless
-dance, run `npm run serve` (pure `node index.js`) instead.
+Wireless ADB is intentionally disabled: mDNS discovery + reconnects
+add latency and failure modes on busy sale-day WiFi. If you ever
+want to drive the phone wirelessly, `git log bridge/reconnect.sh`
+has the previous discovery script.
 
 Output looks like:
 

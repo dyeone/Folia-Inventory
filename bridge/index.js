@@ -72,8 +72,9 @@ if (!API_URL || !TOKEN) {
     console.error(
       `✗ ${devices.length} adb devices connected and BRIDGE_DEVICE not set.\n` +
       `  Connected: ${devices.join(', ')}\n` +
-      `  Set BRIDGE_DEVICE=<ip:port> in bridge/.env or run bridge/start.sh\n` +
-      `  (which exports BRIDGE_DEVICE from .wireless-target automatically).`,
+      `  Run bridge/start.sh (clears wireless transports and pins the\n` +
+      `  USB serial automatically), or set BRIDGE_DEVICE=<serial> in\n` +
+      `  bridge/.env manually.`,
     );
     process.exit(1);
   }

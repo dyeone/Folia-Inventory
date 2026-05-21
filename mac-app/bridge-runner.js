@@ -55,9 +55,15 @@ class BridgeRunner extends EventEmitter {
     this._logStream.write(stamped + '\n');
     this.emit('log', line);
 
-    // Sniff a few well-known patterns from bridge/index.js output to
-    // keep the UI state in sync without a separate IPC channel:
-    if (/connected to .*:[0-9]+/i.test(line) || /Already connected:/i.test(line)) {
+    // Sniff a few well-known patterns from bridge/index.js + the
+    // start.sh / reconnect.sh prep scripts to keep the UI state in
+    // sync without a separate IPC channel. We match both the legacy
+    // wireless "ip:port" form and the USB serial form so the pill
+    // flips to "live" regardless of which transport is active.
+    const usbMatch = line.match(/(?:Bridge\s+(?:pinned to|will use)\s+device|Found USB device)\s+(\S+)/i);
+    if (usbMatch) {
+      this._setState({ phoneConnected: true, phoneTarget: usbMatch[1] });
+    } else if (/connected to .*:[0-9]+/i.test(line) || /Already connected:/i.test(line)) {
       const m = line.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+)/);
       if (m) this._setState({ phoneConnected: true, phoneTarget: m[1] });
     }
