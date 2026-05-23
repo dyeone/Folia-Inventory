@@ -261,6 +261,20 @@ create table if not exists species_photos (
 create index if not exists species_photos_species_idx
   on species_photos ("speciesId", "sortOrder");
 
+-- 0016 · classify each photo as gallery vs the per-species parent
+-- slots (mother / father) used for Anthurium parentage records.
+alter table species_photos add column if not exists "kind" text not null default 'gallery';
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'species_photos_kind_check') then
+    alter table species_photos
+      add constraint species_photos_kind_check
+      check ("kind" in ('gallery','mother','father'));
+  end if;
+end $$;
+create index if not exists species_photos_species_kind_idx
+  on species_photos ("speciesId", "kind");
+
 create table if not exists purchase_orders (
   id             text        primary key,
   supplier       text        not null default '',
