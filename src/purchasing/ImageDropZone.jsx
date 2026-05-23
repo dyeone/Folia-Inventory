@@ -16,9 +16,10 @@ import { Upload, ImagePlus } from 'lucide-react';
 //   accept         — file input accept attribute (default 'image/*')
 //   multiple       — allow multi-file file-picker (default true)
 //   disabled       — disable all input
-//   pasteScope     — DOM element to listen for paste on (default window).
-//                    Pass a ref.current of the parent modal so paste only
-//                    fires while that modal is open.
+//   pasteScope     — React ref to a DOM element to listen on for paste
+//                    events (default: window). Pass the modal's ref so
+//                    paste only fires while that modal is open. We deref
+//                    inside the effect because refs aren't valid render values.
 //   children       — content rendered inside the zone (the visual UI).
 //                    If null, renders the default "Drop / click / paste"
 //                    placeholder.
@@ -35,9 +36,11 @@ export function ImageDropZone({
   const [dragging, setDragging] = useState(false);
 
   // Paste handler — listens on the provided scope (default window).
+  // pasteScope may be a ref ({ current: HTMLElement }), a DOM element,
+  // or null/undefined (→ window).
   useEffect(() => {
     if (disabled) return undefined;
-    const target = pasteScope || window;
+    const target = (pasteScope && pasteScope.current) || pasteScope || window;
     const handler = (e) => {
       const items = e.clipboardData?.items || [];
       let consumed = false;

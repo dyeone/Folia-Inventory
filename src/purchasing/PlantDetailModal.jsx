@@ -1,11 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { api } from '../api.js';
 import { PhotoGallery } from './PhotoGallery.jsx';
+import { ParentPhotoSlot } from './ParentPhotoSlot.jsx';
 
-// Edit (or create) a catalog plant. `initial` is null for create mode.
-// PhotoGallery mounts in Task 11. onSaved(species) → called with the
-// updated/created species row so the parent can refresh its cache.
+// Edit (or create) a catalog plant. Photo support spans both modes:
+//   - edit mode:   PhotoGallery + parent slots upload directly via the API
+//   - create mode: files are staged client-side; after Save creates the
+//                  species, each staged file is uploaded with its kind.
+//
+// onSaved(species) → called with the updated/created species row so the
+// parent can refresh its cache.
 
 export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToast }) {
   const isCreate = !initial;
@@ -25,6 +30,61 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
+  // Staged uploads — only used in create mode. Each gallery item gets
+  // a temp local id for keying + remove. Mother/father are single slots.
+  const [stagedGallery, setStagedGallery] = useState([]); // [{ id, previewUrl, file }]
+  const [stagedMother, setStagedMother]   = useState(null); // { previewUrl, file } | null
+  const [stagedFather, setStagedFather]   = useState(null);
+
+  // Used to scope the ImageDropZone paste handler to this modal so
+  // clipboard images don't get consumed while the modal is closed.
+  const modalRef = useRef(null);
+
+  // Revoke object URLs on unmount / when the staged file changes, so we
+  // don't leak Blob memory if the user adds + removes many photos.
+  useEffect(() => () => {
+    for (const g of stagedGallery) URL.revokeObjectURL(g.previewUrl);
+    if (stagedMother?.previewUrl) URL.revokeObjectURL(stagedMother.previewUrl);
+    if (stagedFather?.previewUrl) URL.revokeObjectURL(stagedFather.previewUrl);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Anthurium check — drives whether the parent-photo slots render.
+  // String compare (case-insensitive) so a misspelled-but-close variety
+  // name still works without a config flag.
+  const selectedVarietyName = useMemo(() => {
+    return (varieties || []).find(v => v.id === varietyId)?.name || '';
+  }, [varieties, varietyId]);
+  const isAnthurium = selectedVarietyName.toLowerCase() === 'anthurium';
+
+  const stageGallery = (file) => {
+    const previewUrl = URL.createObjectURL(file);
+    const id = `staged-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    setStagedGallery(prev => [...prev, { id, previewUrl, file }]);
+  };
+  const removeStagedGallery = (id) => {
+    setStagedGallery(prev => {
+      const dropped = prev.find(g => g.id === id);
+      if (dropped) URL.revokeObjectURL(dropped.previewUrl);
+      return prev.filter(g => g.id !== id);
+    });
+  };
+  const stageParent = (which, file) => {
+    const previewUrl = URL.createObjectURL(file);
+    const setter = which === 'mother' ? setStagedMother : setStagedFather;
+    setter(prev => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return { previewUrl, file };
+    });
+  };
+  const clearStagedParent = (which) => {
+    const setter = which === 'mother' ? setStagedMother : setStagedFather;
+    setter(prev => {
+      if (prev?.previewUrl) URL.revokeObjectURL(prev.previewUrl);
+      return null;
+    });
+  };
+
   const save = async () => {
     setErr('');
     if (!varietyId) { setErr('Variety required'); return; }
@@ -42,6 +102,20 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
       let saved;
       if (isCreate) {
         saved = await api.createSpecies(body);
+        // Flush staged photos. Per-file errors surface as toasts but
+        // don't block — the species exists and the user can retry from
+        // edit mode if a single upload failed.
+        const uploads = [];
+        for (const g of stagedGallery) {
+          uploads.push(uploadStaged(saved.id, g.file, 'gallery'));
+        }
+        if (isAnthurium && stagedMother) uploads.push(uploadStaged(saved.id, stagedMother.file, 'mother'));
+        if (isAnthurium && stagedFather) uploads.push(uploadStaged(saved.id, stagedFather.file, 'father'));
+        const results = await Promise.allSettled(uploads);
+        const failed = results.filter(r => r.status === 'rejected').length;
+        if (failed > 0) {
+          showToast?.(`Plant created, but ${failed} photo${failed === 1 ? '' : 's'} failed to upload`, 4000);
+        }
       } else {
         await api.updateSpecies({
           id: initial.id,
@@ -62,9 +136,14 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
     }
   };
 
+  // Pre-filter photos to the relevant kinds for the live-mode widgets.
+  const galleryPhotos = (initial?.photos || []).filter(p => (p.kind || 'gallery') === 'gallery');
+  const parentPhotos  = (initial?.photos || []).filter(p => p.kind === 'mother' || p.kind === 'father');
+
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <div
+        ref={modalRef}
         className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
@@ -85,17 +164,50 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
               {(varieties || []).map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
             </select>
           </Field>
-          {!isCreate && (
-            <Field label="Photos">
-              <PhotoGallery
-                speciesId={initial.id}
-                photos={initial.photos || []}
-                primaryPhotoId={initial.primaryPhotoId}
-                onChanged={() => onSaved?.(initial)}
+
+          <Field label="Photos">
+            <PhotoGallery
+              speciesId={isCreate ? null : initial.id}
+              photos={galleryPhotos}
+              primaryPhotoId={initial?.primaryPhotoId}
+              pasteScope={modalRef}
+              onChanged={() => onSaved?.(initial)}
+              showToast={showToast}
+              staged={isCreate ? stagedGallery : undefined}
+              onStaged={isCreate ? stageGallery : undefined}
+              onClearStaged={isCreate ? removeStagedGallery : undefined}
+            />
+          </Field>
+
+          {isAnthurium && (
+            <div className="grid grid-cols-2 gap-3">
+              <ParentPhotoSlot
+                kind="mother"
+                label="Mother plant"
+                speciesId={isCreate ? null : initial.id}
+                photos={parentPhotos}
+                pasteScope={modalRef}
                 showToast={showToast}
+                onChanged={() => onSaved?.(initial)}
+                stagedPreviewUrl={isCreate ? stagedMother?.previewUrl : null}
+                onStaged={isCreate ? ((f) => stageParent('mother', f)) : undefined}
+                onClearStaged={isCreate ? (() => clearStagedParent('mother')) : undefined}
               />
-            </Field>
+              <ParentPhotoSlot
+                kind="father"
+                label="Father plant"
+                speciesId={isCreate ? null : initial.id}
+                photos={parentPhotos}
+                pasteScope={modalRef}
+                showToast={showToast}
+                onChanged={() => onSaved?.(initial)}
+                stagedPreviewUrl={isCreate ? stagedFather?.previewUrl : null}
+                onStaged={isCreate ? ((f) => stageParent('father', f)) : undefined}
+                onClearStaged={isCreate ? (() => clearStagedParent('father')) : undefined}
+              />
+            </div>
           )}
+
           <Field label="Name / epithet">
             <input value={epithet} onChange={(e) => setEpithet(e.target.value)}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg" />
@@ -142,6 +254,30 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
       </div>
     </div>
   );
+}
+
+async function uploadStaged(speciesId, file, kind) {
+  const fileBase64 = await fileToBase64(file);
+  await api.uploadSpeciesPhoto({
+    speciesId,
+    fileBase64,
+    contentType: file.type || 'image/jpeg',
+    filename: file.name,
+    kind,
+  });
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload  = () => {
+      const r = String(reader.result || '');
+      const comma = r.indexOf(',');
+      resolve(comma >= 0 ? r.slice(comma + 1) : r);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function Field({ label, children }) {
