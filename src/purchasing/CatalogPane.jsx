@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Search, Plus } from 'lucide-react';
+import { api } from '../api.js';
 import { CatalogPlantCard } from './CatalogPlantCard.jsx';
 import { PlantDetailModal } from './PlantDetailModal.jsx';
 
@@ -16,6 +17,26 @@ export function CatalogPane({ varieties, species, showToast, onSpeciesChanged })
   const [search, setSearch] = useState('');
   const [sortId, setSortId] = useState('name');
   const [selectedSpeciesId, setSelectedSpeciesId] = useState(null);
+  const [addingId, setAddingId] = useState(null);
+
+  const addToDraft = async (plant) => {
+    setAddingId(plant.id);
+    try {
+      const drafts = await api.listPurchaseOrders('draft');
+      let po = drafts && drafts[0];
+      if (!po) po = await api.createPurchaseOrder({});
+      await api.addPurchaseOrderLine({
+        id: po.id,
+        speciesId: plant.id,
+        quantityOrdered: 1,
+      });
+      showToast?.(`Added ${plant.epithet} to draft`, 1500);
+    } catch (e) {
+      showToast?.(e.message || 'Add failed', 3000);
+    } finally {
+      setAddingId(null);
+    }
+  };
 
   // Decorate each species row with its variety name (the API only returns varietyId).
   const varietyById = useMemo(() => {
@@ -127,6 +148,8 @@ export function CatalogPane({ varieties, species, showToast, onSpeciesChanged })
               key={plant.id}
               plant={plant}
               onOpenDetail={() => setSelectedSpeciesId(plant.id)}
+              onAddToDraft={() => addToDraft(plant)}
+              adding={addingId === plant.id}
             />
           ))}
         </div>
