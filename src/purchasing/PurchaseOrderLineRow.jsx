@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Trash2, Loader2 } from 'lucide-react';
+import { Trash2, Loader2, Check } from 'lucide-react';
 import { api } from '../api.js';
 
 // One line in an expanded PO. Editing rules:
@@ -82,6 +82,27 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
 
   const lineTotal = (Number(price) || 0) * (parseInt(qty, 10) || 0);
   const isDraft = poStatus === 'draft';
+  const remaining = Math.max(0, line.quantityOrdered - line.quantityReceived);
+  const [receiveQty, setReceiveQty] = useState(String(remaining));
+
+  const doReceive = async () => {
+    const n = parseInt(receiveQty, 10);
+    if (!Number.isFinite(n) || n <= 0) return;
+    setBusy(true);
+    try {
+      const r = await api.receivePurchaseOrderLine({ id: poId, lineId: line.id, quantityReceived: n });
+      if (r?.poFlippedToReceived) {
+        showToast?.('Received — PO complete', 2200);
+      } else {
+        showToast?.(`Received ${n}`, 1500);
+      }
+      onChanged?.();
+    } catch (e) {
+      showToast?.(e.message || 'Receive failed', 3000);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // receivedItemIds is reserved for the Task 15 cancel-receive button.
   void receivedItemIds;
@@ -126,8 +147,35 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
           <span className="text-gray-500">=</span>
           <span className="font-semibold text-gray-900 tabular-nums">${lineTotal.toFixed(2)}</span>
           {!isDraft && (
-            <span className="ml-auto text-gray-500">
-              Received <span className="font-semibold text-gray-900">{line.quantityReceived}</span>/{line.quantityOrdered}
+            <span className="ml-auto flex items-center gap-2">
+              <span className="text-gray-500">
+                Received <span className="font-semibold text-gray-900">{line.quantityReceived}</span>/{line.quantityOrdered}
+                {line.quantityReceived > line.quantityOrdered && (
+                  <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">
+                    +{line.quantityReceived - line.quantityOrdered} over
+                  </span>
+                )}
+              </span>
+              {poStatus === 'ordered' && remaining > 0 && (
+                <>
+                  <input
+                    type="number"
+                    min={1}
+                    value={receiveQty}
+                    onChange={(e) => setReceiveQty(e.target.value)}
+                    className="w-16 px-2 py-1 text-xs border border-gray-300 rounded"
+                  />
+                  <button
+                    type="button"
+                    onClick={doReceive}
+                    disabled={busy}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded disabled:opacity-60"
+                  >
+                    {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                    Receive
+                  </button>
+                </>
+              )}
             </span>
           )}
         </div>

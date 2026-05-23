@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Loader2, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Trash2, Check, Truck } from 'lucide-react';
 import { api } from '../api.js';
 import { PurchaseOrderLineRow } from './PurchaseOrderLineRow.jsx';
 
@@ -66,6 +66,39 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
       showToast?.(e.message || 'Save failed', 3000);
     } finally {
       setSavingHeader(false);
+    }
+  };
+
+  const markOrdered = async () => {
+    try {
+      await api.markPurchaseOrderOrdered(po.id);
+      await refreshLines();
+      showToast?.('Marked as ordered', 1500);
+    } catch (e) {
+      showToast?.(e.message || 'Failed', 3000);
+    }
+  };
+
+  const markAllReceived = async () => {
+    if (!lines) return;
+    const targets = lines.filter(l => l.quantityReceived < l.quantityOrdered);
+    if (targets.length === 0) {
+      showToast?.('Already fully received', 1500);
+      return;
+    }
+    try {
+      for (const l of targets) {
+        await api.receivePurchaseOrderLine({
+          id: po.id,
+          lineId: l.id,
+          quantityReceived: l.quantityOrdered - l.quantityReceived,
+        });
+      }
+      await refreshLines();
+      showToast?.('Marked all received', 1800);
+    } catch (e) {
+      showToast?.(e.message || 'Receive failed', 3000);
+      await refreshLines();
     }
   };
 
@@ -184,17 +217,37 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
           )}
 
           {/* Footer actions */}
-          {isDraft && lines && (
+          {(isDraft || po.status === 'ordered') && lines && (
             <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={deletePo}
-                disabled={savingHeader}
-                className="flex items-center gap-1.5 px-3 py-2 text-sm border border-red-200 text-red-700 rounded-lg hover:bg-red-50"
-              >
-                <Trash2 className="w-4 h-4" /> Delete PO
-              </button>
-              {/* Mark ordered button lives here in Task 14. */}
+              {isDraft && (
+                <>
+                  <button
+                    type="button"
+                    onClick={deletePo}
+                    disabled={savingHeader}
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm border border-red-200 text-red-700 rounded-lg hover:bg-red-50"
+                  >
+                    <Trash2 className="w-4 h-4" /> Delete PO
+                  </button>
+                  <button
+                    type="button"
+                    onClick={markOrdered}
+                    disabled={lines.length === 0}
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg disabled:opacity-60"
+                  >
+                    <Check className="w-4 h-4" /> Mark ordered
+                  </button>
+                </>
+              )}
+              {po.status === 'ordered' && (
+                <button
+                  type="button"
+                  onClick={markAllReceived}
+                  className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg"
+                >
+                  <Truck className="w-4 h-4" /> Mark all received
+                </button>
+              )}
             </div>
           )}
         </div>
