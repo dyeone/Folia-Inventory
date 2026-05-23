@@ -5,7 +5,7 @@ import {
   Receipt, Search, Copy,
 } from 'lucide-react';
 import { api } from '../api.js';
-import { BoxNotes } from './BoxNotes.jsx';
+import { ItemNotes } from './ItemNotes.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
@@ -958,21 +958,10 @@ function groupBoxesByBuyer(items, sales, predicate) {
         buyerAddress: item.buyerAddress || {},
         carrier: item.shipmentCarrier || 'usps',
         items: [],
-        // Union of distinct notes across the box's items. Persisted on
-        // each item as a ' · '-joined string at upload time; here we
-        // split and dedupe so the Shipping tab can render each line
-        // separately if the operator left multiple notes.
-        notes: [],
       };
       boxMap.set(item.shipmentBoxId, box);
     }
     box.items.push(item);
-    if (item.notes) {
-      for (const n of String(item.notes).split(' · ')) {
-        const t = n.trim();
-        if (t && !box.notes.includes(t)) box.notes.push(t);
-      }
-    }
   }
 
   // Box openedAt = earliest soldAt across its items. The system has no
@@ -1295,6 +1284,7 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
                   </>
                 )}
               </div>
+              <ItemNotes raw={item.notes} />
             </div>
             {priceStr && (
               <span className="text-sm text-gray-700 font-medium shrink-0 tabular-nums">
@@ -1543,10 +1533,6 @@ function BoxRow({
           </div>
         )}
       </div>
-
-      {/* Notes live OUTSIDE the {expanded && ...} gate so the operator
-          sees customer instructions even while the box is collapsed. */}
-      <BoxNotes notes={box.notes} />
 
       {expanded && (
         <>

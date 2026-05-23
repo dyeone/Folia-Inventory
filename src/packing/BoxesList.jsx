@@ -3,6 +3,7 @@ import {
   ChevronDown, ChevronRight, Truck, MapPin, Check, AlertCircle, SkipForward,
 } from 'lucide-react';
 import { shortBoxCode } from '../labels/boxCode.js';
+import { ItemNotes } from './ItemNotes.jsx';
 
 // Renders the parsed/matched preview of a Palmstreet orders upload.
 // Used by the Validate Sales modal (SalesUploadModal). Each box shows
@@ -65,11 +66,6 @@ export function BoxesList({ boxes }) {
                 {box.items.map(item => (
                   <BoxItemRow key={item.rowKey} item={item} />
                 ))}
-                {box.notes?.length > 0 && (
-                  <div className="px-4 py-2 bg-amber-50 text-xs text-amber-900">
-                    <span className="font-medium">Notes:</span> {box.notes.join(' · ')}
-                  </div>
-                )}
               </div>
             )}
           </div>
@@ -110,6 +106,7 @@ function BoxItemRow({ item }) {
             {item.sku ? `No inventory item with SKU ${item.sku}` : 'No SKU on this order line'}
           </div>
         )}
+        <ItemNotes raw={item.notes} />
       </div>
     </div>
   );

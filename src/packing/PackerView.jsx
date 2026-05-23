@@ -3,6 +3,7 @@ import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, Camera, Tr
 import { api } from '../api.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { CameraScanner } from './CameraScanner.jsx';
+import { ItemNotes } from './ItemNotes.jsx';
 
 // Full-screen mobile workflow for the 'packer' role. Two screens:
 //   1. Scan-box → operator scans/types a box code (B-XXXXXX). On valid
@@ -484,6 +485,7 @@ function ItemRow({ item, onMarkPacked }) {
           </button>
         )}
       </div>
+      <ItemNotes raw={item.notes} />
     </div>
   );
 }
