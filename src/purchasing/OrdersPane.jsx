@@ -9,7 +9,7 @@ const FILTERS = [
   { id: 'received', label: 'Received' },
 ];
 
-export function OrdersPane({ species, showToast, onItemsChanged }) {
+export function OrdersPane({ species, showToast, setConfirmDialog, onItemsChanged }) {
   const [activeFilters, setActiveFilters] = useState(new Set(['draft', 'ordered']));
   const [pos, setPos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -48,7 +48,6 @@ export function OrdersPane({ species, showToast, onItemsChanged }) {
     return () => { cancelled = true; };
   }, [activeFilters, onItemsChanged]);
 
-  // eslint-disable-next-line no-unused-vars
   const speciesById = useMemo(() => {
     const m = new Map();
     for (const s of species || []) m.set(s.id, s);
@@ -118,7 +117,14 @@ export function OrdersPane({ species, showToast, onItemsChanged }) {
       ) : (
         <div className="space-y-2">
           {pos.map(po => (
-            <PurchaseOrderCard key={po.id} po={po} />
+            <PurchaseOrderCard
+              key={po.id}
+              po={po}
+              speciesById={speciesById}
+              showToast={showToast}
+              setConfirmDialog={setConfirmDialog}
+              onChanged={refresh}
+            />
           ))}
         </div>
       )}
