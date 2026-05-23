@@ -24,7 +24,7 @@ const InventoryView = lazyNamed(() => import('./inventory/InventoryView.jsx'), '
 const SalesView = lazyNamed(() => import('./sales/SalesView.jsx'), 'SalesView');
 const PackingView = lazyNamed(() => import('./packing/PackingView.jsx'), 'PackingView');
 const FinancialView = lazyNamed(() => import('./financial/FinancialView.jsx'), 'FinancialView');
-const PurchaseOrderView = lazyNamed(() => import('./purchasing/PurchaseOrderView.jsx'), 'PurchaseOrderView');
+const PurchasingView = lazyNamed(() => import('./purchasing/PurchasingView.jsx'), 'PurchasingView');
 const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedView.jsx'), 'RecentlyDeletedView');
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 
@@ -1046,9 +1046,20 @@ function StaffOrAdminInventory() {
           />
         )}
         {activeTab === 'purchasing' && (
-          <PurchaseOrderView
-            items={items}
+          <PurchasingView
             varieties={varieties}
+            species={species}
+            currentUser={currentUser}
+            showToast={showToast}
+            setConfirmDialog={setConfirmDialog}
+            onSpeciesChanged={async () => {
+              const fresh = await api.getSpecies();
+              setSpecies(fresh);
+            }}
+            onItemsChanged={async () => {
+              const fresh = await api.getItems();
+              applyItemsFresh(fresh);
+            }}
           />
         )}
         {activeTab === 'financial' && (
