@@ -270,7 +270,25 @@ async function removeLine(req, res) {
 // ─── placeholders, filled in tasks 5-6 ─────────────────────────────────────
 
 async function markOrdered(req, res, user) {
-  const e = new Error('mark-ordered not implemented yet'); e.status = 501; throw e;
+  const { id } = req.body || {};
+  const po = await loadPo(id);
+  requireStatus(po, ['draft']);
+
+  // Must have at least one line.
+  const { count, error: cErr } = await supabase
+    .from('purchase_order_lines')
+    .select('id', { count: 'exact', head: true })
+    .eq('purchaseOrderId', id);
+  if (cErr) { const e = new Error(cErr.message); e.status = 500; throw e; }
+  if (!count) { const e = new Error('Cannot mark ordered — PO has no lines'); e.status = 409; throw e; }
+
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from('purchase_orders')
+    .update({ status: 'ordered', orderedAt: now, modifiedAt: now, modifiedBy: user.displayName })
+    .eq('id', id);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ purchaseOrder: { ...po, status: 'ordered', orderedAt: now } });
 }
 async function receiveLine(req, res, user) {
   const e = new Error('receive-line not implemented yet'); e.status = 501; throw e;
