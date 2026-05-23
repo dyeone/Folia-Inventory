@@ -11,24 +11,52 @@ export default wrap(async (req, res) => {
 
   switch (req.method) {
     case 'GET': {
-      const { data, error } = await supabase
+      const { data: species, error } = await supabase
         .from('species')
         .select('*')
         .order('epithet');
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-      return res.status(200).json({ species: data || [] });
+      const ids = (species || []).map(s => s.id);
+      let photos = [];
+      if (ids.length) {
+        const { data: p, error: pe } = await supabase
+          .from('species_photos')
+          .select('id, "speciesId", "storagePath", "sortOrder"')
+          .in('speciesId', ids)
+          .order('sortOrder');
+        if (pe) { const e = new Error(pe.message); e.status = 500; throw e; }
+        photos = p || [];
+      }
+      const photosBySpecies = new Map();
+      for (const ph of photos) {
+        if (!photosBySpecies.has(ph.speciesId)) photosBySpecies.set(ph.speciesId, []);
+        photosBySpecies.get(ph.speciesId).push(ph);
+      }
+      const out = (species || []).map(s => ({
+        ...s,
+        photos: photosBySpecies.get(s.id) || [],
+      }));
+      return res.status(200).json({ species: out });
     }
 
     case 'POST': {
-      const { varietyId, epithet, commonName, notes, imageUrl } = req.body || {};
+      const { varietyId, epithet, commonName, notes, imageUrl,
+              wholesalePrice, idealSellingPrice } = req.body || {};
       if (!varietyId) { const e = new Error('varietyId required'); e.status = 400; throw e; }
       const cleanEpithet = String(epithet || '').trim();
       if (!cleanEpithet) { const e = new Error('epithet required'); e.status = 400; throw e; }
-      // Make sure the variety actually exists (FK would catch this too,
-      // but a clearer error helps the client).
       const { data: vrow } = await supabase
         .from('varieties').select('id').eq('id', varietyId).maybeSingle();
       if (!vrow) { const e = new Error('Unknown variety'); e.status = 400; throw e; }
+
+      const parseMoney = (v, name) => {
+        if (v === undefined || v === null || v === '') return null;
+        const n = parseFloat(v);
+        if (!Number.isFinite(n) || n < 0) {
+          const e = new Error(`${name} must be a non-negative number`); e.status = 400; throw e;
+        }
+        return n;
+      };
 
       const row = {
         id: newId(),
@@ -37,6 +65,8 @@ export default wrap(async (req, res) => {
         commonName: commonName ? String(commonName).trim() : null,
         notes: notes ? String(notes) : null,
         imageUrl: imageUrl ? String(imageUrl).trim() : null,
+        wholesalePrice: parseMoney(wholesalePrice, 'wholesalePrice'),
+        idealSellingPrice: parseMoney(idealSellingPrice, 'idealSellingPrice'),
         createdAt: new Date().toISOString(),
         createdBy: user.displayName,
       };
@@ -47,17 +77,28 @@ export default wrap(async (req, res) => {
         }
         const e = new Error(error.message); e.status = 500; throw e;
       }
-      return res.status(200).json({ species: row });
+      return res.status(200).json({ species: { ...row, photos: [] } });
     }
 
     case 'PATCH': {
-      const { id, varietyId, epithet, commonName, notes, imageUrl, profitRate } = req.body || {};
+      const { id, varietyId, epithet, commonName, notes, imageUrl, profitRate,
+              wholesalePrice, idealSellingPrice, primaryPhotoId } = req.body || {};
       if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
-      // Renames / reparenting are structural and need admin; profitRate is
-      // operational and any active user can change it.
+      // Renames / reparenting are structural and need admin; pricing +
+      // photo selection are operational and any active user can change.
       const wantsStructural = varietyId !== undefined || epithet !== undefined
         || commonName !== undefined || notes !== undefined || imageUrl !== undefined;
       if (wantsStructural) await requireAdmin(userId);
+
+      const parseMoneyOrNull = (v, name) => {
+        if (v === null || v === '') return null;
+        const n = parseFloat(v);
+        if (!Number.isFinite(n) || n < 0) {
+          const e = new Error(`${name} must be a non-negative number`); e.status = 400; throw e;
+        }
+        return n;
+      };
+
       const patch = {};
       if (varietyId !== undefined) patch.varietyId = varietyId;
       if (epithet !== undefined) patch.epithet = String(epithet).trim();
@@ -73,6 +114,9 @@ export default wrap(async (req, res) => {
           patch.profitRate = n;
         }
       }
+      if (wholesalePrice    !== undefined) patch.wholesalePrice    = parseMoneyOrNull(wholesalePrice,    'wholesalePrice');
+      if (idealSellingPrice !== undefined) patch.idealSellingPrice = parseMoneyOrNull(idealSellingPrice, 'idealSellingPrice');
+      if (primaryPhotoId    !== undefined) patch.primaryPhotoId    = primaryPhotoId || null;
       if (Object.keys(patch).length === 0) {
         const e = new Error('No fields to update'); e.status = 400; throw e;
       }
