@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Search, Plus } from 'lucide-react';
 import { CatalogPlantCard } from './CatalogPlantCard.jsx';
+import { PlantDetailModal } from './PlantDetailModal.jsx';
 
 const SORTS = [
   { id: 'name',       label: 'Name' },
@@ -10,12 +11,11 @@ const SORTS = [
   { id: 'recent',     label: 'Recently added' },
 ];
 
-export function CatalogPane({ varieties, species }) {
+export function CatalogPane({ varieties, species, showToast, onSpeciesChanged }) {
   const [varietyTab, setVarietyTab] = useState('all');
   const [search, setSearch] = useState('');
   const [sortId, setSortId] = useState('name');
-  // PlantDetailModal wired in Task 10; selectedSpeciesId is unused until then.
-  const [, setSelectedSpeciesId] = useState(null);
+  const [selectedSpeciesId, setSelectedSpeciesId] = useState(null);
 
   // Decorate each species row with its variety name (the API only returns varietyId).
   const varietyById = useMemo(() => {
@@ -130,6 +130,16 @@ export function CatalogPane({ varieties, species }) {
             />
           ))}
         </div>
+      )}
+
+      {selectedSpeciesId && (
+        <PlantDetailModal
+          initial={selectedSpeciesId === 'NEW' ? null : plants.find(p => p.id === selectedSpeciesId)}
+          varieties={varieties}
+          showToast={showToast}
+          onClose={() => setSelectedSpeciesId(null)}
+          onSaved={() => onSpeciesChanged?.()}
+        />
       )}
     </div>
   );
