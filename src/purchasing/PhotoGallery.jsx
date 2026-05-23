@@ -1,31 +1,53 @@
-import { useEffect, useRef, useState } from 'react';
-import { Upload, Star, X, Loader2, ImagePlus } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Star, X, Loader2 } from 'lucide-react';
 import { api } from '../api.js';
+import { ImageDropZone } from './ImageDropZone.jsx';
 
-// Photo CRUD widget for a single species. Caller passes the parent
-// species (so we can show + edit primaryPhotoId), and onChanged after
-// any mutation so the parent can refresh.
+// Photo CRUD widget for the catalog gallery (kind='gallery' photos).
+// Caller passes the parent species (so we can show + edit
+// primaryPhotoId), and onChanged after any mutation so the parent can
+// refresh. Mother/father parent slots live in <ParentPhotoSlot /> —
+// distinct kind, distinct widget.
 //
-// Display: signed URLs cached locally for the modal session — each
-// photo refetches its URL on mount, then reuses. (Signed URLs are
-// 5 minutes; we never live long enough in this modal to hit expiry.)
+// Two modes:
+//   - speciesId present → live mode: upload immediately on file pick
+//   - staged prop set   → staged mode: caller stores files client-side
+//                         (used during catalog "create")
+//
+// Live-mode signed URLs cached locally for the modal session — fetched
+// once per photo id, reused. (Signed URLs are 5 minutes; this modal
+// never lives that long.)
 
-export function PhotoGallery({ speciesId, photos, primaryPhotoId, onChanged, showToast }) {
+export function PhotoGallery({
+  speciesId,
+  photos,                  // gallery photos for this species (kind='gallery')
+  primaryPhotoId,
+  pasteScope,
+  onChanged,
+  showToast,
+  // Staged-mode props (used while creating the species). The gallery
+  // becomes a write-only preview surface: existing 'photos' is empty,
+  // and the dropzone forwards each file to onStaged.
+  staged,                  // [{ id, previewUrl, file }] | undefined
+  onStaged,                // (file) → void — caller stages
+  onClearStaged,           // (id) → void — caller drops a staged item
+}) {
+  const stagedMode = !speciesId;
   const [busy, setBusy] = useState(false);
   const [urls, setUrls] = useState({}); // photoId → signed URL
   const [draggingId, setDraggingId] = useState(null);
-  const fileRef = useRef(null);
-  const photoIdsKey = photos.map(p => p.id).join(',');
+  const photoIdsKey = (photos || []).map(p => p.id).join(',');
 
   useEffect(() => {
+    if (stagedMode || !photos || photos.length === 0) return undefined;
     let alive = true;
     (async () => {
       for (const ph of photos) {
         if (!alive) return;
-        // Skip if we already have a URL for this id.
+        // Skip if a URL already exists for this photo id.
         let already = false;
         setUrls(prev => {
-          if (prev[ph.id]) { already = true; }
+          if (prev[ph.id]) already = true;
           return prev;
         });
         if (already) continue;
@@ -37,10 +59,10 @@ export function PhotoGallery({ speciesId, photos, primaryPhotoId, onChanged, sho
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photoIdsKey]);
+  }, [photoIdsKey, stagedMode]);
 
-  const handleUpload = async (file) => {
-    if (!file) return;
+  const liveUpload = async (file) => {
+    if (!speciesId) return;
     setBusy(true);
     try {
       const b64 = await fileToBase64(file);
@@ -49,6 +71,7 @@ export function PhotoGallery({ speciesId, photos, primaryPhotoId, onChanged, sho
         fileBase64: b64,
         contentType: file.type || 'image/jpeg',
         filename: file.name,
+        kind: 'gallery',
       });
       if (signedUrl) setUrls(u => ({ ...u, [photo.id]: signedUrl }));
       onChanged?.();
@@ -82,7 +105,7 @@ export function PhotoGallery({ speciesId, photos, primaryPhotoId, onChanged, sho
 
   const reorderTo = async (dropTargetId) => {
     if (!draggingId || draggingId === dropTargetId) return;
-    const ordered = [...photos];
+    const ordered = [...(photos || [])];
     const fromIdx = ordered.findIndex(p => p.id === draggingId);
     const toIdx   = ordered.findIndex(p => p.id === dropTargetId);
     if (fromIdx < 0 || toIdx < 0) return;
@@ -98,65 +121,54 @@ export function PhotoGallery({ speciesId, photos, primaryPhotoId, onChanged, sho
     } finally { setBusy(false); }
   };
 
+  // In staged mode we render the staged previews; in live mode, the photos prop.
+  const visible = stagedMode
+    ? (staged || []).map(s => ({ id: s.id, previewUrl: s.previewUrl, staged: true }))
+    : (photos || []).map(p => ({ id: p.id, previewUrl: urls[p.id], staged: false }));
+
   return (
     <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) => handleUpload(e.target.files?.[0])}
-        />
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          disabled={busy}
-          className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-60"
-        >
-          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-          Upload photo
-        </button>
-        <div className="text-xs text-gray-500">Drag to reorder · click ★ to set primary</div>
-      </div>
-
-      {photos.length === 0 ? (
-        <div className="bg-gray-50 border border-dashed border-gray-300 rounded-lg p-6 text-center text-sm text-gray-500">
-          <ImagePlus className="w-6 h-6 mx-auto mb-1 text-gray-400" />
-          No photos yet.
-        </div>
-      ) : (
+      <ImageDropZone
+        onFile={(f) => (stagedMode ? onStaged?.(f) : liveUpload(f))}
+        disabled={busy}
+        pasteScope={pasteScope}
+      />
+      {visible.length === 0 ? null : (
         <div className="grid grid-cols-3 gap-2">
-          {photos.map((ph, idx) => {
-            const isPrimary = primaryPhotoId === ph.id || (!primaryPhotoId && idx === 0);
+          {visible.map((ph, idx) => {
+            // Primary star is only meaningful in live mode (server-side state).
+            const isPrimary = !stagedMode && (primaryPhotoId === ph.id || (!primaryPhotoId && idx === 0));
+            const draggable = !stagedMode;
             return (
               <div
                 key={ph.id}
-                draggable
-                onDragStart={() => setDraggingId(ph.id)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => reorderTo(ph.id)}
+                draggable={draggable}
+                onDragStart={() => draggable && setDraggingId(ph.id)}
+                onDragOver={(e) => draggable && e.preventDefault()}
+                onDrop={() => draggable && reorderTo(ph.id)}
                 className={`relative aspect-square rounded-lg overflow-hidden border-2 ${
                   isPrimary ? 'border-emerald-500' : 'border-gray-200'
                 } ${draggingId === ph.id ? 'opacity-50' : ''}`}
               >
-                {urls[ph.id]
-                  ? <img src={urls[ph.id]} alt="" className="w-full h-full object-cover" draggable={false} />
+                {ph.previewUrl
+                  ? <img src={ph.previewUrl} alt="" className="w-full h-full object-cover" draggable={false} />
                   : <div className="w-full h-full bg-gray-100 flex items-center justify-center">
                       <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
                     </div>}
+                {!stagedMode && (
+                  <button
+                    type="button"
+                    onClick={() => setPrimary(ph.id)}
+                    disabled={busy || isPrimary}
+                    title={isPrimary ? 'Primary photo' : 'Make primary'}
+                    className={`absolute top-1 left-1 p-1 rounded-full bg-white/90 hover:bg-white ${isPrimary ? 'text-emerald-600' : 'text-gray-400'}`}
+                  >
+                    <Star className="w-3.5 h-3.5" fill={isPrimary ? 'currentColor' : 'none'} />
+                  </button>
+                )}
                 <button
                   type="button"
-                  onClick={() => setPrimary(ph.id)}
-                  disabled={busy || isPrimary}
-                  title={isPrimary ? 'Primary photo' : 'Make primary'}
-                  className={`absolute top-1 left-1 p-1 rounded-full bg-white/90 hover:bg-white ${isPrimary ? 'text-emerald-600' : 'text-gray-400'}`}
-                >
-                  <Star className="w-3.5 h-3.5" fill={isPrimary ? 'currentColor' : 'none'} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => remove(ph.id)}
+                  onClick={() => (stagedMode ? onClearStaged?.(ph.id) : remove(ph.id))}
                   disabled={busy}
                   className="absolute top-1 right-1 p-1 rounded-full bg-white/90 hover:bg-red-50 text-red-600"
                   title="Delete"
