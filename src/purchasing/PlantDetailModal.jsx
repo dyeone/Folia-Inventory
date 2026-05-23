@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { api } from '../api.js';
+import { PhotoGallery } from './PhotoGallery.jsx';
 
 // Edit (or create) a catalog plant. `initial` is null for create mode.
 // PhotoGallery mounts in Task 11. onSaved(species) → called with the
@@ -84,6 +85,17 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
               {(varieties || []).map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
             </select>
           </Field>
+          {!isCreate && (
+            <Field label="Photos">
+              <PhotoGallery
+                speciesId={initial.id}
+                photos={initial.photos || []}
+                primaryPhotoId={initial.primaryPhotoId}
+                onChanged={() => onSaved?.(initial)}
+                showToast={showToast}
+              />
+            </Field>
+          )}
           <Field label="Name / epithet">
             <input value={epithet} onChange={(e) => setEpithet(e.target.value)}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg" />
