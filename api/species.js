@@ -21,7 +21,7 @@ export default wrap(async (req, res) => {
       if (ids.length) {
         const { data: p, error: pe } = await supabase
           .from('species_photos')
-          .select('id, "speciesId", "storagePath", "sortOrder"')
+          .select('id, "speciesId", "storagePath", "sortOrder", "kind"')
           .in('speciesId', ids)
           .order('sortOrder');
         if (pe) { const e = new Error(pe.message); e.status = 500; throw e; }

@@ -53,25 +53,46 @@ async function signedUrl(req, res) {
 }
 
 async function upload(req, res, user) {
-  const { speciesId, fileBase64, contentType, filename } = req.body || {};
+  const { speciesId, fileBase64, contentType, filename, kind: rawKind } = req.body || {};
   if (!speciesId)   { const e = new Error('speciesId required');   e.status = 400; throw e; }
   if (!fileBase64)  { const e = new Error('fileBase64 required');  e.status = 400; throw e; }
   if (!contentType) { const e = new Error('contentType required'); e.status = 400; throw e; }
+  const kind = rawKind || 'gallery';
+  if (!['gallery', 'mother', 'father'].includes(kind)) {
+    const e = new Error('kind must be gallery, mother, or father'); e.status = 400; throw e;
+  }
 
   const { data: sp, error: spErr } = await supabase
     .from('species').select('id, "imageUrl"').eq('id', speciesId).maybeSingle();
   if (spErr) { const e = new Error(spErr.message); e.status = 500; throw e; }
   if (!sp)   { const e = new Error('Unknown species'); e.status = 404; throw e; }
 
-  // Find next sortOrder for this species.
+  // Find next sortOrder within this kind. For 'mother' / 'father' there's
+  // only ever one slot, so the value doesn't matter much; we still scope
+  // by kind so multiple gallery uploads order correctly.
   const { data: existing, error: exErr } = await supabase
     .from('species_photos')
     .select('"sortOrder"')
     .eq('speciesId', speciesId)
+    .eq('kind', kind)
     .order('sortOrder', { ascending: false })
     .limit(1);
   if (exErr) { const e = new Error(exErr.message); e.status = 500; throw e; }
   const nextSort = existing && existing[0] ? existing[0].sortOrder + 1 : 0;
+
+  // Single-slot semantics for mother/father: delete any prior row of
+  // the same kind before inserting the new one (including its blob).
+  if (kind === 'mother' || kind === 'father') {
+    const { data: prior } = await supabase
+      .from('species_photos')
+      .select('id, "storagePath"')
+      .eq('speciesId', speciesId)
+      .eq('kind', kind);
+    for (const p of prior || []) {
+      await supabase.storage.from(STORAGE_BUCKET).remove([p.storagePath]).catch(() => {});
+      await supabase.from('species_photos').delete().eq('id', p.id);
+    }
+  }
 
   const buf = Buffer.from(String(fileBase64), 'base64');
   if (buf.length === 0) { const e = new Error('Empty file'); e.status = 400; throw e; }
@@ -92,6 +113,7 @@ async function upload(req, res, user) {
     speciesId,
     storagePath,
     sortOrder: nextSort,
+    kind,
     createdAt: new Date().toISOString(),
     createdBy: user.displayName,
   };
@@ -102,14 +124,16 @@ async function upload(req, res, user) {
   }
 
   // Lazy migration: move the legacy species.imageUrl into species_photos
-  // on the first real upload, so the catalog UI stops needing the fallback.
-  if (sp.imageUrl) {
+  // (as a gallery photo) on the first gallery upload. Skip for parent
+  // photo uploads — the legacy image is a generic photo, not parentage.
+  if (sp.imageUrl && kind === 'gallery') {
     const legacyId = newId();
     await supabase.from('species_photos').insert({
       id: legacyId,
       speciesId,
       storagePath: sp.imageUrl,
       sortOrder: -1,
+      kind: 'gallery',
       createdAt: new Date().toISOString(),
       createdBy: user.displayName,
     }).then(() => supabase.from('species').update({ imageUrl: null }).eq('id', speciesId))

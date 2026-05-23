@@ -130,8 +130,8 @@ export const api = {
     request('/purchase-orders', { method: 'POST', body: { action: 'delete', id } }),
 
   // Species photos
-  uploadSpeciesPhoto: ({ speciesId, fileBase64, contentType, filename }) =>
-    request('/species-photos', { method: 'POST', body: { action: 'upload', speciesId, fileBase64, contentType, filename } }),
+  uploadSpeciesPhoto: ({ speciesId, fileBase64, contentType, filename, kind }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'upload', speciesId, fileBase64, contentType, filename, kind } }),
   deleteSpeciesPhoto: (id) =>
     request('/species-photos', { method: 'POST', body: { action: 'delete', id } }),
   reorderSpeciesPhotos: ({ speciesId, orderedPhotoIds }) =>
