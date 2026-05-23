@@ -96,12 +96,48 @@ export const api = {
 
   // Species catalog
   getSpecies: () => request('/species').then(r => r.species),
-  createSpecies: ({ varietyId, epithet, commonName, notes, imageUrl }) =>
-    request('/species', { method: 'POST', body: { varietyId, epithet, commonName, notes, imageUrl } }).then(r => r.species),
+  createSpecies: ({ varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice }) =>
+    request('/species', { method: 'POST', body: { varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice } }).then(r => r.species),
   updateSpecies: ({ id, patch }) =>
     request('/species', { method: 'PATCH', body: { id, ...patch } }),
   deleteSpecies: (id) =>
     request('/species', { method: 'DELETE', body: { id } }),
+
+  // Purchase orders
+  listPurchaseOrders: (statuses = 'draft,ordered') =>
+    request(`/purchase-orders?status=${encodeURIComponent(statuses)}`).then(r => r.purchaseOrders),
+  getPurchaseOrder: (id) =>
+    request(`/purchase-orders?action=get&id=${encodeURIComponent(id)}`).then(r => ({
+      purchaseOrder: r.purchaseOrder, lines: r.lines, receivedItems: r.receivedItems,
+    })),
+  createPurchaseOrder: ({ supplier, shippingFee, notes } = {}) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'create', supplier, shippingFee, notes } }).then(r => r.purchaseOrder),
+  updatePurchaseOrderHeader: ({ id, supplier, shippingFee, notes }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'update-header', id, supplier, shippingFee, notes } }).then(r => r.purchaseOrder),
+  addPurchaseOrderLine: ({ id, speciesId, quantityOrdered, unitWholesalePrice }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'add-line', id, speciesId, quantityOrdered, unitWholesalePrice } }).then(r => r.line),
+  updatePurchaseOrderLine: ({ id, lineId, quantityOrdered, unitWholesalePrice }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'update-line', id, lineId, quantityOrdered, unitWholesalePrice } }),
+  removePurchaseOrderLine: ({ id, lineId }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'remove-line', id, lineId } }),
+  markPurchaseOrderOrdered: (id) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'mark-ordered', id } }).then(r => r.purchaseOrder),
+  receivePurchaseOrderLine: ({ id, lineId, quantityReceived }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'receive-line', id, lineId, quantityReceived } }),
+  cancelReceivePurchaseOrderLine: ({ id, lineId }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'cancel-receive-line', id, lineId } }),
+  deletePurchaseOrder: (id) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'delete', id } }),
+
+  // Species photos
+  uploadSpeciesPhoto: ({ speciesId, fileBase64, contentType, filename }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'upload', speciesId, fileBase64, contentType, filename } }),
+  deleteSpeciesPhoto: (id) =>
+    request('/species-photos', { method: 'POST', body: { action: 'delete', id } }),
+  reorderSpeciesPhotos: ({ speciesId, orderedPhotoIds }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'reorder', speciesId, orderedPhotoIds } }),
+  speciesPhotoSignedUrl: (id) =>
+    request(`/species-photos?action=signed-url&id=${encodeURIComponent(id)}`).then(r => r.url),
 
   // App settings — single-row JSON blob keyed by id.
   // GET returns { id, data, updatedAt, updatedBy } (data may be {} if unset).
