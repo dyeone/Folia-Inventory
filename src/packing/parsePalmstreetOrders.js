@@ -144,8 +144,17 @@ export function parsePalmstreetOrders(rows) {
       box.orderNumbers.push(orderNum);
     }
     if (shippingFee > 0) box.shippingFee += shippingFee;
-    if (sellerNote && !box.notes.includes(sellerNote)) box.notes.push(sellerNote);
-    if (buyerNote && !box.notes.includes(buyerNote)) box.notes.push(buyerNote);
+    // Prefix each note with its source so the Packing tab can label
+    // them separately. Persisted on inventory_items.notes as a single
+    // ' · '-joined string; the prefix is the only signal of origin.
+    if (sellerNote) {
+      const labeled = `Seller: ${sellerNote}`;
+      if (!box.notes.includes(labeled)) box.notes.push(labeled);
+    }
+    if (buyerNote) {
+      const labeled = `Buyer: ${buyerNote}`;
+      if (!box.notes.includes(labeled)) box.notes.push(labeled);
+    }
 
     // Detect the UPS 2-Day Upgrade row to flip the whole box's carrier
     // — this is a side effect of seeing the row, not a reason to drop it.

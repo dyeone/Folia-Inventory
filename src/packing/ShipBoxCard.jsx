@@ -4,6 +4,7 @@ import {
   MapPin, Box, Send, RotateCcw, Download as DownloadIcon, Edit2, Tag,
 } from 'lucide-react';
 import { api } from '../api.js';
+import { BoxNotes } from './BoxNotes.jsx';
 
 // Fetch a fresh signed URL for one of the shipment PDFs (label or slip)
 // and open it in a new tab. Falls back to a Blob download for legacy
@@ -151,6 +152,10 @@ export function ShipBoxCard({
           </div>
         </div>
       </button>
+
+      {/* Notes always visible — even on shipped boxes, so the operator
+          can refer back to seller/buyer instructions after the fact. */}
+      <BoxNotes notes={box.notes} />
 
       {open && (
         <div className="border-t border-gray-100">

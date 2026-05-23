@@ -5,6 +5,7 @@ import {
   Receipt, Search, Copy,
 } from 'lucide-react';
 import { api } from '../api.js';
+import { BoxNotes } from './BoxNotes.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
@@ -1543,14 +1544,12 @@ function BoxRow({
         )}
       </div>
 
+      {/* Notes live OUTSIDE the {expanded && ...} gate so the operator
+          sees customer instructions even while the box is collapsed. */}
+      <BoxNotes notes={box.notes} />
+
       {expanded && (
         <>
-          {box.notes && box.notes.length > 0 && (
-            <div className="px-3 py-2 border-t border-amber-200 bg-amber-50 text-xs text-amber-900">
-              <span className="font-semibold uppercase tracking-wide text-[10px] mr-1">Notes</span>
-              {box.notes.join(' · ')}
-            </div>
-          )}
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
         </>
