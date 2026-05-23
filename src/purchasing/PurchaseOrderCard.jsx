@@ -12,7 +12,7 @@ const STATUS_CLASS = {
 export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setConfirmDialog }) {
   const [open, setOpen] = useState(false);
   const [lines, setLines] = useState(null);
-  const [, setReceivedItems] = useState([]); // Task 15 uses
+  const [receivedItems, setReceivedItems] = useState([]);
   // Initial true so the first expand shows the spinner; the async IIFE
   // below flips it false in finally().
   const [loading, setLoading] = useState(true);
@@ -207,6 +207,7 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
                   key={line.id}
                   line={line}
                   species={speciesById?.get(line.speciesId)}
+                  receivedItemIds={receivedItems.filter(r => r.lineId === line.id).map(r => r.inventoryItemId)}
                   poStatus={po.status}
                   poId={po.id}
                   showToast={showToast}

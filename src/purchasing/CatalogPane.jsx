@@ -3,6 +3,7 @@ import { Search, Plus } from 'lucide-react';
 import { api } from '../api.js';
 import { CatalogPlantCard } from './CatalogPlantCard.jsx';
 import { PlantDetailModal } from './PlantDetailModal.jsx';
+import { DraftMiniBar } from './DraftMiniBar.jsx';
 
 const SORTS = [
   { id: 'name',       label: 'Name' },
@@ -12,7 +13,7 @@ const SORTS = [
   { id: 'recent',     label: 'Recently added' },
 ];
 
-export function CatalogPane({ varieties, species, showToast, onSpeciesChanged }) {
+export function CatalogPane({ varieties, species, showToast, onSpeciesChanged, onSwitchToOrders }) {
   const [varietyTab, setVarietyTab] = useState('all');
   const [search, setSearch] = useState('');
   const [sortId, setSortId] = useState('name');
@@ -154,6 +155,8 @@ export function CatalogPane({ varieties, species, showToast, onSpeciesChanged })
           ))}
         </div>
       )}
+
+      <DraftMiniBar onOpen={() => onSwitchToOrders?.()} />
 
       {selectedSpeciesId && (
         <PlantDetailModal

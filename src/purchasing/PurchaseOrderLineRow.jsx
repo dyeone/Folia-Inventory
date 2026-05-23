@@ -104,8 +104,16 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
     }
   };
 
-  // receivedItemIds is reserved for the Task 15 cancel-receive button.
-  void receivedItemIds;
+  const cancelReceive = async () => {
+    setBusy(true);
+    try {
+      const r = await api.cancelReceivePurchaseOrderLine({ id: poId, lineId: line.id });
+      showToast?.(`Cancelled ${r.deletedCount} unit${r.deletedCount === 1 ? '' : 's'}`, 2000);
+      onChanged?.();
+    } catch (e) {
+      showToast?.(e.message || 'Cancel failed', 3000);
+    } finally { setBusy(false); }
+  };
 
   return (
     <div className="flex items-start gap-3 px-3 py-2.5 border-t border-gray-100">
@@ -175,6 +183,17 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
                     Receive
                   </button>
                 </>
+              )}
+              {!isDraft && line.quantityReceived > 0 && receivedItemIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={cancelReceive}
+                  disabled={busy}
+                  className="text-xs px-2 py-1 border border-gray-300 text-gray-600 rounded hover:bg-gray-50"
+                  title="Soft-delete any still-available SKUs from this line and roll back the count"
+                >
+                  Cancel receive
+                </button>
               )}
             </span>
           )}
