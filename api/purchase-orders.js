@@ -4,6 +4,17 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 // Purchase orders. Action-dispatched. See:
 //   docs/superpowers/specs/2026-05-22-purchasing-catalog-and-receive-design.md
 
+// Generates the next SKU for a variety code, using the same RPC the
+// existing /api/items handler uses. Synchronous in the request path:
+// a 10-unit receive does 10 RPC calls in sequence. Acceptable for
+// shipment-size batches.
+async function nextSku(varietyCode) {
+  const { data, error } = await supabase.rpc('inventory_max_sku_suffix');
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const next = (data || 0) + 1;
+  return `${varietyCode}-${next}`;
+}
+
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   const user = await requireUser(userId);
@@ -291,8 +302,164 @@ async function markOrdered(req, res, user) {
   return res.status(200).json({ purchaseOrder: { ...po, status: 'ordered', orderedAt: now } });
 }
 async function receiveLine(req, res, user) {
-  const e = new Error('receive-line not implemented yet'); e.status = 501; throw e;
+  const { id, lineId, quantityReceived } = req.body || {};
+  const po = await loadPo(id);
+  requireStatus(po, ['ordered']);
+  if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
+  const n = parseInt(quantityReceived, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    const e = new Error('quantityReceived must be > 0'); e.status = 400; throw e;
+  }
+
+  const { data: line, error: lErr } = await supabase
+    .from('purchase_order_lines')
+    .select('*')
+    .eq('id', lineId)
+    .eq('purchaseOrderId', id)
+    .maybeSingle();
+  if (lErr) { const e = new Error(lErr.message); e.status = 500; throw e; }
+  if (!line) { const e = new Error('Line not found'); e.status = 404; throw e; }
+
+  const { data: species, error: spErr } = await supabase
+    .from('species')
+    .select('id, epithet, "varietyId", "idealSellingPrice"')
+    .eq('id', line.speciesId)
+    .maybeSingle();
+  if (spErr) { const e = new Error(spErr.message); e.status = 500; throw e; }
+  if (!species) { const e = new Error('Linked species missing'); e.status = 500; throw e; }
+
+  const { data: variety, error: vErr } = await supabase
+    .from('varieties').select('name, code').eq('id', species.varietyId).maybeSingle();
+  if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
+
+  // Allocate shipping per unit across ALL lines on this PO.
+  const { data: allLines, error: alErr } = await supabase
+    .from('purchase_order_lines')
+    .select('"quantityOrdered"')
+    .eq('purchaseOrderId', id);
+  if (alErr) { const e = new Error(alErr.message); e.status = 500; throw e; }
+  const totalOrdered = (allLines || []).reduce((s, l) => s + l.quantityOrdered, 0) || 1;
+  const perUnitShipping = Math.round(((po.shippingFee || 0) / totalOrdered) * 10000) / 10000;
+
+  const nowIso = new Date().toISOString();
+  const todayDate = nowIso.slice(0, 10);
+  const supplierLabel = po.supplier && po.supplier.trim() ? po.supplier.trim() : `PO #${po.id.slice(-6)}`;
+
+  const createdIds = [];
+  for (let i = 0; i < n; i++) {
+    const sku = await nextSku(variety?.code || 'PLT');
+    const itemId = newId();
+    const itemRow = {
+      id: itemId,
+      sku,
+      type: 'plant',
+      name: species.epithet,
+      variety: variety?.name || null,
+      speciesId: species.id,
+      quantity: 1,
+      grossCost: Number(line.unitWholesalePrice) + perUnitShipping,
+      idealPrice: species.idealSellingPrice ?? null,
+      status: 'available',
+      lotKind: 'sale',
+      source: supplierLabel,
+      acquiredAt: todayDate,
+      createdAt: nowIso,
+      createdBy: user.displayName,
+    };
+    const { error: insErr } = await supabase.from('inventory_items').insert(itemRow);
+    if (insErr) { const e = new Error(`Insert SKU ${sku} failed: ${insErr.message}`); e.status = 500; throw e; }
+
+    const auditRow = {
+      id: newId(),
+      lineId,
+      inventoryItemId: itemId,
+      receivedAt: nowIso,
+      receivedBy: user.displayName,
+    };
+    const { error: aErr } = await supabase.from('purchase_order_received_items').insert(auditRow);
+    if (aErr) { const e = new Error(`Audit insert failed for ${sku}: ${aErr.message}`); e.status = 500; throw e; }
+    createdIds.push(itemId);
+  }
+
+  const newReceived = line.quantityReceived + n;
+  const { error: uErr } = await supabase
+    .from('purchase_order_lines')
+    .update({ quantityReceived: newReceived })
+    .eq('id', lineId);
+  if (uErr) { const e = new Error(uErr.message); e.status = 500; throw e; }
+
+  // If every line is fully received, flip PO.
+  const { data: refreshed, error: rErr } = await supabase
+    .from('purchase_order_lines')
+    .select('"quantityOrdered","quantityReceived"')
+    .eq('purchaseOrderId', id);
+  if (rErr) { const e = new Error(rErr.message); e.status = 500; throw e; }
+  const allDone = (refreshed || []).every(l => l.quantityReceived >= l.quantityOrdered);
+  if (allDone) {
+    await supabase
+      .from('purchase_orders')
+      .update({ status: 'received', receivedAt: nowIso, modifiedAt: nowIso, modifiedBy: user.displayName })
+      .eq('id', id);
+  }
+
+  return res.status(200).json({
+    line: { ...line, quantityReceived: newReceived },
+    createdInventoryItemIds: createdIds,
+    poFlippedToReceived: allDone,
+  });
 }
+
 async function cancelReceiveLine(req, res, user) {
-  const e = new Error('cancel-receive-line not implemented yet'); e.status = 501; throw e;
+  const { id, lineId } = req.body || {};
+  const po = await loadPo(id);
+  // Cancel allowed on partially-received (ordered) AND fully-received POs.
+  requireStatus(po, ['ordered', 'received']);
+  if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
+
+  const { data: audits, error: aErr } = await supabase
+    .from('purchase_order_received_items')
+    .select('"inventoryItemId"')
+    .eq('lineId', lineId);
+  if (aErr) { const e = new Error(aErr.message); e.status = 500; throw e; }
+  const itemIds = (audits || []).map(a => a.inventoryItemId);
+  if (itemIds.length === 0) {
+    return res.status(200).json({ deletedCount: 0, line: null });
+  }
+
+  const { data: items, error: iErr } = await supabase
+    .from('inventory_items')
+    .select('id, status, "deletedAt"')
+    .in('id', itemIds);
+  if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
+  const cancelable = (items || []).filter(it => it.status === 'available' && !it.deletedAt);
+  if (cancelable.length === 0) {
+    const e = new Error('Nothing to cancel — every SKU from this line has already moved past available');
+    e.status = 409; throw e;
+  }
+
+  const nowIso = new Date().toISOString();
+  const cancelIds = cancelable.map(c => c.id);
+  const { error: dErr } = await supabase
+    .from('inventory_items')
+    .update({ deletedAt: nowIso, deletedBy: user.displayName })
+    .in('id', cancelIds);
+  if (dErr) { const e = new Error(dErr.message); e.status = 500; throw e; }
+
+  const { data: line } = await supabase
+    .from('purchase_order_lines').select('*').eq('id', lineId).maybeSingle();
+  if (line) {
+    const next = Math.max(0, line.quantityReceived - cancelIds.length);
+    await supabase
+      .from('purchase_order_lines').update({ quantityReceived: next }).eq('id', lineId);
+    line.quantityReceived = next;
+  }
+
+  if (po.status === 'received') {
+    await supabase
+      .from('purchase_orders')
+      .update({ status: 'ordered', receivedAt: null, modifiedAt: nowIso, modifiedBy: user.displayName })
+      .eq('id', id);
+  }
+
+  return res.status(200).json({ deletedCount: cancelIds.length, line });
 }
