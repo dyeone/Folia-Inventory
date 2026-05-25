@@ -123,12 +123,36 @@ async function adbDump() {
   return adbShell('uiautomator dump --compressed /sdcard/ui.xml && cat /sdcard/ui.xml');
 }
 
+// In-place u2 server relaunch — same command the README documents for
+// post-reboot recovery. Kills any stale server first (best-effort; pkill
+// exits non-zero when nothing matches), then re-execs the u2 JAR via
+// app_process detached. The brief sleep gives the server a beat to bind
+// port 9008 before the caller retries u2Dump(). Falls back into a thrown
+// error if app_process can't even start — caller handles it.
+const U2_RELAUNCH_CMD =
+  "nohup sh -c 'CLASSPATH=/data/local/tmp/u2.jar app_process / com.wetest.uia2.Main' > /dev/null 2>&1 &";
+const U2_RELAUNCH_SETTLE_MS = 800;
+
+async function relaunchU2() {
+  try { await adbShell('pkill', '-f', 'com.wetest.uia2'); } catch { /* ignore */ }
+  await adbShell(U2_RELAUNCH_CMD);
+  await new Promise(r => setTimeout(r, U2_RELAUNCH_SETTLE_MS));
+}
+
 // u2 server can die mid-session (device sleep, USB blip, Palmstreet UI
-// churn). The original code latched u2Healthy=false on first failure
-// for the bridge's lifetime, which meant a single dropped u2 call would
-// pin the whole session to the ~2 s adb-dump path. Now we periodically
-// re-probe u2 when in fallback mode and flip back to the fast path on
-// success, so the bridge self-heals without a restart.
+// churn). The bridge tries to self-heal in two ways:
+//
+//  1. On first failure of a previously-healthy server, attempt an
+//     in-place relaunch (same command the README documents). Avoids
+//     30+ s of degraded operation when u2 just needs a kick. Critical
+//     on Android 16+, where the adb-shell `uiautomator dump` fallback
+//     is broken (the shell binary gets SIGKILL'd by the platform).
+//  2. If the relaunch also fails, mark u2 unhealthy and re-probe every
+//     U2_RETRY_INTERVAL_MS so the bridge flips back to the fast path
+//     once u2 returns on its own.
+//
+// adbDump() stays as a last-resort fallback for older Android versions
+// where `uiautomator dump` still works.
 let u2Healthy = U2_ENABLED;
 let u2RetryAfter = 0;
 const U2_RETRY_INTERVAL_MS = 60_000;
@@ -137,9 +161,17 @@ async function dumpUI() {
   if (u2Healthy) {
     try { return await u2Dump(); }
     catch (e) {
-      console.warn(`[u2] dump failed (${e.message}); falling back to adb path`);
-      u2Healthy = false;
-      u2RetryAfter = Date.now() + U2_RETRY_INTERVAL_MS;
+      console.warn(`[u2] dump failed (${e.message}); attempting in-place relaunch`);
+      try {
+        await relaunchU2();
+        const result = await u2Dump();
+        console.log('[u2] relaunched in-place; resuming fast path');
+        return result;
+      } catch (e2) {
+        console.warn(`[u2] in-place relaunch failed (${e2.message}); falling back to adb path`);
+        u2Healthy = false;
+        u2RetryAfter = Date.now() + U2_RETRY_INTERVAL_MS;
+      }
     }
   } else if (U2_ENABLED && Date.now() >= u2RetryAfter) {
     try {
