@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
+import { BoxContentBadges } from './BoxContentBadges.jsx';
 
 // Fetch a fresh signed URL for one of the shipment PDFs (label or slip)
 // and open it in a new tab. Falls back to a Blob download for legacy
@@ -118,6 +119,7 @@ export function ShipBoxCard({
                 <Truck className="w-3 h-3" /> {box.carrier.toUpperCase()}
               </span>
             )}
+            <BoxContentBadges box={box} />
             {a.shipmentMethod && (
               <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
                 {a.shipmentMethod}

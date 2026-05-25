@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
+import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
@@ -1429,6 +1430,7 @@ function BoxRow({
           <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${carrierClass}`}>
             {carrierLabel}
           </span>
+          <BoxContentBadges box={box} />
           <span className="font-mono text-[11px] text-gray-600 shrink-0">
             {shortBoxCode(box.id)}
           </span>

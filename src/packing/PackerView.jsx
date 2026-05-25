@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
+import { BoxContentBadges } from './BoxContentBadges.jsx';
 
 // Full-screen mobile workflow for the 'packer' role. Two screens:
 //   1. Scan-box → operator scans/types a box code (B-XXXXXX). On valid
@@ -338,8 +339,9 @@ function ItemScanner({ box, onMarkPacked, onOpenCamera, onDone }) {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-200 bg-white">
-        <div className="flex items-center gap-3 text-sm">
+        <div className="flex items-center gap-2 flex-wrap text-sm">
           <CarrierBadge carrier={box.carrier} />
+          <BoxContentBadges box={box} size="lg" />
           <div className="text-gray-700 ml-auto">
             <span className="font-semibold text-gray-900">{packedItems.length}/{totalSold}</span>
             <span className="text-gray-500 ml-1">packed</span>
