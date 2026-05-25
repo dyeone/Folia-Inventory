@@ -4,22 +4,23 @@ import { Upload, ImagePlus } from 'lucide-react';
 // One unified surface for picking an image — supports three input modes:
 //   1. Click → hidden <input type="file"> file picker
 //   2. Drag-and-drop onto the surface
-//   3. Paste an image from the clipboard while the surface is "active"
-//      (focused or its parent modal is open)
+//   3. Paste an image from the clipboard while the component is mounted
 //
 // Calls onFile(file) with each File the user provides. Multi-file drops
 // are forwarded one File at a time so the caller decides how to handle
 // them (a gallery may want all, a single-slot may want only the first).
+//
+// Paste listens on window for the lifetime of this component. We don't
+// scope to a DOM element because paste events fire on document.activeElement
+// and bubble up — scoping to a modal <div> means paste silently fails until
+// the user focuses something inside the modal. The component's own mount
+// lifecycle (it only renders while the modal is open) handles teardown.
 //
 // Props:
 //   onFile(file)   — required, called per selected/dropped/pasted File
 //   accept         — file input accept attribute (default 'image/*')
 //   multiple       — allow multi-file file-picker (default true)
 //   disabled       — disable all input
-//   pasteScope     — React ref to a DOM element to listen on for paste
-//                    events (default: window). Pass the modal's ref so
-//                    paste only fires while that modal is open. We deref
-//                    inside the effect because refs aren't valid render values.
 //   children       — content rendered inside the zone (the visual UI).
 //                    If null, renders the default "Drop / click / paste"
 //                    placeholder.
@@ -29,18 +30,13 @@ export function ImageDropZone({
   accept = 'image/*',
   multiple = true,
   disabled = false,
-  pasteScope,
   children,
 }) {
   const fileRef = useRef(null);
   const [dragging, setDragging] = useState(false);
 
-  // Paste handler — listens on the provided scope (default window).
-  // pasteScope may be a ref ({ current: HTMLElement }), a DOM element,
-  // or null/undefined (→ window).
   useEffect(() => {
     if (disabled) return undefined;
-    const target = (pasteScope && pasteScope.current) || pasteScope || window;
     const handler = (e) => {
       const items = e.clipboardData?.items || [];
       let consumed = false;
@@ -56,9 +52,9 @@ export function ImageDropZone({
       }
       if (consumed) e.preventDefault();
     };
-    target.addEventListener('paste', handler);
-    return () => target.removeEventListener('paste', handler);
-  }, [onFile, multiple, disabled, pasteScope]);
+    window.addEventListener('paste', handler);
+    return () => window.removeEventListener('paste', handler);
+  }, [onFile, multiple, disabled]);
 
   const handlePicked = (files) => {
     if (!files || files.length === 0) return;
@@ -79,9 +75,6 @@ export function ImageDropZone({
       }}
       onDragLeave={(e) => {
         if (disabled) return;
-        // Only flip dragging off when the pointer truly leaves the zone
-        // (relatedTarget outside this element). Otherwise hovering a
-        // child element causes flickering.
         if (e.currentTarget.contains(e.relatedTarget)) return;
         setDragging(false);
       }}

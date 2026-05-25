@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { api } from '../api.js';
 import { PhotoGallery } from './PhotoGallery.jsx';
@@ -35,10 +35,6 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
   const [stagedGallery, setStagedGallery] = useState([]); // [{ id, previewUrl, file }]
   const [stagedMother, setStagedMother]   = useState(null); // { previewUrl, file } | null
   const [stagedFather, setStagedFather]   = useState(null);
-
-  // Used to scope the ImageDropZone paste handler to this modal so
-  // clipboard images don't get consumed while the modal is closed.
-  const modalRef = useRef(null);
 
   // Revoke object URLs on unmount / when the staged file changes, so we
   // don't leak Blob memory if the user adds + removes many photos.
@@ -143,7 +139,6 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
       <div
-        ref={modalRef}
         className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
@@ -170,7 +165,6 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
               speciesId={isCreate ? null : initial.id}
               photos={galleryPhotos}
               primaryPhotoId={initial?.primaryPhotoId}
-              pasteScope={modalRef}
               onChanged={() => onSaved?.(initial)}
               showToast={showToast}
               staged={isCreate ? stagedGallery : undefined}
@@ -186,7 +180,6 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
                 label="Mother plant"
                 speciesId={isCreate ? null : initial.id}
                 photos={parentPhotos}
-                pasteScope={modalRef}
                 showToast={showToast}
                 onChanged={() => onSaved?.(initial)}
                 stagedPreviewUrl={isCreate ? stagedMother?.previewUrl : null}
@@ -198,7 +191,6 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
                 label="Father plant"
                 speciesId={isCreate ? null : initial.id}
                 photos={parentPhotos}
-                pasteScope={modalRef}
                 showToast={showToast}
                 onChanged={() => onSaved?.(initial)}
                 stagedPreviewUrl={isCreate ? stagedFather?.previewUrl : null}

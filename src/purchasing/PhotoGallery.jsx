@@ -22,7 +22,6 @@ export function PhotoGallery({
   speciesId,
   photos,                  // gallery photos for this species (kind='gallery')
   primaryPhotoId,
-  pasteScope,
   onChanged,
   showToast,
   // Staged-mode props (used while creating the species). The gallery
@@ -131,7 +130,6 @@ export function PhotoGallery({
       <ImageDropZone
         onFile={(f) => (stagedMode ? onStaged?.(f) : liveUpload(f))}
         disabled={busy}
-        pasteScope={pasteScope}
       />
       {visible.length === 0 ? null : (
         <div className="grid grid-cols-3 gap-2">

@@ -20,7 +20,6 @@ export function ParentPhotoSlot({
   label,
   speciesId,
   photos,              // species.photos (filtered to this kind, optional in staged mode)
-  pasteScope,
   showToast,
   onChanged,           // live mode — called after a successful mutation
   stagedPreviewUrl,    // staged mode — local preview to render
@@ -122,7 +121,6 @@ export function ParentPhotoSlot({
         onFile={(f) => (stagedMode ? onStaged?.(f) : liveUpload(f))}
         multiple={false}
         disabled={busy}
-        pasteScope={pasteScope}
       >
         {inner}
       </ImageDropZone>
