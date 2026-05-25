@@ -263,7 +263,15 @@ export function PackingView({
   // list — drilling into a sale is reserved for label PDFs, voids, and
   // partial-tracking edits.
   const handleMarkShipped = async (box) => {
-    const itemIds = box.items.filter(i => i.status === 'sold').map(i => i.id);
+    // Flip every item in the box that isn't already terminally shipped.
+    // The prior version only included status='sold' items, which left
+    // items in any other non-terminal state (e.g., full refunds) stuck
+    // in the box — so the box couldn't move to the Shipped archive
+    // (SHIPPED_PREDICATE requires every item to be shipped/delivered)
+    // and silently disappeared from both views.
+    const itemIds = box.items
+      .filter(i => !['shipped', 'delivered'].includes(i.status))
+      .map(i => i.id);
     if (itemIds.length === 0) return;
     await onShipBox(box.saleId, itemIds);
     // onShipBox refreshes items at the App level → groups recompute and
