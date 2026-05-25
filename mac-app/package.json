@@ -22,7 +22,7 @@
       {
         "from": "../bridge",
         "to": "bridge",
-        "filter": ["**/*", "!.env", "!.wireless-target", "!node_modules/**/*"]
+        "filter": ["**/*", "!.env", "!node_modules/**/*"]
       }
     ],
     "mac": {

@@ -55,17 +55,12 @@ class BridgeRunner extends EventEmitter {
     this._logStream.write(stamped + '\n');
     this.emit('log', line);
 
-    // Sniff a few well-known patterns from bridge/index.js + the
-    // start.sh / reconnect.sh prep scripts to keep the UI state in
-    // sync without a separate IPC channel. We match both the legacy
-    // wireless "ip:port" form and the USB serial form so the pill
-    // flips to "live" regardless of which transport is active.
+    // Sniff well-known patterns from bridge/index.js + start.sh /
+    // reconnect.sh prep scripts to keep the UI state in sync without
+    // a separate IPC channel.
     const usbMatch = line.match(/(?:Bridge\s+(?:pinned to|will use)\s+device|Found USB device)\s+(\S+)/i);
     if (usbMatch) {
       this._setState({ phoneConnected: true, phoneTarget: usbMatch[1] });
-    } else if (/connected to .*:[0-9]+/i.test(line) || /Already connected:/i.test(line)) {
-      const m = line.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+)/);
-      if (m) this._setState({ phoneConnected: true, phoneTarget: m[1] });
     }
     if (/queued/i.test(line)) {
       const m = line.match(/(\d+)\s+queued/i);
@@ -102,9 +97,8 @@ class BridgeRunner extends EventEmitter {
   // Sniff for stale `node .../bridge/index.js` processes that aren't
   // owned by this mac-app (e.g., one the operator launched from a
   // terminal a week ago and forgot about). Two competing bridges
-  // race for jobs on Vercel — the stale one usually has no
-  // BRIDGE_DEVICE set and fails every job it claims with the
-  // dreaded 'more than one device/emulator' error. Kill them before
+  // race for jobs on Vercel; the stale one usually has no working
+  // device pin and fails every job it claims. Kill them before
   // starting our own.
   _killStaleBridges() {
     try {
@@ -154,12 +148,7 @@ class BridgeRunner extends EventEmitter {
   }
 
   stop() {
-    if (!this.proc) {
-      // No running bridge, but still clean up any lingering wireless
-      // adb handles so a subsequent start gets a fresh device list.
-      this.disconnectAllAdb();
-      return { ok: true, already: true };
-    }
+    if (!this.proc) return { ok: true, already: true };
     this._line('→ Stopping bridge');
     try {
       // SIGTERM gives the bridge a chance to flush its current job;
@@ -171,41 +160,12 @@ class BridgeRunner extends EventEmitter {
       this._line(`✗ Stop failed: ${e.message}`, true);
       return { ok: false, error: e.message };
     }
-    // Fire-and-forget: clean up wireless adb connections so the next
-    // `adb devices` shows just whatever's actually plugged in. Without
-    // this, mDNS-re-discovered duplicates and stale ip:port entries
-    // accumulate every session and a fresh start hits the multi-device
-    // guard the bridge added in this commit.
-    this.disconnectAllAdb();
     return { ok: true };
   }
 
-  // Run `adb disconnect` (no args = disconnect all wireless devices).
-  // Async / fire-and-forget; logs the result so the operator can see
-  // it landed. USB connections aren't affected — `adb disconnect`
-  // only touches TCP/IP transports.
-  disconnectAllAdb() {
-    try {
-      const child = spawn('adb', ['disconnect'], {
-        env: this._childEnv(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      this._line('→ Running `adb disconnect` to clear wireless devices');
-      this._wireLines(child.stdout, false);
-      this._wireLines(child.stderr, true);
-      child.on('exit', (code) => {
-        this._line(`→ adb disconnect exited (code=${code ?? 0})`);
-        this._setState({ phoneConnected: false, phoneTarget: null });
-      });
-    } catch (e) {
-      this._line(`✗ adb disconnect failed to spawn: ${e.message}`, true);
-    }
-  }
-
-  // Re-run bridge/reconnect.sh — discovers + adb-connects the phone
-  // independently of the polling bridge process. Useful when the phone
-  // dropped off WiFi and the operator wants to retry without bouncing
-  // the whole bridge.
+  // Re-run bridge/reconnect.sh — re-pins the USB device, refreshes the
+  // tcp:9008 forward, and bounces u2 if it died. Useful after a cable
+  // blip without bouncing the whole bridge.
   reconnectPhone() {
     return new Promise((resolve) => {
       if (this.reconnectProc) {

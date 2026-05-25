@@ -98,22 +98,17 @@ cd bridge && npm start
 `npm start` runs `./start.sh`, which calls `./reconnect.sh` to prep the
 USB-tethered phone, then execs the bridge:
 
-1. **Clears any wireless transports** (`adb disconnect`) — operators
-   sometimes leave wireless debugging toggled on, which trips the
-   multi-device guard in `index.js`.
-2. **Finds the USB device serial** from `adb devices` (the entry
-   without an `ip:port`).
-3. **Sets up the `tcp:9008` forward** so the bridge can talk to the
+1. **Finds the USB device serial** from `adb devices`.
+2. **Sets up the `tcp:9008` forward** so the bridge can talk to the
    on-device u2 server, and verifies u2 is responding (relaunches
    it if it crashed since the last session).
-4. **Pins `BRIDGE_DEVICE`** to that USB serial so every adb call is
-   unambiguous even if a wireless device reappears mid-session.
-5. **Starts the bridge poller** (`node index.js`).
+3. **Pins `BRIDGE_DEVICE`** to that serial so every adb call is
+   unambiguous if more than one phone is ever plugged in.
+4. **Starts the bridge poller** (`node index.js`).
 
-Wireless ADB is intentionally disabled: mDNS discovery + reconnects
-add latency and failure modes on busy sale-day WiFi. If you ever
-want to drive the phone wirelessly, `git log bridge/reconnect.sh`
-has the previous discovery script.
+USB-only by design. Wireless ADB added latency and failure modes on
+sale-day WiFi without buying anything we needed; the bridge no longer
+supports it.
 
 Output looks like:
 

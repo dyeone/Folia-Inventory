@@ -13,7 +13,6 @@ const els = {
   btnStop:       $('btn-stop'),
   btnRestart:    $('btn-restart'),
   btnReconnect:  $('btn-reconnect'),
-  btnDisconnect: $('btn-disconnect'),
   cfgView:       $('cfg-view'),
   cfgEdit:       $('cfg-edit'),
   btnEditCfg:    $('btn-edit-cfg'),
@@ -92,11 +91,6 @@ els.btnReconnect.addEventListener('click', async () => {
   els.btnReconnect.disabled = true;
   try { await window.bridge.reconnectPhone(); }
   finally { els.btnReconnect.disabled = false; }
-});
-els.btnDisconnect.addEventListener('click', async () => {
-  els.btnDisconnect.disabled = true;
-  try { await window.bridge.disconnectAll(); }
-  finally { els.btnDisconnect.disabled = false; }
 });
 
 els.btnEditCfg.addEventListener('click', async () => {

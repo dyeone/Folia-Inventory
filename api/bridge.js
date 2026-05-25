@@ -48,72 +48,11 @@ export default wrap(async (req, res) => {
     case 'complete':        return complete(req, res);
     case 'status':          return status(req, res);
     case 'health':          return health(req, res);
-    case 'phone-heartbeat': return phoneHeartbeat(req, res);
-    case 'phone-target':    return phoneTarget(req, res);
     default: {
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
   }
 });
-
-// Android Bridge Helper → POST {deviceIp, debugPort}. Authenticated
-// with the user's bridge token (same one used by the Mac bridge poller)
-// so a third party can't spoof a phone target. The helper does mDNS
-// discovery on the phone itself for the live _adb-tls-connect._tcp
-// port and reports it here every ~10s while wireless debug is on.
-async function phoneHeartbeat(req, res) {
-  if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
-  const user = await requireBridgeUser(req);
-  const { deviceIp, debugPort } = req.body || {};
-  const ip = String(deviceIp || '').trim();
-  const port = parseInt(debugPort, 10);
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
-    const e = new Error('deviceIp must be a dotted IPv4'); e.status = 400; throw e;
-  }
-  if (!Number.isFinite(port) || port < 1 || port > 65535) {
-    const e = new Error('debugPort must be 1..65535'); e.status = 400; throw e;
-  }
-  const { error } = await supabase
-    .from('users')
-    .update({
-      phoneIp: ip,
-      phonePort: port,
-      phoneLastSeen: new Date().toISOString(),
-    })
-    .eq('id', user.id);
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  return res.status(200).json({ ok: true });
-}
-
-// Mac bridge → GET the latest known phone target. Bridge auth (same
-// Bearer token the helper uses; this assumes one user owns both ends
-// of the bridge, which is true in the current single-tenant setup).
-// Returns the most recently heartbeated target across active users —
-// in practice always the single user that's running both helper +
-// bridge. Includes lastSeen so the Mac side can decide whether the
-// target is fresh enough to trust.
-async function phoneTarget(req, res) {
-  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
-  await requireBridgeUser(req);
-  const { data, error } = await supabase
-    .from('users')
-    .select('"phoneIp","phonePort","phoneLastSeen"')
-    .not('phoneLastSeen', 'is', null)
-    .order('phoneLastSeen', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  if (!data || !data.phoneIp || !data.phonePort) {
-    return res.status(200).json({ target: null });
-  }
-  return res.status(200).json({
-    target: {
-      ip: data.phoneIp,
-      port: data.phonePort,
-      lastSeen: data.phoneLastSeen,
-    },
-  });
-}
 
 // Mint (or rotate) a bridge token for the calling user. Returns the
 // plaintext token once — there's no way to recover it later, since we

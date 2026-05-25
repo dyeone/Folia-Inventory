@@ -63,7 +63,5 @@ Developer ID and the `electron-builder` mac signing config.
   reachable — typically `/opt/homebrew/bin/adb` via Homebrew. If you
   see `adb: command not found` in the log, install `android-platform-tools`
   (`brew install --cask android-platform-tools`) and restart the app.
-- The Android helper still needs to be installed on the phone
-  separately (see `../android-helper/README.md`).
 - No auto-update — operator pulls a new DMG manually when shipping
   a new build.

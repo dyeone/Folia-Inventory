@@ -87,10 +87,6 @@ ipcMain.handle('bridge:restart', async () => {
 ipcMain.handle('bridge:reconnect-phone', async () => {
   return runner.reconnectPhone();
 });
-ipcMain.handle('bridge:disconnect-all', async () => {
-  runner.disconnectAllAdb();
-  return { ok: true };
-});
 ipcMain.handle('bridge:get-state', () => runner.getState());
 ipcMain.handle('bridge:get-config', () => runner.readEnv());
 ipcMain.handle('bridge:save-config', async (_e, cfg) => {

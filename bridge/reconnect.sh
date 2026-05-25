@@ -7,12 +7,9 @@
 # whole bridge subprocess.
 #
 # Steps:
-#   1. Clear any wireless adb transports (operators sometimes toggle
-#      wireless debugging on by accident, which trips the multi-device
-#      guard in index.js)
-#   2. Find the USB device serial
-#   3. Re-establish the tcp:9008 forward so the u2 server is reachable
-#   4. Verify u2; relaunch if dead
+#   1. Find the USB device serial
+#   2. Re-establish the tcp:9008 forward so the u2 server is reachable
+#   3. Verify u2; relaunch if dead
 #
 # Side effects: writes the serial to .bridge-device so start.sh can
 # pin BRIDGE_DEVICE without re-running the discovery.
@@ -22,11 +19,8 @@ set -euo pipefail
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 
-echo "→ Disconnecting any wireless ADB transports"
-adb disconnect >/dev/null 2>&1 || true
-
 USB_SERIAL=$(adb devices \
-  | awk 'NR>1 && $2=="device" && $1 !~ /:/ {print $1}' \
+  | awk 'NR>1 && $2=="device" {print $1}' \
   | head -n 1)
 
 if [ -z "$USB_SERIAL" ]; then

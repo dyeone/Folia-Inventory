@@ -52,16 +52,15 @@ if (!API_URL || !TOKEN) {
 }
 
 // Multi-device guard. Without BRIDGE_DEVICE set, every adb call falls
-// back to "use the only connected device" — which silently breaks the
-// moment USB + Wireless ADB are both attached (a very common setup
-// because operators plug in for charging). Detect that up front and
-// fail loudly instead of letting downstream `input tap` calls error
-// with the cryptic "more than one device/emulator" message.
+// back to "use the only connected device" — ambiguous and fragile when
+// more than one phone is plugged in. Detect up front and fail loudly
+// instead of letting downstream `input tap` errors surface as the
+// cryptic "more than one device/emulator" message.
 {
   const devices = (() => {
     try {
-      const out = require('node:child_process')
-        .execFileSync('adb', ['devices'], { encoding: 'utf8' });
+      const { execFileSync } = require('node:child_process');
+      const out = execFileSync('adb', ['devices'], { encoding: 'utf8' });
       return out.split('\n')
         .slice(1)
         .map(l => l.split('\t')[0])
@@ -72,9 +71,7 @@ if (!API_URL || !TOKEN) {
     console.error(
       `✗ ${devices.length} adb devices connected and BRIDGE_DEVICE not set.\n` +
       `  Connected: ${devices.join(', ')}\n` +
-      `  Run bridge/start.sh (clears wireless transports and pins the\n` +
-      `  USB serial automatically), or set BRIDGE_DEVICE=<serial> in\n` +
-      `  bridge/.env manually.`,
+      `  Set BRIDGE_DEVICE=<serial> in bridge/.env to pin one.`,
     );
     process.exit(1);
   }
@@ -643,7 +640,7 @@ async function main() {
     const out = await adb('devices');
     const lines = out.split('\n').slice(1).map(l => l.trim()).filter(Boolean);
     if (lines.length === 0) {
-      console.warn('  ⚠ no ADB devices detected — plug in the phone or run `adb connect <ip>:5555`');
+      console.warn('  ⚠ no ADB devices detected — plug in the phone via USB');
     } else {
       console.log(`  adb    ${lines.length} device(s): ${lines.join(', ')}`);
     }
