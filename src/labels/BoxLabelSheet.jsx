@@ -47,21 +47,27 @@ function Label({ box }) {
   );
 }
 
-// Top line of the label: carrier (UPS / USPS) and a match-status marker.
-// Names and @ids are intentionally omitted — the label exists to identify
-// the box at the carrier-handoff station, not to identify the buyer.
+// Top line of the label: carrier (UPS / USPS), match-status marker,
+// and a contents tag for plants that need special handling at pack-out.
+// Names and @ids are intentionally omitted — the label exists to
+// identify the box at the carrier-handoff station, not the buyer.
 //
-//   *  every item in the box is matched real inventory
-//   #  at least one item is an unmatched placeholder (purple in Shipping)
+//   *    every item in the box is matched real inventory
+//   #    at least one item is an unmatched placeholder (purple in Shipping)
+//   ANT  at least one item is an Anthurium — flagged on the physical
+//        tag so the packer sees it before opening the box
 //
 // '#' tells the packer to double-check the manifest before sealing —
 // the placeholder row didn't tie to a known SKU, so something needs
 // attention before this box ships.
 function displayHeader(box) {
   const carrier = String(box.carrier || 'usps').toUpperCase();
-  const hasUnmatched = (box.items || []).some(i => i.lotKind === 'unmatched');
+  const items = box.items || [];
+  const hasUnmatched = items.some(i => i.lotKind === 'unmatched');
+  const hasAnthurium = items.some(i => (i.variety || '').toLowerCase() === 'anthurium');
   const marker = hasUnmatched ? '#' : '*';
-  return `${carrier} · ${marker}`;
+  const tag = hasAnthurium ? ' · ANT' : '';
+  return `${carrier} · ${marker}${tag}`;
 }
 
 const LABEL_W = 2;
