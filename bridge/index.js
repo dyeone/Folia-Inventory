@@ -260,6 +260,13 @@ async function tapBoundsAttr(boundsAttr) {
   return b;
 }
 
+// Palmstreet's Android package name. The user-facing app is called
+// "Palmstreet", but its package is published under the original
+// developer's namespace — neither "palmstreet" nor "popshop" appears
+// in it. Update this constant if Palmstreet ever republishes the app
+// under a new package id.
+const PALMSTREET_PACKAGE = 'com.touchberry.plant.story.identification.gardening';
+
 // Ask Android which window currently has focus. If it isn't Palmstreet,
 // we can't drive the listing form — the operator pushed the app to the
 // background, or a system dialog stole focus. Surface a clear message
@@ -272,7 +279,7 @@ async function checkPalmstreetForeground() {
   } catch {
     return; // best-effort diagnostic only — don't mask a real error
   }
-  if (focus && !/palmstreet/i.test(focus)) {
+  if (focus && !focus.includes(PALMSTREET_PACKAGE)) {
     throw new Error('Palmstreet is not in the foreground — open the Palmstreet app on the phone, then re-scan');
   }
 }
