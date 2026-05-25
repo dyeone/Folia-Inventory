@@ -3,6 +3,7 @@ import { X, Loader2 } from 'lucide-react';
 import { api } from '../api.js';
 import { PhotoGallery } from './PhotoGallery.jsx';
 import { ParentPhotoSlot } from './ParentPhotoSlot.jsx';
+import { NameAutocomplete } from './NameAutocomplete.jsx';
 
 // Edit (or create) a catalog plant. Photo support spans both modes:
 //   - edit mode:   PhotoGallery + parent slots upload directly via the API
@@ -12,8 +13,16 @@ import { ParentPhotoSlot } from './ParentPhotoSlot.jsx';
 // onSaved(species) → called with the updated/created species row so the
 // parent can refresh its cache.
 
-export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToast }) {
-  const isCreate = !initial;
+export function PlantDetailModal({ initial, varieties, existingSpecies, onClose, onSaved, showToast }) {
+  // After picking an autocomplete suggestion, the modal pivots from create
+  // mode to "edit this matched species" mode. We keep the full matched
+  // species in state so PhotoGallery / ParentPhotoSlot can show its
+  // existing photos and Save knows which species to update.
+  const [matchedSpecies, setMatchedSpecies] = useState(null);
+
+  const effective = initial || matchedSpecies;
+  const isCreate = !effective;
+
   const [varietyId, setVarietyId] = useState(initial?.varietyId || (varieties?.[0]?.id || ''));
   const [epithet, setEpithet] = useState(initial?.epithet || '');
   const [commonName, setCommonName] = useState(initial?.commonName || '');
@@ -81,6 +90,60 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
     });
   };
 
+  // Called when the user picks an autocomplete suggestion. Switches the
+  // modal from create mode into "edit matched species" mode: repopulates
+  // all form fields from the matched species, then immediately uploads
+  // any staged photos to it (so the photo widgets can switch to live
+  // mode without a hybrid state).
+  const onPickMatch = async (s) => {
+    setMatchedSpecies(s);
+    setEpithet(s.epithet || '');
+    setCommonName(s.commonName || '');
+    setWholesalePrice(s.wholesalePrice != null ? String(s.wholesalePrice) : '');
+    setIdealSellingPrice(s.idealSellingPrice != null ? String(s.idealSellingPrice) : '');
+    setProfitRate(s.profitRate != null ? String(s.profitRate) : '');
+    setNotes(s.notes || '');
+
+    // Flush any staged photos to the matched species so the gallery /
+    // parent slots can transition to live mode. Failures surface as a
+    // toast but don't block — the species still exists and the user can
+    // retry from the now-live widgets.
+    const uploads = [];
+    for (const g of stagedGallery) uploads.push(uploadStaged(s.id, g.file, 'gallery'));
+    if (stagedMother) uploads.push(uploadStaged(s.id, stagedMother.file, 'mother'));
+    if (stagedFather) uploads.push(uploadStaged(s.id, stagedFather.file, 'father'));
+    const stagedCount = uploads.length;
+
+    // Clear staged state regardless of upload outcome — the live widgets
+    // will show whatever made it onto the server.
+    for (const g of stagedGallery) URL.revokeObjectURL(g.previewUrl);
+    if (stagedMother?.previewUrl) URL.revokeObjectURL(stagedMother.previewUrl);
+    if (stagedFather?.previewUrl) URL.revokeObjectURL(stagedFather.previewUrl);
+    setStagedGallery([]);
+    setStagedMother(null);
+    setStagedFather(null);
+
+    const label = s.commonName || s.epithet;
+    if (stagedCount > 0) {
+      try {
+        const results = await Promise.allSettled(uploads);
+        const failed = results.filter(r => r.status === 'rejected').length;
+        const ok = stagedCount - failed;
+        if (failed === 0) {
+          showToast?.(`Switched to edit mode for ${label} — ${ok} photo${ok === 1 ? '' : 's'} added`, 2500);
+        } else {
+          showToast?.(`Switched to edit mode for ${label} — ${ok} of ${stagedCount} photo${stagedCount === 1 ? '' : 's'} uploaded`, 3500);
+        }
+        // Surface fresh photos via the parent's species refresh.
+        onSaved?.(s);
+      } catch {
+        showToast?.('Some photos failed to upload', 3000);
+      }
+    } else {
+      showToast?.(`Switched to edit mode for ${label}`, 2000);
+    }
+  };
+
   const save = async () => {
     setErr('');
     if (!varietyId) { setErr('Variety required'); return; }
@@ -96,15 +159,26 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
         notes: notes || null,
       };
       let saved;
-      if (isCreate) {
+      if (effective) {
+        // Edit mode — either we opened on an existing species (initial)
+        // or the user picked an autocomplete match (matchedSpecies).
+        await api.updateSpecies({
+          id: effective.id,
+          patch: {
+            ...body,
+            profitRate: profitRate === '' ? null : parseFloat(profitRate),
+          },
+        });
+        saved = {
+          ...effective,
+          ...body,
+          profitRate: profitRate === '' ? null : parseFloat(profitRate),
+        };
+      } else {
+        // True create — no initial, no matched.
         saved = await api.createSpecies(body);
-        // Flush staged photos. Per-file errors surface as toasts but
-        // don't block — the species exists and the user can retry from
-        // edit mode if a single upload failed.
         const uploads = [];
-        for (const g of stagedGallery) {
-          uploads.push(uploadStaged(saved.id, g.file, 'gallery'));
-        }
+        for (const g of stagedGallery) uploads.push(uploadStaged(saved.id, g.file, 'gallery'));
         if (isAnthurium && stagedMother) uploads.push(uploadStaged(saved.id, stagedMother.file, 'mother'));
         if (isAnthurium && stagedFather) uploads.push(uploadStaged(saved.id, stagedFather.file, 'father'));
         const results = await Promise.allSettled(uploads);
@@ -112,18 +186,9 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
         if (failed > 0) {
           showToast?.(`Plant created, but ${failed} photo${failed === 1 ? '' : 's'} failed to upload`, 4000);
         }
-      } else {
-        await api.updateSpecies({
-          id: initial.id,
-          patch: {
-            ...body,
-            profitRate: profitRate === '' ? null : parseFloat(profitRate),
-          },
-        });
-        saved = { ...initial, ...body, profitRate: profitRate === '' ? null : parseFloat(profitRate) };
       }
       onSaved?.(saved);
-      showToast?.(isCreate ? 'Plant created' : 'Saved', 2000);
+      showToast?.(effective ? 'Saved' : 'Plant created', 2000);
       onClose();
     } catch (e) {
       setErr(e.message || 'Save failed');
@@ -131,10 +196,6 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
       setSaving(false);
     }
   };
-
-  // Pre-filter photos to the relevant kinds for the live-mode widgets.
-  const galleryPhotos = (initial?.photos || []).filter(p => (p.kind || 'gallery') === 'gallery');
-  const parentPhotos  = (initial?.photos || []).filter(p => p.kind === 'mother' || p.kind === 'father');
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
@@ -162,10 +223,10 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
 
           <Field label="Photos">
             <PhotoGallery
-              speciesId={isCreate ? null : initial.id}
-              photos={galleryPhotos}
-              primaryPhotoId={initial?.primaryPhotoId}
-              onChanged={() => onSaved?.(initial)}
+              speciesId={effective?.id || null}
+              photos={(effective?.photos || []).filter(p => (p.kind || 'gallery') === 'gallery')}
+              primaryPhotoId={effective?.primaryPhotoId}
+              onChanged={() => onSaved?.(effective)}
               showToast={showToast}
               staged={isCreate ? stagedGallery : undefined}
               onStaged={isCreate ? stageGallery : undefined}
@@ -178,10 +239,10 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
               <ParentPhotoSlot
                 kind="mother"
                 label="Mother plant"
-                speciesId={isCreate ? null : initial.id}
-                photos={parentPhotos}
+                speciesId={effective?.id || null}
+                photos={(effective?.photos || []).filter(p => p.kind === 'mother' || p.kind === 'father')}
                 showToast={showToast}
-                onChanged={() => onSaved?.(initial)}
+                onChanged={() => onSaved?.(effective)}
                 stagedPreviewUrl={isCreate ? stagedMother?.previewUrl : null}
                 onStaged={isCreate ? ((f) => stageParent('mother', f)) : undefined}
                 onClearStaged={isCreate ? (() => clearStagedParent('mother')) : undefined}
@@ -189,10 +250,10 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
               <ParentPhotoSlot
                 kind="father"
                 label="Father plant"
-                speciesId={isCreate ? null : initial.id}
-                photos={parentPhotos}
+                speciesId={effective?.id || null}
+                photos={(effective?.photos || []).filter(p => p.kind === 'mother' || p.kind === 'father')}
                 showToast={showToast}
-                onChanged={() => onSaved?.(initial)}
+                onChanged={() => onSaved?.(effective)}
                 stagedPreviewUrl={isCreate ? stagedFather?.previewUrl : null}
                 onStaged={isCreate ? ((f) => stageParent('father', f)) : undefined}
                 onClearStaged={isCreate ? (() => clearStagedParent('father')) : undefined}
@@ -201,12 +262,30 @@ export function PlantDetailModal({ initial, varieties, onClose, onSaved, showToa
           )}
 
           <Field label="Name / epithet">
-            <input value={epithet} onChange={(e) => setEpithet(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg" />
+            <NameAutocomplete
+              value={epithet}
+              onChange={setEpithet}
+              onPick={onPickMatch}
+              candidates={(existingSpecies || []).filter(s => s.varietyId === varietyId)}
+              matchField="epithet"
+              disabled={!isCreate}
+              inputProps={{
+                className: 'w-full px-3 py-2 text-sm border border-gray-300 rounded-lg',
+              }}
+            />
           </Field>
           <Field label="Common name">
-            <input value={commonName} onChange={(e) => setCommonName(e.target.value)}
-              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg" />
+            <NameAutocomplete
+              value={commonName}
+              onChange={setCommonName}
+              onPick={onPickMatch}
+              candidates={(existingSpecies || []).filter(s => s.varietyId === varietyId)}
+              matchField="commonName"
+              disabled={!isCreate}
+              inputProps={{
+                className: 'w-full px-3 py-2 text-sm border border-gray-300 rounded-lg',
+              }}
+            />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Wholesale ($)">

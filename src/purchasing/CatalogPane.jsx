@@ -162,6 +162,7 @@ export function CatalogPane({ varieties, species, showToast, onSpeciesChanged, o
         <PlantDetailModal
           initial={selectedSpeciesId === 'NEW' ? null : plants.find(p => p.id === selectedSpeciesId)}
           varieties={varieties}
+          existingSpecies={plants}
           showToast={showToast}
           onClose={() => setSelectedSpeciesId(null)}
           onSaved={() => onSpeciesChanged?.()}
