@@ -920,6 +920,7 @@ function StaffOrAdminInventory() {
             }}
             setConfirmDialog={setConfirmDialog}
             onPrintBoxLabels={(boxes) => setBoxLabelBoxes(boxes)}
+            onPrintItemLabels={(items) => setLabelItems(items)}
             onTogglePacked={async (itemId, packed) => {
               // Per-item pack toggle. packed=true stamps packedAt with
               // the current time so the operator can see when it was
