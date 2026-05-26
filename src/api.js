@@ -159,6 +159,12 @@ export const api = {
     request('/shipments', { method: 'POST', body: { action: 'record-tracking', shipmentBoxId, trackingNumber } }).then(r => r.shipment),
   clearPalmstreetTracking: (shipmentBoxId) =>
     request('/shipments', { method: 'POST', body: { action: 'clear-tracking', shipmentBoxId } }),
+  // Per-box notes (lazy `shipment_boxes` rows). Internal operator
+  // memos shown only in the ShipBoxCard drill-down.
+  getBoxNotes: (saleId) =>
+    request(`/shipments?action=box-notes&saleId=${encodeURIComponent(saleId)}`).then(r => r.boxNotes || {}),
+  setBoxNote: ({ shipmentBoxId, note }) =>
+    request('/shipments', { method: 'POST', body: { action: 'set-box-note', shipmentBoxId, note } }).then(r => r.box),
   buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation }) =>
     request('/shipstation', { method: 'POST', body: { action: 'buy-label', shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation } }).then(r => r.shipment),
   voidLabel: (shipmentBoxId) =>
