@@ -9,6 +9,7 @@ import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
+import { BoxNotePanel } from './BoxNotePanel.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
@@ -179,6 +180,7 @@ export function PackingView({
   // all sales since `GET /api/shipments` with no saleId returns the user's
   // full shipments table — see api/shipments.js:53.
   const [shipmentsByBox, setShipmentsByBox] = useState({});
+  const [boxNotesByBox, setBoxNotesByBox] = useState({});
   const [buyingFor, setBuyingFor] = useState(null);
   const [toast, setToast] = useState(null);
 
@@ -189,18 +191,38 @@ export function PackingView({
 
   const refreshShipments = async () => {
     try {
-      const list = await api.getShipments();
+      const [list, notes] = await Promise.all([
+        api.getShipments(),
+        api.getBoxNotes(),
+      ]);
       setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+      setBoxNotesByBox(notes || {});
     } catch { /* no-op — rows just won't reflect label state */ }
+  };
+
+  const onSaveBoxNote = async (shipmentBoxId, note) => {
+    const saved = await api.setBoxNote({ shipmentBoxId, note });
+    setBoxNotesByBox(prev => ({
+      ...prev,
+      [shipmentBoxId]: {
+        note: saved.note,
+        updatedAt: saved.updatedAt,
+        updatedBy: saved.updatedBy,
+      },
+    }));
   };
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const list = await api.getShipments();
+        const [list, notes] = await Promise.all([
+          api.getShipments(),
+          api.getBoxNotes(),
+        ]);
         if (cancelled) return;
         setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+        setBoxNotesByBox(notes || {});
       } catch { /* no-op */ }
     })();
     return () => { cancelled = true; };
@@ -736,6 +758,8 @@ export function PackingView({
                     group={g}
                     sales={sales}
                     shipmentsByBox={shipmentsByBox}
+                    boxNotesByBox={boxNotesByBox}
+                    onSaveBoxNote={onSaveBoxNote}
                     onOpenBox={(saleId) => setActiveSaleId(saleId)}
                     onBuyLabel={(box) => setBuyingFor(box)}
                     onSaveTracking={handleSaveTracking}
@@ -863,6 +887,8 @@ export function PackingView({
                   group={g}
                   sales={sales}
                   shipmentsByBox={shipmentsByBox}
+                  boxNotesByBox={boxNotesByBox}
+                  onSaveBoxNote={onSaveBoxNote}
                   onOpenBox={(saleId) => setActiveSaleId(saleId)}
                   onBuyLabel={(box) => setBuyingFor(box)}
                   onSaveTracking={handleSaveTracking}
@@ -1056,7 +1082,7 @@ function addressOneLine(addr) {
 }
 
 function BuyerGroupCard({
-  group, sales, shipmentsByBox,
+  group, sales, shipmentsByBox, boxNotesByBox, onSaveBoxNote,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
@@ -1092,7 +1118,7 @@ function BuyerGroupCard({
         {group.boxes.map(box => (
           <BoxRow
             key={box.id}
-            box={box}
+            box={{ ...box, ...(boxNotesByBox?.[box.id] || {}) }}
             sale={salesById.get(box.saleId)}
             salesById={salesById}
             shipment={shipmentsByBox[box.id]}
@@ -1101,6 +1127,7 @@ function BuyerGroupCard({
             onSaveTracking={(num) => onSaveTracking(box, num)}
             onMarkShipped={() => onMarkShipped(box)}
             onTogglePacked={onTogglePacked}
+            onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
             showToast={showToast}
             isAdmin={isAdmin}
             onEditItems={onEditItems ? () => onEditItems(box) : null}
@@ -1334,6 +1361,7 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
+  onSaveNote,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected,
 }) {
@@ -1572,6 +1600,15 @@ function BoxRow({
         <>
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
+          {onSaveNote && (
+            <BoxNotePanel
+              note={box.note}
+              onSave={onSaveNote}
+              allShipped={allShipped}
+              showToast={showToast}
+              compact
+            />
+          )}
         </>
       )}
 

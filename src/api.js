@@ -162,7 +162,7 @@ export const api = {
   // Per-box notes (lazy `shipment_boxes` rows). Internal operator
   // memos shown only in the ShipBoxCard drill-down.
   getBoxNotes: (saleId) =>
-    request(`/shipments?action=box-notes&saleId=${encodeURIComponent(saleId)}`).then(r => r.boxNotes || {}),
+    request(`/shipments?action=box-notes${saleId ? `&saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.boxNotes || {}),
   setBoxNote: ({ shipmentBoxId, note }) =>
     request('/shipments', { method: 'POST', body: { action: 'set-box-note', shipmentBoxId, note } }).then(r => r.box),
   buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation }) =>

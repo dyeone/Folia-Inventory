@@ -2,11 +2,11 @@ import { useState } from 'react';
 import {
   ChevronDown, ChevronRight, Truck, ShoppingCart, PackageCheck,
   MapPin, Box, Send, RotateCcw, Download as DownloadIcon, Edit2, Tag, Printer,
-  StickyNote, Pencil,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
+import { BoxNotePanel } from './BoxNotePanel.jsx';
 
 // Fetch a fresh signed URL for one of the shipment PDFs (label or slip)
 // and open it in a new tab. Falls back to a Blob download for legacy
@@ -57,10 +57,6 @@ export function ShipBoxCard({
   const [trackingInput, setTrackingInput] = useState('');
   const [savingTracking, setSavingTracking] = useState(false);
   const [trackingErr, setTrackingErr] = useState('');
-  const [editingNote, setEditingNote] = useState(false);
-  const [noteInput, setNoteInput] = useState('');
-  const [savingNote, setSavingNote] = useState(false);
-  const [noteErr, setNoteErr] = useState('');
 
   const allShipped = box.items.every(i => ['shipped', 'delivered'].includes(i.status));
   const hasActiveLabel = shipment && !shipment.voidedAt;
@@ -183,94 +179,14 @@ export function ShipBoxCard({
             ))}
           </div>
 
-          {/* Operator's internal seller-note. Single text field per box,
-              edit overwrites, never printed. Lazy-persisted to
-              shipment_boxes via api.setBoxNote. Hidden in edit form when
-              the box is already shipped. */}
-          {onSaveNote && (() => {
-            const hasNote = !!(box.note && box.note.trim());
-            const beginEdit = () => {
-              setNoteInput(box.note || '');
-              setNoteErr('');
-              setEditingNote(true);
-            };
-            if (editingNote) {
-              return (
-                <div className="px-4 py-3 bg-amber-50 border-t border-amber-100 space-y-2">
-                  <div className="text-[11px] uppercase tracking-wide text-amber-800 font-medium">Note</div>
-                  <textarea
-                    value={noteInput}
-                    onChange={(e) => setNoteInput(e.target.value)}
-                    rows={2}
-                    autoFocus
-                    placeholder="Operator note for this box (internal — not printed)"
-                    className="w-full px-3 py-2 text-sm border border-amber-300 rounded-lg resize-y bg-white"
-                  />
-                  {noteErr && <div className="text-sm text-red-600">{noteErr}</div>}
-                  <div className="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => { setEditingNote(false); setNoteErr(''); }}
-                      disabled={savingNote}
-                      className="px-3 py-1.5 text-sm rounded-lg hover:bg-amber-100"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        setSavingNote(true);
-                        setNoteErr('');
-                        try {
-                          await onSaveNote(noteInput);
-                          setEditingNote(false);
-                          showToast?.('Note saved', 1800);
-                        } catch (e) {
-                          setNoteErr(e.message || 'Save failed');
-                        } finally {
-                          setSavingNote(false);
-                        }
-                      }}
-                      disabled={savingNote}
-                      className="px-3 py-1.5 text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white rounded-lg disabled:opacity-60"
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
-              );
-            }
-            if (hasNote) {
-              return (
-                <div className="px-4 py-2.5 bg-amber-50 border-t border-amber-100 flex items-start gap-2">
-                  <StickyNote className="w-3.5 h-3.5 text-amber-700 mt-0.5" />
-                  <div className="flex-1 min-w-0 text-sm text-amber-900 whitespace-pre-wrap break-words">{box.note}</div>
-                  {!allShipped && (
-                    <button
-                      type="button"
-                      onClick={beginEdit}
-                      title="Edit note"
-                      className="p-1 text-amber-700 hover:bg-amber-100 rounded"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              );
-            }
-            if (allShipped) return null;
-            return (
-              <div className="px-4 py-2 border-t border-gray-100 bg-gray-50">
-                <button
-                  type="button"
-                  onClick={beginEdit}
-                  className="inline-flex items-center gap-1.5 text-xs text-gray-600 hover:text-amber-700"
-                >
-                  <StickyNote className="w-3.5 h-3.5" /> Add note
-                </button>
-              </div>
-            );
-          })()}
+          {onSaveNote && (
+            <BoxNotePanel
+              note={box.note}
+              onSave={onSaveNote}
+              allShipped={allShipped}
+              showToast={showToast}
+            />
+          )}
 
           {/* Inline USPS tracking editor — opens via "Add tracking" or "Edit". */}
           {editingTracking && (

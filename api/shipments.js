@@ -273,27 +273,29 @@ async function setBoxNote(req, res, userId) {
   return res.status(200).json({ box: data });
 }
 
-// GET /api/shipments?action=box-notes&saleId=<id>
-// Returns { boxNotes: { [shipmentBoxId]: { note, updatedAt, updatedBy } } }
-// for boxes that belong to the sale. Boxes with no row are simply absent
-// from the map (the client treats absence as "no note").
+// GET /api/shipments?action=box-notes[&saleId=<id>]
+// Returns { boxNotes: { [shipmentBoxId]: { note, updatedAt, updatedBy } } }.
+// With saleId: scoped to boxes whose items belong to that sale.
+// Without saleId: returns all box-note rows (top-level Ready/Shipped tab
+// uses this to decorate every visible box). Missing rows are absent from
+// the map (client treats absence as "no note").
 async function boxNotes(req, res) {
   const saleId = req.query?.saleId;
-  if (!saleId) {
-    const e = new Error('saleId required'); e.status = 400; throw e;
-  }
-  const { data: items, error: itemsErr } = await supabase
-    .from('inventory_items')
-    .select('"shipmentBoxId"')
-    .eq('saleId', saleId)
-    .not('shipmentBoxId', 'is', null);
-  if (itemsErr) { const e = new Error(itemsErr.message); e.status = 500; throw e; }
-  const ids = Array.from(new Set((items || []).map(i => i.shipmentBoxId).filter(Boolean)));
-  if (ids.length === 0) return res.status(200).json({ boxNotes: {} });
-  const { data: rows, error: rowsErr } = await supabase
+  let query = supabase
     .from('shipment_boxes')
-    .select('id, note, "updatedAt", "updatedBy"')
-    .in('id', ids);
+    .select('id, note, "updatedAt", "updatedBy"');
+  if (saleId) {
+    const { data: items, error: itemsErr } = await supabase
+      .from('inventory_items')
+      .select('"shipmentBoxId"')
+      .eq('saleId', saleId)
+      .not('shipmentBoxId', 'is', null);
+    if (itemsErr) { const e = new Error(itemsErr.message); e.status = 500; throw e; }
+    const ids = Array.from(new Set((items || []).map(i => i.shipmentBoxId).filter(Boolean)));
+    if (ids.length === 0) return res.status(200).json({ boxNotes: {} });
+    query = query.in('id', ids);
+  }
+  const { data: rows, error: rowsErr } = await query;
   if (rowsErr) { const e = new Error(rowsErr.message); e.status = 500; throw e; }
   const map = Object.fromEntries((rows || []).map(r => [r.id, {
     note: r.note,
