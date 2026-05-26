@@ -1672,24 +1672,33 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
   // Shipments (= purchased labels) for this sale, keyed by shipmentBoxId.
   // Loaded once on mount and refreshed after a Buy/Void completes.
   const [shipmentsByBox, setShipmentsByBox] = useState({});
+  const [boxNotesByBox, setBoxNotesByBox] = useState({});
   const [buyingFor, setBuyingFor] = useState(null);
   const [actionToast, setActionToast] = useState(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const list = await api.getShipments(sale.id);
+        const [list, notes] = await Promise.all([
+          api.getShipments(sale.id),
+          api.getBoxNotes(sale.id),
+        ]);
         setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+        setBoxNotesByBox(notes || {});
       } catch {
-        // Silent — shipments simply won't show until refresh.
+        // Silent — shipments / notes simply won't show until refresh.
       }
     })();
   }, [sale.id]);
 
   const refreshShipments = async () => {
     try {
-      const list = await api.getShipments(sale.id);
+      const [list, notes] = await Promise.all([
+        api.getShipments(sale.id),
+        api.getBoxNotes(sale.id),
+      ]);
       setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+      setBoxNotesByBox(notes || {});
     } catch {/* no-op */}
   };
 
@@ -1798,10 +1807,21 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
         ) : visibleBoxes.map(box => (
           <ShipBoxCard
             key={box.id}
-            box={box}
+            box={{ ...box, ...(boxNotesByBox[box.id] || {}) }}
             shipment={shipmentsByBox[box.id]}
             showToast={showToast}
             onPrintItemLabels={onPrintItemLabels}
+            onSaveNote={async (note) => {
+              const saved = await api.setBoxNote({ shipmentBoxId: box.id, note });
+              setBoxNotesByBox(prev => ({
+                ...prev,
+                [box.id]: {
+                  note: saved.note,
+                  updatedAt: saved.updatedAt,
+                  updatedBy: saved.updatedBy,
+                },
+              }));
+            }}
             onShip={() => onShipBox(box.items.map(i => i.id))}
             onBuyLabel={() => setBuyingFor(box)}
             onVoidLabel={() => {
