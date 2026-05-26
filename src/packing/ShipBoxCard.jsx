@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   ChevronDown, ChevronRight, Truck, ShoppingCart, PackageCheck,
-  MapPin, Box, Send, RotateCcw, Download as DownloadIcon, Edit2, Tag,
+  MapPin, Box, Send, RotateCcw, Download as DownloadIcon, Edit2, Tag, Printer,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -48,6 +48,7 @@ export function ShipBoxCard({
   onShip,
   onBuyLabel, onVoidLabel,
   onSaveTracking, onClearTracking,
+  onPrintItemLabels,
 }) {
   const [open, setOpen] = useState(true);
   const [editingTracking, setEditingTracking] = useState(false);
@@ -281,6 +282,26 @@ export function ShipBoxCard({
               Buy Label button; USPS gets a Palmstreet tracking entry button. */}
           {!allShipped && !editingTracking && (
             <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex justify-end gap-2 flex-wrap">
+              {onPrintItemLabels && (() => {
+                // Same predicate as the tab-level button and the
+                // BoxLabelSheet header tag (src/labels/BoxLabelSheet.jsx).
+                const antItems = (box.items || []).filter(
+                  i => (i.variety || '').toLowerCase() === 'anthurium'
+                );
+                if (antItems.length === 0) return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => onPrintItemLabels(antItems)}
+                    className="flex items-center gap-1.5 px-4 py-2.5 bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-medium rounded-lg"
+                    title={`Print 2″×1″ labels for the ${antItems.length} Anthurium item${antItems.length === 1 ? '' : 's'} in this box`}
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print ANT labels
+                    <span className="text-xs text-gray-500 ml-0.5">· {antItems.length}</span>
+                  </button>
+                );
+              })()}
               {!hasActiveLabel && isUps && (
                 <button
                   onClick={onBuyLabel}
