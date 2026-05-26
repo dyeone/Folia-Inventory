@@ -401,6 +401,20 @@ create index if not exists shipments_carrier_idx on shipments (carrier);
 alter table app_settings enable row level security;
 alter table shipments    enable row level security;
 
+-- ─── Shipment boxes ──────────────────────────────────────────────────────────
+-- Per-box metadata (operator's seller-note today; room for weight/dims/etc.
+-- later). Lazy-created the first time a note is saved; missing row = no
+-- note. See migration 0018.
+
+create table if not exists shipment_boxes (
+  id          text        primary key,            -- = shipmentBoxId on inventory_items
+  note        text,
+  "updatedAt" timestamptz not null default now(),
+  "updatedBy" text
+);
+
+alter table shipment_boxes enable row level security;
+
 -- ─── Bridge Jobs ──────────────────────────────────────────────────────────────
 -- Durable queue between the web app and the local Folia Bridge that drives
 -- the Palmstreet Android app via ADB. Web enqueues, bridge polls outbound.
