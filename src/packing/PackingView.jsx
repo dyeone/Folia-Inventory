@@ -57,7 +57,7 @@ function fmtShortDate(iso) {
 
 export function PackingView({
   inventoryItems, sales,
-  onShipBox, onDeleteAllOpenBoxes, onDeleteBox, onPrintBoxLabels, onTogglePacked,
+  onShipBox, onDeleteAllOpenBoxes, onDeleteBox, onPrintBoxLabels, onPrintItemLabels, onTogglePacked,
   setConfirmDialog,
   isAdmin, onRefreshItems,
 }) {
@@ -254,6 +254,7 @@ export function PackingView({
         inventoryItems={inventoryItems}
         onBack={() => setActiveSaleId(null)}
         onShipBox={(itemIds) => onShipBox(activeSale.id, itemIds)}
+        onPrintItemLabels={onPrintItemLabels}
         setConfirmDialog={setConfirmDialog}
       />
     );
@@ -691,6 +692,29 @@ export function PackingView({
                     </span>
                   </button>
                 )}
+                {onPrintItemLabels && (() => {
+                  // Count Anthurium items across the currently-visible
+                  // open boxes (after any sort/filter already applied
+                  // upstream). Same predicate the box-label header uses
+                  // (src/labels/BoxLabelSheet.jsx).
+                  const allBoxes = groups.flatMap(g => g.boxes);
+                  const antItems = allBoxes.flatMap(b =>
+                    (b.items || []).filter(i => (i.variety || '').toLowerCase() === 'anthurium')
+                  );
+                  const n = antItems.length;
+                  return (
+                    <button
+                      type="button"
+                      disabled={n === 0}
+                      onClick={() => onPrintItemLabels(antItems)}
+                      className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Printer className="w-4 h-4" />
+                      Print ANT labels
+                      <span className="text-xs text-gray-400 ml-1">· {n}</span>
+                    </button>
+                  );
+                })()}
               </div>
             </div>
             {filteredReady.length === 0 ? (
@@ -1596,7 +1620,7 @@ function BoxRow({
 // (derived from items once the upload has been applied).
 // ───────────────────────────────────────────────────────────────────────────
 
-function SalePackingPane({ sale, inventoryItems, onBack, onShipBox, setConfirmDialog }) {
+function SalePackingPane({ sale, inventoryItems, onBack, onShipBox, onPrintItemLabels, setConfirmDialog }) {
   const saleItems = useMemo(
     () => inventoryItems.filter(i => i.saleId === sale.id),
     [inventoryItems, sale.id]
@@ -1635,6 +1659,7 @@ function SalePackingPane({ sale, inventoryItems, onBack, onShipBox, setConfirmDi
       saleItems={saleItems}
       onBack={onBack}
       onShipBox={onShipBox}
+      onPrintItemLabels={onPrintItemLabels}
       setConfirmDialog={setConfirmDialog}
     />
   );
@@ -1643,7 +1668,7 @@ function SalePackingPane({ sale, inventoryItems, onBack, onShipBox, setConfirmDi
 
 // ───── Boxes phase (after apply) ───────────────────────────────────────────
 
-function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, setConfirmDialog }) {
+function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabels, setConfirmDialog }) {
   // Shipments (= purchased labels) for this sale, keyed by shipmentBoxId.
   // Loaded once on mount and refreshed after a Buy/Void completes.
   const [shipmentsByBox, setShipmentsByBox] = useState({});
@@ -1776,6 +1801,7 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, setConfirmDialog
             box={box}
             shipment={shipmentsByBox[box.id]}
             showToast={showToast}
+            onPrintItemLabels={onPrintItemLabels}
             onShip={() => onShipBox(box.items.map(i => i.id))}
             onBuyLabel={() => setBuyingFor(box)}
             onVoidLabel={() => {
