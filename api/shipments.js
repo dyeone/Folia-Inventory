@@ -32,12 +32,14 @@ export default wrap(async (req, res) => {
       const action = req.query?.action;
       if (action === 'label-url') return labelUrl(req, res);
       if (action === 'pending') return pending(req, res);
+      if (action === 'box-notes') return boxNotes(req, res);
       return list(req, res);
     }
     case 'POST': {
       const action = req.body?.action;
       if (action === 'record-tracking') return recordTracking(req, res, userId);
       if (action === 'clear-tracking') return clearTracking(req, res);
+      if (action === 'set-box-note') return setBoxNote(req, res, userId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
     default:
@@ -244,6 +246,61 @@ async function clearTracking(req, res) {
   const { error } = await supabase.from('shipments').delete().eq('id', shipmentBoxId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ ok: true });
+}
+
+// POST /api/shipments  body: { action: 'set-box-note', shipmentBoxId, note }
+// Upserts the per-box note. Empty/whitespace note is persisted as null so
+// the row stays as an audit trail of when the note was cleared (and by
+// whom). The row is created on first save — `shipment_boxes` is lazy.
+async function setBoxNote(req, res, userId) {
+  const { shipmentBoxId, note } = req.body || {};
+  if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
+    const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
+  }
+  const trimmed = typeof note === 'string' ? note.trim() : '';
+  const payload = {
+    id: shipmentBoxId,
+    note: trimmed === '' ? null : trimmed,
+    updatedAt: new Date().toISOString(),
+    updatedBy: userId,
+  };
+  const { data, error } = await supabase
+    .from('shipment_boxes')
+    .upsert(payload, { onConflict: 'id' })
+    .select('id, note, "updatedAt", "updatedBy"')
+    .single();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ box: data });
+}
+
+// GET /api/shipments?action=box-notes&saleId=<id>
+// Returns { boxNotes: { [shipmentBoxId]: { note, updatedAt, updatedBy } } }
+// for boxes that belong to the sale. Boxes with no row are simply absent
+// from the map (the client treats absence as "no note").
+async function boxNotes(req, res) {
+  const saleId = req.query?.saleId;
+  if (!saleId) {
+    const e = new Error('saleId required'); e.status = 400; throw e;
+  }
+  const { data: items, error: itemsErr } = await supabase
+    .from('inventory_items')
+    .select('"shipmentBoxId"')
+    .eq('saleId', saleId)
+    .not('shipmentBoxId', 'is', null);
+  if (itemsErr) { const e = new Error(itemsErr.message); e.status = 500; throw e; }
+  const ids = Array.from(new Set((items || []).map(i => i.shipmentBoxId).filter(Boolean)));
+  if (ids.length === 0) return res.status(200).json({ boxNotes: {} });
+  const { data: rows, error: rowsErr } = await supabase
+    .from('shipment_boxes')
+    .select('id, note, "updatedAt", "updatedBy"')
+    .in('id', ids);
+  if (rowsErr) { const e = new Error(rowsErr.message); e.status = 500; throw e; }
+  const map = Object.fromEntries((rows || []).map(r => [r.id, {
+    note: r.note,
+    updatedAt: r.updatedAt,
+    updatedBy: r.updatedBy,
+  }]));
+  return res.status(200).json({ boxNotes: map });
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
