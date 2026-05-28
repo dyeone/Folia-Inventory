@@ -19,7 +19,7 @@
 //                    faster per dump (~280 ms vs ~2 s) — well worth the
 //                    one-time setup (`python -m uiautomator2 init`).
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -59,12 +59,15 @@ if (!API_URL || !TOKEN) {
 {
   const devices = (() => {
     try {
-      const { execFileSync } = require('node:child_process');
       const out = execFileSync('adb', ['devices'], { encoding: 'utf8' });
+      // Rows are "serial\tstatus". Count only fully-attached devices —
+      // ignore "offline"/"unauthorized"/"no permissions" entries so a
+      // half-connected second phone doesn't trip the guard.
       return out.split('\n')
         .slice(1)
-        .map(l => l.split('\t')[0])
-        .filter(s => s && /\S/.test(s));
+        .map(l => l.split('\t'))
+        .filter(([serial, status]) => serial && /\S/.test(serial) && status?.trim() === 'device')
+        .map(([serial]) => serial);
     } catch { return []; }
   })();
   if (devices.length > 1 && !DEVICE) {
@@ -121,19 +124,40 @@ async function adbDump() {
 }
 
 // In-place u2 server relaunch — same command the README documents for
-// post-reboot recovery. Kills any stale server first (best-effort; pkill
-// exits non-zero when nothing matches), then re-execs the u2 JAR via
-// app_process detached. The brief sleep gives the server a beat to bind
-// port 9008 before the caller retries u2Dump(). Falls back into a thrown
-// error if app_process can't even start — caller handles it.
+// post-reboot recovery, and the same recovery reconnect.sh performs.
 const U2_RELAUNCH_CMD =
   "nohup sh -c 'CLASSPATH=/data/local/tmp/u2.jar app_process / com.wetest.uia2.Main' > /dev/null 2>&1 &";
-const U2_RELAUNCH_SETTLE_MS = 800;
+// The server takes ~2-3 s to bind port 9008 (setup.sh/reconnect.sh budget
+// up to 8 s). A fixed 800 ms sleep then a single retry — what this used to
+// do — almost always fired before the port was listening, so the in-place
+// relaunch "failed" and the bridge dropped to the slow/unhealthy path for
+// nothing. Instead, poll until the server answers (returns on the first
+// success, so the happy path stays fast) up to a real bind timeout.
+const U2_BIND_TIMEOUT_MS = 6000;
+const U2_BIND_PROBE_MS = 300;
 
+// Kill any stale server, re-establish the host-side forward, re-exec the
+// JAR, then poll u2Dump() until it answers. Returns that first successful
+// dump so the caller doesn't re-probe. Throws if the server never binds.
 async function relaunchU2() {
-  try { await adbShell('pkill', '-f', 'com.wetest.uia2'); } catch { /* ignore */ }
+  try { await adbShell('pkill', '-f', 'com.wetest.uia2'); } catch { /* nothing to kill */ }
+  // Let the old process release port 9008 before the new one rebinds —
+  // both shell scripts sleep 1 s here for the same reason.
+  await new Promise(r => setTimeout(r, 1000));
+  // A USB blip / re-enumeration commonly drops the host `adb forward`,
+  // which is the real reason u2 became unreachable. reconnect.sh
+  // re-forwards on every recovery; do the same (best-effort) so a dropped
+  // forward self-heals without the operator clicking "Reconnect phone".
+  try { await adb('forward', 'tcp:9008', 'tcp:9008'); } catch { /* may already be live */ }
   await adbShell(U2_RELAUNCH_CMD);
-  await new Promise(r => setTimeout(r, U2_RELAUNCH_SETTLE_MS));
+  const deadline = Date.now() + U2_BIND_TIMEOUT_MS;
+  let lastErr;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, U2_BIND_PROBE_MS));
+    try { return await u2Dump(); }
+    catch (e) { lastErr = e; }
+  }
+  throw new Error(`u2 did not bind within ${U2_BIND_TIMEOUT_MS}ms${lastErr ? ` (${lastErr.message})` : ''}`);
 }
 
 // u2 server can die mid-session (device sleep, USB blip, Palmstreet UI
@@ -152,7 +176,23 @@ async function relaunchU2() {
 // where `uiautomator dump` still works.
 let u2Healthy = U2_ENABLED;
 let u2RetryAfter = 0;
-const U2_RETRY_INTERVAL_MS = 60_000;
+let u2Backoff = 0;
+// Escalating retry: don't sit on the slow path for a fixed 60 s when u2
+// often comes back within seconds. Start at 3 s, double to a 60 s ceiling.
+const U2_RETRY_MIN_MS = 3_000;
+const U2_RETRY_MAX_MS = 60_000;
+
+function markU2Unhealthy() {
+  u2Healthy = false;
+  u2Backoff = u2Backoff ? Math.min(u2Backoff * 2, U2_RETRY_MAX_MS) : U2_RETRY_MIN_MS;
+  u2RetryAfter = Date.now() + u2Backoff;
+}
+
+function markU2Recovered(label) {
+  if (!u2Healthy) console.log(`[u2] ${label} — back on fast path`);
+  u2Healthy = true;
+  u2Backoff = 0;
+}
 
 async function dumpUI() {
   if (u2Healthy) {
@@ -160,24 +200,30 @@ async function dumpUI() {
     catch (e) {
       console.warn(`[u2] dump failed (${e.message}); attempting in-place relaunch`);
       try {
-        await relaunchU2();
-        const result = await u2Dump();
+        const result = await relaunchU2();  // re-forwards, re-execs, polls until bound
         console.log('[u2] relaunched in-place; resuming fast path');
+        u2Backoff = 0;
         return result;
       } catch (e2) {
         console.warn(`[u2] in-place relaunch failed (${e2.message}); falling back to adb path`);
-        u2Healthy = false;
-        u2RetryAfter = Date.now() + U2_RETRY_INTERVAL_MS;
+        markU2Unhealthy();
       }
     }
   } else if (U2_ENABLED && Date.now() >= u2RetryAfter) {
+    // Cheap probe first, in case u2 came back on its own…
     try {
       const result = await u2Dump();
-      console.log(`[u2] recovered — switching back to fast path`);
-      u2Healthy = true;
+      markU2Recovered('recovered');
+      return result;
+    } catch { /* still down — actively re-kick it below */ }
+    // …a server that truly died won't return without a relaunch, so do
+    // one here rather than only passively pinging a dead port forever.
+    try {
+      const result = await relaunchU2();
+      markU2Recovered('re-kicked');
       return result;
     } catch {
-      u2RetryAfter = Date.now() + U2_RETRY_INTERVAL_MS;
+      markU2Unhealthy();
     }
   }
   return adbDump();
