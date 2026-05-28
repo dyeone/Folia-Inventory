@@ -147,20 +147,33 @@ class BridgeRunner extends EventEmitter {
     return { ok: true };
   }
 
+  // Returns a Promise that resolves only once the child has actually
+  // exited. restart() (main.js) does `await stop(); start()`, and start()
+  // no-ops when this.proc is still set — so stop() MUST NOT resolve until
+  // the start()-registered 'exit' handler has cleared this.proc, or the
+  // restart silently leaves the bridge stopped. The 'exit' handler runs
+  // first (registered earlier), then our once('exit') resolves, so by the
+  // time the caller's await returns this.proc === null.
   stop() {
-    if (!this.proc) return { ok: true, already: true };
+    if (!this.proc) return Promise.resolve({ ok: true, already: true });
     this._line('→ Stopping bridge');
-    try {
-      // SIGTERM gives the bridge a chance to flush its current job;
-      // SIGKILL after 4s as a safety net for a stuck process.
-      this.proc.kill('SIGTERM');
-      const proc = this.proc;
+    const proc = this.proc;
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (res) => { if (!settled) { settled = true; resolve(res); } };
+      // Resolve however the process dies — clean SIGTERM exit or the
+      // SIGKILL fallback below (uncatchable, so 'exit' always fires).
+      proc.once('exit', () => done({ ok: true }));
+      try {
+        // SIGTERM asks the bridge to terminate; SIGKILL after 4s is the
+        // safety net for a process that's wedged and ignores it.
+        proc.kill('SIGTERM');
+      } catch (e) {
+        this._line(`✗ Stop failed: ${e.message}`, true);
+        return done({ ok: false, error: e.message });
+      }
       setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } }, 4000);
-    } catch (e) {
-      this._line(`✗ Stop failed: ${e.message}`, true);
-      return { ok: false, error: e.message };
-    }
-    return { ok: true };
+    });
   }
 
   // Re-run bridge/reconnect.sh — re-pins the USB device, refreshes the
