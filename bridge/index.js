@@ -19,7 +19,7 @@
 //                    faster per dump (~280 ms vs ~2 s) — well worth the
 //                    one-time setup (`python -m uiautomator2 init`).
 
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -59,12 +59,15 @@ if (!API_URL || !TOKEN) {
 {
   const devices = (() => {
     try {
-      const { execFileSync } = require('node:child_process');
       const out = execFileSync('adb', ['devices'], { encoding: 'utf8' });
+      // Rows are "serial\tstatus". Count only fully-attached devices —
+      // ignore "offline"/"unauthorized"/"no permissions" entries so a
+      // half-connected second phone doesn't trip the guard.
       return out.split('\n')
         .slice(1)
-        .map(l => l.split('\t')[0])
-        .filter(s => s && /\S/.test(s));
+        .map(l => l.split('\t'))
+        .filter(([serial, status]) => serial && /\S/.test(serial) && status?.trim() === 'device')
+        .map(([serial]) => serial);
     } catch { return []; }
   })();
   if (devices.length > 1 && !DEVICE) {
