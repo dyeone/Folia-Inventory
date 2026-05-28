@@ -99,6 +99,12 @@ export function parsePalmstreetOrders(rows) {
     const shipMethod = String(pick(row, 'Shipment Method', 'Shipping Method')).trim();
     const sellerNote = String(pick(row, 'Seller Order Note')).trim();
     const buyerNote = String(pick(row, 'Buyer Order Note')).trim();
+    const orderStatus = String(pick(row, 'Order Status')).trim().toLowerCase();
+
+    // Skip canceled orders entirely — the buyer never paid, the line shouldn't
+    // mark inventory sold or create a packing box. Matches 'canceled' (American)
+    // and 'cancelled' (British) case-insensitively.
+    if (orderStatus === 'canceled' || orderStatus === 'cancelled') return;
 
     const title = String(pick(row, 'Item Title', 'Title')).trim();
     const sku = String(pick(row, 'SKU')).trim();
