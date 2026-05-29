@@ -206,6 +206,39 @@ async function reorder(req, res) {
 // Same storage bucket as species photos; the `items/` path prefix keeps the
 // two namespaces from colliding. Gallery-only (no mother/father slots).
 
+// Stable public URL for a stored object. Only resolves once the bucket is
+// public (migration 0021) — building the string never fails regardless.
+function publicUrlFor(path) {
+  const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+  return data?.publicUrl || null;
+}
+
+// Keep inventory_items.imageUrl (the Palmstreet CSV "Image URL") pointed at
+// the item's primary (lowest-sortOrder) photo, so dropped photos auto-fill
+// the export. Only manage imageUrl when it's empty or already one of this
+// item's photo URLs — a manually-entered URL is left untouched. Returns the
+// resulting imageUrl.
+async function syncItemPrimaryImage(itemId) {
+  const { data: rows } = await supabase
+    .from('item_photos')
+    .select('"storagePath"')
+    .eq('itemId', itemId)
+    .order('sortOrder', { ascending: true })
+    .limit(1);
+  const primaryUrl = rows && rows[0] ? publicUrlFor(rows[0].storagePath) : null;
+
+  const { data: it } = await supabase
+    .from('inventory_items').select('"imageUrl"').eq('id', itemId).maybeSingle();
+  const cur = it?.imageUrl || '';
+  const managedPrefix = publicUrlFor(`items/${itemId}/`) || '';
+  const isManaged = !cur || (managedPrefix && cur.startsWith(managedPrefix));
+  if (isManaged && cur !== (primaryUrl || '')) {
+    await supabase.from('inventory_items').update({ imageUrl: primaryUrl }).eq('id', itemId);
+    return primaryUrl;
+  }
+  return cur || null;
+}
+
 async function listItemPhotos(req, res) {
   const itemId = req.query?.itemId;
   if (!itemId) { const e = new Error('itemId required'); e.status = 400; throw e; }
@@ -280,7 +313,9 @@ async function uploadItem(req, res, user) {
     .from(STORAGE_BUCKET)
     .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
 
-  return res.status(200).json({ photo: row, signedUrl: signed?.signedUrl || null });
+  const itemImageUrl = await syncItemPrimaryImage(itemId);
+
+  return res.status(200).json({ photo: row, signedUrl: signed?.signedUrl || null, itemImageUrl });
 }
 
 async function removeItem(req, res) {
@@ -288,7 +323,7 @@ async function removeItem(req, res) {
   if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
   const { data: row, error } = await supabase
     .from('item_photos')
-    .select('id, "storagePath"')
+    .select('id, "itemId", "storagePath"')
     .eq('id', id)
     .maybeSingle();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
@@ -297,7 +332,8 @@ async function removeItem(req, res) {
   await supabase.storage.from(STORAGE_BUCKET).remove([row.storagePath]).catch(() => {});
   const { error: delErr } = await supabase.from('item_photos').delete().eq('id', id);
   if (delErr) { const e = new Error(delErr.message); e.status = 500; throw e; }
-  return res.status(200).json({ ok: true });
+  const itemImageUrl = await syncItemPrimaryImage(row.itemId);
+  return res.status(200).json({ ok: true, itemImageUrl });
 }
 
 async function reorderItem(req, res) {
@@ -314,5 +350,6 @@ async function reorderItem(req, res) {
       .eq('itemId', itemId);
     if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   }
-  return res.status(200).json({ ok: true });
+  const itemImageUrl = await syncItemPrimaryImage(itemId);
+  return res.status(200).json({ ok: true, itemImageUrl });
 }

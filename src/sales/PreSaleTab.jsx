@@ -354,6 +354,7 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
                   showToast={showToast}
                   onRemove={() => removeFromSale(it)}
                   onSaveDetails={(patch) => saveDetails(it.id, patch)}
+                  onPhotosChanged={onItemsChanged}
                 />
               ))}
             </div>
@@ -371,7 +372,7 @@ function defaultTitle(item) {
   return t.slice(0, 80);
 }
 
-function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails }) {
+function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails, onPhotosChanged }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -416,13 +417,16 @@ function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails }) {
     setUploading(true);
     try {
       const fileBase64 = await fileToBase64(file);
-      await api.uploadItemPhoto({
+      const res = await api.uploadItemPhoto({
         itemId: item.id,
         fileBase64,
         contentType: file.type || 'image/jpeg',
         filename: file.name,
       });
+      // Server auto-points the item's CSV Image URL at its primary photo.
+      if (res && 'itemImageUrl' in res) setField('imageUrl', res.itemImageUrl || '');
       await loadPhotos();
+      onPhotosChanged?.();
     } catch (err) {
       showToast?.(err.message || 'Upload failed', 'error');
     } finally {
@@ -432,8 +436,10 @@ function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails }) {
 
   const delPhoto = async (id) => {
     try {
-      await api.deleteItemPhoto(id);
+      const res = await api.deleteItemPhoto(id);
       setPhotos(p => (p || []).filter(x => x.id !== id));
+      if (res && 'itemImageUrl' in res) setField('imageUrl', res.itemImageUrl || '');
+      onPhotosChanged?.();
     } catch (e) {
       showToast?.(e.message || 'Delete failed', 'error');
     }
@@ -520,7 +526,7 @@ function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails }) {
               />
             </label>
             <label className="block">
-              <span className="text-[11px] font-medium text-gray-600">Image URL <span className="text-gray-400">(public, for the CSV)</span></span>
+              <span className="text-[11px] font-medium text-gray-600">Image URL <span className="text-gray-400">(auto-filled from your first photo)</span></span>
               <input
                 type="url" value={form.imageUrl}
                 onChange={(e) => setField('imageUrl', e.target.value)}
