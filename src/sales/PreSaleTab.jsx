@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Tag, ScanLine, Search, X, Loader2, ImagePlus, Trash2, Calendar,
+  Tag, ScanLine, Search, X, Loader2, ImagePlus, Trash2, Calendar, Plus, Check,
 } from 'lucide-react';
 import { api } from '../api.js';
 
@@ -15,6 +15,10 @@ import { api } from '../api.js';
 // partial-update shape LineupBuilder emits) so item-column invariants are
 // respected; if it isn't wired it falls back to a direct upsert of the full
 // row, which is safe against both the insert and update paths.
+
+// How many eligible rows to render in the browse list before asking the user
+// to narrow with search — keeps the DOM light on big inventories.
+const BROWSE_CAP = 200;
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -34,6 +38,13 @@ function fileToBase64(file) {
 function saleSortKey(s) {
   const t = s.startTime ? Date.parse(s.startTime) : (s.date ? Date.parse(s.date) : NaN);
   return Number.isNaN(t) ? Infinity : t;
+}
+
+// Trailing numeric part of a SKU (e.g. ANT-2303 -> 2303) so the browse list
+// shows newest inventory first; non-numeric SKUs sort last.
+function skuNum(sku) {
+  const m = /-(\d+)\s*$/.exec(sku || '');
+  return m ? parseInt(m[1], 10) : -1;
 }
 
 export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChanged }) {
@@ -84,6 +95,7 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
 
   const eligibleToAdd = (it) => {
     const cur = effSaleId(it);
+    if (cur === saleId) return { ok: false, reason: 'Already staged' };
     if (cur && cur !== saleId) return { ok: false, reason: `${it.sku} is already on another sale` };
     if (!['available', 'listed'].includes(it.status)) {
       return { ok: false, reason: `${it.sku} is ${it.status}, not available` };
@@ -119,33 +131,44 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
     }
   };
 
+  const addItem = async (it) => {
+    if (!saleId) { flash('error', 'Pick a sale event first'); return; }
+    const elig = eligibleToAdd(it);
+    if (!elig.ok) { flash(elig.reason === 'Already staged' ? 'ok' : 'error', elig.reason); return; }
+    if (await assign(it, saleId)) flash('ok', `Added ${it.sku}`);
+  };
+
   const addBySku = async (raw) => {
     const code = (raw || '').trim();
     if (!code) return;
-    if (!saleId) { flash('error', 'Pick a sale event first'); return; }
     const found = items.find(i => i.sku?.toLowerCase() === code.toLowerCase());
     if (!found) { flash('error', `No SKU "${code}" in inventory`); return; }
-    if (effSaleId(found) === saleId) { flash('ok', `${found.sku} is already staged`); return; }
-    const elig = eligibleToAdd(found);
-    if (!elig.ok) { flash('error', elig.reason); return; }
-    if (await assign(found, saleId)) flash('ok', `Added ${found.sku}`);
+    await addItem(found);
   };
 
   const removeFromSale = async (it) => {
     if (await assign(it, null)) flash('ok', `Removed ${it.sku}`);
   };
 
-  const suggestions = useMemo(() => {
+  // Everything eligible to add to the selected sale (not already staged here),
+  // narrowed by the search box. Newest SKUs first.
+  const available = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return [];
-    return items
-      .filter(it => (it.id in override ? override[it.id] : it.saleId) !== saleId)
-      .filter(it =>
+    const rows = items.filter(it => {
+      if (!eligibleToAdd(it).ok) return false;
+      if (!q) return true;
+      return (
         it.sku?.toLowerCase().includes(q) ||
         it.name?.toLowerCase().includes(q) ||
-        it.variety?.toLowerCase().includes(q))
-      .slice(0, 8);
-  }, [items, search, saleId, override]);
+        it.variety?.toLowerCase().includes(q)
+      );
+    });
+    rows.sort((a, b) => skuNum(b.sku) - skuNum(a.sku));
+    return rows;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, search, saleId, override, sale?.itemTypes]);
+
+  const availableShown = available.slice(0, BROWSE_CAP);
 
   if (openSales.length === 0) {
     return (
@@ -162,25 +185,35 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
 
   return (
     <div className="space-y-3">
+      {/* Sale picker + scanner */}
       <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-end gap-3">
           <label className="block flex-1 min-w-0">
             <span className="text-sm font-medium text-gray-700 block mb-1.5">Next sale event</span>
-            <select
-              value={saleId}
-              onChange={(e) => setSaleSel(e.target.value)}
-              className="w-full px-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
-            >
-              {openSales.map(s => (
-                <option key={s.id} value={s.id}>
-                  {s.name}{s.date ? ` · ${s.date}` : ''}{s.itemTypes && s.itemTypes !== 'both' ? ` · ${s.itemTypes.toUpperCase()} only` : ''}
-                </option>
-              ))}
-            </select>
+            <div className="relative">
+              <Calendar className="w-4 h-4 text-emerald-600 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <select
+                value={saleId}
+                onChange={(e) => setSaleSel(e.target.value)}
+                className="w-full appearance-none pl-9 pr-9 py-3 text-sm font-medium border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                {openSales.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}{s.date ? ` · ${s.date}` : ''}{s.itemTypes && s.itemTypes !== 'both' ? ` · ${s.itemTypes.toUpperCase()} only` : ''}
+                  </option>
+                ))}
+              </select>
+              <svg className="w-4 h-4 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6">
+                <path d="M6 8l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
           </label>
-          <div className="text-sm text-gray-600 sm:pb-2.5 whitespace-nowrap">
-            <span className="font-semibold text-gray-900">{staged.length}</span> staged ·{' '}
-            <span className="font-semibold text-emerald-700">${stagedValue.toFixed(0)}</span>
+          <div className="flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2.5 self-start sm:self-auto">
+            <span className="text-sm text-emerald-800">
+              <span className="font-semibold">{staged.length}</span> staged
+            </span>
+            <span className="text-emerald-300">·</span>
+            <span className="text-sm font-semibold text-emerald-700">${stagedValue.toFixed(0)}</span>
           </div>
         </div>
 
@@ -205,60 +238,104 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
             </div>
           )}
         </div>
+      </div>
 
-        <div className="relative">
-          <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search inventory by SKU, name, variety…"
-            className="w-full pl-9 pr-3 py-2.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
-          />
-          {suggestions.length > 0 && (
-            <div className="absolute z-10 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
-              {suggestions.map(it => {
-                const elig = eligibleToAdd(it);
-                return (
-                  <button
-                    key={it.id}
-                    disabled={!elig.ok || busy}
-                    onClick={async () => { await addBySku(it.sku); setSearch(''); }}
-                    className="w-full text-left px-3 py-2.5 flex items-center gap-2 hover:bg-gray-50 disabled:opacity-50"
-                    title={elig.ok ? 'Add to sale' : elig.reason}
-                  >
-                    <span className={`inline-block w-2 h-2 rounded-full ${it.type === 'tc' ? 'bg-sky-500' : 'bg-emerald-500'}`} />
-                    <span className="font-medium text-sm text-gray-900 truncate">{it.name || it.sku}</span>
-                    {it.variety && <span className="text-xs text-gray-500 truncate">· {it.variety}</span>}
-                    <span className="ml-auto text-xs text-gray-500 font-mono">{it.sku}</span>
-                  </button>
-                );
-              })}
+      <div className="grid lg:grid-cols-2 gap-3 items-start">
+        {/* Available inventory — always visible, click to stage */}
+        <div className="bg-white rounded-xl border border-gray-200 flex flex-col">
+          <div className="p-3 border-b border-gray-100">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-gray-900">
+                Available inventory
+                <span className="ml-1.5 text-xs font-normal text-gray-500">({available.length})</span>
+              </h3>
+              {sale?.itemTypes && sale.itemTypes !== 'both' && (
+                <span className="text-[11px] text-gray-500 uppercase tracking-wide">{sale.itemTypes} only</span>
+              )}
+            </div>
+            <div className="relative">
+              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Filter by SKU, name, variety…"
+                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+              />
+            </div>
+          </div>
+
+          <div className="max-h-[480px] overflow-y-auto">
+            {availableShown.length === 0 ? (
+              <div className="px-3 py-10 text-center text-sm text-gray-500">
+                {search ? 'No matching items.' : 'No eligible items for this sale.'}
+              </div>
+            ) : (
+              <ul className="divide-y divide-gray-100">
+                {availableShown.map(it => (
+                  <li key={it.id}>
+                    <button
+                      onClick={() => addItem(it)}
+                      disabled={busy}
+                      className="group w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-emerald-50/60 active:bg-emerald-100/60 disabled:opacity-50 transition"
+                    >
+                      <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${it.type === 'tc' ? 'bg-sky-500' : 'bg-emerald-500'}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="font-medium text-sm text-gray-900 truncate">{it.name || it.sku}</span>
+                          {it.variety && <span className="text-xs text-gray-500 truncate">· {it.variety}</span>}
+                        </span>
+                        <span className="block text-xs text-gray-500 font-mono">{it.sku}</span>
+                      </span>
+                      <span className="text-sm text-gray-700 w-12 text-right flex-shrink-0">
+                        {it.listingPrice ? `$${parseFloat(it.listingPrice).toFixed(0)}` : '—'}
+                      </span>
+                      <span className="flex items-center gap-1 text-xs font-medium text-emerald-700 flex-shrink-0 opacity-0 group-hover:opacity-100 transition">
+                        <Plus className="w-4 h-4" /> Add
+                      </span>
+                    </button>
+                  </li>
+                ))}
+                {available.length > BROWSE_CAP && (
+                  <li className="px-3 py-2.5 text-center text-xs text-gray-500">
+                    Showing first {BROWSE_CAP} of {available.length} — type above to narrow.
+                  </li>
+                )}
+              </ul>
+            )}
+          </div>
+        </div>
+
+        {/* Staged for this sale */}
+        <div className="bg-white rounded-xl border border-gray-200 flex flex-col">
+          <div className="p-3 border-b border-gray-100">
+            <h3 className="text-sm font-semibold text-gray-900">
+              Staged for this sale
+              <span className="ml-1.5 text-xs font-normal text-gray-500">({staged.length})</span>
+            </h3>
+          </div>
+          {staged.length === 0 ? (
+            <div className="px-3 py-10 text-center">
+              <Tag className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+              <p className="text-sm text-gray-500">
+                Nothing staged yet. Pick items from the list on the left, or scan a SKU above.
+              </p>
+            </div>
+          ) : (
+            <div className="p-3 space-y-2 max-h-[480px] overflow-y-auto">
+              {staged.map(it => (
+                <PreSaleRow
+                  key={it.id}
+                  item={it}
+                  busy={busy}
+                  showToast={showToast}
+                  onRemove={() => removeFromSale(it)}
+                />
+              ))}
             </div>
           )}
         </div>
       </div>
-
-      {staged.length === 0 ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
-          <Tag className="w-9 h-9 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-500 text-sm">
-            Nothing staged yet. Scan or search a SKU above to add items for this sale.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {staged.map(it => (
-            <PreSaleRow
-              key={it.id}
-              item={it}
-              busy={busy}
-              showToast={showToast}
-              onRemove={() => removeFromSale(it)}
-            />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -320,24 +397,28 @@ function PreSaleRow({ item, busy, showToast, onRemove }) {
   const count = photos === null ? null : photos.length;
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="flex items-center gap-3 px-3 py-3">
+    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+      <div className="flex items-center gap-3 px-3 py-2.5">
         <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${item.type === 'tc' ? 'bg-sky-500' : 'bg-emerald-500'}`} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-sm sm:text-base text-gray-900 truncate">{item.name || item.sku}</span>
-            {item.variety && <span className="text-xs sm:text-sm text-gray-500 truncate">· {item.variety}</span>}
+            <span className="font-medium text-sm text-gray-900 truncate">{item.name || item.sku}</span>
+            {item.variety && <span className="text-xs text-gray-500 truncate">· {item.variety}</span>}
           </div>
           <div className="text-xs text-gray-500 font-mono mt-0.5">{item.sku}</div>
         </div>
-        <div className="text-sm font-medium text-gray-900 w-14 text-right flex-shrink-0">
+        <div className="text-sm font-medium text-gray-900 w-12 text-right flex-shrink-0">
           {item.listingPrice ? `$${parseFloat(item.listingPrice).toFixed(0)}` : '—'}
         </div>
         <button
           onClick={toggle}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 active:bg-gray-100 flex-shrink-0"
+          className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border flex-shrink-0 transition ${
+            count ? 'border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
+                  : 'border-gray-300 text-gray-700 hover:bg-gray-50 active:bg-gray-100'
+          }`}
         >
-          <ImagePlus className="w-3.5 h-3.5" /> Photos{count !== null ? ` (${count})` : ''}
+          {count ? <Check className="w-3.5 h-3.5" /> : <ImagePlus className="w-3.5 h-3.5" />}
+          Photos{count !== null ? ` (${count})` : ''}
         </button>
         <button
           onClick={onRemove}
