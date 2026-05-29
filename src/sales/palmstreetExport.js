@@ -39,14 +39,10 @@ function details(item) {
   return o && typeof o === 'object' ? o : {};
 }
 
-// Title: operator override first, else "<name> <variety>" capped at 80 chars.
+// Title: operator override first, else the item's name, capped at 80 chars.
 function buildTitle(item) {
   const override = (details(item).title != null ? String(details(item).title) : '').trim();
-  let t = override;
-  if (!t) {
-    t = item.name || '';
-    if (item.variety) t = `${t} ${item.variety}`.trim();
-  }
+  const t = override || (item.name || '');
   return t.length > 80 ? t.slice(0, 80) : t;
 }
 

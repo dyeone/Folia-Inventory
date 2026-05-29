@@ -365,11 +365,9 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
   );
 }
 
-// Default Palmstreet title for an item with no override: "<name> <variety>".
+// Default Palmstreet title for an item with no override: the item's name.
 function defaultTitle(item) {
-  let t = item.name || '';
-  if (item.variety) t = `${t} ${item.variety}`.trim();
-  return t.slice(0, 80);
+  return (item.name || '').slice(0, 80);
 }
 
 function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails, onPhotosChanged }) {
@@ -380,7 +378,7 @@ function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails, onPhotosCh
   const d = (item.listingDetails && typeof item.listingDetails === 'object') ? item.listingDetails : {};
   const vars = Array.isArray(d.variations) ? d.variations : [];
   const [form, setForm] = useState({
-    title: d.title ?? '',
+    title: d.title || (item.name || ''),
     description: d.description ?? '',
     imageUrl: item.imageUrl ?? '',
     price: item.listingPrice ?? '',
