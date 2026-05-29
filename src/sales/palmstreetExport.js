@@ -1,6 +1,12 @@
 // Build a Palmstreet CSV — for a single sale event, or for the entire
 // "available" inventory ready to be listed. Both modes share the same
 // header set so Palmstreet ingests them identically.
+//
+// Per-item listing overrides — title, description, up to three variation
+// name/value pairs, the private-listing flag, and a shipping note — come from
+// the item's `listingDetails` JSONB, filled in on the Pre Sale tab (migration
+// 0020). Price, quantity, image URL and SKU read from their own columns. The
+// column order below matches Palmstreet's upload template exactly.
 
 const HEADERS = [
   'Title (product name, 80 character max)*',
@@ -28,19 +34,75 @@ function escapeCsv(v) {
   return s;
 }
 
-function buildTitle(item) {
-  let t = item.name || '';
-  if (item.variety) t = `${t} ${item.variety}`.trim();
-  if (t.length > 80) t = t.slice(0, 80);
-  return t;
+function details(item) {
+  const o = item && item.listingDetails;
+  return o && typeof o === 'object' ? o : {};
 }
 
+// Title: operator override first, else "<name> <variety>" capped at 80 chars.
+function buildTitle(item) {
+  const override = (details(item).title != null ? String(details(item).title) : '').trim();
+  let t = override;
+  if (!t) {
+    t = item.name || '';
+    if (item.variety) t = `${t} ${item.variety}`.trim();
+  }
+  return t.length > 80 ? t.slice(0, 80) : t;
+}
+
+// Description: operator override first, else a sentence built from the item.
 function buildDescription(item) {
+  const override = (details(item).description != null ? String(details(item).description) : '').trim();
+  if (override) return override;
   const parts = [];
   if (item.name) parts.push(item.name);
   if (item.variety) parts.push(`Variety: ${item.variety}`);
   if (item.notes) parts.push(item.notes);
   return parts.join('. ');
+}
+
+// Six cells in Palmstreet order: v1 name, v1 value, v2 name, v2 value, …
+function variationCells(item) {
+  const v = details(item).variations;
+  const arr = Array.isArray(v) ? v : [];
+  const cells = [];
+  for (let i = 0; i < 3; i++) {
+    const x = arr[i] || {};
+    cells.push(x.name || '', x.value || '');
+  }
+  return cells;
+}
+
+// One 14-column row in the template's exact order.
+function baseRow(item, price) {
+  return [
+    buildTitle(item),
+    buildDescription(item),
+    item.imageUrl || '',
+    price,
+    parseInt(item.quantity) || 1,
+    ...variationCells(item),
+    item.sku || '',
+    details(item).private ? 'Yes' : '',
+    details(item).shipping || '',
+  ];
+}
+
+function toCsv(rows) {
+  return [
+    HEADERS.map(escapeCsv).join(','),
+    ...rows.map(r => r.map(escapeCsv).join(',')),
+  ].join('\n');
+}
+
+function download(csv, filename) {
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export function exportPalmstreetCsv(sale, items) {
@@ -56,33 +118,9 @@ export function exportPalmstreetCsv(sale, items) {
     return { ok: false, reason: 'No sale lots in this event yet.' };
   }
 
-  const rows = saleItems.map(item => [
-    buildTitle(item),
-    buildDescription(item),
-    item.imageUrl || '',
-    parseFloat(item.listingPrice) || 0,
-    parseInt(item.quantity) || 1,
-    '', '',
-    '', '',
-    '', '',
-    item.sku || '',
-    '',
-    '',
-  ]);
-
-  const csv = [
-    HEADERS.map(escapeCsv).join(','),
-    ...rows.map(r => r.map(escapeCsv).join(',')),
-  ].join('\n');
-
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
+  const rows = saleItems.map(item => baseRow(item, parseFloat(item.listingPrice) || 0));
   const safeName = (sale.name || 'sale').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
-  a.href = url;
-  a.download = `palmstreet-${safeName}-${sale.date || 'event'}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  download(toCsv(rows), `palmstreet-${safeName}-${sale.date || 'event'}.csv`);
   return { ok: true, count: saleItems.length };
 }
 
@@ -132,33 +170,10 @@ export function exportAvailableToPalmstreet(items, varieties = [], species = [],
         priceless += 1;
       }
     }
-    return [
-      buildTitle(item),
-      buildDescription(item),
-      item.imageUrl || '',
-      price,
-      parseInt(item.quantity) || 1,
-      '', '',
-      '', '',
-      '', '',
-      item.sku || '',
-      '',
-      '',
-    ];
+    return baseRow(item, price);
   });
 
-  const csv = [
-    HEADERS.map(escapeCsv).join(','),
-    ...rows.map(r => r.map(escapeCsv).join(',')),
-  ].join('\n');
-
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
   const stamp = new Date().toISOString().slice(0, 10);
-  a.href = url;
-  a.download = `palmstreet-inventory-${stamp}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  download(toCsv(rows), `palmstreet-inventory-${stamp}.csv`);
   return { ok: true, count: eligible.length, pricedFromIdeal, priceless };
 }
