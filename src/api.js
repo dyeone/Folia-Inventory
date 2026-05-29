@@ -139,6 +139,16 @@ export const api = {
   speciesPhotoSignedUrl: (id) =>
     request(`/species-photos?action=signed-url&id=${encodeURIComponent(id)}`).then(r => r.url),
 
+  // Item photos — per-individual-item gallery (Pre Sale tab). Shares the
+  // /species-photos route (target:'item') so we don't add a serverless
+  // function; rows live in item_photos. See migration 0019.
+  listItemPhotos: (itemId) =>
+    request(`/species-photos?action=list&target=item&itemId=${encodeURIComponent(itemId)}`).then(r => r.photos),
+  uploadItemPhoto: ({ itemId, fileBase64, contentType, filename }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'upload', target: 'item', itemId, fileBase64, contentType, filename } }),
+  deleteItemPhoto: (id) =>
+    request('/species-photos', { method: 'POST', body: { action: 'delete', target: 'item', id } }),
+
   // App settings — single-row JSON blob keyed by id.
   // GET returns { id, data, updatedAt, updatedBy } (data may be {} if unset).
   // PUT requires admin and replaces the data blob wholesale.

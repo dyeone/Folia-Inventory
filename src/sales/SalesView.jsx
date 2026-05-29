@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import {
   Plus, Calendar, Layers, Download, Trash2, Edit2, PackageOpen,
-  Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock, Radio,
+  Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock, Radio, Tag,
 } from 'lucide-react';
+import { PreSaleTab } from './PreSaleTab.jsx';
 const STATUS_META = {
   ongoing:  { label: 'Ongoing',  cls: 'bg-emerald-100 text-emerald-800', icon: Clock },
   packing:  { label: 'Packing',  cls: 'bg-blue-100 text-blue-800',       icon: PackageOpen },
@@ -27,6 +28,7 @@ function formatStart(sale) {
 export function SalesView({
   sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
   onSendToPacking, onGoLive, onValidateSales, onStartLiveScan, isAdmin,
+  onStageItems, onItemsChanged, showToast,
 }) {
   const [tab, setTab] = useState('active');
 
@@ -36,6 +38,12 @@ export function SalesView({
 
   const archiveCount = sales.filter(s => s.status === 'closed').length;
   const activeCount = sales.length - archiveCount;
+
+  // Items already staged into an upcoming (non-closed) sale's lineup.
+  const presaleCount = useMemo(() => {
+    const openSaleIds = new Set(sales.filter(s => s.status !== 'closed').map(s => s.id));
+    return items.filter(i => i.saleId && openSaleIds.has(i.saleId)).length;
+  }, [sales, items]);
 
   return (
     <div className="space-y-4">
@@ -80,6 +88,15 @@ export function SalesView({
           <span className="text-xs text-gray-500">({activeCount})</span>
         </button>
         <button
+          onClick={() => setTab('presale')}
+          className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition ${
+            tab === 'presale' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 active:bg-gray-200'
+          }`}
+        >
+          <Tag className="w-4 h-4" /> Pre Sale
+          <span className="text-xs text-gray-500">({presaleCount})</span>
+        </button>
+        <button
           onClick={() => setTab('archive')}
           className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition ${
             tab === 'archive' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 active:bg-gray-200'
@@ -90,7 +107,15 @@ export function SalesView({
         </button>
       </div>
 
-      {visible.length === 0 ? (
+      {tab === 'presale' ? (
+        <PreSaleTab
+          sales={sales}
+          items={items}
+          showToast={showToast}
+          onStageItems={onStageItems}
+          onItemsChanged={onItemsChanged}
+        />
+      ) : visible.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
           <Calendar className="w-10 h-10 text-gray-300 mx-auto mb-3" />
           <p className="text-gray-500 text-sm">
