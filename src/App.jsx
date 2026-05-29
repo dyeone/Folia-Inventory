@@ -860,6 +860,20 @@ function StaffOrAdminInventory() {
             sales={sales}
             items={items}
             isAdmin={isAdmin}
+            showToast={showToast}
+            onStageItems={(updates) => {
+              // Same merge LineupBuilder uses — route through saveItems so
+              // the change is optimistic + diff-persisted in one place.
+              const updateMap = new Map(updates.map(u => [u.id, u]));
+              const newItems = items.map(i => updateMap.has(i.id)
+                ? { ...i, ...updateMap.get(i.id) }
+                : i);
+              saveItems(newItems);
+            }}
+            onItemsChanged={async () => {
+              const fresh = await api.getItems();
+              applyItemsFresh(fresh);
+            }}
             onCreate={() => setShowSaleModal(true)}
             onEdit={(sale) => setEditingSale(sale)}
             onBuildLineup={(sale) => { setLineupSale(sale); setShowLineupBuilder(true); }}
