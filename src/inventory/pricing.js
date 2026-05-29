@@ -1,6 +1,29 @@
 // Variety/species lookup + ideal-price math, factored out of InventoryView
 // so they can be unit-tested or reused by other views.
 
+// Statuses where an item has a realized sale price. salePrice stays the
+// right number to show after the item ships or is delivered, not just
+// while it's 'sold'.
+export const SOLD_STATUSES = new Set(['sold', 'shipped', 'delivered']);
+
+// The price to show for an item in inventory lists: the realized sale
+// price once it's sold/shipped/delivered, otherwise the listing price.
+// Returns a positive number to display, or null when there's nothing.
+//
+// This is the one place the sold-family check lives. Gating only on
+// status === 'sold' (the old inline logic) made the price vanish the
+// instant a box shipped — salePrice was still in the DB, the row just
+// fell back to a usually-null listingPrice and rendered blank.
+export function displayPrice(item) {
+  if (SOLD_STATUSES.has(item.status)) {
+    const sp = parseFloat(item.salePrice);
+    if (Number.isFinite(sp) && sp > 0) return sp;
+  }
+  const lp = parseFloat(item.listingPrice);
+  if (Number.isFinite(lp) && lp > 0) return lp;
+  return null;
+}
+
 // Pre-build O(1) Maps from the (varieties, species) arrays so per-item
 // price calculations don't re-scan on every render.
 export function buildLookups(varieties, species) {

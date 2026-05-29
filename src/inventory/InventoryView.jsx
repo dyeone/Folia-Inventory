@@ -3,7 +3,7 @@ import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, P
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
-import { buildLookups, speciesForItem, computeIdealPrice, rateSourceLabel } from './pricing.js';
+import { buildLookups, speciesForItem, computeIdealPrice, rateSourceLabel, displayPrice } from './pricing.js';
 import { CultivarRateInput } from './CultivarRateInput.jsx';
 import { AcclimationModal } from './AcclimationModal.jsx';
 
@@ -492,11 +492,14 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                           {profitRate >= 0 ? '+' : ''}{profitRate.toFixed(0)}%
                         </span>
                       )}
-                      {(item.status === 'sold' && item.salePrice) || item.listingPrice ? (
-                        <span className="text-xs text-gray-700 mr-1">
-                          ${parseFloat(item.status === 'sold' && item.salePrice ? item.salePrice : item.listingPrice).toFixed(2)}
-                        </span>
-                      ) : null}
+                      {(() => {
+                        const price = displayPrice(item);
+                        return price !== null ? (
+                          <span className="text-xs text-gray-700 mr-1">
+                            ${price.toFixed(2)}
+                          </span>
+                        ) : null;
+                      })()}
                       {item.type === 'tc' && item.status !== 'converted' && (
                         <button onClick={() => onConvert(item)} title="Convert to plant" className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded">
                           <ArrowRightLeft className="w-4 h-4" />
@@ -689,8 +692,10 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                           })()}
                         </td>
                         <td className="px-3 py-2.5 text-right tabular-nums text-gray-900">
-                          {item.status === 'sold' && item.salePrice ? `$${parseFloat(item.salePrice).toFixed(2)}` :
-                           item.listingPrice ? `$${parseFloat(item.listingPrice).toFixed(2)}` : <span className="text-gray-400">—</span>}
+                          {(() => {
+                            const price = displayPrice(item);
+                            return price !== null ? `$${price.toFixed(2)}` : <span className="text-gray-400">—</span>;
+                          })()}
                         </td>
                         <td className="px-3 py-2.5 text-right">
                           {(() => {
