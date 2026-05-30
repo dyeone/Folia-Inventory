@@ -74,12 +74,40 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
   const [busy, setBusy] = useState(false);
   const scanRef = useRef(null);
 
+  // Scan-driven workflow state: which staged row is expanded (single-open
+  // accordion), which item was just added (for highlight + price focus), and
+  // the order items were staged this session (newest floats to the top).
+  const [openId, setOpenId] = useState(null);
+  const [lastAddedId, setLastAddedId] = useState(null);
+  const [addedOrder, setAddedOrder] = useState([]);
+
   useEffect(() => { scanRef.current?.focus(); }, [saleId]);
   useEffect(() => {
     if (!msg) return undefined;
     const t = setTimeout(() => setMsg(null), 2500);
     return () => clearTimeout(t);
   }, [msg]);
+  // The highlight is a brief cue; clear it so it doesn't linger on the row.
+  useEffect(() => {
+    if (!lastAddedId) return undefined;
+    const t = setTimeout(() => setLastAddedId(null), 2000);
+    return () => clearTimeout(t);
+  }, [lastAddedId]);
+
+  // Open a row, flag it as freshly added, and float it to the top.
+  const markAdded = (id) => {
+    setOpenId(id);
+    setLastAddedId(id);
+    setAddedOrder(o => [id, ...o.filter(x => x !== id)]);
+  };
+
+  // After saving a row's details, collapse it and hand focus back to the
+  // scanner so the next barcode stages the next item immediately.
+  const handleSavedDetails = () => {
+    setOpenId(null);
+    setLastAddedId(null);
+    setTimeout(() => scanRef.current?.focus(), 0);
+  };
 
   const flash = (type, text) => {
     setMsg({ type, text });
@@ -88,11 +116,21 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
 
   const staged = useMemo(() => {
     if (!saleId) return [];
+    // Items staged this session float to the top (newest first) so the one
+    // you just scanned is right there to edit; the rest stay sorted by SKU.
+    const rank = (id) => {
+      const i = addedOrder.indexOf(id);
+      return i === -1 ? Infinity : i;
+    };
     return items
       .filter(it => (it.id in override ? override[it.id] : it.saleId) === saleId)
       .slice()
-      .sort((a, b) => (a.sku || '').localeCompare(b.sku || ''));
-  }, [items, saleId, override]);
+      .sort((a, b) => {
+        const ra = rank(a.id), rb = rank(b.id);
+        if (ra !== rb) return ra - rb;
+        return (a.sku || '').localeCompare(b.sku || '');
+      });
+  }, [items, saleId, override, addedOrder]);
 
   const eligibleToAdd = (it) => {
     const cur = effSaleId(it);
@@ -137,8 +175,13 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
   const addItem = async (it) => {
     if (!saleId) { flash('error', 'Pick a sale event first'); return; }
     const elig = eligibleToAdd(it);
-    if (!elig.ok) { flash(elig.reason === 'Already staged' ? 'ok' : 'error', elig.reason); return; }
-    if (await assign(it, saleId)) flash('ok', `Added ${it.sku}`);
+    if (!elig.ok) {
+      // Re-scanning something already on this sale just reopens it to edit.
+      if (elig.reason === 'Already staged') { markAdded(it.id); flash('ok', `Editing ${it.sku}`); }
+      else flash('error', elig.reason);
+      return;
+    }
+    if (await assign(it, saleId)) { markAdded(it.id); flash('ok', `Added ${it.sku}`); }
   };
 
   const addBySku = async (raw) => {
@@ -261,6 +304,9 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
             </div>
           )}
         </div>
+        <p className="text-[11px] text-gray-400">
+          Scan → edit price &amp; drop a photo → <span className="font-medium text-gray-500">Save details</span> → scan the next.
+        </p>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-3 items-start">
@@ -352,8 +398,13 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
                   item={it}
                   busy={busy}
                   showToast={showToast}
+                  open={openId === it.id}
+                  onToggle={() => setOpenId(o => (o === it.id ? null : it.id))}
+                  autoFocusPrice={lastAddedId === it.id}
+                  highlight={lastAddedId === it.id}
                   onRemove={() => removeFromSale(it)}
                   onSaveDetails={(patch) => saveDetails(it.id, patch)}
+                  onSaved={handleSavedDetails}
                   onPhotosChanged={onItemsChanged}
                 />
               ))}
@@ -370,9 +421,10 @@ function defaultTitle(item) {
   return (item.name || '').slice(0, 80);
 }
 
-function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails, onPhotosChanged }) {
-  const [open, setOpen] = useState(false);
+function PreSaleRow({ item, busy, showToast, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
   const [saving, setSaving] = useState(false);
+  const rowRef = useRef(null);
+  const priceRef = useRef(null);
 
   // Listing-detail form, seeded from the item's columns + listingDetails blob.
   const d = (item.listingDetails && typeof item.listingDetails === 'object') ? item.listingDetails : {};
@@ -404,11 +456,28 @@ function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails, onPhotosCh
     finally { setLoadingPhotos(false); }
   };
 
-  const toggle = () => {
-    const next = !open;
-    setOpen(next);
-    if (next && photos === null) loadPhotos();
-  };
+  const toggle = () => onToggle?.();
+
+  // Lazy-load photos the first time the row opens.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (open && photos === null) loadPhotos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // A freshly scanned row drops focus straight into the price field and
+  // scrolls itself into view, so editing starts without a click.
+  useEffect(() => {
+    if (open && autoFocusPrice && priceRef.current) {
+      priceRef.current.focus();
+      priceRef.current.select?.();
+    }
+  }, [open, autoFocusPrice]);
+  useEffect(() => {
+    if (highlight && rowRef.current) {
+      rowRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [highlight]);
 
   const uploadFile = async (file) => {
     if (!file?.type?.startsWith('image/')) return;
@@ -459,6 +528,7 @@ function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails, onPhotosCh
         },
       });
       showToast?.('Details saved');
+      onSaved?.();
     } catch (e) {
       showToast?.(e.message || 'Save failed', 'error');
     } finally {
@@ -470,7 +540,12 @@ function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails, onPhotosCh
   const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white';
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+    <div
+      ref={rowRef}
+      className={`bg-white rounded-lg border overflow-hidden transition-shadow ${
+        highlight ? 'border-emerald-400 ring-2 ring-emerald-300' : 'border-gray-200'
+      }`}
+    >
       <div className="flex items-center gap-2.5 px-3 py-2.5">
         <button onClick={toggle} className="flex items-center gap-2.5 min-w-0 flex-1 text-left" aria-expanded={open}>
           <ChevronRight className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
@@ -536,6 +611,7 @@ function PreSaleRow({ item, busy, showToast, onRemove, onSaveDetails, onPhotosCh
               <label className="block">
                 <span className="text-[11px] font-medium text-gray-600">Price</span>
                 <input
+                  ref={priceRef}
                   type="number" step="0.01" inputMode="decimal" value={form.price}
                   onChange={(e) => setField('price', e.target.value)}
                   placeholder="0.00" className={inputCls}
