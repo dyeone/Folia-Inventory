@@ -39,10 +39,19 @@ function details(item) {
   return o && typeof o === 'object' ? o : {};
 }
 
-// Title: operator override first, else the item's name, capped at 80 chars.
+// Title: "<SKU> <name>" so every Palmstreet listing carries its SKU
+// (which is how orders match back to inventory). The name part is the
+// operator's title override if set, else the item's name. The SKU is
+// prepended unless it's already at the front of the override. Capped at
+// 80 chars.
 function buildTitle(item) {
   const override = (details(item).title != null ? String(details(item).title) : '').trim();
-  const t = override || (item.name || '');
+  const base = override || (item.name || '');
+  const sku = (item.sku || '').trim();
+  let t = base;
+  if (sku && !base.toLowerCase().startsWith(sku.toLowerCase())) {
+    t = base ? `${sku} ${base}` : sku;
+  }
   return t.length > 80 ? t.slice(0, 80) : t;
 }
 
