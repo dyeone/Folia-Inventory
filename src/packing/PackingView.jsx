@@ -1514,10 +1514,14 @@ function BoxRow({
   // primary action button and the inline tracking editor. Chevron
   // drill-in to the per-sale pane is still useful (label PDF download).
   const action = allShipped ? null : boxActionState(box, shipment);
-  // A live (non-voided) label with a saved PDF can be reprinted from the
-  // row — true for ShipStation, Shippo, and Palmstreet-with-PDF rows alike.
+  // A live (non-voided) bought label is always printable: the PDF is in
+  // Storage (labelStoragePath) or inline as a fallback — getLabelUrl serves
+  // either. Palmstreet tracking-only rows have no PDF unless one was
+  // attached, so require labelStoragePath there.
   const liveShipment = shipment && !shipment.voidedAt ? shipment : null;
-  const canPrintLabel = !!liveShipment?.labelStoragePath;
+  const canPrintLabel = !!liveShipment && (
+    !!liveShipment.labelStoragePath || liveShipment.carrierCode !== 'palmstreet'
+  );
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
