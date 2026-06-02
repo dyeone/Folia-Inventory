@@ -116,6 +116,10 @@ export function PackingView({
   // operator can batch UPS-only or USPS-only work.
   const [readySort, setReadySort] = useState('created-desc');
   const [readyCarrierFilter, setReadyCarrierFilter] = useState('all'); // 'all' | 'usps' | 'ups'
+  // Narrow the list to boxes that contain a given kind of item, so the
+  // operator can batch-pack one product line at a time: 'tc' = boxes with
+  // any tissue-culture item, 'anthurium' = boxes with any Anthurium plant.
+  const [contentFilter, setContentFilter] = useState('all'); // 'all' | 'tc' | 'anthurium'
 
   // Multi-select for batch label printing. Selected box ids are
   // accumulated as the operator clicks the per-row checkboxes; the
@@ -392,15 +396,26 @@ export function PackingView({
     }
     return false;
   };
+  // A box passes the contents filter if it holds at least one item of the
+  // selected kind. TC keys off item.type; Anthurium off item.variety (the
+  // same predicate the Print ANT labels button and box labels use).
+  const matchContents = (box) => {
+    if (contentFilter === 'tc') return box.items.some(i => i.type === 'tc');
+    if (contentFilter === 'anthurium') {
+      return box.items.some(i => (i.variety || '').toLowerCase() === 'anthurium');
+    }
+    return true;
+  };
   const filterBoxes = (boxes, applyCarrierFilter) =>
     boxes.filter(b =>
       (!scannedBoxId || b.id === scannedBoxId) &&
       matchSearch(b) &&
+      matchContents(b) &&
       (!applyCarrierFilter ||
         readyCarrierFilter === 'all' ||
         (b.carrier || 'usps').toLowerCase() === readyCarrierFilter),
     );
-  const anyFilter = !!(scannedBoxId || searchLower);
+  const anyFilter = !!(scannedBoxId || searchLower || contentFilter !== 'all');
   // Sort boxes within a group, then groups across the page, by the
   // operator's chosen mode. Tie-breakers fall back to buyer name and
   // box code so the order is deterministic.
@@ -608,6 +623,34 @@ export function PackingView({
             );
           })}
         </div>
+        <div className="flex items-center gap-1">
+          <span className="text-gray-500 font-medium mr-1">Contents</span>
+          {[
+            { v: 'all', label: 'All' },
+            { v: 'tc', label: 'TC' },
+            { v: 'anthurium', label: 'Anthurium' },
+          ].map(c => {
+            const active = contentFilter === c.v;
+            return (
+              <button
+                key={c.v}
+                type="button"
+                onClick={() => setContentFilter(c.v)}
+                className={`px-2.5 py-1 rounded-md font-medium transition ${
+                  active
+                    ? c.v === 'tc'
+                      ? 'bg-sky-100 text-sky-900 ring-1 ring-sky-300'
+                      : c.v === 'anthurium'
+                      ? 'bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300'
+                      : 'bg-gray-900 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                {c.label}
+              </button>
+            );
+          })}
+        </div>
         {selectedBoxIds.size > 0 && (
           <div className="ml-auto flex items-center gap-2">
             <span className="text-emerald-700 font-medium">
@@ -747,6 +790,8 @@ export function PackingView({
                     ? `No Ready boxes match "${searchQuery.trim()}".`
                     : scannedBoxId
                     ? `Scanned box isn't in Ready to ship — check the Shipped tab.`
+                    : contentFilter !== 'all'
+                    ? `No Ready boxes contain ${contentFilter === 'tc' ? 'TC' : 'Anthurium'} items.`
                     : `Nothing waiting to ship. When a sale's orders get applied, boxes show up here.`}
                 </p>
               </div>
@@ -876,6 +921,8 @@ export function PackingView({
                   ? `No Shipped boxes match "${searchQuery.trim()}".`
                   : scannedBoxId
                   ? `Scanned box isn't in Shipped — check the Ready tab.`
+                  : contentFilter !== 'all'
+                  ? `No Shipped boxes contain ${contentFilter === 'tc' ? 'TC' : 'Anthurium'} items.`
                   : `No boxes have shipped yet. Once you Mark shipped on a row, it moves here.`}
               </p>
             </div>
