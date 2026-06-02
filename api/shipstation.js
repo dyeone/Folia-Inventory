@@ -342,14 +342,32 @@ async function buyLabel(req, res, userId) {
     voidedBy: null,
   };
 
-  const { data: saved, error: saveErr } = await supabase
-    .from('shipments')
-    .upsert(row)
-    .select()
-    .single();
-  if (saveErr) { const e = new Error(saveErr.message); e.status = 500; throw e; }
-
+  const saved = await upsertShipment(row);
   return res.status(200).json({ shipment: saved });
+}
+
+// True for a "column does not exist" / stale-schema-cache error — used to
+// stay functional on a DB where migration 0023 (provider,
+// shippoTransactionId) hasn't been applied yet.
+function isMissingColumn(error) {
+  const m = (error?.message || '').toLowerCase();
+  return error?.code === '42703' || error?.code === 'PGRST204'
+    || (m.includes('column') && (m.includes('does not exist') || m.includes('schema cache')));
+}
+
+// Upsert a shipments row. If the 0023 columns aren't there yet, strip them
+// and retry so buying never hard-fails on deploy ordering. ShipStation
+// voids still work (shipstationShipmentId); Shippo refund-routing needs the
+// columns, so apply 0023 for full function.
+async function upsertShipment(row) {
+  let { data, error } = await supabase.from('shipments').upsert(row).select().single();
+  if (error && isMissingColumn(error)) {
+    const { provider: _p, shippoTransactionId: _t, ...legacy } = row;
+    console.warn('[shipstation] shipments.provider/shippoTransactionId missing — apply migration 0023. Saving without them.');
+    ({ data, error } = await supabase.from('shipments').upsert(legacy).select().single());
+  }
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return data;
 }
 
 async function voidLabelHandler(req, res, userId) {
@@ -358,11 +376,26 @@ async function voidLabelHandler(req, res, userId) {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
   }
 
-  const { data: shipment } = await supabase
-    .from('shipments')
-    .select('id, provider, "shipstationShipmentId", "shippoTransactionId", "voidedAt"')
-    .eq('id', shipmentBoxId)
-    .maybeSingle();
+  // Tolerate a pre-0023 DB: fall back to the legacy column set (treats the
+  // row as ShipStation) if provider/shippoTransactionId aren't there yet.
+  let shipment;
+  {
+    const r = await supabase
+      .from('shipments')
+      .select('id, provider, "shipstationShipmentId", "shippoTransactionId", "voidedAt"')
+      .eq('id', shipmentBoxId)
+      .maybeSingle();
+    if (r.error && isMissingColumn(r.error)) {
+      const r2 = await supabase
+        .from('shipments')
+        .select('id, "shipstationShipmentId", "voidedAt"')
+        .eq('id', shipmentBoxId)
+        .maybeSingle();
+      shipment = r2.data ? { ...r2.data, provider: null, shippoTransactionId: null } : null;
+    } else {
+      shipment = r.data;
+    }
+  }
   if (!shipment) {
     const e = new Error('No purchased label for this box'); e.status = 404; throw e;
   }
