@@ -1,22 +1,30 @@
-import { useEffect, useMemo, useState } from 'react';
-import { LogOut, Package, ScanLine, Check, X, ArrowLeft, AlertCircle, Camera, Truck } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
+  Ruler, ChevronRight, Loader2, PackageCheck,
+} from 'lucide-react';
 import { api } from '../api.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 
-// Full-screen mobile workflow for the 'packer' role. Two screens:
-//   1. Scan-box → operator scans/types a box code (B-XXXXXX). On valid
-//      match, advance to the items screen.
-//   2. Items → list of items still to pack in the scanned box. Operator
-//      scans/types each item's SKU; matching items flip to packed
-//      (writes packedAt on inventory_items). When every item is packed
-//      the packer can hit "Done" to return to scan-box for the next one.
+// Full-screen workflow for the 'packer' role, tuned for an iPad at a
+// packing table with a USB/Bluetooth barcode scanner.
 //
-// "Scanning" here is text input — works with a hardware barcode
-// scanner (it just types the decoded code into the focused field and
-// sends Enter). Camera-based scanning is a planned follow-up.
+//   Landing → an always-focused scan field (the USB scanner just types the
+//     decoded code + Enter into it) plus a tappable grid of every open box.
+//     Scan a box label (B-XXXXXX) to open it, or scan an item SKU to jump
+//     straight to its box.
+//   Box → scan each plant's barcode; matching items flip to packed
+//     (writes packedAt). When every item is packed the packer is asked which
+//     box size they used; the choice is saved to shipment_boxes.boxSizeId,
+//     which the Shipping tab reads back automatically.
+//
+// The scan field uses inputMode="none" so iPadOS doesn't pop the on-screen
+// keyboard while still receiving the hardware scanner's keystrokes, and it
+// re-grabs focus aggressively so a stray tap never breaks scanning. The
+// camera remains as a secondary, tap-to-open option.
 
 export function PackerView({ onLogout }) {
   const [items, setItems] = useState([]);
@@ -24,12 +32,16 @@ export function PackerView({ onLogout }) {
   const [err, setErr] = useState('');
   const [activeBoxId, setActiveBoxId] = useState(null);
   const [toast, setToast] = useState(null);
-  // Camera lives at PackerView level so its lifecycle is independent
-  // of the BoxScanner ↔ ItemScanner swap. Unmounting the camera at the
-  // same instant the screen swaps was causing a blank-screen flash on
-  // iOS Safari. Mode is 'box' or 'item' so the same CameraScanner
-  // routes its single decode to the right handler.
   const [cameraMode, setCameraMode] = useState(null); // 'box' | 'item' | null
+  // Box-size catalog (from Shipping Settings) + the per-box selection map
+  // (shipmentBoxId → boxSizeId), shared with the Shipping tab via
+  // shipment_boxes. Loaded once on mount.
+  const [boxSizes, setBoxSizes] = useState([]);
+  const [boxSizeByBox, setBoxSizeByBox] = useState({});
+  const [savingSizeFor, setSavingSizeFor] = useState(null);
+
+  const [scanValue, setScanValue] = useState('');
+  const scanRef = useRef(null);
 
   const refresh = async () => {
     setErr('');
@@ -44,12 +56,23 @@ export function PackerView({ onLogout }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      await refresh();
+      const [, settings, notes] = await Promise.all([
+        refresh(),
+        api.getSettings('shipping').catch(() => null),
+        api.getBoxNotes().catch(() => ({})),
+      ]);
+      setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
+      setBoxSizeByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, v?.boxSizeId || null]),
+        ),
+      );
       setLoading(false);
     })();
   }, []);
 
-  // All currently-open boxes (anything with a still-'sold' item).
+  // Open boxes, keyed by short code for scan lookup. A box is "open" while it
+  // still has at least one 'sold' item; fully-shipped boxes drop out.
   const boxesByCode = useMemo(() => {
     const map = new Map();
     for (const item of items) {
@@ -63,10 +86,6 @@ export function PackerView({ onLogout }) {
           buyer: item.buyer || '',
           buyerUsername: item.buyerUsername || '',
           buyerAddress: item.buyerAddress || {},
-          // All items in one box share a carrier (set during Validate
-          // Sales). Take the first non-empty value defensively — falls
-          // back to 'usps' so the badge always renders something
-          // recognizable.
           carrier: item.shipmentCarrier || 'usps',
           items: [],
         };
@@ -74,8 +93,6 @@ export function PackerView({ onLogout }) {
       }
       box.items.push(item);
     }
-    // Index by code for fast scan lookup. Drop boxes where every item
-    // is already shipped — the packer can't act on them.
     const out = {};
     for (const box of map.values()) {
       if (box.items.some(i => i.status === 'sold')) out[box.code] = box;
@@ -83,131 +100,143 @@ export function PackerView({ onLogout }) {
     return out;
   }, [items]);
 
+  const openBoxes = useMemo(
+    () => Object.values(boxesByCode).sort((a, b) => {
+      // Boxes with work left float above fully-packed ones.
+      const ap = a.items.filter(i => i.status === 'sold' && !i.packedAt).length;
+      const bp = b.items.filter(i => i.status === 'sold' && !i.packedAt).length;
+      if ((ap === 0) !== (bp === 0)) return ap === 0 ? 1 : -1;
+      return (a.buyer || '').localeCompare(b.buyer || '');
+    }),
+    [boxesByCode],
+  );
+
   const showToast = (msg, durationMs = 2200) => {
     setToast(msg);
     setTimeout(() => setToast(null), durationMs);
-  };
-
-  // Dual-purpose landing scanner. The packer can either scan a box
-  // label (B-XXXXXX) to open it, OR scan an item SKU and we resolve
-  // which box that item belongs to and open that box. Saves a step
-  // when the packer pulls a plant off the shelf — they don't need to
-  // look up the box first.
-  const handleScanBox = (raw) => {
-    const upper = String(raw || '').trim().toUpperCase().replace(/_/g, '-');
-    if (!upper) return false;
-
-    // Box-code path: scanned a label that looks like B-XXXXXX.
-    if (upper.startsWith('B-')) {
-      const code = normalizeBoxCode(raw);
-      const match = boxesByCode[code];
-      if (!match) {
-        showToast(`No open box with code ${code}`, 3500);
-        return false;
-      }
-      goToBox(match.id);
-      return true;
-    }
-
-    // Item-SKU path: walk every open box and find the one carrying
-    // this SKU. First match wins (an item shouldn't ever be in two
-    // open boxes — see the upload dedupe).
-    const sku = normalizeSku(raw);
-    for (const box of Object.values(boxesByCode)) {
-      if (box.items.some(i => normalizeSku(i.sku) === sku)) {
-        showToast(`${sku} → box ${box.code}`, 2500);
-        goToBox(box.id);
-        return true;
-      }
-    }
-    showToast(`Nothing matches ${raw}`, 3500);
-    return false;
   };
 
   const activeBox = activeBoxId
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
 
-  // Centralized box-enter / box-leave. The camera no longer auto-
-  // opens on box enter — each scan is one-shot, so auto-opening
-  // would just close again 350ms later and confuse the operator.
-  // They tap the Camera button on the items screen explicitly when
-  // ready to scan the next plant.
   const goToBox = (boxId) => {
     setActiveBoxId(boxId);
     setCameraMode(null);
   };
 
-  // Shared item-scan handler used by both the text input in ItemScanner
-  // and the camera (when in 'item' mode). Lifted to PackerView so the
-  // camera doesn't need to live inside ItemScanner.
-  //
-  // Optimistic update: flip the local item to packed BEFORE the
-  // network round-trip lands, so the UI reflects the change
-  // immediately and the operator can scan the next plant without
-  // waiting on a full refetch. If the upsert fails we roll back
-  // just this item — other in-flight packs aren't disturbed.
-  // Optimistic pack-by-id. Flips the local item to packed before the
-  // network call lands, rolls back just that item on failure. Used by
-  // both the scan handler (after SKU lookup) and the per-row 'Mark
-  // packed' button (for unmatched placeholders that have a synthetic
-  // SKU and can't be scanned).
+  // ── Scan field focus management ──────────────────────────────────────────
+  // Keep the scan input focused whenever the camera overlay is closed, so the
+  // USB scanner's keystrokes always land in it. A ref mirrors the overlay
+  // state so a click that opens the camera doesn't yank focus back.
+  const overlayOpen = !!cameraMode;
+  const overlayRef = useRef(overlayOpen);
+  useEffect(() => { overlayRef.current = overlayOpen; }, [overlayOpen]);
+  useEffect(() => {
+    if (overlayOpen) return undefined;
+    const t = setTimeout(() => scanRef.current?.focus({ preventScroll: true }), 60);
+    return () => clearTimeout(t);
+  }, [activeBoxId, overlayOpen, loading]);
+  useEffect(() => {
+    const refocus = (e) => {
+      if (overlayRef.current) return;
+      // Leave focus alone when the tap lands in a real field.
+      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      setTimeout(() => {
+        if (overlayRef.current) return;
+        scanRef.current?.focus({ preventScroll: true });
+      }, 0);
+    };
+    document.addEventListener('click', refocus);
+    return () => document.removeEventListener('click', refocus);
+  }, []);
+
+  // Optimistic pack-by-id: flip the local item to packed before the network
+  // call lands; roll back just that item on failure.
   const packById = async (itemId, displayLabel) => {
     const now = new Date().toISOString();
-    setItems(prev => prev.map(i =>
-      i.id === itemId ? { ...i, packedAt: now } : i
-    ));
+    setItems(prev => prev.map(i => (i.id === itemId ? { ...i, packedAt: now } : i)));
     if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(30);
     showToast(`Packed ${displayLabel}`, 1500);
     try {
       await api.upsertItems([{ id: itemId, packedAt: now }]);
     } catch (e) {
-      setItems(prev => prev.map(i =>
-        i.id === itemId ? { ...i, packedAt: null } : i
-      ));
+      setItems(prev => prev.map(i => (i.id === itemId ? { ...i, packedAt: null } : i)));
       showToast(`Pack failed for ${displayLabel}: ${e.message || 'unknown'}`, 4000);
     }
   };
 
-  // Shared item-scan handler used by both the text input in ItemScanner
-  // and the camera (when in 'item' mode). Lifted to PackerView so the
-  // camera doesn't need to live inside ItemScanner.
+  // Landing scan: a box label (B-XXXXXX) opens the box; an item SKU resolves
+  // which open box carries it and opens that box.
+  const handleScanBox = (raw) => {
+    const upper = String(raw || '').trim().toUpperCase().replace(/_/g, '-');
+    if (!upper) return;
+    if (upper.startsWith('B-')) {
+      const code = normalizeBoxCode(raw);
+      const match = boxesByCode[code];
+      if (!match) { showToast(`No open box with code ${code}`, 3500); return; }
+      goToBox(match.id);
+      return;
+    }
+    const sku = normalizeSku(raw);
+    for (const box of Object.values(boxesByCode)) {
+      if (box.items.some(i => normalizeSku(i.sku) === sku)) {
+        showToast(`${sku} → box ${box.code}`, 2500);
+        goToBox(box.id);
+        return;
+      }
+    }
+    showToast(`Nothing matches ${raw}`, 3500);
+  };
+
+  // In-box scan: flip the matching item to packed.
   const handleScanItem = async (rawText) => {
     if (!activeBox) return;
     const sku = normalizeSku(rawText);
     if (!sku) return;
-    const candidate = activeBox.items.find(
-      i => normalizeSku(i.sku) === sku,
-    );
-    if (!candidate) {
-      showToast(`SKU ${sku} isn't in this box`, 3500);
-      return;
-    }
-    if (candidate.status !== 'sold') {
-      showToast(`SKU ${sku} is already ${candidate.status}`, 3500);
-      return;
-    }
-    if (candidate.packedAt) {
-      showToast(`SKU ${sku} already packed`, 2500);
-      return;
-    }
+    const candidate = activeBox.items.find(i => normalizeSku(i.sku) === sku);
+    if (!candidate) { showToast(`SKU ${sku} isn't in this box`, 3500); return; }
+    if (candidate.status !== 'sold') { showToast(`SKU ${sku} is already ${candidate.status}`, 3500); return; }
+    if (candidate.packedAt) { showToast(`SKU ${sku} already packed`, 2500); return; }
     await packById(candidate.id, sku);
   };
 
-  // Per-row manual pack for unmatched placeholders. They have a
-  // synthetic SKU (UNMATCHED-...) that doesn't appear on a real
-  // barcode, so scanning can never pack them. The packer taps the
-  // 'Mark packed' button on the row directly.
+  // Per-row manual pack for unmatched placeholders (synthetic SKU, no barcode).
   const handleMarkPacked = async (item) => {
-    if (item.packedAt) return;
-    if (item.status !== 'sold') return;
+    if (item.packedAt || item.status !== 'sold') return;
     const label = item.name?.trim() || item.sku || 'item';
     await packById(item.id, label.slice(0, 30));
   };
 
-  if (loading) {
-    return <FullScreenMessage>Loading boxes…</FullScreenMessage>;
-  }
+  const submitScan = () => {
+    const v = scanValue.trim();
+    setScanValue('');
+    if (v) {
+      if (activeBox) handleScanItem(v);
+      else handleScanBox(v);
+    }
+    setTimeout(() => scanRef.current?.focus({ preventScroll: true }), 0);
+  };
+
+  // Save the box size the packer used → shipment_boxes.boxSizeId. The
+  // Shipping tab reads this back, so the size syncs automatically.
+  const saveBoxSize = async (boxId, boxSizeId) => {
+    const prev = boxSizeByBox[boxId] || null;
+    setSavingSizeFor(boxId);
+    setBoxSizeByBox(m => ({ ...m, [boxId]: boxSizeId }));
+    try {
+      await api.setBoxPackaging({ shipmentBoxId: boxId, boxSizeId });
+      const size = boxSizes.find(s => s.id === boxSizeId);
+      showToast(`Box size saved: ${size?.name || '—'} · synced to shipping`, 1800);
+    } catch (e) {
+      setBoxSizeByBox(m => ({ ...m, [boxId]: prev }));
+      showToast(`Couldn't save box size: ${e.message || 'unknown'}`, 4000);
+    } finally {
+      setSavingSizeFor(null);
+    }
+  };
+
+  if (loading) return <FullScreenMessage><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Loading boxes…</FullScreenMessage>;
   if (err) {
     return (
       <FullScreenMessage tone="error">
@@ -216,32 +245,49 @@ export function PackerView({ onLogout }) {
     );
   }
 
+  const totalOpen = openBoxes.length;
+  const fullyPacked = openBoxes.filter(b => b.items.filter(i => i.status === 'sold').every(i => i.packedAt)).length;
+
   return (
     <div className="fixed inset-0 bg-gray-50 flex flex-col">
       <TopBar
         onLogout={onLogout}
-        title={activeBox ? activeBox.code : 'Scan a box'}
+        title={activeBox ? activeBox.code : 'Packing'}
         subtitle={activeBox
-          ? (activeBox.buyer || `@${activeBox.buyerUsername}` || 'Box')
-          : `${Object.keys(boxesByCode).length} open boxes`}
+          ? (activeBox.buyer || (activeBox.buyerUsername ? `@${activeBox.buyerUsername}` : 'Box'))
+          : `${totalOpen} open · ${fullyPacked} packed`}
         onBack={activeBox ? () => goToBox(null) : null}
       />
+
+      {/* Always-on scan strip — the USB scanner types here. */}
+      <ScanField
+        inputRef={scanRef}
+        value={scanValue}
+        onChange={setScanValue}
+        onSubmit={submitScan}
+        placeholder={activeBox ? 'Scan a plant barcode…' : 'Scan a box or plant…'}
+        onCamera={() => setCameraMode(activeBox ? 'item' : 'box')}
+      />
+
       {activeBox
-        ? <ItemScanner
+        ? <BoxPane
             box={activeBox}
+            boxSizes={boxSizes}
+            currentSizeId={boxSizeByBox[activeBox.id] || null}
+            savingSize={savingSizeFor === activeBox.id}
+            onPickSize={(sizeId) => saveBoxSize(activeBox.id, sizeId)}
             onMarkPacked={handleMarkPacked}
-            onOpenCamera={() => setCameraMode('item')}
+            onCamera={() => setCameraMode('item')}
             onDone={() => goToBox(null)}
           />
-        : <BoxScanner
-            onOpenCamera={() => setCameraMode('box')}
-            hint="Scan a box label (B-…) to open it, or scan an item to jump straight to its box."
+        : <LandingGrid
+            boxes={openBoxes}
+            boxSizes={boxSizes}
+            boxSizeByBox={boxSizeByBox}
+            onOpen={goToBox}
           />
       }
-      {/* Camera overlay — rendered at PackerView root so its mount /
-          unmount lifecycle is decoupled from the box ↔ item screen
-          swap. Single instance now; the active mode just decides
-          which handler the one-shot decode fires. */}
+
       {cameraMode && (cameraMode === 'box' || activeBox) && (
         <CameraScanner
           onScan={cameraMode === 'box' ? handleScanBox : handleScanItem}
@@ -254,236 +300,344 @@ export function PackerView({ onLogout }) {
 }
 
 function TopBar({ onLogout, title, subtitle, onBack }) {
-  // Box codes look right in mono ("B-3K8F2A"); regular titles like
-  // "Scan a box" don't. Pick the font per-title instead of forcing one.
   const isCodeTitle = /^B-/.test(title || '');
   return (
-    <div className="bg-emerald-700 text-white pt-safe">
-      <div className="h-14 px-3 flex items-center gap-3">
-        {/* Left slot: back button when in a box, app icon otherwise.
-            Same 40×40 visual footprint so the layout doesn't shift
-            between screens. */}
+    <div className="bg-emerald-700 text-white pt-safe flex-shrink-0">
+      <div className="h-16 px-3 sm:px-5 flex items-center gap-3">
         {onBack ? (
           <button
             onClick={onBack}
             aria-label="Back"
-            className="w-10 h-10 -ml-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"
+            className="w-12 h-12 -ml-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"
           >
-            <ArrowLeft className="w-5 h-5" />
+            <ArrowLeft className="w-6 h-6" />
           </button>
         ) : (
-          <div className="w-10 h-10 -ml-2 rounded-full flex items-center justify-center">
-            <Package className="w-5 h-5" />
+          <div className="w-12 h-12 -ml-2 rounded-full flex items-center justify-center">
+            <Package className="w-6 h-6" />
           </div>
         )}
-
         <div className="flex-1 min-w-0">
-          <div className={`font-semibold text-base leading-tight truncate ${isCodeTitle ? 'font-mono tracking-wide' : ''}`}>
+          <div className={`font-semibold text-lg leading-tight truncate ${isCodeTitle ? 'font-mono tracking-wide' : ''}`}>
             {title}
           </div>
-          {subtitle && (
-            <div className="text-xs text-emerald-100 leading-tight truncate mt-0.5">
-              {subtitle}
-            </div>
-          )}
+          {subtitle && <div className="text-sm text-emerald-100 leading-tight truncate mt-0.5">{subtitle}</div>}
         </div>
-
         <button
           onClick={onLogout}
           aria-label="Log out"
-          className="w-10 h-10 -mr-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"
+          className="w-12 h-12 -mr-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"
         >
-          <LogOut className="w-5 h-5" />
+          <LogOut className="w-6 h-6" />
         </button>
       </div>
     </div>
   );
 }
 
-// Landing screen — scan-only. The text input was removed by request:
-// the packer workflow is barcode-driven end to end. They scan either a
-// box label (B-XXXXXX) or an item label (SKU); handleScanBox routes
-// both. Camera is the single tap to action.
-function BoxScanner({ onOpenCamera, hint }) {
+// The always-focused scan input. inputMode="none" keeps iPadOS from popping
+// the on-screen keyboard while the hardware scanner still types into it.
+function ScanField({ inputRef, value, onChange, onSubmit, placeholder, onCamera }) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center px-6 pb-safe">
-      <ScanLine className="w-16 h-16 text-emerald-600 mb-4" />
-      <h2 className="text-lg font-semibold text-gray-900 mb-1">Scan to start</h2>
-      <p className="text-sm text-gray-500 text-center mb-6 max-w-xs">{hint}</p>
+    <div className="flex-shrink-0 bg-white border-b border-gray-200 px-3 sm:px-5 py-3">
+      <div className="flex items-center gap-2 max-w-5xl mx-auto">
+        <form
+          onSubmit={(e) => { e.preventDefault(); onSubmit(); }}
+          className="flex-1 flex items-center gap-2 px-3 h-14 rounded-xl border-2 border-emerald-300 bg-emerald-50/40 focus-within:border-emerald-500 focus-within:bg-white"
+        >
+          <ScanLine className="w-6 h-6 text-emerald-600 flex-shrink-0" />
+          <input
+            ref={inputRef}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onSubmit(); } }}
+            inputMode="none"
+            autoFocus
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            aria-label="Scan barcode"
+            placeholder={placeholder}
+            className="flex-1 min-w-0 bg-transparent outline-none text-lg font-mono text-gray-900 placeholder:font-sans placeholder:text-gray-400"
+          />
+          <span className="hidden sm:flex items-center gap-1.5 text-xs text-emerald-700 flex-shrink-0">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Ready
+          </span>
+        </form>
+        <button
+          type="button"
+          onClick={onCamera}
+          aria-label="Scan with camera"
+          className="flex-shrink-0 w-14 h-14 rounded-xl border-2 border-gray-200 bg-white text-gray-600 flex items-center justify-center hover:bg-gray-50 active:bg-gray-100"
+          title="Scan with the camera instead"
+        >
+          <Camera className="w-6 h-6" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Landing — a responsive grid of every open box. Tap a card to open it (or
+// just scan). Cards show packing progress + the chosen box size so the
+// packer can see what's left at a glance across the iPad.
+function LandingGrid({ boxes, boxSizes, boxSizeByBox, onOpen }) {
+  if (boxes.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center px-6 text-center pb-safe">
+        <PackageCheck className="w-16 h-16 text-emerald-300 mb-3" />
+        <h2 className="text-lg font-semibold text-gray-900">All caught up</h2>
+        <p className="text-sm text-gray-500 mt-1 max-w-xs">No open boxes to pack right now. Scan a box label if one was just created.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
+      <div className="max-w-5xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {boxes.map(box => (
+          <BoxCard
+            key={box.id}
+            box={box}
+            sizeName={boxSizes.find(s => s.id === boxSizeByBox[box.id])?.name || null}
+            onOpen={() => onOpen(box.id)}
+          />
+        ))}
+      </div>
+      <div className="h-6 pb-safe" />
+    </div>
+  );
+}
+
+function BoxCard({ box, sizeName, onOpen }) {
+  const sold = box.items.filter(i => i.status === 'sold');
+  const packed = sold.filter(i => i.packedAt).length;
+  const total = sold.length;
+  const allPacked = total > 0 && packed === total;
+  const pct = total > 0 ? (packed / total) * 100 : 0;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={`text-left rounded-2xl border-2 p-4 transition active:scale-[0.99] ${
+        allPacked
+          ? 'border-emerald-300 bg-emerald-50/60 hover:border-emerald-400'
+          : 'border-gray-200 bg-white hover:border-emerald-400 hover:shadow-sm'
+      }`}
+    >
+      <div className="flex items-center gap-2">
+        <CarrierBadge carrier={box.carrier} size="sm" />
+        <span className="font-mono font-semibold text-gray-900 tracking-wide">{box.code}</span>
+        {allPacked && <Check className="w-5 h-5 text-emerald-600 ml-auto" />}
+        {!allPacked && <ChevronRight className="w-5 h-5 text-gray-300 ml-auto" />}
+      </div>
+      <div className="mt-2 text-sm font-medium text-gray-900 truncate">
+        {box.buyer || (box.buyerUsername ? `@${box.buyerUsername}` : 'Box')}
+      </div>
+      <div className="mt-2 flex items-center gap-2">
+        <div className="flex-1 bg-gray-200 rounded-full h-2 overflow-hidden">
+          <div className={`h-full ${allPacked ? 'bg-emerald-500' : 'bg-emerald-400'}`} style={{ width: `${pct}%` }} />
+        </div>
+        <span className="text-xs font-medium text-gray-600 tabular-nums">{packed}/{total}</span>
+      </div>
+      <div className="mt-2 flex items-center gap-2 flex-wrap">
+        <BoxContentBadges box={box} />
+        {sizeName && (
+          <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
+            <Ruler className="w-3 h-3" /> {sizeName}
+          </span>
+        )}
+      </div>
+    </button>
+  );
+}
+
+// Active-box pane: progress header, item grid, and — once everything is
+// packed — the box-size question.
+function BoxPane({ box, boxSizes, currentSizeId, savingSize, onPickSize, onMarkPacked, onCamera, onDone }) {
+  const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
+  const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
+  const total = unpacked.length + packed.length;
+  const allPacked = total > 0 && unpacked.length === 0;
+  const pct = total > 0 ? (packed.length / total) * 100 : 0;
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Progress header */}
+      <div className="flex-shrink-0 px-4 sm:px-5 py-3 border-b border-gray-200 bg-white">
+        <div className="max-w-5xl mx-auto">
+          <div className="flex items-center gap-2 flex-wrap">
+            <CarrierBadge carrier={box.carrier} />
+            <BoxContentBadges box={box} size="lg" />
+            <div className="ml-auto text-base">
+              <span className="font-bold text-gray-900">{packed.length}/{total}</span>
+              <span className="text-gray-500 ml-1">packed</span>
+            </div>
+          </div>
+          <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+            <div className="h-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
+        <div className="max-w-5xl mx-auto">
+          {allPacked ? (
+            <BoxSizePicker
+              boxSizes={boxSizes}
+              currentSizeId={currentSizeId}
+              saving={savingSize}
+              onPick={onPickSize}
+              onDone={onDone}
+            />
+          ) : (
+            <>
+              {total === 0 ? (
+                <div className="text-center text-sm text-gray-500 py-12">
+                  <Package className="w-8 h-8 text-gray-300 mx-auto mb-2" /> No items in this box.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} />)}
+                  {packed.map(item => <ItemCard key={item.id} item={item} />)}
+                </div>
+              )}
+            </>
+          )}
+          <div className="h-6 pb-safe" />
+        </div>
+      </div>
+
+      {/* Footer — secondary camera while packing; the box-size step owns its
+          own Done button once everything is packed. */}
+      {!allPacked && (
+        <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3 pb-safe">
+          <div className="max-w-5xl mx-auto">
+            <button
+              type="button"
+              onClick={onCamera}
+              className="w-full flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50"
+            >
+              <Camera className="w-5 h-5" /> Or scan with camera
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Shown when every item in the box is packed: ask which box size was used and
+// sync it to the system (shipment_boxes → Shipping tab).
+function BoxSizePicker({ boxSizes, currentSizeId, saving, onPick, onDone }) {
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-1">
+        <PackageCheck className="w-6 h-6 text-emerald-600" />
+        <h2 className="text-lg font-semibold text-gray-900">Box packed!</h2>
+      </div>
+      <p className="text-sm text-gray-600 mb-4">Which box size did you use? It syncs to the shipping desk automatically.</p>
+
+      {boxSizes.length === 0 ? (
+        <div className="flex items-start gap-2 text-sm text-gray-600 bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4">
+          <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+          <span>No box sizes have been set up yet. An admin can add them in <strong>Shipping Settings → Box sizes</strong>. You can still finish this box.</span>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 mb-5">
+          {boxSizes.map(s => {
+            const selected = currentSizeId === s.id;
+            return (
+              <button
+                key={s.id}
+                type="button"
+                disabled={saving}
+                onClick={() => onPick(s.id)}
+                className={`text-left rounded-2xl border-2 p-3.5 transition active:scale-[0.98] disabled:opacity-60 ${
+                  selected
+                    ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200'
+                    : 'border-gray-200 bg-white hover:border-emerald-400'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Ruler className={`w-4 h-4 ${selected ? 'text-emerald-600' : 'text-gray-400'}`} />
+                  <span className="font-semibold text-gray-900 truncate">{s.name}</span>
+                  {selected && <Check className="w-4 h-4 text-emerald-600 ml-auto flex-shrink-0" />}
+                </div>
+                <div className="mt-1 text-xs text-gray-500 font-mono">{s.length}×{s.width}×{s.height} in</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <button
         type="button"
-        onClick={onOpenCamera}
-        className="w-full max-w-sm px-4 py-4 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800 flex items-center justify-center gap-2"
+        onClick={onDone}
+        className="w-full flex items-center justify-center gap-2 px-4 py-4 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
       >
-        <Camera className="w-5 h-5" /> Open camera
+        {currentSizeId ? 'Done — next box' : 'Finish without a size'} <ChevronRight className="w-5 h-5" />
       </button>
     </div>
   );
 }
 
-// Items screen — list of unpacked items in the active box + an item
-// scanner that flips matching items to packed. Scan logic lives in
-// PackerView so the camera (also at PackerView level) can share it.
-function ItemScanner({ box, onMarkPacked, onOpenCamera, onDone }) {
-  // Two buckets so the unpacked items rise to the top — the operator
-  // sees what's left before everything that's already packed.
-  const unpackedItems = box.items.filter(
-    i => i.status === 'sold' && !i.packedAt,
-  );
-  const packedItems = box.items.filter(
-    i => i.status === 'sold' && !!i.packedAt,
-  );
-  const totalSold = unpackedItems.length + packedItems.length;
-  const allPacked = totalSold > 0 && unpackedItems.length === 0;
-
-  return (
-    <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-200 bg-white">
-        <div className="flex items-center gap-2 flex-wrap text-sm">
-          <CarrierBadge carrier={box.carrier} />
-          <BoxContentBadges box={box} size="lg" />
-          <div className="text-gray-700 ml-auto">
-            <span className="font-semibold text-gray-900">{packedItems.length}/{totalSold}</span>
-            <span className="text-gray-500 ml-1">packed</span>
-          </div>
-          {allPacked && (
-            <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-              All done — close the box
-            </span>
-          )}
-        </div>
-        <div className="mt-2 w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-          <div
-            className="h-full bg-emerald-500 transition-all"
-            style={{ width: totalSold > 0 ? `${(packedItems.length / totalSold) * 100}%` : '0%' }}
-          />
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1.5">
-        {unpackedItems.length === 0 && packedItems.length === 0 && (
-          <div className="text-center text-sm text-gray-500 py-12">
-            <Package className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-            No items in this box.
-          </div>
-        )}
-        {unpackedItems.map(item => (
-          <ItemRow key={item.id} item={item} onMarkPacked={onMarkPacked} />
-        ))}
-        {packedItems.length > 0 && unpackedItems.length > 0 && (
-          <div className="pt-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400 font-semibold">
-            Packed
-          </div>
-        )}
-        {packedItems.map(item => <ItemRow key={item.id} item={item} />)}
-      </div>
-      {/* Footer is scan-only. Either the Scan plant button (camera) while
-          the box still has unpacked items, or a prominent Done button
-          once everything's flipped to packed. The 'or type SKU' field
-          was removed by request — the packer flow is barcode-driven
-          end to end. Unmatched placeholders (no real barcode) still
-          have their per-row 'Pack' button. */}
-      <div className="border-t border-gray-200 bg-white p-3 pb-safe">
-        {allPacked ? (
-          <button
-            type="button"
-            onClick={onDone}
-            className="w-full px-4 py-4 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
-          >
-            Done
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={onOpenCamera}
-            className="w-full flex items-center justify-center gap-2 px-4 py-4 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800 shadow-sm"
-          >
-            <Camera className="w-6 h-6" /> Scan plant
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// Carrier banner at the top of the items screen. The packer needs to
-// know which postage / handoff bin to use BEFORE they finish packing,
-// so the badge is sized to read across a worktable: bold uppercase
-// label, carrier-flavored color (UPS=amber, USPS=blue), truck glyph.
-function CarrierBadge({ carrier }) {
+function CarrierBadge({ carrier, size = 'md' }) {
   const c = String(carrier || 'usps').toUpperCase();
   const isUps = c === 'UPS';
   const cls = isUps
     ? 'bg-amber-100 text-amber-900 ring-1 ring-amber-300'
     : 'bg-blue-100 text-blue-900 ring-1 ring-blue-300';
+  const sz = size === 'sm'
+    ? 'px-2 py-0.5 text-xs gap-1'
+    : size === 'lg'
+    ? 'px-3 py-1.5 text-base gap-1.5'
+    : 'px-2.5 py-1 text-sm gap-1.5';
+  const ic = size === 'lg' ? 'w-5 h-5' : size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4';
   return (
-    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-base font-bold tracking-wider ${cls}`}>
-      <Truck className="w-5 h-5" /> {c}
+    <span className={`inline-flex items-center rounded-md font-bold tracking-wider ${cls} ${sz}`}>
+      <Truck className={ic} /> {c}
     </span>
   );
 }
 
-function ItemRow({ item, onMarkPacked }) {
+function ItemCard({ item, onMarkPacked }) {
   const isPacked = !!item.packedAt;
   const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
   const variety = (item.variety || '').trim();
-  // Unmatched placeholders have a synthetic SKU (UNMATCHED-...) that
-  // can't be scanned off a barcode label. Show a manual 'Mark packed'
-  // button on the row so the packer can flip its status without a scan.
   const showManualPack = isUnmatched && !isPacked && !!onMarkPacked;
 
-  // Color family by match status, mirroring the Shipping tab so the
-  // packer sees the same emerald/purple convention the admin sees:
-  //   matched real inventory  → emerald
-  //   unmatched placeholder   → purple (something to double-check)
-  //
-  // Bg intensifies (50 → 100) when the item flips to packed, so the
-  // packed/unpacked split stays visible even though color is now
-  // carrying match status too. Check icon + strikethrough still
-  // signal packed.
   const family = isUnmatched
-    ? {
-        bg: isPacked ? 'bg-purple-100' : 'bg-purple-50',
-        border: 'border-purple-200',
-        accent: 'text-purple-700',
-        icon: 'text-purple-600',
-        ring: 'border-purple-300',
-      }
-    : {
-        bg: isPacked ? 'bg-emerald-100' : 'bg-emerald-50',
-        border: 'border-emerald-200',
-        accent: 'text-emerald-700',
-        icon: 'text-emerald-600',
-        ring: 'border-emerald-300',
-      };
+    ? { bg: isPacked ? 'bg-purple-100' : 'bg-purple-50', border: 'border-purple-200', accent: 'text-purple-700', icon: 'text-purple-600', ring: 'border-purple-300' }
+    : { bg: isPacked ? 'bg-emerald-100' : 'bg-emerald-50', border: 'border-emerald-200', accent: 'text-emerald-700', icon: 'text-emerald-600', ring: 'border-emerald-300' };
 
   return (
-    <div className={`px-3 py-2 rounded-lg border ${family.bg} ${family.border}`}>
-      <div className="flex items-center gap-2">
+    <div className={`px-3 py-3 rounded-xl border-2 ${family.bg} ${family.border}`}>
+      <div className="flex items-center gap-2.5">
         {isPacked
-          ? <Check className={`w-5 h-5 ${family.icon} shrink-0`} />
-          : <div className={`w-5 h-5 rounded-full border-2 ${family.ring} shrink-0`} />}
+          ? <Check className={`w-6 h-6 ${family.icon} shrink-0`} />
+          : <div className={`w-6 h-6 rounded-full border-2 ${family.ring} shrink-0`} />}
         <div className="flex-1 min-w-0">
-          <div className={`text-sm font-mono ${family.accent} ${isPacked ? '' : 'font-medium'}`}>
+          <div className={`text-base font-mono ${family.accent} ${isPacked ? '' : 'font-semibold'}`}>
             {item.sku || '(no SKU)'}
           </div>
           {(name || variety) && (
-            <div className={`text-xs truncate ${family.accent} ${isPacked ? 'line-through opacity-70' : 'opacity-80'}`}>
+            <div className={`text-sm truncate ${family.accent} ${isPacked ? 'line-through opacity-70' : 'opacity-80'}`}>
               {[name, variety].filter(Boolean).join(' · ')}
             </div>
           )}
         </div>
-        {item.quantity > 1 && (
-          <span className={`text-xs ${family.accent} shrink-0`}>×{item.quantity}</span>
-        )}
+        {item.quantity > 1 && <span className={`text-sm font-medium ${family.accent} shrink-0`}>×{item.quantity}</span>}
         {showManualPack && (
           <button
             type="button"
             onClick={() => onMarkPacked(item)}
-            className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-md bg-purple-600 text-white hover:bg-purple-700 active:bg-purple-800 flex items-center gap-1"
+            className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg bg-purple-600 text-white hover:bg-purple-700 active:bg-purple-800 flex items-center gap-1"
             title="No scannable barcode — mark packed manually"
           >
-            <Check className="w-3.5 h-3.5" /> Pack
+            <Check className="w-4 h-4" /> Pack
           </button>
         )}
       </div>
@@ -506,7 +660,7 @@ function FullScreenMessage({ children, tone }) {
 
 function Toast({ text }) {
   return (
-    <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2 rounded-lg shadow-lg z-50 max-w-[90%] text-center">
+    <div className="fixed bottom-[calc(2rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2.5 rounded-xl shadow-lg z-50 max-w-[90%] text-center">
       {text}
     </div>
   );
