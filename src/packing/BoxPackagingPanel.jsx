@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Ruler, Loader2, Settings, Sparkles, ShoppingCart, Check, FlaskConical } from 'lucide-react';
 import { api } from '../api.js';
+import { ShippingMarginNote } from './ShippingMarginNote.jsx';
 
 // Per-box packaging + live rate comparison. The operator picks the box
 // size (from the Shipping Settings catalog), sets the weight, and picks
@@ -119,8 +120,15 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
 
   return (
     <div className="px-4 py-3 border-t border-gray-100 bg-slate-50/60 space-y-3">
-      <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-700">
-        <Ruler className="w-3.5 h-3.5 text-gray-500" /> Packaging &amp; rates
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-700">
+          <Ruler className="w-3.5 h-3.5 text-gray-500" /> Packaging &amp; rates
+        </div>
+        {/* What the buyer paid to ship this box — the budget the label has
+            to come in under. Compared against the chosen rate at buy time. */}
+        {box.shippingFeeCollected != null && (
+          <ShippingMarginNote feeCollected={box.shippingFeeCollected} className="text-[11px]" />
+        )}
       </div>
 
       {boxSizes.length === 0 ? (
@@ -227,6 +235,15 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
                     </span>
                   )}
                 </div>
+                {/* Loss/profit vs. what the buyer paid to ship — the
+                    "are we underwater on this box" check at the moment of buying. */}
+                {box.shippingFeeCollected != null && (
+                  <ShippingMarginNote
+                    feeCollected={box.shippingFeeCollected}
+                    cost={confirmBuy.amount}
+                    className="text-xs"
+                  />
+                )}
                 {buyErr && <div className="text-[11px] text-red-700">{buyErr}</div>}
                 <div className="flex items-center gap-2">
                   <button

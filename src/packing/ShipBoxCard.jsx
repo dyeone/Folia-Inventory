@@ -7,6 +7,7 @@ import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
+import { ShippingMarginNote } from './ShippingMarginNote.jsx';
 import { openLabelPdf, copyText } from './labelPdf.js';
 
 // One row of the packing list: recipient + items + label/ship actions.
@@ -237,12 +238,13 @@ export function ShipBoxCard({
                   <span className="font-mono">(no tracking)</span>
                 </div>
               )}
-              {shipment.labelCost != null && !shipment.isTestLabel && (
-                <span className="text-gray-500">${parseFloat(shipment.labelCost).toFixed(2)}</span>
-              )}
               <span className="text-gray-400">
                 {isPalmstreetRow ? 'Palmstreet USPS' : shipment.serviceCode}
               </span>
+              <ShippingMarginNote
+                feeCollected={box.shippingFeeCollected}
+                cost={shipment.isTestLabel || shipment.labelCost == null ? null : parseFloat(shipment.labelCost)}
+              />
               <div className="ml-auto flex items-center gap-1">
                 {/* Label PDF — exists for ShipStation/Shippo rows AND for
                     Palmstreet rows that came through the Chrome extension. */}

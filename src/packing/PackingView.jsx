@@ -11,6 +11,7 @@ import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
+import { ShippingMarginNote } from './ShippingMarginNote.jsx';
 import { openLabelPdf, copyText } from './labelPdf.js';
 import { SummaryStat } from './SummaryStat.jsx';
 import { CameraScanner } from './CameraScanner.jsx';
@@ -1180,12 +1181,18 @@ function groupBoxesByBuyer(items, sales, predicate) {
   // Box openedAt = earliest soldAt across its items. The system has no
   // explicit "box opened" event since a box exists once any item gets
   // a shipmentBoxId stamped; the first soldAt is when that happened.
+  // shippingFeeCollected = what the buyer(s) paid to ship this box, summed
+  // from each item's Palmstreet order shipping fee — compared against the
+  // label cost in the rate/label UI to flag boxes we lose money on.
   for (const box of boxMap.values()) {
     let earliest = null;
+    let feeCollected = 0;
     for (const i of box.items) {
       if (i.soldAt && (!earliest || i.soldAt < earliest)) earliest = i.soldAt;
+      feeCollected += parseFloat(i.orderShippingFee) || 0;
     }
     box.openedAt = earliest;
+    box.shippingFeeCollected = feeCollected;
   }
 
   const openBoxes = [...boxMap.values()].filter(predicate);
@@ -1792,7 +1799,7 @@ function BoxRow({
         <>
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
-          <LabelInfoRow shipment={shipment} showToast={showToast} />
+          <LabelInfoRow shipment={shipment} feeCollected={box.shippingFeeCollected} showToast={showToast} />
           {/* Quote panel — hidden while a label is active; reappears once the
               label is cancelled (liveShipment goes null). */}
           {onSavePackaging && !allShipped && !liveShipment && (
@@ -1861,7 +1868,7 @@ function BoxRow({
 // The tracking number copies on click; "Print label" opens the saved PDF
 // in a new tab. Renders in the box tab (BoxRow) so the operator never has
 // to drill into the sale to grab tracking or reprint.
-function LabelInfoRow({ shipment, showToast }) {
+function LabelInfoRow({ shipment, feeCollected, showToast }) {
   const live = shipment && !shipment.voidedAt ? shipment : null;
   if (!live || (!live.trackingNumber && !live.labelStoragePath)) return null;
   return (
@@ -1883,12 +1890,13 @@ function LabelInfoRow({ shipment, showToast }) {
         </span>
       )}
       {live.serviceCode && <span className="text-gray-400">{live.serviceCode}</span>}
-      {live.labelCost != null && !live.isTestLabel && (
-        <span className="text-gray-500">${parseFloat(live.labelCost).toFixed(2)}</span>
-      )}
       {live.isTestLabel && (
         <span className="text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">test</span>
       )}
+      <ShippingMarginNote
+        feeCollected={feeCollected}
+        cost={live.isTestLabel || live.labelCost == null ? null : parseFloat(live.labelCost)}
+      />
     </div>
   );
 }
@@ -2003,9 +2011,12 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
           address: item.buyerAddress || {},
           carrier: item.shipmentCarrier || 'usps',
           items: [],
+          shippingFeeCollected: 0,
         });
       }
-      map.get(item.shipmentBoxId).items.push(item);
+      const b = map.get(item.shipmentBoxId);
+      b.items.push(item);
+      b.shippingFeeCollected += parseFloat(item.orderShippingFee) || 0;
     }
     return [...map.values()].sort((a, b) =>
       (a.recipientName || '').localeCompare(b.recipientName || '')
