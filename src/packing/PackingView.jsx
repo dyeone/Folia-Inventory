@@ -193,6 +193,36 @@ export function PackingView({
     setTimeout(() => setToast(null), 2500);
   };
 
+  // Keep the always-on scan strip focused whenever it's actually on screen:
+  // desktop, the list view (not drilled into a box), and no modal open. A USB
+  // barcode scanner only feeds the input that holds focus, so we re-grab it
+  // after the operator clicks around or comes back from a box/modal. A ref
+  // mirrors the overlay state so a click that opens a modal doesn't yank
+  // focus back to the (now-hidden) scan box. preventScroll keeps the page
+  // from jumping to the top when refocusing after a click further down.
+  const overlayOpen = !!(buyingFor || editingBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
+  const overlayOpenRef = useRef(overlayOpen);
+  useEffect(() => { overlayOpenRef.current = overlayOpen; }, [overlayOpen]);
+  useEffect(() => {
+    if (isMobile || overlayOpen) return;
+    scanInputRef.current?.focus({ preventScroll: true });
+  }, [isMobile, overlayOpen, subTab]);
+  useEffect(() => {
+    if (isMobile) return undefined;
+    const refocus = (e) => {
+      if (overlayOpenRef.current) return;
+      // Leave focus alone when the click lands in a real field so the operator
+      // can still type in search, tracking, note, etc.
+      if (e.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return;
+      setTimeout(() => {
+        if (overlayOpenRef.current) return;
+        scanInputRef.current?.focus({ preventScroll: true });
+      }, 0);
+    };
+    document.addEventListener('click', refocus);
+    return () => document.removeEventListener('click', refocus);
+  }, [isMobile]);
+
   const refreshShipments = async () => {
     try {
       const [list, notes] = await Promise.all([
