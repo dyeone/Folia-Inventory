@@ -14,6 +14,7 @@ import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 import { ShippingMarginNote } from './ShippingMarginNote.jsx';
 import { openLabelPdf, copyText } from './labelPdf.js';
 import { SummaryStat } from './SummaryStat.jsx';
+import { shippingRollup, fmt$2 } from '../financial/financialHelpers.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
 import { EditBoxItemsModal } from './EditBoxItemsModal.jsx';
@@ -572,6 +573,14 @@ export function PackingView({
       }
     : shipped;
 
+  // Shipping cost vs. what buyers paid, across the shipped boxes currently
+  // shown. Only boxes with a real purchased label count (see shippingRollup),
+  // so a negative net is a genuine "we shipped this at a loss" figure.
+  const shippedShipping = shippingRollup(
+    filteredShipped.groups.flatMap(g => g.boxes).flatMap(b => b.items),
+    shipmentsByBox,
+  );
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -1017,6 +1026,28 @@ export function PackingView({
               · {shipped.totalBoxes} {shipped.totalBoxes === 1 ? 'box' : 'boxes'} · {shipped.groups.length} {shipped.groups.length === 1 ? 'buyer' : 'buyers'} · {shipped.totalItems} {shipped.totalItems === 1 ? 'item' : 'items'}
             </span>
           </h3>
+          {shippedShipping.boxes > 0 && (
+            <div className="grid grid-cols-3 gap-2">
+              <SummaryStat
+                label="Shipping cost"
+                value={fmt$2(shippedShipping.cost)}
+                sub={`${shippedShipping.boxes} label${shippedShipping.boxes === 1 ? '' : 's'} bought`}
+                tone="gray"
+              />
+              <SummaryStat
+                label="Buyers paid"
+                value={fmt$2(shippedShipping.collected)}
+                sub="shipping collected"
+                tone="gray"
+              />
+              <SummaryStat
+                label={shippedShipping.net < 0 ? 'Lost on shipping' : 'Shipping net'}
+                value={fmt$2(shippedShipping.net)}
+                sub={shippedShipping.net < 0 ? 'cost over collected' : 'collected over cost'}
+                tone={shippedShipping.net < 0 ? 'red' : 'emerald'}
+              />
+            </div>
+          )}
           {filteredShipped.groups.length === 0 ? (
             <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
               <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
