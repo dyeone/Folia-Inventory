@@ -303,6 +303,9 @@ export function PackingView({
     await onShipBox(box.saleId, itemIds);
     // onShipBox refreshes items at the App level → groups recompute and
     // this box disappears. No need to refresh shipments here.
+    // Hand focus back to the always-on scan strip so the operator can scan
+    // the next box without clicking (no-op on mobile, where it isn't rendered).
+    setTimeout(() => scanInputRef.current?.focus(), 0);
   };
 
   const handleSaveTracking = async (box, trackingNumber) => {
