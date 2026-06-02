@@ -198,8 +198,12 @@ async function recordTracking(req, res, userId) {
 
   // Upload PDFs if present. Soft-fail-through to save the row even if
   // Storage isn't reachable — the tracking number is still useful.
-  const labelStoragePath = await uploadPdf(`${shipmentBoxId}.pdf`, labelPdfBase64).catch(logUploadErr('label'));
-  const slipStoragePath  = await uploadPdf(`${shipmentBoxId}-slip.pdf`, slipPdfBase64).catch(logUploadErr('slip'));
+  // shipmentBoxId is a composite key (| + spaces); Supabase Storage rejects
+  // those, so sanitize into a valid object key. The sanitized path is what
+  // gets stored, so retrieval uses it verbatim.
+  const key = String(shipmentBoxId).replace(/[^a-zA-Z0-9._-]/g, '_');
+  const labelStoragePath = await uploadPdf(`${key}.pdf`, labelPdfBase64).catch(logUploadErr('label'));
+  const slipStoragePath  = await uploadPdf(`${key}-slip.pdf`, slipPdfBase64).catch(logUploadErr('slip'));
 
   const row = {
     id: shipmentBoxId,

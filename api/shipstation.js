@@ -312,7 +312,9 @@ async function buyLabel(req, res, userId) {
   if (labelData) {
     try {
       const buf = Buffer.from(labelData, 'base64');
-      const path = `${shipmentBoxId}.pdf`;
+      // shipmentBoxId is a composite key (contains | and spaces); Supabase
+      // Storage rejects those, so sanitize it into a valid object key.
+      const path = `${storageKey(shipmentBoxId)}.pdf`;
       const { error: upErr } = await supabase
         .storage
         .from('shipping-labels')
@@ -355,6 +357,14 @@ async function buyLabel(req, res, userId) {
 
   const saved = await upsertShipment(row);
   return res.status(200).json({ shipment: saved });
+}
+
+// Supabase Storage rejects keys with characters like | and spaces. The
+// shipmentBoxId is a composite "id|buyer|street|city|state|zip" key, so map
+// it to a safe object key. The sanitized path is stored on the row, so
+// retrieval (getLabelUrl) uses it verbatim — no need to reverse it.
+function storageKey(id) {
+  return String(id).replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
 // True for a "column does not exist" / stale-schema-cache error — used to
