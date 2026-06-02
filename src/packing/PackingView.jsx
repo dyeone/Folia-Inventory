@@ -10,6 +10,7 @@ import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
+import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 import { SummaryStat } from './SummaryStat.jsx';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
@@ -185,6 +186,9 @@ export function PackingView({
   // full shipments table — see api/shipments.js:53.
   const [shipmentsByBox, setShipmentsByBox] = useState({});
   const [boxNotesByBox, setBoxNotesByBox] = useState({});
+  // Box-size presets (from Shipping Settings) the operator picks from per
+  // box when rate-shopping. Read-only here; edited in ShippingSettingsModal.
+  const [boxSizes, setBoxSizes] = useState([]);
   const [buyingFor, setBuyingFor] = useState(null);
   const [toast, setToast] = useState(null);
 
@@ -236,10 +240,30 @@ export function PackingView({
 
   const onSaveBoxNote = async (shipmentBoxId, note) => {
     const saved = await api.setBoxNote({ shipmentBoxId, note });
+    // Merge — setBoxNote only returns note fields, so keep any packaging
+    // (boxSizeId / weightOz / serviceKey) already in the cache.
+    setBoxNotesByBox(prev => ({
+      ...prev,
+      [shipmentBoxId]: {
+        ...(prev[shipmentBoxId] || {}),
+        note: saved.note,
+        updatedAt: saved.updatedAt,
+        updatedBy: saved.updatedBy,
+      },
+    }));
+  };
+
+  // Persist a per-box packaging change (box size / weight / service). The
+  // server returns the full row, so we mirror it wholesale into the cache.
+  const onSaveBoxPackaging = async (shipmentBoxId, patch) => {
+    const saved = await api.setBoxPackaging({ shipmentBoxId, ...patch });
     setBoxNotesByBox(prev => ({
       ...prev,
       [shipmentBoxId]: {
         note: saved.note,
+        boxSizeId: saved.boxSizeId ?? null,
+        weightOz: saved.weightOz ?? null,
+        serviceKey: saved.serviceKey ?? null,
         updatedAt: saved.updatedAt,
         updatedBy: saved.updatedBy,
       },
@@ -250,13 +274,15 @@ export function PackingView({
     let cancelled = false;
     (async () => {
       try {
-        const [list, notes] = await Promise.all([
+        const [list, notes, settings] = await Promise.all([
           api.getShipments(),
           api.getBoxNotes(),
+          api.getSettings('shipping').catch(() => null),
         ]);
         if (cancelled) return;
         setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
         setBoxNotesByBox(notes || {});
+        setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
       } catch { /* no-op */ }
     })();
     return () => { cancelled = true; };
@@ -840,7 +866,9 @@ export function PackingView({
                     sales={sales}
                     shipmentsByBox={shipmentsByBox}
                     boxNotesByBox={boxNotesByBox}
+                    boxSizes={boxSizes}
                     onSaveBoxNote={onSaveBoxNote}
+                    onSaveBoxPackaging={onSaveBoxPackaging}
                     onOpenBox={(saleId) => setActiveSaleId(saleId)}
                     onBuyLabel={(box) => setBuyingFor(box)}
                     onSaveTracking={handleSaveTracking}
@@ -971,7 +999,9 @@ export function PackingView({
                   sales={sales}
                   shipmentsByBox={shipmentsByBox}
                   boxNotesByBox={boxNotesByBox}
+                  boxSizes={boxSizes}
                   onSaveBoxNote={onSaveBoxNote}
+                  onSaveBoxPackaging={onSaveBoxPackaging}
                   onOpenBox={(saleId) => setActiveSaleId(saleId)}
                   onBuyLabel={(box) => setBuyingFor(box)}
                   onSaveTracking={handleSaveTracking}
@@ -1165,7 +1195,7 @@ function addressOneLine(addr) {
 }
 
 function BuyerGroupCard({
-  group, sales, shipmentsByBox, boxNotesByBox, onSaveBoxNote,
+  group, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
@@ -1211,6 +1241,8 @@ function BuyerGroupCard({
             onMarkShipped={() => onMarkShipped(box)}
             onTogglePacked={onTogglePacked}
             onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
+            boxSizes={boxSizes}
+            onSavePackaging={onSaveBoxPackaging ? (patch) => onSaveBoxPackaging(box.id, patch) : null}
             showToast={showToast}
             isAdmin={isAdmin}
             onEditItems={onEditItems ? () => onEditItems(box) : null}
@@ -1444,7 +1476,7 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
-  onSaveNote,
+  onSaveNote, boxSizes, onSavePackaging,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected,
 }) {
@@ -1683,6 +1715,14 @@ function BoxRow({
         <>
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
+          {onSavePackaging && !allShipped && (
+            <BoxPackagingPanel
+              box={box}
+              boxSizes={boxSizes}
+              onSavePackaging={onSavePackaging}
+              showToast={showToast}
+            />
+          )}
           {onSaveNote && (
             <BoxNotePanel
               note={box.note}
@@ -1793,18 +1833,21 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
   // Loaded once on mount and refreshed after a Buy/Void completes.
   const [shipmentsByBox, setShipmentsByBox] = useState({});
   const [boxNotesByBox, setBoxNotesByBox] = useState({});
+  const [boxSizes, setBoxSizes] = useState([]);
   const [buyingFor, setBuyingFor] = useState(null);
   const [actionToast, setActionToast] = useState(null);
 
   useEffect(() => {
     (async () => {
       try {
-        const [list, notes] = await Promise.all([
+        const [list, notes, settings] = await Promise.all([
           api.getShipments(sale.id),
           api.getBoxNotes(sale.id),
+          api.getSettings('shipping').catch(() => null),
         ]);
         setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
         setBoxNotesByBox(notes || {});
+        setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
       } catch {
         // Silent — shipments / notes simply won't show until refresh.
       }
@@ -1931,11 +1974,27 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
             shipment={shipmentsByBox[box.id]}
             showToast={showToast}
             onPrintItemLabels={onPrintItemLabels}
+            boxSizes={boxSizes}
+            onSavePackaging={async (patch) => {
+              const saved = await api.setBoxPackaging({ shipmentBoxId: box.id, ...patch });
+              setBoxNotesByBox(prev => ({
+                ...prev,
+                [box.id]: {
+                  note: saved.note,
+                  boxSizeId: saved.boxSizeId ?? null,
+                  weightOz: saved.weightOz ?? null,
+                  serviceKey: saved.serviceKey ?? null,
+                  updatedAt: saved.updatedAt,
+                  updatedBy: saved.updatedBy,
+                },
+              }));
+            }}
             onSaveNote={async (note) => {
               const saved = await api.setBoxNote({ shipmentBoxId: box.id, note });
               setBoxNotesByBox(prev => ({
                 ...prev,
                 [box.id]: {
+                  ...(prev[box.id] || {}),
                   note: saved.note,
                   updatedAt: saved.updatedAt,
                   updatedBy: saved.updatedBy,

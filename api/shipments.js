@@ -40,6 +40,7 @@ export default wrap(async (req, res) => {
       if (action === 'record-tracking') return recordTracking(req, res, userId);
       if (action === 'clear-tracking') return clearTracking(req, res);
       if (action === 'set-box-note') return setBoxNote(req, res, userId);
+      if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
     default:
@@ -273,8 +274,43 @@ async function setBoxNote(req, res, userId) {
   return res.status(200).json({ box: data });
 }
 
+// POST /api/shipments  body: { action:'set-box-packaging', shipmentBoxId,
+//   boxSizeId?, weightOz?, serviceKey? }
+// Upserts the per-box packaging selection (box size + weight + service)
+// onto the lazy shipment_boxes row. Only the keys present in the body are
+// touched, so saving a service doesn't wipe a previously-saved size. Empty
+// string / null clears a field. Mirrors set-box-note's upsert pattern.
+const VALID_SERVICE_KEYS = ['usps_priority', 'ups_2nd_day_air', 'ups_next_day_air_saver'];
+async function setBoxPackaging(req, res, userId) {
+  const { shipmentBoxId, boxSizeId, weightOz, serviceKey } = req.body || {};
+  if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
+    const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
+  }
+  const patch = { id: shipmentBoxId, updatedAt: new Date().toISOString(), updatedBy: userId };
+  if ('boxSizeId' in req.body) patch.boxSizeId = boxSizeId ? String(boxSizeId) : null;
+  if ('weightOz' in req.body) {
+    const n = parseFloat(weightOz);
+    patch.weightOz = Number.isFinite(n) && n > 0 ? n : null;
+  }
+  if ('serviceKey' in req.body) {
+    if (serviceKey && !VALID_SERVICE_KEYS.includes(serviceKey)) {
+      const e = new Error(`Invalid serviceKey: ${serviceKey}`); e.status = 400; throw e;
+    }
+    patch.serviceKey = serviceKey || null;
+  }
+
+  const { data, error } = await supabase
+    .from('shipment_boxes')
+    .upsert(patch, { onConflict: 'id' })
+    .select('id, note, "boxSizeId", "weightOz", "serviceKey", "updatedAt", "updatedBy"')
+    .single();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ box: data });
+}
+
 // GET /api/shipments?action=box-notes[&saleId=<id>]
-// Returns { boxNotes: { [shipmentBoxId]: { note, updatedAt, updatedBy } } }.
+// Returns { boxNotes: { [shipmentBoxId]: { note, boxSizeId, weightOz,
+//   serviceKey, updatedAt, updatedBy } } }.
 // With saleId: scoped to boxes whose items belong to that sale.
 // Without saleId: returns all box-note rows (top-level Ready/Shipped tab
 // uses this to decorate every visible box). Missing rows are absent from
@@ -283,7 +319,7 @@ async function boxNotes(req, res) {
   const saleId = req.query?.saleId;
   let query = supabase
     .from('shipment_boxes')
-    .select('id, note, "updatedAt", "updatedBy"');
+    .select('id, note, "boxSizeId", "weightOz", "serviceKey", "updatedAt", "updatedBy"');
   if (saleId) {
     const { data: items, error: itemsErr } = await supabase
       .from('inventory_items')
@@ -299,6 +335,9 @@ async function boxNotes(req, res) {
   if (rowsErr) { const e = new Error(rowsErr.message); e.status = 500; throw e; }
   const map = Object.fromEntries((rows || []).map(r => [r.id, {
     note: r.note,
+    boxSizeId: r.boxSizeId ?? null,
+    weightOz: r.weightOz ?? null,
+    serviceKey: r.serviceKey ?? null,
     updatedAt: r.updatedAt,
     updatedBy: r.updatedBy,
   }]));

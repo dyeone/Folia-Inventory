@@ -402,16 +402,33 @@ alter table app_settings enable row level security;
 alter table shipments    enable row level security;
 
 -- ─── Shipment boxes ──────────────────────────────────────────────────────────
--- Per-box metadata (operator's seller-note today; room for weight/dims/etc.
--- later). Lazy-created the first time a note is saved; missing row = no
--- note. See migration 0018.
+-- Per-box metadata (operator's seller-note + packaging selection).
+-- Lazy-created the first time a note OR packaging is saved; missing row =
+-- nothing set. See migrations 0018 (note) and 0022 (packaging).
+--   boxSizeId  → a boxSizes preset id from app_settings.id='shipping'
+--   weightOz   → actual per-box weight used for rate quotes
+--   serviceKey → one of the three offered services (see 0022 check)
 
 create table if not exists shipment_boxes (
-  id          text        primary key,            -- = shipmentBoxId on inventory_items
-  note        text,
-  "updatedAt" timestamptz not null default now(),
-  "updatedBy" text
+  id           text        primary key,            -- = shipmentBoxId on inventory_items
+  note         text,
+  "boxSizeId"  text,
+  "weightOz"   numeric,
+  "serviceKey" text,
+  "updatedAt"  timestamptz not null default now(),
+  "updatedBy"  text
 );
+alter table shipment_boxes add column if not exists "boxSizeId" text;
+alter table shipment_boxes add column if not exists "weightOz"  numeric;
+alter table shipment_boxes add column if not exists "serviceKey" text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'shipment_boxes_servicekey_check') then
+    alter table shipment_boxes add constraint shipment_boxes_servicekey_check
+      check ("serviceKey" is null or "serviceKey" in
+        ('usps_priority','ups_2nd_day_air','ups_next_day_air_saver'));
+  end if;
+end $$;
 
 alter table shipment_boxes enable row level security;
 
