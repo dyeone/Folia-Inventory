@@ -154,7 +154,9 @@ export function ShipBoxCard({
             ))}
           </div>
 
-          {onSavePackaging && !allShipped && (
+          {/* Quote panel — hidden once a label is bought; reappears after
+              the label is cancelled (hasActiveLabel flips back to false). */}
+          {onSavePackaging && !allShipped && !hasActiveLabel && (
             <BoxPackagingPanel
               box={box}
               boxSizes={boxSizes}
@@ -277,12 +279,12 @@ export function ShipBoxCard({
                     </button>
                   </>
                 )}
-                {!allShipped && !isPalmstreetRow && (
+                {!isPalmstreetRow && (
                   <button
                     onClick={onVoidLabel}
                     className="flex items-center gap-1 px-2 py-1 text-gray-600 hover:bg-red-50 hover:text-red-600 rounded"
                   >
-                    <RotateCcw className="w-3.5 h-3.5" /> Void
+                    <RotateCcw className="w-3.5 h-3.5" /> Cancel label
                   </button>
                 )}
               </div>
