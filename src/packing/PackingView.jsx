@@ -1514,6 +1514,10 @@ function BoxRow({
   // primary action button and the inline tracking editor. Chevron
   // drill-in to the per-sale pane is still useful (label PDF download).
   const action = allShipped ? null : boxActionState(box, shipment);
+  // A live (non-voided) label with a saved PDF can be reprinted from the
+  // row — true for ShipStation, Shippo, and Palmstreet-with-PDF rows alike.
+  const liveShipment = shipment && !shipment.voidedAt ? shipment : null;
+  const canPrintLabel = !!liveShipment?.labelStoragePath;
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
@@ -1642,12 +1646,12 @@ function BoxRow({
           </div>
         )}
 
-        {/* Row 3 — actions. Hidden when no actionable state (e.g. shipped
-            box). Wraps on overflow so action buttons can't get pushed off
-            screen on narrow viewports. */}
-        {action && (
+        {/* Row 3 — actions. Renders when the box is still actionable OR has a
+            printable label (so shipped boxes can still reprint). Wraps on
+            overflow so action buttons can't get pushed off screen. */}
+        {(action || canPrintLabel) && (
           <div className="mt-2 flex items-center gap-1.5 flex-wrap">
-            {isAdmin && onEditItems && (
+            {action && isAdmin && onEditItems && (
               <button
                 onClick={(e) => { stop(e); onEditItems(); }}
                 title="Add or remove items in this box"
@@ -1657,7 +1661,7 @@ function BoxRow({
                 <Pencil className="w-3 h-3" /> Edit
               </button>
             )}
-            {isAdmin && onDeleteBox && (
+            {action && isAdmin && onDeleteBox && (
               <button
                 onClick={(e) => { stop(e); onDeleteBox(); }}
                 title="Delete this box (reverts matched items, purges placeholders)"
@@ -1667,7 +1671,7 @@ function BoxRow({
                 <Trash2 className="w-3 h-3" />
               </button>
             )}
-            {onTogglePacked && unpackedSoldCount > 0 && (
+            {action && onTogglePacked && unpackedSoldCount > 0 && (
               <button
                 onClick={handlePackAll}
                 disabled={busy}
@@ -1678,7 +1682,7 @@ function BoxRow({
                 <span className="text-emerald-600">· {unpackedSoldCount}</span>
               </button>
             )}
-            {action.kind === 'buy-label' && (
+            {action?.kind === 'buy-label' && (
               <button
                 onClick={(e) => { stop(e); onBuyLabel(); }}
                 className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
@@ -1686,7 +1690,7 @@ function BoxRow({
                 <Truck className="w-3 h-3" /> Buy label
               </button>
             )}
-            {action.kind === 'enter-tracking' && !editingTracking && (
+            {action?.kind === 'enter-tracking' && !editingTracking && (
               <button
                 onClick={(e) => { stop(e); setEditingTracking(true); }}
                 className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
@@ -1694,7 +1698,17 @@ function BoxRow({
                 <Pencil className="w-3 h-3" /> Enter tracking
               </button>
             )}
-            {onPrintSlip && (
+            {/* Print the saved shipping label (ShipStation or Shippo). */}
+            {canPrintLabel && (
+              <button
+                onClick={(e) => { stop(e); openLabelPdf(liveShipment, 'label', showToast); }}
+                title="Open the saved shipping label PDF to print"
+                className="text-xs font-medium px-2.5 py-1 rounded-md border border-emerald-300 text-emerald-700 bg-white hover:bg-emerald-50 active:bg-emerald-100 flex items-center gap-1"
+              >
+                <Printer className="w-3 h-3" /> Print label
+              </button>
+            )}
+            {action && onPrintSlip && (
               <button
                 onClick={(e) => { stop(e); onPrintSlip(); }}
                 title="Print the customer-facing shipping slip"
@@ -1703,14 +1717,16 @@ function BoxRow({
                 <Receipt className="w-3 h-3" /> Print slip
               </button>
             )}
-            <button
-              onClick={handleMarkShipped}
-              disabled={busy}
-              className="ml-auto text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 flex items-center gap-1"
-            >
-              {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-              Mark shipped
-            </button>
+            {action && (
+              <button
+                onClick={handleMarkShipped}
+                disabled={busy}
+                className="ml-auto text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 flex items-center gap-1"
+              >
+                {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                Mark shipped
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -1807,20 +1823,12 @@ function LabelInfoRow({ shipment, showToast }) {
           <Truck className="w-3.5 h-3.5 text-gray-400" /> <span className="font-mono">(no tracking)</span>
         </span>
       )}
+      {live.serviceCode && <span className="text-gray-400">{live.serviceCode}</span>}
       {live.labelCost != null && !live.isTestLabel && (
         <span className="text-gray-500">${parseFloat(live.labelCost).toFixed(2)}</span>
       )}
       {live.isTestLabel && (
         <span className="text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">test</span>
-      )}
-      {live.labelStoragePath && (
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); openLabelPdf(live, 'label', showToast); }}
-          className="ml-auto flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-100 rounded font-medium"
-        >
-          <Printer className="w-3.5 h-3.5" /> Print label
-        </button>
       )}
     </div>
   );
