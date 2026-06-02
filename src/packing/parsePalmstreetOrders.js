@@ -177,6 +177,9 @@ export function parsePalmstreetOrders(rows) {
 
     if (skusInTitle.length > 1) {
       const each = price / skusInTitle.length;
+      // Split the row's shipping fee across the bundled SKUs the same way
+      // price is split, so summing a box's items reproduces the order total.
+      const feeEach = shippingFee / skusInTitle.length;
       skusInTitle.forEach((sk, i) => {
         box.items.push({
           rowKey: `r${idx}_${i}`,
@@ -184,6 +187,7 @@ export function parsePalmstreetOrders(rows) {
           sku: sk,
           quantity,
           price: Number.isFinite(each) ? each : 0,
+          orderShippingFee: Number.isFinite(feeEach) ? feeEach : 0,
           orderNumber: orderNum,
           orderDate: orderDateIso,
           notes: itemNotes,
@@ -199,6 +203,7 @@ export function parsePalmstreetOrders(rows) {
       sku: resolvedSku,
       quantity,
       price,
+      orderShippingFee: shippingFee,
       orderNumber: orderNum,
       orderDate: orderDateIso,
       notes: itemNotes,

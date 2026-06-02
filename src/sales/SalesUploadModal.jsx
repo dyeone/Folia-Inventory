@@ -159,7 +159,10 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             id: inv.id,
             status: 'sold',
             salePrice: finalPrice,
-            soldAt: now,
+            // Sold time is when the buyer actually ordered (from the
+            // Palmstreet "Order Date" column), not when we ran this import.
+            // Falls back to now if the row had no parseable date.
+            soldAt: it.orderDate || now,
             buyer: box.recipientName,
             buyerUsername: box.username,
             buyerAddress,
@@ -167,6 +170,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             shipmentCarrier: box.carrier || 'usps',
             orderId: it.orderNumber || null,
             orderDate: it.orderDate || null,
+            orderShippingFee: it.orderShippingFee ?? null,
             notes: it.notes || null,
           });
         } else {
@@ -188,7 +192,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             lotKind: 'unmatched',
             saleId: fallbackSaleId,
             salePrice: it.price > 0 ? it.price : 0,
-            soldAt: now,
+            soldAt: it.orderDate || now,
             buyer: box.recipientName,
             buyerUsername: box.username,
             buyerAddress,
@@ -196,6 +200,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             shipmentCarrier: box.carrier || 'usps',
             orderId: it.orderNumber || null,
             orderDate: it.orderDate || null,
+            orderShippingFee: it.orderShippingFee ?? null,
             notes: it.notes || null,
           });
         }

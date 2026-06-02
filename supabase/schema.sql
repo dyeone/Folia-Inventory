@@ -127,6 +127,13 @@ alter table inventory_items add column if not exists "orderId" text;
 alter table inventory_items add column if not exists "orderDate" timestamptz;
 alter table inventory_items add column if not exists "refundedAmount" numeric default 0;
 alter table inventory_items add column if not exists "refundedAt" timestamptz;
+-- Shipping fee the buyer paid for this line, taken from the Palmstreet
+-- order's "Shipping Fee" column at Validate-Sales time. Stored per item
+-- (split evenly across a bundled row's SKUs, mirroring price) so summing
+-- a box's items reproduces the total the buyer paid to ship that box. The
+-- Shipping tab compares that sum against the label cost to flag boxes we
+-- lose money shipping.
+alter table inventory_items add column if not exists "orderShippingFee" numeric;
 create index if not exists inventory_items_orderid_idx on inventory_items ("orderId");
 
 -- Carrier the box should ship by ('usps' default, 'ups' if the buyer paid
