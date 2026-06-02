@@ -397,13 +397,14 @@ export function PackingView({
     return false;
   };
   // A box passes the contents filter if it holds at least one item of the
-  // selected kind. TC keys off item.type; Anthurium off item.variety (the
-  // same predicate the Print ANT labels button and box labels use).
+  // selected kind. Anthurium keys off item.variety (the same predicate the
+  // Print ANT labels button and box labels use). TC means tissue culture
+  // that is NOT anthurium — anthurium tissue cultures count as Anthurium,
+  // so the two filters stay mutually exclusive (TC boxes hold no anthurium).
+  const isAnthurium = (i) => (i.variety || '').toLowerCase() === 'anthurium';
   const matchContents = (box) => {
-    if (contentFilter === 'tc') return box.items.some(i => i.type === 'tc');
-    if (contentFilter === 'anthurium') {
-      return box.items.some(i => (i.variety || '').toLowerCase() === 'anthurium');
-    }
+    if (contentFilter === 'tc') return box.items.some(i => i.type === 'tc' && !isAnthurium(i));
+    if (contentFilter === 'anthurium') return box.items.some(isAnthurium);
     return true;
   };
   const filterBoxes = (boxes, applyCarrierFilter) =>
