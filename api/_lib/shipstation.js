@@ -32,8 +32,9 @@ async function call(method, path, body) {
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* leave data null */ }
   if (!res.ok) {
-    // ShipStation returns either { Message, ExceptionMessage } or a string.
-    const msg = data?.Message || data?.ExceptionMessage || data?.message || text || `ShipStation ${res.status}`;
+    // ShipStation wraps real errors in ExceptionMessage and puts a generic
+    // "An error has occurred." in Message — prefer the specific field.
+    const msg = data?.ExceptionMessage || data?.Message || data?.message || text || `ShipStation ${res.status}`;
     const e = new Error(msg);
     e.status = res.status;
     e.body = data;
