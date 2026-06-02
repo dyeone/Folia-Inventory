@@ -10,11 +10,11 @@ import { normalizeSku } from '../labels/boxCode.js';
 //   { item, confidence: 'sku' }        — fresh available/listed match;
 //                                        will be marked sold on apply
 //   { item, alreadyInBox: boxId }      — SKU matches but the inventory
-//                                        row is already in another
-//                                        box (open or shipped). Apply
-//                                        will SKIP this line so we
-//                                        don't duplicate boxes or
-//                                        disrupt actively-packed work.
+//                                        row is already in a box (open or
+//                                        shipped). Apply keeps it in place
+//                                        (never duplicates or moves it) but
+//                                        tops up missing data — order date,
+//                                        shipping fee, etc. — from the file.
 //   null                               — no inventory item with that SKU
 //                                        (or SKU exists only in some
 //                                        non-actionable state)
@@ -24,7 +24,8 @@ export function matchInventory(palmItem, inventoryItems) {
 
   // ── Pass 1: SKU-based match ──────────────────────────────────────
   // Fresh available/listed row → mark sold. Already-placed row in any
-  // box → flag as alreadyInBox so apply can skip.
+  // box → flag as alreadyInBox so apply backfills its missing data
+  // without duplicating or moving it.
   if (palmItem?.sku) {
     const k = normalizeSku(palmItem.sku);
     if (k) {

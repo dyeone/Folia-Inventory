@@ -26,6 +26,16 @@ import { BoxesList, SummaryStat } from '../packing/PackingView.jsx';
 // Sale-event association is preserved automatically because items keep
 // their `saleId` from when they were assigned to a lineup; this modal
 // just updates them in place.
+// Compare two timestamps by the instant they represent, not their string
+// form — Postgres returns timestamptz as `…+00:00` while the parser emits
+// `…000Z`, so a raw === would re-write an identical date on every upload.
+function sameInstant(a, b) {
+  if (!a || !b) return false;
+  const ta = new Date(a).getTime();
+  const tb = new Date(b).getTime();
+  return !isNaN(ta) && !isNaN(tb) && ta === tb;
+}
+
 export function SalesUploadModal({ items, onApply, onClose }) {
   const [fileName, setFileName] = useState('');
   const [boxes, setBoxes] = useState(null);
@@ -144,10 +154,31 @@ export function SalesUploadModal({ items, onApply, onClose }) {
       // right item instead of a box-level rollup).
       for (const it of box.items) {
         if (it.match?.alreadyInBox) {
-          // Inventory row already lives in another box (open or
-          // shipped). Skip entirely — no new placeholder, no
-          // duplicate. The preview's "already in a box" count tells
-          // the operator how many lines were dropped this way.
+          // Inventory row is already placed in a box (open or shipped). We
+          // never duplicate it or move it between boxes — but we DO top up
+          // data an earlier import didn't capture (notably order date +
+          // shipping fee, which only started being saved recently). Order
+          // date / shipping fee are refreshed from the file, and soldAt is
+          // realigned to the order date so the sold time reflects when the
+          // buyer ordered. Buyer / price / notes are filled only when
+          // missing, so a manual correction is never clobbered. status and
+          // shipmentBoxId are deliberately left alone — re-validating must
+          // not revert a shipped box or shuffle placement.
+          const inv = it.match.item;
+          const patch = { id: inv.id };
+          if (it.orderDate && !sameInstant(inv.orderDate, it.orderDate)) patch.orderDate = it.orderDate;
+          if (it.orderDate && !sameInstant(inv.soldAt, it.orderDate)) patch.soldAt = it.orderDate;
+          if (it.orderShippingFee != null && inv.orderShippingFee == null) {
+            patch.orderShippingFee = it.orderShippingFee;
+          }
+          if (it.orderNumber && !inv.orderId) patch.orderId = it.orderNumber;
+          if (box.recipientName && !inv.buyer) patch.buyer = box.recipientName;
+          if (box.username && !inv.buyerUsername) patch.buyerUsername = box.username;
+          if (inv.buyerAddress == null) patch.buyerAddress = buyerAddress;
+          if (inv.salePrice == null && it.price > 0) patch.salePrice = it.price;
+          if (it.notes && !inv.notes) patch.notes = it.notes;
+          // Only enqueue a write if something actually changed.
+          if (Object.keys(patch).length > 1) updates.push(patch);
           continue;
         }
         if (it.match?.item) {
@@ -223,7 +254,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
               Validate Sales
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Match each Palmstreet order to inventory by exact SKU. New lines for a buyer with an open box merge into it; lines whose SKU is already in any box (open or shipped) are skipped — no duplicates.
+              Match each Palmstreet order to inventory by exact SKU. New lines for a buyer with an open box merge into it; lines whose SKU is already in any box (open or shipped) are updated in place — order date, shipping fee, and any missing details are filled in without duplicating or moving the box.
             </p>
           </div>
           <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2" aria-label="Close">
@@ -258,7 +289,8 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                 <div className="font-medium text-gray-900 mb-1">What this does:</div>
                 <ul className="space-y-0.5 list-disc list-inside">
                   <li>Matches each order row against the full inventory by <em>exact SKU</em> (case-insensitive)</li>
-                  <li>Marks matched items <em>sold</em> with the buyer's price, order ID, and address</li>
+                  <li>Marks matched items <em>sold</em> with the buyer's price, order date, shipping fee, order ID, and address</li>
+                  <li>Re-uploading is safe: items already in a box keep their place but get <em>topped up</em> with order date, shipping fee, and anything that was missing</li>
                   <li>Unmatched rows still flow to the Shipping tab as <em>placeholder</em> items (purple) so nothing gets dropped — fix the SKU at source and re-upload if you need them re-linked to real inventory</li>
                   <li>Groups items by buyer so the Shipping tab can ship them</li>
                 </ul>
@@ -321,7 +353,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             >
               <Check className="w-4 h-4" /> Update Inventory · {summary?.matched || 0} matched
               {summary?.unmatched > 0 && <> + {summary.unmatched} unmatched</>}
-              {summary?.alreadyInBox > 0 && <> · {summary.alreadyInBox} skipped</>}
+              {summary?.alreadyInBox > 0 && <> · {summary.alreadyInBox} updated</>}
             </button>
           </div>
         )}
