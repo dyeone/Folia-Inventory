@@ -120,6 +120,24 @@ export function SalesUploadModal({ items, onApply, onClose }) {
     return m;
   }, [items]);
 
+  // Orders that are FULLY shipped — every item with that order number is
+  // shipped/delivered and none is still 'sold'. Re-validating a file that
+  // includes such an order must not mint a fresh OPEN box for it (the merge
+  // logic only reuses open boxes, so without this a re-import created a
+  // duplicate that sat in the Ready tab next to the shipped original). We
+  // require "no sold item" so a partially-shipped order still being filled
+  // keeps merging normally.
+  const fullyShippedOrderIds = useMemo(() => {
+    const sold = new Set();
+    const shipped = new Set();
+    for (const i of items) {
+      if (i.deletedAt || !i.orderId) continue;
+      if (i.status === 'sold') sold.add(i.orderId);
+      else if (i.status === 'shipped' || i.status === 'delivered') shipped.add(i.orderId);
+    }
+    return new Set([...shipped].filter(o => !sold.has(o)));
+  }, [items]);
+
   const handleApply = () => {
     if (!resolved) return;
     const updates = [];
@@ -179,6 +197,14 @@ export function SalesUploadModal({ items, onApply, onClose }) {
           if (it.notes && !inv.notes) patch.notes = it.notes;
           // Only enqueue a write if something actually changed.
           if (Object.keys(patch).length > 1) updates.push(patch);
+          continue;
+        }
+        if (it.orderNumber && fullyShippedOrderIds.has(it.orderNumber)) {
+          // This Palmstreet order already shipped (in a prior box) and has
+          // no still-'sold' items. Don't recreate it as a fresh open box —
+          // that's the duplicate-box bug. Items physically still in a box
+          // are handled by the alreadyInBox branch above; this catches the
+          // fresh-match / placeholder lines that would otherwise spawn a dup.
           continue;
         }
         if (it.match?.item) {

@@ -62,7 +62,7 @@ function fmtShortDate(iso) {
 
 export function PackingView({
   inventoryItems, sales,
-  onShipBox, onDeleteAllOpenBoxes, onDeleteBox, onPrintBoxLabels, onPrintItemLabels, onTogglePacked,
+  onShipBox, onDeleteAllOpenBoxes, onDeleteBox, onDeleteBoxes, onPrintBoxLabels, onPrintItemLabels, onTogglePacked,
   setConfirmDialog,
   isAdmin, onRefreshItems, settingsVersion = 0,
 }) {
@@ -367,6 +367,12 @@ export function PackingView({
     return { matched, unmatched, total: matched + unmatched };
   }, [inventoryItems]);
 
+  // Open boxes that duplicate an already-shipped order (re-validate artifacts).
+  const duplicateBoxIds = useMemo(
+    () => findShippedDuplicateBoxIds(inventoryItems),
+    [inventoryItems],
+  );
+
   const activeSale = sales.find(s => s.id === activeSaleId);
   if (activeSale) {
     return (
@@ -580,6 +586,10 @@ export function PackingView({
     filteredShipped.groups.flatMap(g => g.boxes).flatMap(b => b.items),
     shipmentsByBox,
   );
+
+  // Ready boxes that are duplicates of an already-shipped order — surfaced
+  // as a one-click cleanup banner so the operator can clear them in bulk.
+  const duplicateBoxes = groups.flatMap(g => g.boxes).filter(b => duplicateBoxIds.has(b.id));
 
   return (
     <div className="space-y-6">
@@ -891,6 +901,37 @@ export function PackingView({
                 })()}
               </div>
             </div>
+            {isAdmin && onDeleteBoxes && duplicateBoxes.length > 0 && (
+              <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-amber-900">
+                    {duplicateBoxes.length} box{duplicateBoxes.length === 1 ? '' : 'es'} duplicate an already-shipped order
+                  </div>
+                  <div className="text-xs text-amber-800 mt-0.5">
+                    These were re-created by a Validate Sales re-upload after the order had already shipped. Deleting reverts their re-sold items back to "listed" and purges any placeholders — the original shipped boxes are untouched.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const names = duplicateBoxes
+                      .map(b => `${b.buyer || b.buyerUsername || 'Unknown'} (${shortBoxCode(b.id)})`)
+                      .join(', ');
+                    setConfirmDialog?.({
+                      title: `Delete ${duplicateBoxes.length} duplicate box${duplicateBoxes.length === 1 ? '' : 'es'}?`,
+                      message: `These open boxes duplicate orders that already shipped: ${names}. Their re-sold items revert to "listed" and placeholders are purged. Shipped boxes are not affected.`,
+                      confirmLabel: 'Delete duplicates',
+                      danger: true,
+                      onConfirm: () => onDeleteBoxes(duplicateBoxes.map(b => b.id)),
+                    });
+                  }}
+                  className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-red-200 text-red-700 bg-white hover:bg-red-50 active:bg-red-100 flex-shrink-0"
+                >
+                  <Trash2 className="w-4 h-4" /> Delete duplicates
+                </button>
+              </div>
+            )}
             {filteredReady.length === 0 ? (
               <div className="bg-white border border-gray-200 rounded-xl p-8 text-center">
                 <PackageOpen className="w-8 h-8 text-gray-300 mx-auto mb-2" />
@@ -1181,6 +1222,37 @@ const READY_PREDICATE = (box) =>
 const SHIPPED_PREDICATE = (box) =>
   box.items.length > 0 &&
   box.items.every(i => ['shipped', 'delivered'].includes(i.status));
+
+// Open boxes that are re-validate artifacts of an already-shipped order.
+// Re-validating a Palmstreet file after a buyer's box shipped mints a fresh
+// box for any line it can't fold into an existing OPEN box — producing a
+// duplicate that sits in Ready next to the shipped original. A box is such a
+// duplicate when: it has a 'sold' item (so it's in Ready), it has NO shipped
+// item of its own (a genuinely partially-shipped box is left alone), and
+// every one of its items belongs to an order that shipped in some other box.
+// Palmstreet order numbers are unique per order, so a shared orderId can only
+// mean the same order was re-imported — never a legitimately new order.
+function findShippedDuplicateBoxIds(items) {
+  const shippedOrderIds = new Set();
+  for (const i of items) {
+    if (i.deletedAt || !i.orderId) continue;
+    if (i.status === 'shipped' || i.status === 'delivered') shippedOrderIds.add(i.orderId);
+  }
+  const byBox = new Map();
+  for (const i of items) {
+    if (i.deletedAt || !i.shipmentBoxId) continue;
+    if (!['sold', 'shipped', 'delivered'].includes(i.status)) continue;
+    if (!byBox.has(i.shipmentBoxId)) byBox.set(i.shipmentBoxId, []);
+    byBox.get(i.shipmentBoxId).push(i);
+  }
+  const dupes = new Set();
+  for (const [boxId, list] of byBox) {
+    if (!list.some(i => i.status === 'sold')) continue;                       // must be open
+    if (list.some(i => ['shipped', 'delivered'].includes(i.status))) continue; // not a real partial
+    if (list.every(i => i.orderId && shippedOrderIds.has(i.orderId))) dupes.add(boxId);
+  }
+  return dupes;
+}
 
 function groupBoxesByBuyer(items, sales, predicate) {
   // First, assemble every (live) box from item rows. A box exists once an
@@ -1727,6 +1799,22 @@ function BoxRow({
           <div className="mt-0.5 flex items-baseline gap-2 text-sm">
             <span className="text-gray-900 truncate">{sale?.name || '(unknown sale)'}</span>
             {sale?.date && <span className="text-xs text-gray-400 shrink-0">{sale.date}</span>}
+          </div>
+        )}
+
+        {/* Shipping P/L for shipped boxes — what the buyer paid to ship vs.
+            what the label cost, so a loss is visible right on the row. */}
+        {allShipped &&
+          (box.shippingFeeCollected > 0 ||
+            (liveShipment && !liveShipment.isTestLabel && liveShipment.labelCost != null)) && (
+          <div className="mt-1">
+            <ShippingMarginNote
+              feeCollected={box.shippingFeeCollected}
+              cost={liveShipment && !liveShipment.isTestLabel && liveShipment.labelCost != null
+                ? parseFloat(liveShipment.labelCost)
+                : null}
+              className="text-[11px]"
+            />
           </div>
         )}
 
