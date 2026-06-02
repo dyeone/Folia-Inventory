@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
-  Receipt, Search, Copy,
+  Receipt, Search, Copy, RotateCcw,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -237,6 +237,27 @@ export function PackingView({
       setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
       setBoxNotesByBox(notes || {});
     } catch { /* no-op — rows just won't reflect label state */ }
+  };
+
+  // Cancel a bought label from the box list: confirm, then void (ShipStation)
+  // / refund (Shippo) via api.voidLabel. On success the shipment row is
+  // marked voided, so the box's quote panel + Buy actions return.
+  const onCancelLabel = (box) => {
+    setConfirmDialog?.({
+      title: `Cancel the label for ${box.buyer || box.recipientName || 'this box'}?`,
+      message: 'Voids the ShipStation label (or refunds the Shippo purchase) and re-enables rate quoting. A carrier may decline if the label was already used or scanned.',
+      confirmLabel: 'Cancel label',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await api.voidLabel(box.id);
+          showToast('Label canceled');
+          refreshShipments();
+        } catch (e) {
+          showToast(e.message || 'Cancel failed');
+        }
+      },
+    });
   };
 
   const onSaveBoxNote = async (shipmentBoxId, note) => {
@@ -871,6 +892,7 @@ export function PackingView({
                     onSaveBoxNote={onSaveBoxNote}
                     onSaveBoxPackaging={onSaveBoxPackaging}
                     onBought={refreshShipments}
+                    onCancelLabel={onCancelLabel}
                     onOpenBox={(saleId) => setActiveSaleId(saleId)}
                     onBuyLabel={(box) => setBuyingFor(box)}
                     onSaveTracking={handleSaveTracking}
@@ -1005,6 +1027,7 @@ export function PackingView({
                   onSaveBoxNote={onSaveBoxNote}
                   onSaveBoxPackaging={onSaveBoxPackaging}
                   onBought={refreshShipments}
+                  onCancelLabel={onCancelLabel}
                   onOpenBox={(saleId) => setActiveSaleId(saleId)}
                   onBuyLabel={(box) => setBuyingFor(box)}
                   onSaveTracking={handleSaveTracking}
@@ -1198,7 +1221,7 @@ function addressOneLine(addr) {
 }
 
 function BuyerGroupCard({
-  group, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onBought,
+  group, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onBought, onCancelLabel,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
@@ -1247,6 +1270,7 @@ function BuyerGroupCard({
             boxSizes={boxSizes}
             onSavePackaging={onSaveBoxPackaging ? (patch) => onSaveBoxPackaging(box.id, patch) : null}
             onBought={onBought}
+            onCancelLabel={onCancelLabel ? () => onCancelLabel(box) : null}
             showToast={showToast}
             isAdmin={isAdmin}
             onEditItems={onEditItems ? () => onEditItems(box) : null}
@@ -1480,7 +1504,7 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
-  onSaveNote, boxSizes, onSavePackaging, onBought,
+  onSaveNote, boxSizes, onSavePackaging, onBought, onCancelLabel,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected,
 }) {
@@ -1522,6 +1546,9 @@ function BoxRow({
   const canPrintLabel = !!liveShipment && (
     !!liveShipment.labelStoragePath || liveShipment.carrierCode !== 'palmstreet'
   );
+  // A live bought label (ShipStation/Shippo, not the manual Palmstreet
+  // tracking flow) can be cancelled — voids the label / refunds the buy.
+  const canCancelLabel = !!liveShipment && liveShipment.carrierCode !== 'palmstreet' && !!onCancelLabel;
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
@@ -1653,7 +1680,7 @@ function BoxRow({
         {/* Row 3 — actions. Renders when the box is still actionable OR has a
             printable label (so shipped boxes can still reprint). Wraps on
             overflow so action buttons can't get pushed off screen. */}
-        {(action || canPrintLabel) && (
+        {(action || canPrintLabel || canCancelLabel) && (
           <div className="mt-2 flex items-center gap-1.5 flex-wrap">
             {action && isAdmin && onEditItems && (
               <button
@@ -1712,6 +1739,17 @@ function BoxRow({
                 <Printer className="w-3 h-3" /> Print label
               </button>
             )}
+            {/* Cancel the bought label — voids ShipStation / refunds Shippo.
+                Re-shows the quote panel once the label is gone. */}
+            {canCancelLabel && (
+              <button
+                onClick={(e) => { stop(e); onCancelLabel(); }}
+                title="Cancel this label (void / refund) and re-enable rate quoting"
+                className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-red-50 hover:text-red-600 hover:border-red-200 active:bg-red-100 flex items-center gap-1"
+              >
+                <RotateCcw className="w-3 h-3" /> Cancel label
+              </button>
+            )}
             {action && onPrintSlip && (
               <button
                 onClick={(e) => { stop(e); onPrintSlip(); }}
@@ -1740,7 +1778,9 @@ function BoxRow({
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
           <LabelInfoRow shipment={shipment} showToast={showToast} />
-          {onSavePackaging && !allShipped && (
+          {/* Quote panel — hidden while a label is active; reappears once the
+              label is cancelled (liveShipment goes null). */}
+          {onSavePackaging && !allShipped && !liveShipment && (
             <BoxPackagingPanel
               box={box}
               boxSizes={boxSizes}
