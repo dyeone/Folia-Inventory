@@ -1,5 +1,15 @@
 import { api } from '../api.js';
 
+// Safari (desktop + iOS) blocks silent scripted printing: window.print()
+// pops a "do you want to print this webpage?" confirmation and targets the
+// page, not an embedded PDF. So in Safari we open the label in a tab and let
+// the operator print from the native PDF viewer (correct label, no prompt).
+// Everywhere else we print silently via a hidden iframe.
+function isSafari() {
+  const ua = navigator.userAgent;
+  return /safari/i.test(ua) && !/chrome|chromium|crios|android|edg|fxios|firefox/i.test(ua);
+}
+
 // Convert a data:application/pdf;base64,... URL into a Blob.
 function dataUrlToBlob(dataUrl) {
   const base64 = dataUrl.split(',')[1] || '';
@@ -9,15 +19,12 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([buf], { type: 'application/pdf' });
 }
 
-// Print a same-origin PDF blob via a hidden iframe. The iframe's document
-// IS the PDF, so the print dialog renders the label itself — no new tab, no
-// wrapper page (which printed as blank pages before). The blob must be
-// same-origin for contentWindow.print() to be allowed.
+// Print a same-origin PDF blob via a hidden iframe (Chromium/Firefox). The
+// iframe's document IS the PDF, so the print dialog renders the label only —
+// no tab, no wrapper page.
 function printPdfBlob(blobUrl) {
   const iframe = document.createElement('iframe');
   iframe.setAttribute('aria-hidden', 'true');
-  // Off-screen (not display:none / visibility:hidden) so the PDF fully loads
-  // and the print job captures it.
   iframe.style.cssText = 'position:fixed;left:-9999px;top:0;width:0;height:0;border:0';
 
   let done = false;
@@ -28,17 +35,14 @@ function printPdfBlob(blobUrl) {
   };
 
   iframe.onload = () => {
-    // Small delay lets the PDF plugin finish laying out before we print.
     setTimeout(() => {
       try {
         const win = iframe.contentWindow;
         win.focus();
         win.onafterprint = cleanup;
         win.print();
-        // Fallback cleanup if onafterprint never fires (PDF viewers vary).
         setTimeout(cleanup, 60000);
       } catch {
-        // Same-origin print blocked — open the PDF so the operator can print.
         window.open(blobUrl, '_blank', 'noopener');
         cleanup();
       }
@@ -49,14 +53,28 @@ function printPdfBlob(blobUrl) {
   document.body.appendChild(iframe);
 }
 
-// Print a saved shipment PDF (label or slip): pops the print dialog directly,
-// no file download and no visible tab. Inline (data:) labels become a blob;
-// Storage signed URLs are fetched into a same-origin blob so the hidden
-// iframe can print them. If the fetch is blocked (CORS), we fall back to
-// opening the PDF in a tab so it can still be printed manually.
+// Print a saved shipment PDF (label or slip).
+//   Chromium/Firefox → silent hidden-iframe print (no tab, no download).
+//   Safari           → open the PDF in a tab; print from the native viewer.
 export async function openLabelPdf(shipment, kind, showToast) {
+  const safari = isSafari();
+  // Open the Safari tab synchronously so the click's user-gesture carries
+  // through (avoids the pop-up blocker); we navigate it once we have the URL.
+  const win = safari ? window.open('', '_blank') : null;
   try {
     const url = await api.getLabelUrl(shipment.id, kind);
+
+    if (safari) {
+      if (!win) { showToast?.('Allow pop-ups to print the label'); return; }
+      // Signed Storage URLs render inline in Safari's PDF viewer. (data:
+      // URLs are blocked by Safari, but all labels are backfilled to
+      // Storage, so getLabelUrl returns an https URL.)
+      win.location.href = url.startsWith('data:')
+        ? URL.createObjectURL(dataUrlToBlob(url))
+        : url;
+      return;
+    }
+
     if (url.startsWith('data:')) {
       printPdfBlob(URL.createObjectURL(dataUrlToBlob(url)));
       return;
@@ -69,6 +87,7 @@ export async function openLabelPdf(shipment, kind, showToast) {
       window.open(url, '_blank', 'noopener'); // CORS fallback — print manually
     }
   } catch (e) {
+    win?.close();
     showToast?.(e.message || `Could not open ${kind}`);
   }
 }
