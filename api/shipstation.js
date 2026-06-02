@@ -7,7 +7,9 @@
 
 import { supabase, requireUser } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
-import { createLabel, voidLabel } from './_lib/shipstation.js';
+import { createLabel, voidLabel, getRates as ssGetRates } from './_lib/shipstation.js';
+import { getRates as shippoGetRates, shippoConfigured } from './_lib/shippo.js';
+import { SHIPPING_SERVICES } from './_lib/services.js';
 
 export default wrap(async (req, res) => {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
@@ -18,9 +20,126 @@ export default wrap(async (req, res) => {
   switch (action) {
     case 'buy-label': return buyLabel(req, res, userId);
     case 'void-label': return voidLabelHandler(req, res, userId);
+    case 'get-rates': return getRatesHandler(req, res);
     default: { const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e; }
   }
 });
+
+// POST /api/shipstation  body: { action:'get-rates', shipmentBoxId,
+//   dims:{length,width,height}, weightOz, services?:[serviceKey] }
+//
+// Quotes the offered services from BOTH ShipStation and Shippo for one box,
+// side by side. Read-only — buys nothing. Resolves ship-from from settings
+// and ship-to from the box's items. ShipStation is quoted once per distinct
+// carrier; Shippo once total. Either provider failing degrades to null for
+// that column rather than failing the whole request.
+async function getRatesHandler(req, res) {
+  const { shipmentBoxId, dims, weightOz } = req.body || {};
+  if (!shipmentBoxId) { const e = new Error('shipmentBoxId required'); e.status = 400; throw e; }
+
+  const length = Number(dims?.length), width = Number(dims?.width), height = Number(dims?.height);
+  const weight = Number(weightOz);
+  if (![length, width, height, weight].every(n => Number.isFinite(n) && n > 0)) {
+    const e = new Error('Box dimensions and weight are required to quote rates'); e.status = 422; throw e;
+  }
+
+  // Limit to a requested subset of services, else quote all three.
+  const wanted = Array.isArray(req.body?.services) && req.body.services.length
+    ? SHIPPING_SERVICES.filter(s => req.body.services.includes(s.key))
+    : SHIPPING_SERVICES;
+
+  // Ship-from + connected carrier codes from settings.
+  const { data: settingsRow } = await supabase
+    .from('app_settings').select('data').eq('id', 'shipping').maybeSingle();
+  const settings = settingsRow?.data || {};
+  const shipFrom = settings.shipFrom || {};
+  if (!shipFrom.zip) {
+    const e = new Error('Ship-from address incomplete — open Shipping Settings'); e.status = 412; throw e;
+  }
+  const carrierCodes = {
+    usps: settings.carriers?.usps?.carrierCode || null,
+    ups: settings.carriers?.ups?.carrierCode || null,
+  };
+
+  // Ship-to from the box's items.
+  const { data: items } = await supabase
+    .from('inventory_items')
+    .select('buyer, "buyerUsername", "buyerAddress"')
+    .eq('shipmentBoxId', shipmentBoxId)
+    .limit(1);
+  const sample = items?.[0];
+  const to = sample?.buyerAddress || {};
+  if (!to.zip || !to.state) {
+    const e = new Error('Buyer address incomplete on this box'); e.status = 422; throw e;
+  }
+
+  // ── ShipStation: one getrates call per distinct carrier needed ──────────
+  const neededCarriers = [...new Set(wanted.map(s => s.provider))];
+  const ssByServiceCode = {};
+  const ssJobs = neededCarriers.map(async (carrier) => {
+    const carrierCode = carrierCodes[carrier];
+    if (!carrierCode) return; // carrier not connected in settings — skip
+    const rates = await ssGetRates({
+      carrierCode,
+      packageCode: settings.carriers?.[carrier]?.packageCode || 'package',
+      fromPostalCode: shipFrom.zip,
+      toState: to.state,
+      toCountry: to.country || 'US',
+      toPostalCode: to.zip,
+      toCity: to.city,
+      weight: { value: weight, units: 'ounces' },
+      dimensions: { units: 'inches', length, width, height },
+      confirmation: 'delivery',
+      residential: true,
+    });
+    for (const r of rates) ssByServiceCode[r.serviceCode] = r;
+  });
+
+  // ── Shippo: one call returns rates for every provider/service ───────────
+  const shippoIsConfigured = shippoConfigured();
+  let shippoByToken = {};
+  let shippoError = null;
+  const shippoJob = (async () => {
+    if (!shippoIsConfigured) return;
+    try {
+      const rates = await shippoGetRates({
+        addressFrom: shipFrom,
+        addressTo: { ...to, name: sample?.buyer || sample?.buyerUsername || 'Buyer' },
+        parcel: { length, width, height, weightOz: weight },
+      });
+      for (const r of rates) if (r.serviceToken) shippoByToken[r.serviceToken] = r;
+    } catch (e) {
+      shippoError = e?.message || 'Shippo rate lookup failed';
+    }
+  })();
+
+  const ssSettled = await Promise.allSettled([...ssJobs, shippoJob]);
+  // Surface a ShipStation-wide failure (e.g. bad creds) without masking Shippo.
+  const ssErr = ssSettled.slice(0, ssJobs.length).find(r => r.status === 'rejected');
+  const shipstationError = ssErr ? (ssErr.reason?.message || 'ShipStation rate lookup failed') : null;
+
+  const rates = wanted.map((svc) => {
+    const ss = ssByServiceCode[svc.shipstationServiceCode];
+    const shp = shippoByToken[svc.shippoToken];
+    const shipstation = ss ? { amount: ss.amount, serviceName: ss.serviceName } : null;
+    const shippo = shp && shp.amount != null
+      ? { amount: shp.amount, serviceName: shp.serviceName, estDays: shp.estDays }
+      : null;
+    let cheapest = null;
+    if (shipstation && shippo) {
+      cheapest = shippo.amount < shipstation.amount ? 'shippo'
+        : shippo.amount > shipstation.amount ? 'shipstation' : 'tie';
+    }
+    return { key: svc.key, label: svc.label, provider: svc.provider, shipstation, shippo, cheapest };
+  });
+
+  return res.status(200).json({
+    rates,
+    shippoConfigured: shippoIsConfigured,
+    shippoError,
+    shipstationError,
+  });
+}
 
 async function buyLabel(req, res, userId) {
   const { shipmentBoxId } = req.body || {};

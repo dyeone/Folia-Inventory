@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
+import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 
 // Fetch a fresh signed URL for one of the shipment PDFs (label or slip)
 // and open it in a new tab. Falls back to a Blob download for legacy
@@ -51,6 +52,7 @@ export function ShipBoxCard({
   onSaveTracking, onClearTracking,
   onPrintItemLabels,
   onSaveNote,
+  boxSizes, onSavePackaging,
 }) {
   const [open, setOpen] = useState(true);
   const [editingTracking, setEditingTracking] = useState(false);
@@ -178,6 +180,15 @@ export function ShipBoxCard({
               </div>
             ))}
           </div>
+
+          {onSavePackaging && !allShipped && (
+            <BoxPackagingPanel
+              box={box}
+              boxSizes={boxSizes}
+              onSavePackaging={onSavePackaging}
+              showToast={showToast}
+            />
+          )}
 
           {onSaveNote && (
             <BoxNotePanel

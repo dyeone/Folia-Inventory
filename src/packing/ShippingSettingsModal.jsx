@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
-import { X, Save, Truck, MapPin, Package, AlertCircle, FlaskConical } from 'lucide-react';
+import { X, Save, Truck, MapPin, Package, AlertCircle, FlaskConical, Ruler, Plus, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
+
+// Stable id for a new box-size preset. crypto.randomUUID is available in
+// every browser this app targets; the fallback keeps dev/test from throwing.
+function newId() {
+  try { return crypto.randomUUID(); } catch { return `bs_${Math.random().toString(36).slice(2)}`; }
+}
 
 // Edits the id='shipping' row of app_settings. Holds:
 //   - shipFrom: the warehouse address that ShipStation prints as "From"
@@ -30,6 +36,10 @@ const EMPTY = {
     },
   },
   defaultPackage: { weightOz: 32, length: 12, width: 9, height: 6 },
+  // Reusable packaging presets the operator picks from per box. Each:
+  // { id, name, length, width, height, weightOz? }. weightOz is just a
+  // suggested default — actual weight is set per box.
+  boxSizes: [],
   testMode: true,
 };
 
@@ -50,6 +60,7 @@ export function ShippingSettingsModal({ onClose }) {
             ups: { ...EMPTY.carriers.ups, ...(row?.data?.carriers?.ups || {}) },
           },
           defaultPackage: { ...EMPTY.defaultPackage, ...(row?.data?.defaultPackage || {}) },
+          boxSizes: Array.isArray(row?.data?.boxSizes) ? row.data.boxSizes : [],
         });
       } catch (e) {
         setErr(e.message || 'Failed to load settings');
@@ -62,6 +73,18 @@ export function ShippingSettingsModal({ onClose }) {
   const setCarrier = (carrier, patch) =>
     setData(d => ({ ...d, carriers: { ...d.carriers, [carrier]: { ...d.carriers[carrier], ...patch } } }));
   const setPkg = (patch) => setData(d => ({ ...d, defaultPackage: { ...d.defaultPackage, ...patch } }));
+  const addBoxSize = () => setData(d => ({
+    ...d,
+    boxSizes: [...(d.boxSizes || []), { id: newId(), name: '', length: '', width: '', height: '', weightOz: '' }],
+  }));
+  const updateBoxSize = (id, patch) => setData(d => ({
+    ...d,
+    boxSizes: (d.boxSizes || []).map(b => (b.id === id ? { ...b, ...patch } : b)),
+  }));
+  const removeBoxSize = (id) => setData(d => ({
+    ...d,
+    boxSizes: (d.boxSizes || []).filter(b => b.id !== id),
+  }));
 
   const validShipFrom = ['name', 'street1', 'city', 'state', 'zip', 'country']
     .every(k => data.shipFrom?.[k]?.trim());
@@ -70,7 +93,18 @@ export function ShippingSettingsModal({ onClose }) {
     setErr('');
     setSaving(true);
     try {
-      await api.putSettings('shipping', data);
+      // Drop incomplete rows and coerce numeric strings before persisting.
+      const boxSizes = (data.boxSizes || [])
+        .map(b => ({
+          id: b.id || newId(),
+          name: (b.name || '').trim(),
+          length: parseFloat(b.length) || 0,
+          width: parseFloat(b.width) || 0,
+          height: parseFloat(b.height) || 0,
+          weightOz: b.weightOz === '' || b.weightOz == null ? null : (parseFloat(b.weightOz) || 0),
+        }))
+        .filter(b => b.name && b.length > 0 && b.width > 0 && b.height > 0);
+      await api.putSettings('shipping', { ...data, boxSizes });
       onClose();
     } catch (e) {
       setErr(e.message || 'Save failed');
@@ -151,6 +185,63 @@ export function ShippingSettingsModal({ onClose }) {
                   <Field label="Length (in)" type="number" value={data.defaultPackage.length} onChange={(v) => setPkg({ length: parseFloat(v) || 0 })} />
                   <Field label="Width (in)" type="number" value={data.defaultPackage.width} onChange={(v) => setPkg({ width: parseFloat(v) || 0 })} />
                   <Field label="Height (in)" type="number" value={data.defaultPackage.height} onChange={(v) => setPkg({ height: parseFloat(v) || 0 })} />
+                </div>
+              </Section>
+
+              <Section icon={Ruler} title="Box sizes" subtitle="The presets you pick from per box when comparing rates. Add every box you actually ship in.">
+                <div className="space-y-2">
+                  {(data.boxSizes || []).length === 0 && (
+                    <div className="text-xs text-gray-500 italic py-1">No box sizes yet — add the ones you ship in below.</div>
+                  )}
+                  {(data.boxSizes || []).map((b) => (
+                    <div key={b.id} className="flex items-end gap-2 bg-gray-50 border border-gray-200 rounded-lg p-2">
+                      <label className="flex-1 min-w-0">
+                        <div className="text-[11px] font-medium text-gray-600 mb-1">Name</div>
+                        <input
+                          value={b.name ?? ''}
+                          onChange={(e) => updateBoxSize(b.id, { name: e.target.value })}
+                          placeholder="e.g. Small mailer"
+                          className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </label>
+                      {[['length', 'L'], ['width', 'W'], ['height', 'H']].map(([k, lbl]) => (
+                        <label key={k} className="w-14 flex-shrink-0">
+                          <div className="text-[11px] font-medium text-gray-600 mb-1">{lbl} (in)</div>
+                          <input
+                            type="number"
+                            value={b[k] ?? ''}
+                            onChange={(e) => updateBoxSize(b.id, { [k]: e.target.value })}
+                            className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                          />
+                        </label>
+                      ))}
+                      <label className="w-20 flex-shrink-0">
+                        <div className="text-[11px] font-medium text-gray-600 mb-1">Wt (oz)</div>
+                        <input
+                          type="number"
+                          value={b.weightOz ?? ''}
+                          onChange={(e) => updateBoxSize(b.id, { weightOz: e.target.value })}
+                          placeholder="opt"
+                          className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => removeBoxSize(b.id)}
+                        className="p-1.5 mb-0.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded flex-shrink-0"
+                        aria-label="Remove box size"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={addBoxSize}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-emerald-700 hover:bg-emerald-50 border border-emerald-200 rounded-lg"
+                  >
+                    <Plus className="w-4 h-4" /> Add box size
+                  </button>
                 </div>
               </Section>
 

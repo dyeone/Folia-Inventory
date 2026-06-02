@@ -62,3 +62,23 @@ export function createLabel(payload) {
 export function voidLabel(shipmentId) {
   return call('POST', '/shipments/voidlabel', { shipmentId });
 }
+
+// POST /shipments/getrates — quotes every service for one carrier without
+// buying anything. serviceCode omitted → all services for the carrier.
+//
+// Request (subset): carrierCode, fromPostalCode, toState, toCountry,
+//   toPostalCode, toCity, weight {value,units}, dimensions {units,l,w,h},
+//   confirmation, residential.
+// Response: [{ serviceName, serviceCode, shipmentCost, otherCost }, ...]
+//
+// Returns the normalized array:
+//   [{ serviceName, serviceCode, amount }]  (amount = shipmentCost + otherCost)
+export async function getRates(payload) {
+  const data = await call('POST', '/shipments/getrates', payload);
+  const list = Array.isArray(data) ? data : [];
+  return list.map(r => ({
+    serviceName: r.serviceName || '',
+    serviceCode: r.serviceCode || '',
+    amount: (Number(r.shipmentCost) || 0) + (Number(r.otherCost) || 0),
+  }));
+}

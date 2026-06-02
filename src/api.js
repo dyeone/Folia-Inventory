@@ -175,10 +175,19 @@ export const api = {
     request(`/shipments?action=box-notes${saleId ? `&saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.boxNotes || {}),
   setBoxNote: ({ shipmentBoxId, note }) =>
     request('/shipments', { method: 'POST', body: { action: 'set-box-note', shipmentBoxId, note } }).then(r => r.box),
+  // Per-box packaging selection (box size + weight + service). Only the
+  // keys passed are touched server-side; returns the full updated box row.
+  setBoxPackaging: ({ shipmentBoxId, boxSizeId, weightOz, serviceKey }) =>
+    request('/shipments', { method: 'POST', body: { action: 'set-box-packaging', shipmentBoxId, boxSizeId, weightOz, serviceKey } }).then(r => r.box),
   buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation }) =>
     request('/shipstation', { method: 'POST', body: { action: 'buy-label', shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation } }).then(r => r.shipment),
   voidLabel: (shipmentBoxId) =>
     request('/shipstation', { method: 'POST', body: { action: 'void-label', shipmentBoxId } }).then(r => r.shipment),
+  // Live Shippo-vs-ShipStation rate comparison for one box. Returns
+  // { rates:[{key,label,provider,shipstation,shippo,cheapest}],
+  //   shippoConfigured, shippoError, shipstationError }.
+  getRates: ({ shipmentBoxId, dims, weightOz, services }) =>
+    request('/shipstation', { method: 'POST', body: { action: 'get-rates', shipmentBoxId, dims, weightOz, services } }),
 
   // Bridge — durable job queue between web app and the local Folia Bridge
   // that drives Palmstreet via ADB. See api/bridge.js + bridge/index.js.
