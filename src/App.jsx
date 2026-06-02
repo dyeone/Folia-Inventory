@@ -1038,6 +1038,46 @@ function StaffOrAdminInventory() {
                 showToast(e.message || 'Delete box failed', 'error');
               }
             }}
+            onDeleteBoxes={async (boxIds) => {
+              // Batched per-box delete — used by the "Delete duplicates"
+              // cleanup. Same revert/purge semantics as onDeleteBox, applied
+              // across several boxes in one round-trip + one refresh. Only
+              // still-'sold' items are touched; shipped items are left alone.
+              try {
+                const set = new Set(boxIds);
+                const candidates = items.filter(i =>
+                  !i.deletedAt &&
+                  i.status === 'sold' &&
+                  set.has(i.shipmentBoxId),
+                );
+                const matched = candidates.filter(i => i.lotKind !== 'unmatched');
+                const unmatched = candidates.filter(i => i.lotKind === 'unmatched');
+                const updates = matched.map(i => ({
+                  id: i.id,
+                  status: 'listed',
+                  salePrice: null,
+                  soldAt: null,
+                  buyer: null,
+                  buyerUsername: null,
+                  buyerAddress: null,
+                  shipmentBoxId: null,
+                  shipmentCarrier: null,
+                  orderId: null,
+                  orderDate: null,
+                }));
+                if (updates.length > 0) await api.upsertItems(updates);
+                if (unmatched.length > 0) await api.purgeItems(unmatched.map(i => i.id));
+                const fresh = await api.getItems();
+                applyItemsFresh(fresh);
+                showToast(
+                  `Deleted ${set.size} duplicate box${set.size === 1 ? '' : 'es'} · reverted ${matched.length} item${matched.length === 1 ? '' : 's'}${
+                    unmatched.length > 0 ? ` + purged ${unmatched.length} placeholder${unmatched.length === 1 ? '' : 's'}` : ''
+                  }`,
+                );
+              } catch (e) {
+                showToast(e.message || 'Delete duplicates failed', 'error');
+              }
+            }}
             onShipBox={async (saleId, itemIds) => {
               try {
                 const now = new Date().toISOString();
