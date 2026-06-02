@@ -88,3 +88,43 @@ export function rollup(items) {
   const avgPrice = unitsWithFinancials > 0 ? revenue / unitsWithFinancials : null;
   return { revenue, cost, profit, margin, unitsSold, unitsWithFinancials, avgPrice, refundsTotal };
 }
+
+// Shipping P/L for a set of items, given the shipments keyed by box id.
+//   cost      — what we paid the carrier for labels
+//   collected — what buyers paid to ship (summed from item.orderShippingFee)
+//   net       — collected − cost (negative = we lost money shipping)
+//   boxes     — how many boxes the figures cover
+// A box only counts when BOTH numbers are known: it has a real purchased
+// label (non-test, non-voided) AND at least one item with a recorded
+// shipping fee. That keeps net a like-for-like comparison and avoids
+// overstating losses on legacy boxes that predate fee tracking (null fee)
+// or that shipped via Palmstreet/USPS (label bought off-site, no cost here).
+// A box with an explicit $0 fee (free shipping) still counts — that's a real
+// loss when we paid for the label.
+export function shippingRollup(items, shipmentsByBox) {
+  const byBox = new Map(); // boxId -> { fee, hasFee }
+  for (const i of items) {
+    if (!i.shipmentBoxId) continue;
+    let rec = byBox.get(i.shipmentBoxId);
+    if (!rec) { rec = { fee: 0, hasFee: false }; byBox.set(i.shipmentBoxId, rec); }
+    const f = i.orderShippingFee;
+    if (f != null && f !== '' && Number.isFinite(parseFloat(f))) {
+      rec.fee += parseFloat(f);
+      rec.hasFee = true;
+    }
+  }
+  let cost = 0;
+  let collected = 0;
+  let boxes = 0;
+  for (const [boxId, rec] of byBox) {
+    if (!rec.hasFee) continue;
+    const ship = shipmentsByBox?.[boxId];
+    const live = ship && !ship.voidedAt && !ship.isTestLabel ? ship : null;
+    const lc = live ? parseFloat(live.labelCost) : NaN;
+    if (!Number.isFinite(lc)) continue;
+    cost += lc;
+    collected += rec.fee;
+    boxes += 1;
+  }
+  return { cost, collected, net: collected - cost, boxes };
+}

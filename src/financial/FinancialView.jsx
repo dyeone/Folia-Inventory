@@ -1,14 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   DollarSign, TrendingUp, Receipt, Percent, ShoppingBag, Tag,
-  Download, Calendar, Search, Upload,
+  Download, Calendar, Search, Upload, Truck,
   AlertCircle, Check, RotateCcw, FileText, X,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { api } from '../api.js';
 import { parseCashflow, buildRefundUpdates } from './parseCashflow.js';
 import {
   SOLD_STATUSES, RANGES, todayIso, daysAgoIso,
-  fmt$, fmt$2, fmtPct, inRange, rollup, effectiveRevenue,
+  fmt$, fmt$2, fmtPct, inRange, rollup, effectiveRevenue, shippingRollup,
 } from './financialHelpers.js';
 import { Kpi, PctBadge, StatusBadge, MonthlyDelta, ProfitTrendByName } from './FinancialChrome.jsx';
 
@@ -27,6 +28,21 @@ export function FinancialView({ items, sales, onApplyRefunds }) {
     const base = RANGES.find(r => r.id === rangeId) || RANGES[0];
     return base.custom ? { ...base, from: customFrom, to: customTo } : base;
   }, [rangeId, customFrom, customTo]);
+
+  // Label costs live on the shipments table (not on items), so the Financial
+  // tab pulls them once to total shipping cost / loss alongside the revenue
+  // and cost it already derives from items. Keyed by shipmentBoxId.
+  const [shipmentsByBox, setShipmentsByBox] = useState({});
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await api.getShipments();
+        if (!cancelled) setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
+      } catch { /* no-op — shipping KPIs just stay at zero */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -99,7 +115,7 @@ export function FinancialView({ items, sales, onApplyRefunds }) {
         </div>
       </div>
 
-      {tab === 'overview' && <Overview items={items} sales={sales} range={range} />}
+      {tab === 'overview' && <Overview items={items} sales={sales} range={range} shipmentsByBox={shipmentsByBox} />}
       {tab === 'sold' && <SoldItems items={items} sales={sales} range={range} />}
       {tab === 'cashflow' && <CashflowSync items={items} onApplyRefunds={onApplyRefunds} />}
     </div>
@@ -108,7 +124,7 @@ export function FinancialView({ items, sales, onApplyRefunds }) {
 
 // ─────────────────────────── Overview ───────────────────────────────────────
 
-function Overview({ items, sales, range }) {
+function Overview({ items, sales, range, shipmentsByBox }) {
   const itemsInRange = useMemo(
     () => items.filter(i =>
       (SOLD_STATUSES.has(i.status) || i.status === 'refunded') && inRange(i, range)
@@ -116,6 +132,10 @@ function Overview({ items, sales, range }) {
     [items, range]
   );
   const totals = useMemo(() => rollup(itemsInRange), [itemsInRange]);
+  const shipping = useMemo(
+    () => shippingRollup(itemsInRange, shipmentsByBox),
+    [itemsInRange, shipmentsByBox]
+  );
 
   const perSale = useMemo(() => {
     const rows = sales.map(sale => {
@@ -204,6 +224,20 @@ function Overview({ items, sales, range }) {
           label="Refunds"
           value={fmt$(totals.refundsTotal)}
           tone={totals.refundsTotal > 0 ? 'amber' : 'gray'}
+        />
+        <Kpi
+          icon={Truck}
+          label="Shipping cost"
+          value={fmt$(shipping.cost)}
+          sub={shipping.boxes > 0 ? `${shipping.boxes} label${shipping.boxes === 1 ? '' : 's'} · buyers paid ${fmt$2(shipping.collected)}` : 'no labels bought'}
+          tone="gray"
+        />
+        <Kpi
+          icon={Truck}
+          label={shipping.net < 0 ? 'Shipping loss' : 'Shipping net'}
+          value={fmt$(shipping.net)}
+          sub="buyers paid − label cost"
+          tone={shipping.net < 0 ? 'red' : 'emerald'}
         />
       </section>
 
