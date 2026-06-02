@@ -269,17 +269,28 @@ async function buyLabel(req, res, userId) {
       e.status = 412; throw e;
     }
     const testLabel = settings.testMode !== false; // default to TRUE for safety
-    const result = await createLabel({
-      carrierCode, serviceCode, packageCode, confirmation,
-      shipDate: new Date().toISOString().slice(0, 10),
-      weight: { value: weightOz, units: 'ounces' },
-      dimensions: dims?.length && dims?.width && dims?.height
-        ? { units: 'inches', length: Number(dims.length), width: Number(dims.width), height: Number(dims.height) }
-        : undefined,
-      shipFrom: { ...shipFromAddr, postalCode: shipFrom.zip, zip: undefined },
-      shipTo: { ...shipToAddr, postalCode: buyerAddr.zip, zip: undefined },
-      testLabel,
-    });
+    let result;
+    try {
+      result = await createLabel({
+        carrierCode, serviceCode, packageCode, confirmation,
+        shipDate: new Date().toISOString().slice(0, 10),
+        weight: { value: weightOz, units: 'ounces' },
+        dimensions: dims?.length && dims?.width && dims?.height
+          ? { units: 'inches', length: Number(dims.length), width: Number(dims.width), height: Number(dims.height) }
+          : undefined,
+        shipFrom: { ...shipFromAddr, postalCode: shipFrom.zip, zip: undefined },
+        shipTo: { ...shipToAddr, postalCode: buyerAddr.zip, zip: undefined },
+        testLabel,
+      });
+    } catch (e) {
+      // ShipStation only issues test labels for USPS (Stamps.com); UPS/FedEx
+      // by ShipStation reject them. Turn that opaque 500 into a next step.
+      if (testLabel && /test label/i.test(e?.message || '')) {
+        const err = new Error(`ShipStation can't make test labels for ${carrier.toUpperCase()} — only USPS. Turn off Test mode in Shipping Settings to buy a real ${carrier.toUpperCase()} label, or test with USPS / Shippo.`);
+        err.status = 422; throw err;
+      }
+      throw e;
+    }
     purchase = {
       labelData: result?.labelData || null,
       trackingNumber: result?.trackingNumber || null,
