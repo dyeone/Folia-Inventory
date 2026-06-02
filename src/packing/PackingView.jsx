@@ -869,6 +869,7 @@ export function PackingView({
                     boxSizes={boxSizes}
                     onSaveBoxNote={onSaveBoxNote}
                     onSaveBoxPackaging={onSaveBoxPackaging}
+                    onBought={refreshShipments}
                     onOpenBox={(saleId) => setActiveSaleId(saleId)}
                     onBuyLabel={(box) => setBuyingFor(box)}
                     onSaveTracking={handleSaveTracking}
@@ -1002,6 +1003,7 @@ export function PackingView({
                   boxSizes={boxSizes}
                   onSaveBoxNote={onSaveBoxNote}
                   onSaveBoxPackaging={onSaveBoxPackaging}
+                  onBought={refreshShipments}
                   onOpenBox={(saleId) => setActiveSaleId(saleId)}
                   onBuyLabel={(box) => setBuyingFor(box)}
                   onSaveTracking={handleSaveTracking}
@@ -1195,7 +1197,7 @@ function addressOneLine(addr) {
 }
 
 function BuyerGroupCard({
-  group, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging,
+  group, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onBought,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
@@ -1243,6 +1245,7 @@ function BuyerGroupCard({
             onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
             boxSizes={boxSizes}
             onSavePackaging={onSaveBoxPackaging ? (patch) => onSaveBoxPackaging(box.id, patch) : null}
+            onBought={onBought}
             showToast={showToast}
             isAdmin={isAdmin}
             onEditItems={onEditItems ? () => onEditItems(box) : null}
@@ -1476,7 +1479,7 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
-  onSaveNote, boxSizes, onSavePackaging,
+  onSaveNote, boxSizes, onSavePackaging, onBought,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected,
 }) {
@@ -1721,6 +1724,8 @@ function BoxRow({
               boxSizes={boxSizes}
               onSavePackaging={onSavePackaging}
               showToast={showToast}
+              shipment={shipment}
+              onBought={onBought}
             />
           )}
           {onSaveNote && (
@@ -1975,6 +1980,7 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
             showToast={showToast}
             onPrintItemLabels={onPrintItemLabels}
             boxSizes={boxSizes}
+            onBought={refreshShipments}
             onSavePackaging={async (patch) => {
               const saved = await api.setBoxPackaging({ shipmentBoxId: box.id, ...patch });
               setBoxNotesByBox(prev => ({

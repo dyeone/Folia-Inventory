@@ -8,7 +8,10 @@
 import { supabase, requireUser } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { createLabel, voidLabel, getRates as ssGetRates } from './_lib/shipstation.js';
-import { getRates as shippoGetRates, shippoConfigured } from './_lib/shippo.js';
+import {
+  getRates as shippoGetRates, createLabel as shippoCreateLabel,
+  refund as shippoRefund, shippoConfigured, isTestToken as shippoIsTest,
+} from './_lib/shippo.js';
 import { SHIPPING_SERVICES } from './_lib/services.js';
 
 export default wrap(async (req, res) => {
@@ -138,6 +141,9 @@ async function getRatesHandler(req, res) {
     shippoConfigured: shippoIsConfigured,
     shippoError,
     shipstationError,
+    // So the buy UI can label a purchase test vs live before confirming.
+    shipstationTestMode: settings.testMode !== false,
+    shippoTest: shippoIsConfigured ? shippoIsTest() : false,
   });
 }
 
@@ -146,6 +152,8 @@ async function buyLabel(req, res, userId) {
   if (!shipmentBoxId) {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
   }
+  const provider = req.body?.provider === 'shippo' ? 'shippo' : 'shipstation';
+  const serviceKey = req.body?.serviceKey || null;
 
   // Already-purchased guard. The unique key prevents accidental double-buys.
   const { data: existing } = await supabase
@@ -181,73 +189,115 @@ async function buyLabel(req, res, userId) {
     const e = new Error('No items found for this shipment box'); e.status = 404; throw e;
   }
   const sample = items[0];
-  const carrier = sample.shipmentCarrier || 'usps';
-  const carrierDefaults = settings.carriers?.[carrier] || {};
   const buyerAddr = sample.buyerAddress || {};
   if (!buyerAddr.street1 || !buyerAddr.city || !buyerAddr.state || !buyerAddr.zip) {
     const e = new Error('Buyer address incomplete on this box'); e.status = 422; throw e;
   }
 
-  // Resolve the ShipStation request fields with caller overrides → settings
-  // defaults → hard-coded fallbacks.
+  // Resolve the service. A serviceKey (new rate-shop flow) picks the carrier
+  // + per-provider codes from the shared catalog; without one we fall back
+  // to the box's item-derived carrier + saved defaults (legacy Buy-label).
+  const svc = serviceKey ? SHIPPING_SERVICES.find(s => s.key === serviceKey) : null;
+  if (serviceKey && !svc) {
+    const e = new Error(`Unknown serviceKey: ${serviceKey}`); e.status = 400; throw e;
+  }
+  const carrier = svc ? svc.provider : (sample.shipmentCarrier || 'usps');
+  const carrierDefaults = settings.carriers?.[carrier] || {};
+
   const pkg = settings.defaultPackage || {};
   const weightOz = Number(req.body?.weightOz ?? pkg.weightOz ?? 16);
   const dims = req.body?.dims || pkg;
-  const serviceCode = req.body?.serviceCode || carrierDefaults.serviceCode;
-  const packageCode = req.body?.packageCode || carrierDefaults.packageCode || 'package';
-  const confirmation = req.body?.confirmation || carrierDefaults.confirmation || 'delivery';
-  const carrierCode = carrierDefaults.carrierCode;
-  if (!carrierCode || !serviceCode) {
-    const e = new Error(`Missing carrier/service code for ${carrier} — open Shipping Settings`);
-    e.status = 412; throw e;
-  }
+  if (!(weightOz > 0)) { const e = new Error('Weight is required to buy a label'); e.status = 422; throw e; }
 
-  const testLabel = settings.testMode !== false; // default to TRUE for safety
-  const today = new Date().toISOString().slice(0, 10);
-
-  const payload = {
-    carrierCode,
-    serviceCode,
-    packageCode,
-    confirmation,
-    shipDate: today,
-    weight: { value: weightOz, units: 'ounces' },
-    dimensions: dims?.length && dims?.width && dims?.height
-      ? { units: 'inches', length: Number(dims.length), width: Number(dims.width), height: Number(dims.height) }
-      : undefined,
-    shipFrom: {
-      name: shipFrom.name,
-      company: shipFrom.company || undefined,
-      street1: shipFrom.street1,
-      street2: shipFrom.street2 || undefined,
-      city: shipFrom.city,
-      state: shipFrom.state,
-      postalCode: shipFrom.zip,
-      country: shipFrom.country,
-      phone: shipFrom.phone || undefined,
-    },
-    shipTo: {
-      name: sample.buyer || sample.buyerUsername || 'Buyer',
-      street1: buyerAddr.street1,
-      street2: buyerAddr.street2 || undefined,
-      city: buyerAddr.city,
-      state: buyerAddr.state,
-      postalCode: buyerAddr.zip,
-      country: buyerAddr.country || 'US',
-      phone: buyerAddr.phone || undefined,
-    },
-    testLabel,
+  const shipFromAddr = {
+    name: shipFrom.name,
+    company: shipFrom.company || undefined,
+    street1: shipFrom.street1,
+    street2: shipFrom.street2 || undefined,
+    city: shipFrom.city,
+    state: shipFrom.state,
+    zip: shipFrom.zip,
+    country: shipFrom.country,
+    phone: shipFrom.phone || undefined,
+  };
+  const shipToAddr = {
+    name: sample.buyer || sample.buyerUsername || 'Buyer',
+    street1: buyerAddr.street1,
+    street2: buyerAddr.street2 || undefined,
+    city: buyerAddr.city,
+    state: buyerAddr.state,
+    zip: buyerAddr.zip,
+    country: buyerAddr.country || 'US',
+    phone: buyerAddr.phone || undefined,
   };
 
-  const result = await createLabel(payload);
+  // Provider-specific purchase. Both normalize to:
+  //   { labelData(base64), trackingNumber, labelCost, serviceCode,
+  //     carrierCode, isTestLabel, shipstation*Id, shippoTransactionId }
+  let purchase;
+  if (provider === 'shippo') {
+    if (!svc) { const e = new Error('serviceKey required for a Shippo label'); e.status = 400; throw e; }
+    if (!shippoConfigured()) { const e = new Error('Shippo not configured (SHIPPO_API_TOKEN)'); e.status = 412; throw e; }
+    const r = await shippoCreateLabel({
+      addressFrom: shipFromAddr,
+      addressTo: shipToAddr,
+      parcel: { length: Number(dims.length), width: Number(dims.width), height: Number(dims.height), weightOz },
+      serviceToken: svc.shippoToken,
+    });
+    if (!r.labelUrl) { const e = new Error('Shippo did not return a label PDF'); e.status = 502; throw e; }
+    const pdfRes = await fetch(r.labelUrl);
+    if (!pdfRes.ok) { const e = new Error('Could not download the Shippo label PDF'); e.status = 502; throw e; }
+    const labelData = Buffer.from(await pdfRes.arrayBuffer()).toString('base64');
+    purchase = {
+      labelData,
+      trackingNumber: r.trackingNumber,
+      labelCost: r.amount,
+      serviceCode: svc.shippoToken,
+      carrierCode: 'shippo',
+      isTestLabel: r.isTest,
+      shipstationShipmentId: null,
+      shipstationLabelId: null,
+      shippoTransactionId: r.transactionId,
+    };
+  } else {
+    const serviceCode = svc ? svc.shipstationServiceCode : (req.body?.serviceCode || carrierDefaults.serviceCode);
+    const carrierCode = carrierDefaults.carrierCode;
+    const packageCode = req.body?.packageCode || carrierDefaults.packageCode || 'package';
+    const confirmation = req.body?.confirmation || carrierDefaults.confirmation || 'delivery';
+    if (!carrierCode || !serviceCode) {
+      const e = new Error(`Missing carrier/service code for ${carrier} — open Shipping Settings`);
+      e.status = 412; throw e;
+    }
+    const testLabel = settings.testMode !== false; // default to TRUE for safety
+    const result = await createLabel({
+      carrierCode, serviceCode, packageCode, confirmation,
+      shipDate: new Date().toISOString().slice(0, 10),
+      weight: { value: weightOz, units: 'ounces' },
+      dimensions: dims?.length && dims?.width && dims?.height
+        ? { units: 'inches', length: Number(dims.length), width: Number(dims.width), height: Number(dims.height) }
+        : undefined,
+      shipFrom: { ...shipFromAddr, postalCode: shipFrom.zip, zip: undefined },
+      shipTo: { ...shipToAddr, postalCode: buyerAddr.zip, zip: undefined },
+      testLabel,
+    });
+    purchase = {
+      labelData: result?.labelData || null,
+      trackingNumber: result?.trackingNumber || null,
+      labelCost: result?.shipmentCost ?? null,
+      serviceCode,
+      carrierCode,
+      isTestLabel: !!testLabel,
+      shipstationShipmentId: result?.shipmentId ? String(result.shipmentId) : null,
+      shipstationLabelId: result?.labelId ? String(result.labelId) : null,
+      shippoTransactionId: null,
+    };
+  }
 
   // Upload the PDF to the `shipping-labels` Storage bucket so the row stays
-  // small. The DB only keeps the path; signed URLs are minted on demand.
-  // Soft-fall-through to inline labelData if the bucket doesn't exist or
-  // the upload fails — better to leave a working but bigger row than to
-  // lose the label after we've already paid for it.
+  // small. Soft-fall-through to inline labelData if the upload fails —
+  // better a working bigger row than losing a label we've paid for.
   let labelStoragePath = null;
-  let labelData = result?.labelData || null;
+  let labelData = purchase.labelData || null;
   if (labelData) {
     try {
       const buf = Buffer.from(labelData, 'base64');
@@ -260,7 +310,7 @@ async function buyLabel(req, res, userId) {
       labelStoragePath = path;
       labelData = null; // success — no need to store the bytes inline
     } catch (e) {
-      console.error('[shipstation] label upload to Storage failed; falling back to inline labelData:', e?.message || e);
+      console.error(`[${provider}] label upload to Storage failed; falling back to inline labelData:`, e?.message || e);
     }
   }
 
@@ -268,22 +318,24 @@ async function buyLabel(req, res, userId) {
     id: shipmentBoxId,
     saleId: sample.saleId || null,
     carrier,
-    carrierCode,
-    serviceCode,
-    packageCode,
+    carrierCode: purchase.carrierCode,
+    serviceCode: purchase.serviceCode,
+    packageCode: 'package',
     weightOz,
-    dimsLength: payload.dimensions?.length || null,
-    dimsWidth: payload.dimensions?.width || null,
-    dimsHeight: payload.dimensions?.height || null,
-    shipFrom: payload.shipFrom,
-    shipTo: payload.shipTo,
-    trackingNumber: result?.trackingNumber || null,
-    labelCost: result?.shipmentCost ?? null,
+    dimsLength: Number(dims?.length) || null,
+    dimsWidth: Number(dims?.width) || null,
+    dimsHeight: Number(dims?.height) || null,
+    shipFrom: shipFromAddr,
+    shipTo: shipToAddr,
+    trackingNumber: purchase.trackingNumber,
+    labelCost: purchase.labelCost,
     labelData,
     labelStoragePath,
-    shipstationShipmentId: result?.shipmentId ? String(result.shipmentId) : null,
-    shipstationLabelId: result?.labelId ? String(result.labelId) : null,
-    isTestLabel: !!testLabel,
+    provider,
+    shippoTransactionId: purchase.shippoTransactionId,
+    shipstationShipmentId: purchase.shipstationShipmentId,
+    shipstationLabelId: purchase.shipstationLabelId,
+    isTestLabel: !!purchase.isTestLabel,
     purchasedAt: new Date().toISOString(),
     purchasedBy: userId,
     voidedAt: null,
@@ -308,7 +360,7 @@ async function voidLabelHandler(req, res, userId) {
 
   const { data: shipment } = await supabase
     .from('shipments')
-    .select('id, "shipstationShipmentId", "voidedAt"')
+    .select('id, provider, "shipstationShipmentId", "shippoTransactionId", "voidedAt"')
     .eq('id', shipmentBoxId)
     .maybeSingle();
   if (!shipment) {
@@ -317,15 +369,24 @@ async function voidLabelHandler(req, res, userId) {
   if (shipment.voidedAt) {
     const e = new Error('Label already voided'); e.status = 409; throw e;
   }
-  if (!shipment.shipstationShipmentId) {
-    const e = new Error('Missing ShipStation shipment id — cannot void');
-    e.status = 422; throw e;
-  }
 
-  const result = await voidLabel(Number(shipment.shipstationShipmentId));
-  if (result && result.approved === false) {
-    const e = new Error(result.message || 'ShipStation declined the void');
-    e.status = 409; throw e;
+  // Route the void by who sold the label. A null provider on a row with a
+  // ShipStation id is a legacy ShipStation label.
+  const isShippo = shipment.provider === 'shippo' || (!!shipment.shippoTransactionId && !shipment.shipstationShipmentId);
+  if (isShippo) {
+    if (!shipment.shippoTransactionId) {
+      const e = new Error('Missing Shippo transaction id — cannot refund'); e.status = 422; throw e;
+    }
+    await shippoRefund(shipment.shippoTransactionId);
+  } else {
+    if (!shipment.shipstationShipmentId) {
+      const e = new Error('Missing ShipStation shipment id — cannot void'); e.status = 422; throw e;
+    }
+    const result = await voidLabel(Number(shipment.shipstationShipmentId));
+    if (result && result.approved === false) {
+      const e = new Error(result.message || 'ShipStation declined the void');
+      e.status = 409; throw e;
+    }
   }
 
   const { data: updated, error: updErr } = await supabase
