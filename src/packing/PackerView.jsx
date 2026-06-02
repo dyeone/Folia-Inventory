@@ -533,19 +533,19 @@ function BoxPane({ box, boxSizes, currentSizeId, savingSize, onPickSize, onMarkP
 function BoxSizePicker({ boxSizes, currentSizeId, saving, onPick, onDone }) {
   return (
     <div>
-      <div className="flex items-center gap-2 mb-1">
-        <PackageCheck className="w-6 h-6 text-emerald-600" />
-        <h2 className="text-lg font-semibold text-gray-900">Box packed!</h2>
+      <div className="flex items-center gap-2.5 mb-1.5">
+        <PackageCheck className="w-8 h-8 text-emerald-600" />
+        <h2 className="text-2xl font-bold text-gray-900">Box packed!</h2>
       </div>
-      <p className="text-sm text-gray-600 mb-4">Which box size did you use? It syncs to the shipping desk automatically.</p>
+      <p className="text-lg text-gray-600 mb-5">Which box size did you use? It syncs to the shipping desk automatically.</p>
 
       {boxSizes.length === 0 ? (
-        <div className="flex items-start gap-2 text-sm text-gray-600 bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4">
-          <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+        <div className="flex items-start gap-2 text-base text-gray-600 bg-amber-50 border border-amber-200 rounded-xl p-4 mb-5">
+          <AlertCircle className="w-6 h-6 text-amber-600 flex-shrink-0 mt-0.5" />
           <span>No box sizes have been set up yet. An admin can add them in <strong>Shipping Settings → Box sizes</strong>. You can still finish this box.</span>
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 mb-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-6">
           {boxSizes.map(s => {
             const selected = currentSizeId === s.id;
             return (
@@ -554,18 +554,18 @@ function BoxSizePicker({ boxSizes, currentSizeId, saving, onPick, onDone }) {
                 type="button"
                 disabled={saving}
                 onClick={() => onPick(s.id)}
-                className={`text-left rounded-2xl border-2 p-3.5 transition active:scale-[0.98] disabled:opacity-60 ${
+                className={`text-left rounded-2xl border-2 p-5 min-h-[7rem] flex flex-col justify-center transition active:scale-[0.98] disabled:opacity-60 ${
                   selected
                     ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200'
                     : 'border-gray-200 bg-white hover:border-emerald-400'
                 }`}
               >
-                <div className="flex items-center gap-1.5">
-                  <Ruler className={`w-4 h-4 ${selected ? 'text-emerald-600' : 'text-gray-400'}`} />
-                  <span className="font-semibold text-gray-900 truncate">{s.name}</span>
-                  {selected && <Check className="w-4 h-4 text-emerald-600 ml-auto flex-shrink-0" />}
+                <div className="flex items-center gap-2">
+                  <Ruler className={`w-6 h-6 flex-shrink-0 ${selected ? 'text-emerald-600' : 'text-gray-400'}`} />
+                  <span className="text-2xl font-bold text-gray-900 truncate">{s.name}</span>
+                  {selected && <Check className="w-7 h-7 text-emerald-600 ml-auto flex-shrink-0" />}
                 </div>
-                <div className="mt-1 text-xs text-gray-500 font-mono">{s.length}×{s.width}×{s.height} in</div>
+                <div className="mt-2 text-lg text-gray-500 font-mono tracking-tight">{s.length} × {s.width} × {s.height} in</div>
               </button>
             );
           })}
@@ -575,9 +575,9 @@ function BoxSizePicker({ boxSizes, currentSizeId, saving, onPick, onDone }) {
       <button
         type="button"
         onClick={onDone}
-        className="w-full flex items-center justify-center gap-2 px-4 py-4 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
+        className="w-full flex items-center justify-center gap-2 px-4 py-5 text-lg font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
       >
-        {currentSizeId ? 'Done — next box' : 'Finish without a size'} <ChevronRight className="w-5 h-5" />
+        {currentSizeId ? 'Done — next box' : 'Finish without a size'} <ChevronRight className="w-6 h-6" />
       </button>
     </div>
   );
