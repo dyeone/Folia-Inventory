@@ -52,7 +52,7 @@ export function ShipBoxCard({
   onSaveTracking, onClearTracking,
   onPrintItemLabels,
   onSaveNote,
-  boxSizes, onSavePackaging,
+  boxSizes, onSavePackaging, onBought,
 }) {
   const [open, setOpen] = useState(true);
   const [editingTracking, setEditingTracking] = useState(false);
@@ -187,6 +187,8 @@ export function ShipBoxCard({
               boxSizes={boxSizes}
               onSavePackaging={onSavePackaging}
               showToast={showToast}
+              shipment={shipment}
+              onBought={onBought}
             />
           )}
 

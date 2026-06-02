@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Ruler, Loader2, Settings, Sparkles } from 'lucide-react';
+import { Ruler, Loader2, Settings, Sparkles, ShoppingCart, Check, FlaskConical } from 'lucide-react';
 import { api } from '../api.js';
 
 // Per-box packaging + live rate comparison. The operator picks the box
@@ -21,10 +21,11 @@ const SERVICES = [
 
 const money = (n) => (n == null ? '—' : `$${Number(n).toFixed(2)}`);
 
-export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToast }) {
+export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToast, shipment, onBought }) {
   const sizeId = box.boxSizeId || '';
   const serviceKey = box.serviceKey || '';
   const selectedSize = boxSizes.find(s => s.id === sizeId) || null;
+  const hasActiveLabel = !!(shipment && !shipment.voidedAt);
 
   // Weight is a free text draft so typing stays smooth; we commit on blur.
   // Re-sync from props only while the field isn't focused (avoids stomping
@@ -39,6 +40,12 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
   const [meta, setMeta] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+
+  // Buy flow: clicking a provider's Buy button arms a confirm; confirming
+  // calls the server. confirmBuy = { provider, amount } | null.
+  const [confirmBuy, setConfirmBuy] = useState(null);
+  const [buying, setBuying] = useState(false);
+  const [buyErr, setBuyErr] = useState('');
 
   const save = async (patch) => {
     try { await onSavePackaging?.(patch); }
@@ -74,7 +81,7 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
 
   const getRates = async () => {
     if (!canQuote || loading) return;
-    setLoading(true); setErr(''); setRates(null); setMeta(null);
+    setLoading(true); setErr(''); setRates(null); setMeta(null); setConfirmBuy(null); setBuyErr('');
     try {
       const resp = await api.getRates({ shipmentBoxId: box.id, dims, weightOz });
       setRates(resp?.rates || []);
@@ -82,11 +89,31 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
         shippoConfigured: resp?.shippoConfigured,
         shippoError: resp?.shippoError,
         shipstationError: resp?.shipstationError,
+        shipstationTestMode: resp?.shipstationTestMode,
+        shippoTest: resp?.shippoTest,
       });
     } catch (e) {
       setErr(e?.message || 'Could not fetch rates');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const selectedRate = rates?.find(r => r.key === serviceKey) || null;
+  const providerIsTest = (provider) => provider === 'shippo' ? !!meta?.shippoTest : meta?.shipstationTestMode !== false;
+
+  const doBuy = async () => {
+    if (!confirmBuy || buying) return;
+    setBuying(true); setBuyErr('');
+    try {
+      await api.buyLabel({ shipmentBoxId: box.id, provider: confirmBuy.provider, serviceKey, dims, weightOz });
+      showToast?.(`Label purchased${providerIsTest(confirmBuy.provider) ? ' (test)' : ''}`);
+      setConfirmBuy(null);
+      onBought?.();
+    } catch (e) {
+      setBuyErr(e?.message || 'Purchase failed');
+    } finally {
+      setBuying(false);
     }
   };
 
@@ -184,6 +211,73 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
           )}
 
           {rates && <RateTable rates={rates} meta={meta} selectedKey={serviceKey} onPickService={onPickService} />}
+
+          {/* Buy a label through the platform you choose, for the selected
+              service. Shown only once rates exist and there's no live label. */}
+          {rates && !hasActiveLabel && (
+            confirmBuy ? (
+              <div className="bg-white border border-emerald-300 rounded-lg p-2.5 space-y-2">
+                <div className="text-xs text-gray-800">
+                  Buy <strong>{selectedRate?.label}</strong> via{' '}
+                  <strong>{confirmBuy.provider === 'shippo' ? 'Shippo' : 'ShipStation'}</strong>{' '}
+                  for <strong>{money(confirmBuy.amount)}</strong>?
+                  {providerIsTest(confirmBuy.provider) && (
+                    <span className="inline-flex items-center gap-1 ml-1.5 text-amber-700">
+                      <FlaskConical className="w-3 h-3" /> test — no charge
+                    </span>
+                  )}
+                </div>
+                {buyErr && <div className="text-[11px] text-red-700">{buyErr}</div>}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={doBuy}
+                    disabled={buying}
+                    className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md text-white disabled:bg-gray-300 ${
+                      providerIsTest(confirmBuy.provider) ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
+                    }`}
+                  >
+                    {buying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                    {buying ? 'Buying…' : providerIsTest(confirmBuy.provider) ? 'Buy test label' : 'Buy label'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmBuy(null); setBuyErr(''); }}
+                    disabled={buying}
+                    className="text-xs font-medium px-2.5 py-1.5 rounded-md text-gray-600 hover:bg-gray-100"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : !serviceKey ? (
+              <div className="text-[11px] text-gray-500">Select a service above to buy its label.</div>
+            ) : selectedRate && (selectedRate.shipstation || selectedRate.shippo) ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] text-gray-500">Buy {selectedRate.label}:</span>
+                {selectedRate.shipstation && (
+                  <button
+                    type="button"
+                    onClick={() => { setBuyErr(''); setConfirmBuy({ provider: 'shipstation', amount: selectedRate.shipstation.amount }); }}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md border border-emerald-300 text-emerald-800 bg-white hover:bg-emerald-50"
+                  >
+                    <ShoppingCart className="w-3.5 h-3.5" /> via ShipStation · {money(selectedRate.shipstation.amount)}
+                  </button>
+                )}
+                {selectedRate.shippo && (
+                  <button
+                    type="button"
+                    onClick={() => { setBuyErr(''); setConfirmBuy({ provider: 'shippo', amount: selectedRate.shippo.amount }); }}
+                    className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-md border border-emerald-300 text-emerald-800 bg-white hover:bg-emerald-50"
+                  >
+                    <ShoppingCart className="w-3.5 h-3.5" /> via Shippo · {money(selectedRate.shippo.amount)}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="text-[11px] text-gray-500">No quote for {selectedRate?.label} — neither platform returned a price for that carrier.</div>
+            )
+          )}
         </>
       )}
     </div>

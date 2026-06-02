@@ -389,12 +389,23 @@ create table if not exists shipments (
   "shippingSlipStoragePath" text,                               -- second PDF: packing slip (Palmstreet flow)
   "shipstationShipmentId"  text,
   "shipstationLabelId"     text,
+  provider                 text,                                 -- 'shipstation' | 'shippo' | 'palmstreet' (null = legacy ShipStation)
+  "shippoTransactionId"    text,                                 -- Shippo transaction id, for refunds
   "isTestLabel"            boolean     not null default false,
   "purchasedAt"            timestamptz not null default now(),
   "purchasedBy"            text,
   "voidedAt"               timestamptz,
   "voidedBy"               text
 );
+alter table shipments add column if not exists provider text;
+alter table shipments add column if not exists "shippoTransactionId" text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'shipments_provider_check') then
+    alter table shipments add constraint shipments_provider_check
+      check (provider is null or provider in ('shipstation','shippo','palmstreet'));
+  end if;
+end $$;
 create index if not exists shipments_saleid_idx on shipments ("saleId");
 create index if not exists shipments_carrier_idx on shipments (carrier);
 

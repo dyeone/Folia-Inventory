@@ -46,6 +46,10 @@ async function call(method, path, body) {
   return data;
 }
 
+export function isTestToken() {
+  return (process.env.SHIPPO_API_TOKEN || '').startsWith('shippo_test');
+}
+
 // Map an app ship-from / buyer address into Shippo's address shape.
 function toShippoAddress(a = {}) {
   return {
@@ -61,25 +65,27 @@ function toShippoAddress(a = {}) {
   };
 }
 
+function toShippoParcel(p = {}) {
+  return {
+    length: String(p.length),
+    width: String(p.width),
+    height: String(p.height),
+    distance_unit: 'in',
+    weight: String(p.weightOz),
+    mass_unit: 'oz',
+  };
+}
+
 // POST /shipments — creates a shipment and (with async:false) returns the
 // fully-rated object synchronously. Returns the normalized rates array:
 //   [{ provider, serviceName, serviceToken, amount, currency, estDays }]
 export async function getRates({ addressFrom, addressTo, parcel }) {
-  const payload = {
+  const shipment = await call('POST', '/shipments/', {
     address_from: toShippoAddress(addressFrom),
     address_to: toShippoAddress(addressTo),
-    parcels: [{
-      length: String(parcel.length),
-      width: String(parcel.width),
-      height: String(parcel.height),
-      distance_unit: 'in',
-      weight: String(parcel.weightOz),
-      mass_unit: 'oz',
-    }],
+    parcels: [toShippoParcel(parcel)],
     async: false,
-  };
-
-  const shipment = await call('POST', '/shipments/', payload);
+  });
   const rates = Array.isArray(shipment?.rates) ? shipment.rates : [];
   return rates.map(r => ({
     provider: r.provider || '',
@@ -89,4 +95,57 @@ export async function getRates({ addressFrom, addressTo, parcel }) {
     currency: r.currency || 'USD',
     estDays: r.estimated_days ?? null,
   }));
+}
+
+// Buy a label for one parcel via a specific service. Creates the shipment,
+// finds the matching rate by servicelevel token, then purchases it via a
+// Transaction. Returns tracking + a Shippo-hosted PDF URL + the txn id
+// (needed for refunds). With a shippo_test_* token, no charge is made.
+export async function createLabel({ addressFrom, addressTo, parcel, serviceToken }) {
+  const shipment = await call('POST', '/shipments/', {
+    address_from: toShippoAddress(addressFrom),
+    address_to: toShippoAddress(addressTo),
+    parcels: [toShippoParcel(parcel)],
+    async: false,
+  });
+  const rates = Array.isArray(shipment?.rates) ? shipment.rates : [];
+  const rate = rates.find(r => r.servicelevel?.token === serviceToken);
+  if (!rate) {
+    const e = new Error(`Shippo returned no ${serviceToken} rate for this box — is that carrier connected in Shippo?`);
+    e.status = 422; throw e;
+  }
+
+  const txn = await call('POST', '/transactions/', {
+    rate: rate.object_id,
+    label_file_type: 'PDF',
+    async: false,
+  });
+  if (txn?.status !== 'SUCCESS') {
+    const msg = (txn?.messages || []).map(m => m?.text || m).filter(Boolean).join('; ')
+      || `Shippo could not buy the label (status ${txn?.status || 'unknown'})`;
+    const e = new Error(msg); e.status = 422; throw e;
+  }
+
+  return {
+    trackingNumber: txn.tracking_number || null,
+    labelUrl: txn.label_url || null,
+    amount: rate.amount != null ? Number(rate.amount) : null,
+    currency: rate.currency || 'USD',
+    transactionId: txn.object_id || null,
+    serviceName: rate.servicelevel?.name || '',
+    isTest: isTestToken(),
+  };
+}
+
+// POST /refunds — Shippo's equivalent of voiding. Refunds are frequently
+// returned as PENDING (processed async); only an explicit ERROR is a
+// failure. Treats PENDING/SUCCESS as accepted.
+export async function refund(transactionId) {
+  const r = await call('POST', '/refunds/', { transaction: transactionId, async: false });
+  if (r?.status === 'ERROR') {
+    const msg = (r?.messages || []).map(m => m?.text || m).filter(Boolean).join('; ')
+      || 'Shippo declined the refund';
+    const e = new Error(msg); e.status = 409; throw e;
+  }
+  return r;
 }
