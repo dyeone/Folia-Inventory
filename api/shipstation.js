@@ -403,13 +403,13 @@ async function voidLabelHandler(req, res, userId) {
   {
     const r = await supabase
       .from('shipments')
-      .select('id, provider, "shipstationShipmentId", "shippoTransactionId", "voidedAt"')
+      .select('id, provider, "shipstationShipmentId", "shippoTransactionId", "isTestLabel", "voidedAt"')
       .eq('id', shipmentBoxId)
       .maybeSingle();
     if (r.error && isMissingColumn(r.error)) {
       const r2 = await supabase
         .from('shipments')
-        .select('id, "shipstationShipmentId", "voidedAt"')
+        .select('id, "shipstationShipmentId", "isTestLabel", "voidedAt"')
         .eq('id', shipmentBoxId)
         .maybeSingle();
       shipment = r2.data ? { ...r2.data, provider: null, shippoTransactionId: null } : null;
@@ -424,22 +424,28 @@ async function voidLabelHandler(req, res, userId) {
     const e = new Error('Label already voided'); e.status = 409; throw e;
   }
 
-  // Route the void by who sold the label. A null provider on a row with a
-  // ShipStation id is a legacy ShipStation label.
-  const isShippo = shipment.provider === 'shippo' || (!!shipment.shippoTransactionId && !shipment.shipstationShipmentId);
-  if (isShippo) {
-    if (!shipment.shippoTransactionId) {
-      const e = new Error('Missing Shippo transaction id — cannot refund'); e.status = 422; throw e;
-    }
-    await shippoRefund(shipment.shippoTransactionId);
-  } else {
-    if (!shipment.shipstationShipmentId) {
-      const e = new Error('Missing ShipStation shipment id — cannot void'); e.status = 422; throw e;
-    }
-    const result = await voidLabel(Number(shipment.shipstationShipmentId));
-    if (result && result.approved === false) {
-      const e = new Error(result.message || 'ShipStation declined the void');
-      e.status = 409; throw e;
+  // Test labels are placeholders — nothing was charged and no real carrier
+  // shipment exists, so there is nothing to void/refund. (ShipStation's
+  // voidlabel even throws a .NET "Index was out of range" on the fake test
+  // id.) Skip the carrier call and just mark our row voided below.
+  if (!shipment.isTestLabel) {
+    // Route the void by who sold the label. A null provider on a row with a
+    // ShipStation id is a legacy ShipStation label.
+    const isShippo = shipment.provider === 'shippo' || (!!shipment.shippoTransactionId && !shipment.shipstationShipmentId);
+    if (isShippo) {
+      if (!shipment.shippoTransactionId) {
+        const e = new Error('Missing Shippo transaction id — cannot refund'); e.status = 422; throw e;
+      }
+      await shippoRefund(shipment.shippoTransactionId);
+    } else {
+      if (!shipment.shipstationShipmentId) {
+        const e = new Error('Missing ShipStation shipment id — cannot void'); e.status = 422; throw e;
+      }
+      const result = await voidLabel(Number(shipment.shipstationShipmentId));
+      if (result && result.approved === false) {
+        const e = new Error(result.message || 'ShipStation declined the void');
+        e.status = 409; throw e;
+      }
     }
   }
 
