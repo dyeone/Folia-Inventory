@@ -11,6 +11,7 @@ import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
+import { openLabelPdf, copyText } from './labelPdf.js';
 import { SummaryStat } from './SummaryStat.jsx';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
@@ -1718,6 +1719,7 @@ function BoxRow({
         <>
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
+          <LabelInfoRow shipment={shipment} showToast={showToast} />
           {onSavePackaging && !allShipped && (
             <BoxPackagingPanel
               box={box}
@@ -1775,6 +1777,50 @@ function BoxRow({
             <X className="w-3 h-3" />
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+// Purchased-label strip: shows once a box has a live (non-voided) label.
+// The tracking number copies on click; "Print label" opens the saved PDF
+// in a new tab. Renders in the box tab (BoxRow) so the operator never has
+// to drill into the sale to grab tracking or reprint.
+function LabelInfoRow({ shipment, showToast }) {
+  const live = shipment && !shipment.voidedAt ? shipment : null;
+  if (!live || (!live.trackingNumber && !live.labelStoragePath)) return null;
+  return (
+    <div className="px-3 py-2 bg-emerald-50/50 border-t border-emerald-100 flex items-center gap-2 flex-wrap text-xs">
+      {live.trackingNumber ? (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); copyText(live.trackingNumber, showToast); }}
+          title="Copy tracking number"
+          className="flex items-center gap-1.5 text-gray-700 hover:text-emerald-700 group"
+        >
+          <Truck className="w-3.5 h-3.5 text-gray-500 group-hover:text-emerald-600" />
+          <span className="font-mono">{live.trackingNumber}</span>
+          <Copy className="w-3 h-3 text-gray-400 group-hover:text-emerald-600" />
+        </button>
+      ) : (
+        <span className="flex items-center gap-1.5 text-gray-500">
+          <Truck className="w-3.5 h-3.5 text-gray-400" /> <span className="font-mono">(no tracking)</span>
+        </span>
+      )}
+      {live.labelCost != null && !live.isTestLabel && (
+        <span className="text-gray-500">${parseFloat(live.labelCost).toFixed(2)}</span>
+      )}
+      {live.isTestLabel && (
+        <span className="text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">test</span>
+      )}
+      {live.labelStoragePath && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); openLabelPdf(live, 'label', showToast); }}
+          className="ml-auto flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-100 rounded font-medium"
+        >
+          <Printer className="w-3.5 h-3.5" /> Print label
+        </button>
       )}
     </div>
   );

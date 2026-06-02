@@ -1,40 +1,13 @@
 import { useState } from 'react';
 import {
   ChevronDown, ChevronRight, Truck, ShoppingCart, PackageCheck,
-  MapPin, Box, Send, RotateCcw, Download as DownloadIcon, Edit2, Tag, Printer,
+  MapPin, Box, Send, RotateCcw, Edit2, Tag, Printer, Copy,
 } from 'lucide-react';
-import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
-
-// Fetch a fresh signed URL for one of the shipment PDFs (label or slip)
-// and open it in a new tab. Falls back to a Blob download for legacy
-// data: URLs (pre-Storage rows) since direct <a href="data:..."> downloads
-// don't always trigger correctly.
-async function downloadShipmentPdf(shipment, kind, showToast) {
-  try {
-    const url = await api.getLabelUrl(shipment.id, kind);
-    if (url.startsWith('data:')) {
-      const base64 = url.split(',')[1] || '';
-      const bytes = atob(base64);
-      const buf = new Uint8Array(bytes.length);
-      for (let i = 0; i < bytes.length; i++) buf[i] = bytes.charCodeAt(i);
-      const blob = new Blob([buf], { type: 'application/pdf' });
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = `${kind}-${shipment.trackingNumber || shipment.id}.pdf`;
-      a.click();
-      URL.revokeObjectURL(blobUrl);
-    } else {
-      window.open(url, '_blank', 'noopener');
-    }
-  } catch (e) {
-    showToast?.(e.message || `Could not open ${kind}`);
-  }
-}
+import { openLabelPdf, copyText } from './labelPdf.js';
 
 // One row of the packing list: recipient + items + label/ship actions.
 // All the buy/void/ship/tracking handlers come from the parent so this
@@ -244,10 +217,24 @@ export function ShipBoxCard({
               available actions differ. */}
           {hasActiveLabel && !editingTracking && (
             <div className="px-4 py-2.5 bg-gray-50 border-t border-gray-100 flex items-center gap-3 flex-wrap text-xs">
-              <div className="flex items-center gap-1.5 text-gray-700">
-                <Truck className="w-3.5 h-3.5 text-gray-500" />
-                <span className="font-mono">{shipment.trackingNumber || '(no tracking)'}</span>
-              </div>
+              {/* Tracking number — click to copy. */}
+              {shipment.trackingNumber ? (
+                <button
+                  type="button"
+                  onClick={() => copyText(shipment.trackingNumber, showToast)}
+                  title="Copy tracking number"
+                  className="flex items-center gap-1.5 text-gray-700 hover:text-emerald-700 group"
+                >
+                  <Truck className="w-3.5 h-3.5 text-gray-500 group-hover:text-emerald-600" />
+                  <span className="font-mono">{shipment.trackingNumber}</span>
+                  <Copy className="w-3 h-3 text-gray-400 group-hover:text-emerald-600" />
+                </button>
+              ) : (
+                <div className="flex items-center gap-1.5 text-gray-500">
+                  <Truck className="w-3.5 h-3.5 text-gray-400" />
+                  <span className="font-mono">(no tracking)</span>
+                </div>
+              )}
               {shipment.labelCost != null && !shipment.isTestLabel && (
                 <span className="text-gray-500">${parseFloat(shipment.labelCost).toFixed(2)}</span>
               )}
@@ -255,23 +242,23 @@ export function ShipBoxCard({
                 {isPalmstreetRow ? 'Palmstreet USPS' : shipment.serviceCode}
               </span>
               <div className="ml-auto flex items-center gap-1">
-                {/* Label PDF — exists for ShipStation rows AND for Palmstreet
-                    rows that came through the Chrome extension flow. */}
+                {/* Label PDF — exists for ShipStation/Shippo rows AND for
+                    Palmstreet rows that came through the Chrome extension. */}
                 {(shipment.labelStoragePath || (!isPalmstreetRow)) && (
                   <button
-                    onClick={() => downloadShipmentPdf(shipment, 'label', showToast)}
+                    onClick={() => openLabelPdf(shipment, 'label', showToast)}
                     className="flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-50 rounded"
                   >
-                    <DownloadIcon className="w-3.5 h-3.5" /> Label
+                    <Printer className="w-3.5 h-3.5" /> Print label
                   </button>
                 )}
                 {/* Packing slip — only Palmstreet flow currently provides this. */}
                 {shipment.shippingSlipStoragePath && (
                   <button
-                    onClick={() => downloadShipmentPdf(shipment, 'slip', showToast)}
+                    onClick={() => openLabelPdf(shipment, 'slip', showToast)}
                     className="flex items-center gap-1 px-2 py-1 text-emerald-700 hover:bg-emerald-50 rounded"
                   >
-                    <DownloadIcon className="w-3.5 h-3.5" /> Slip
+                    <Printer className="w-3.5 h-3.5" /> Slip
                   </button>
                 )}
                 {!allShipped && isPalmstreetRow && (
