@@ -62,7 +62,7 @@ export function PackingView({
   inventoryItems, sales,
   onShipBox, onDeleteAllOpenBoxes, onDeleteBox, onPrintBoxLabels, onPrintItemLabels, onTogglePacked,
   setConfirmDialog,
-  isAdmin, onRefreshItems,
+  isAdmin, onRefreshItems, settingsVersion = 0,
 }) {
   // Admin-only modal for creating a box by hand (no Palmstreet upload
   // involved). Sits next to the existing Print box labels button. The
@@ -296,19 +296,34 @@ export function PackingView({
     let cancelled = false;
     (async () => {
       try {
-        const [list, notes, settings] = await Promise.all([
+        const [list, notes] = await Promise.all([
           api.getShipments(),
           api.getBoxNotes(),
-          api.getSettings('shipping').catch(() => null),
         ]);
         if (cancelled) return;
         setShipmentsByBox(Object.fromEntries((list || []).map(s => [s.id, s])));
         setBoxNotesByBox(notes || {});
-        setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
       } catch { /* no-op */ }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Box-size presets live in the id='shipping' settings row, edited in
+  // ShippingSettingsModal (a sibling view, not a child). settingsVersion is
+  // bumped by the parent whenever that modal saves, so re-pull the presets
+  // here to keep the per-box size picker in sync without a page reload. The
+  // version starts at 0, so this also does the initial load on mount.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const settings = await api.getSettings('shipping').catch(() => null);
+        if (cancelled) return;
+        setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
+      } catch { /* no-op */ }
+    })();
+    return () => { cancelled = true; };
+  }, [settingsVersion]);
 
   // "Ready to ship" = boxes with at least one item still 'sold' (i.e. not
   // every item has been shipped yet). "Shipped" = boxes where every item
