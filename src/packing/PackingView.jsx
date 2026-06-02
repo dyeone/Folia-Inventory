@@ -396,15 +396,17 @@ export function PackingView({
     }
     return false;
   };
-  // A box passes the contents filter if it holds at least one item of the
-  // selected kind. Anthurium keys off item.variety (the same predicate the
-  // Print ANT labels button and box labels use). TC means tissue culture
-  // that is NOT anthurium — anthurium tissue cultures count as Anthurium,
-  // so the two filters stay mutually exclusive (TC boxes hold no anthurium).
+  // A box passes the contents filter if it holds the selected kind.
+  // Anthurium keys off item.variety (the same predicate the Print ANT
+  // labels button and box labels use): any box with an anthurium item is
+  // an Anthurium box. TC is the complement — a box with a tissue-culture
+  // item and NO anthurium at all — so a mixed box that contains anthurium
+  // never shows under TC (TC boxes hold no anthurium inside).
   const isAnthurium = (i) => (i.variety || '').toLowerCase() === 'anthurium';
   const matchContents = (box) => {
-    if (contentFilter === 'tc') return box.items.some(i => i.type === 'tc' && !isAnthurium(i));
-    if (contentFilter === 'anthurium') return box.items.some(isAnthurium);
+    const hasAnthurium = box.items.some(isAnthurium);
+    if (contentFilter === 'tc') return box.items.some(i => i.type === 'tc') && !hasAnthurium;
+    if (contentFilter === 'anthurium') return hasAnthurium;
     return true;
   };
   const filterBoxes = (boxes, applyCarrierFilter) =>
