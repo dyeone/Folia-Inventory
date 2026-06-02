@@ -498,7 +498,7 @@ function BoxPane({ box, boxSizes, currentSizeId, savingSize, onPickSize, onMarkP
                   <Package className="w-8 h-8 text-gray-300 mx-auto mb-2" /> No items in this box.
                 </div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} />)}
                   {packed.map(item => <ItemCard key={item.id} item={item} />)}
                 </div>
@@ -624,7 +624,7 @@ function ItemCard({ item, onMarkPacked }) {
             {item.sku || '(no SKU)'}
           </div>
           {(name || variety) && (
-            <div className={`text-sm truncate ${family.accent} ${isPacked ? 'line-through opacity-70' : 'opacity-80'}`}>
+            <div className={`text-sm break-words ${family.accent} ${isPacked ? 'line-through opacity-70' : 'opacity-80'}`}>
               {[name, variety].filter(Boolean).join(' · ')}
             </div>
           )}
