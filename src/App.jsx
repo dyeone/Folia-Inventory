@@ -183,6 +183,9 @@ function StaffOrAdminInventory() {
   const [showMoreNav, setShowMoreNav] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
   const [showShippingSettings, setShowShippingSettings] = useState(false);
+  // Bumped each time Shipping Settings saves so the Shipping tab re-pulls
+  // its box-size presets (order included) without a page reload.
+  const [shippingSettingsVersion, setShippingSettingsVersion] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [filterStatus, setFilterStatus] = useState('all');
@@ -928,6 +931,7 @@ function StaffOrAdminInventory() {
             inventoryItems={items}
             sales={sales}
             isAdmin={isAdmin}
+            settingsVersion={shippingSettingsVersion}
             onRefreshItems={async () => {
               const fresh = await api.getItems();
               applyItemsFresh(fresh);
@@ -1363,7 +1367,10 @@ function StaffOrAdminInventory() {
         />
       )}
       {showShippingSettings && (
-        <ShippingSettingsModal onClose={() => setShowShippingSettings(false)} />
+        <ShippingSettingsModal
+          onClose={() => setShowShippingSettings(false)}
+          onSaved={() => setShippingSettingsVersion(v => v + 1)}
+        />
       )}
 
       {toast && (

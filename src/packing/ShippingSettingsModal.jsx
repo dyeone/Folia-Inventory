@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { X, Save, Truck, MapPin, Package, AlertCircle, FlaskConical, Ruler, Plus, Trash2 } from 'lucide-react';
+import { X, Save, Truck, MapPin, Package, AlertCircle, FlaskConical, Ruler, Plus, Trash2, GripVertical } from 'lucide-react';
 import { api } from '../api.js';
 
 // Stable id for a new box-size preset. crypto.randomUUID is available in
@@ -43,11 +43,17 @@ const EMPTY = {
   testMode: true,
 };
 
-export function ShippingSettingsModal({ onClose }) {
+export function ShippingSettingsModal({ onClose, onSaved }) {
   const [data, setData] = useState(EMPTY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
+  // Drag-to-reorder state for the box-size list. draggingId is the row
+  // being dragged (drives the dimmed style); dragHandleId gates which row
+  // is `draggable` so a drag only starts from the grip — never from inside
+  // one of the text inputs. Native HTML5 DnD, matching PhotoGallery.
+  const [draggingId, setDraggingId] = useState(null);
+  const [dragHandleId, setDragHandleId] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -85,6 +91,21 @@ export function ShippingSettingsModal({ onClose }) {
     ...d,
     boxSizes: (d.boxSizes || []).filter(b => b.id !== id),
   }));
+  // Move the currently-dragged row so it lands at the drop target's slot.
+  // The persisted array order is the order the shipping tab's per-box size
+  // picker lists presets in, so reordering here re-sorts that dropdown.
+  const moveBoxSize = (dropTargetId) => {
+    if (!draggingId || draggingId === dropTargetId) return;
+    setData(d => {
+      const list = [...(d.boxSizes || [])];
+      const fromIdx = list.findIndex(b => b.id === draggingId);
+      const toIdx = list.findIndex(b => b.id === dropTargetId);
+      if (fromIdx < 0 || toIdx < 0) return d;
+      const [moved] = list.splice(fromIdx, 1);
+      list.splice(toIdx, 0, moved);
+      return { ...d, boxSizes: list };
+    });
+  };
 
   const validShipFrom = ['name', 'street1', 'city', 'state', 'zip', 'country']
     .every(k => data.shipFrom?.[k]?.trim());
@@ -105,6 +126,7 @@ export function ShippingSettingsModal({ onClose }) {
         }))
         .filter(b => b.name && b.length > 0 && b.width > 0 && b.height > 0);
       await api.putSettings('shipping', { ...data, boxSizes });
+      onSaved?.();
       onClose();
     } catch (e) {
       setErr(e.message || 'Save failed');
@@ -188,13 +210,31 @@ export function ShippingSettingsModal({ onClose }) {
                 </div>
               </Section>
 
-              <Section icon={Ruler} title="Box sizes" subtitle="The presets you pick from per box when comparing rates. Add every box you actually ship in.">
+              <Section icon={Ruler} title="Box sizes" subtitle="The presets you pick from per box when comparing rates. Drag the handle to reorder; that's the order they're listed in per box. Add every box you actually ship in.">
                 <div className="space-y-2">
                   {(data.boxSizes || []).length === 0 && (
                     <div className="text-xs text-gray-500 italic py-1">No box sizes yet — add the ones you ship in below.</div>
                   )}
                   {(data.boxSizes || []).map((b) => (
-                    <div key={b.id} className="flex items-end gap-2 bg-gray-50 border border-gray-200 rounded-lg p-2">
+                    <div
+                      key={b.id}
+                      draggable={dragHandleId === b.id}
+                      onDragStart={() => setDraggingId(b.id)}
+                      onDragEnd={() => { setDraggingId(null); setDragHandleId(null); }}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => moveBoxSize(b.id)}
+                      className={`flex items-end gap-2 bg-gray-50 border border-gray-200 rounded-lg p-2 ${draggingId === b.id ? 'opacity-50' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        onMouseDown={() => setDragHandleId(b.id)}
+                        onMouseUp={() => setDragHandleId(null)}
+                        className="p-1.5 mb-0.5 -ml-0.5 text-gray-400 hover:text-gray-600 cursor-grab active:cursor-grabbing flex-shrink-0"
+                        aria-label="Drag to reorder"
+                        title="Drag to reorder"
+                      >
+                        <GripVertical className="w-4 h-4" />
+                      </button>
                       <label className="flex-1 min-w-0">
                         <div className="text-[11px] font-medium text-gray-600 mb-1">Name</div>
                         <input
