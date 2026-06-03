@@ -175,6 +175,11 @@ export function PackingView({
   // 'shipped' for the archive. Defaults to 'ready' since that's the
   // common operator workflow.
   const [subTab, setSubTab] = useState('ready');
+  // Period scope for the Shipped tab's shipping-cost summary only (not the
+  // list): 'week' = boxes marked shipped in the current Mon–Sun local week,
+  // 'all' = every shipped box. Defaults to this week so the figure is a
+  // meaningful weekly spend/loss rather than an ever-growing all-time total.
+  const [shippedCostPeriod, setShippedCostPeriod] = useState('week');
   // Scanner state. scannerMode picks which lookup path the next decode
   // runs through: 'box' resolves a B-XXXXXX code to a box, 'item' looks
   // up which open/shipped box contains a given item SKU. Either way,
@@ -583,10 +588,39 @@ export function PackingView({
   // Shipping cost vs. what buyers paid, across the shipped boxes currently
   // shown. Only boxes with a real purchased label count (see shippingRollup),
   // so a negative net is a genuine "we shipped this at a loss" figure.
-  const shippedShipping = shippingRollup(
-    filteredShipped.groups.flatMap(g => g.boxes).flatMap(b => b.items),
-    shipmentsByBox,
-  );
+  //
+  // The summary can scope to the current Mon–Sun local week (default). A box's
+  // ship date is the latest shippedAt across its items (handleMarkShipped
+  // stamps them together), falling back to the label's purchasedAt for older
+  // boxes that predate shippedAt. The list itself stays all-time.
+  const shippedCostBoxes = filteredShipped.groups.flatMap(g => g.boxes);
+  const weekBounds = (() => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7)); // back to Monday 00:00 local
+    const end = new Date(start);
+    end.setDate(start.getDate() + 7);
+    return { start: start.getTime(), end: end.getTime() };
+  })();
+  const boxShippedTime = (box) => {
+    let t = 0;
+    for (const i of box.items) {
+      if (i.shippedAt) { const ts = new Date(i.shippedAt).getTime(); if (ts > t) t = ts; }
+    }
+    if (!t) {
+      const p = shipmentsByBox?.[box.id]?.purchasedAt;
+      if (p) t = new Date(p).getTime();
+    }
+    return t;
+  };
+  const boxesThisWeek = shippedCostBoxes.filter(b => {
+    const t = boxShippedTime(b);
+    return t >= weekBounds.start && t < weekBounds.end;
+  });
+  const shippedShippingAll = shippingRollup(shippedCostBoxes.flatMap(b => b.items), shipmentsByBox);
+  const shippedShipping = shippedCostPeriod === 'week'
+    ? shippingRollup(boxesThisWeek.flatMap(b => b.items), shipmentsByBox)
+    : shippedShippingAll;
 
   // Ready boxes that are duplicates of an already-shipped order — surfaced
   // as a one-click cleanup banner so the operator can clear them in bulk.
@@ -1054,26 +1088,56 @@ export function PackingView({
           <span className="text-xs text-gray-400">
             {shipped.totalBoxes} {shipped.totalBoxes === 1 ? 'box' : 'boxes'} · {shipped.groups.length} {shipped.groups.length === 1 ? 'buyer' : 'buyers'} · {shipped.totalItems} {shipped.totalItems === 1 ? 'item' : 'items'}
           </span>
-          {shippedShipping.boxes > 0 && (
-            <div className="grid grid-cols-3 gap-2">
-              <SummaryStat
-                label="Shipping cost"
-                value={fmt$2(shippedShipping.cost)}
-                sub={`${shippedShipping.boxes} label${shippedShipping.boxes === 1 ? '' : 's'} bought`}
-                tone="gray"
-              />
-              <SummaryStat
-                label="Buyers paid"
-                value={fmt$2(shippedShipping.collected)}
-                sub="shipping collected"
-                tone="gray"
-              />
-              <SummaryStat
-                label={shippedShipping.net < 0 ? 'Lost on shipping' : 'Shipping net'}
-                value={fmt$2(shippedShipping.net)}
-                sub={shippedShipping.net < 0 ? 'cost over collected' : 'collected over cost'}
-                tone={shippedShipping.net < 0 ? 'red' : 'emerald'}
-              />
+          {/* Shipping-cost summary — scoped to this week by default; toggle to
+              all time. Shown whenever any shipped box has a real label cost. */}
+          {shippedShippingAll.boxes > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-gray-400 mr-0.5">Shipping cost</span>
+                {[
+                  { v: 'week', label: 'This week' },
+                  { v: 'all', label: 'All time' },
+                ].map(p => (
+                  <button
+                    key={p.v}
+                    type="button"
+                    onClick={() => setShippedCostPeriod(p.v)}
+                    className={`px-2 py-1 rounded-md font-medium transition ${
+                      shippedCostPeriod === p.v
+                        ? 'bg-emerald-600 text-white'
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              {shippedShipping.boxes > 0 ? (
+                <div className="grid grid-cols-3 gap-2">
+                  <SummaryStat
+                    label="Shipping cost"
+                    value={fmt$2(shippedShipping.cost)}
+                    sub={`${shippedShipping.boxes} label${shippedShipping.boxes === 1 ? '' : 's'}${shippedCostPeriod === 'week' ? ' this week' : ''}`}
+                    tone="gray"
+                  />
+                  <SummaryStat
+                    label="Buyers paid"
+                    value={fmt$2(shippedShipping.collected)}
+                    sub="shipping collected"
+                    tone="gray"
+                  />
+                  <SummaryStat
+                    label={shippedShipping.net < 0 ? 'Lost on shipping' : 'Shipping net'}
+                    value={fmt$2(shippedShipping.net)}
+                    sub={shippedShipping.net < 0 ? 'cost over collected' : 'collected over cost'}
+                    tone={shippedShipping.net < 0 ? 'red' : 'emerald'}
+                  />
+                </div>
+              ) : (
+                <div className="bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-xs text-gray-500">
+                  No labels bought this week. Switch to <span className="font-medium text-gray-700">All time</span> for the running total.
+                </div>
+              )}
             </div>
           )}
           {filteredShipped.groups.length === 0 ? (
