@@ -1702,6 +1702,11 @@ function BoxRow({
     setPrevDefaultExpanded(defaultExpanded);
     if (defaultExpanded) setExpanded(true);
   }
+  // The rendered open-state. A focused box (defaultExpanded — a scan/lookup
+  // target or sole filter survivor) is always shown open, independent of the
+  // local toggle, so scanning a box reliably opens its card. Once the focus
+  // clears, the box follows the operator's own expand/collapse again.
+  const isExpanded = expanded || !!defaultExpanded;
   const carrierKey = (box.carrier || 'usps').toLowerCase();
   const carrierLabel = carrierKey.toUpperCase();
 
@@ -1817,7 +1822,7 @@ function BoxRow({
       <div
         role="button"
         tabIndex={0}
-        aria-expanded={expanded}
+        aria-expanded={isExpanded}
         onClick={() => setExpanded((v) => !v)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -1860,8 +1865,8 @@ function BoxRow({
           )}
           <div className="flex-1" />
           <span className={`text-xs shrink-0 ${statusClass}`}>{statusLabel}</span>
-          {!expanded && primaryAction}
-          <ChevronRight className={`w-4 h-4 text-gray-300 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
+          {!isExpanded && primaryAction}
+          <ChevronRight className={`w-4 h-4 text-gray-300 shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
         </div>
 
         {/* Row 2 — sale info. Plenty of room to display the full sale
@@ -1891,7 +1896,7 @@ function BoxRow({
 
       </div>
 
-      {expanded && (
+      {isExpanded && (
         <>
           {/* Action toolbar — the full set for the focused box. The collapsed
               row carries only the primary action; everything else (edit,
