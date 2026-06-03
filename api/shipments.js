@@ -33,6 +33,7 @@ export default wrap(async (req, res) => {
       if (action === 'label-url') return labelUrl(req, res);
       if (action === 'pending') return pending(req, res);
       if (action === 'box-notes') return boxNotes(req, res);
+      if (action === 'phone-handoff') return phoneHandoff(req, res, userId);
       return list(req, res);
     }
     case 'POST': {
@@ -41,6 +42,7 @@ export default wrap(async (req, res) => {
       if (action === 'clear-tracking') return clearTracking(req, res);
       if (action === 'set-box-note') return setBoxNote(req, res, userId);
       if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId);
+      if (action === 'send-to-phone') return sendToPhone(req, res, userId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
     default:
@@ -310,6 +312,66 @@ async function setBoxPackaging(req, res, userId) {
     .single();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ box: data });
+}
+
+// Packer cross-device handoff. A packer running the iPad packing UI taps
+// "Send to phone" on an open box; their phone (same login) polls and shows
+// the box's items as a find-list. We stash the snapshot in app_settings
+// under a per-user key — it's transient per-user state, one row, overwritten
+// on each send, so no dedicated table is needed.
+const HANDOFF_PREFIX = 'packer-handoff:';
+
+// POST /api/shipments  body: { action:'send-to-phone', box }
+// Stores the (sanitized) box snapshot the iPad sent, stamped with a fresh
+// sentAt the receiving device uses to detect a new handoff.
+async function sendToPhone(req, res, userId) {
+  const { box } = req.body || {};
+  if (!box || typeof box !== 'object' || !box.id) {
+    const e = new Error('box required'); e.status = 400; throw e;
+  }
+  const str = (v) => (v == null ? null : String(v));
+  const safeBox = {
+    id: String(box.id),
+    code: str(box.code) || '',
+    buyer: str(box.buyer) || '',
+    buyerUsername: str(box.buyerUsername) || '',
+    carrier: str(box.carrier) || 'usps',
+    items: (Array.isArray(box.items) ? box.items : []).slice(0, 500).map(it => ({
+      id: str(it?.id),
+      sku: str(it?.sku),
+      name: str(it?.name),
+      variety: str(it?.variety),
+      quantity: Number.isFinite(+it?.quantity) ? +it.quantity : null,
+      lotNumber: str(it?.lotNumber),
+      notes: str(it?.notes),
+      packedAt: str(it?.packedAt),
+      status: str(it?.status),
+    })),
+  };
+  const sentAt = new Date().toISOString();
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({
+      id: `${HANDOFF_PREFIX}${userId}`,
+      data: { box: safeBox, sentAt, sentBy: userId },
+      updatedAt: sentAt,
+      updatedBy: userId,
+    }, { onConflict: 'id' });
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ ok: true, sentAt });
+}
+
+// GET /api/shipments?action=phone-handoff
+// Returns the caller's latest handoff ({ box, sentAt }) or null. The phone
+// polls this; a changed sentAt means a fresh box to surface.
+async function phoneHandoff(req, res, userId) {
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('data')
+    .eq('id', `${HANDOFF_PREFIX}${userId}`)
+    .maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ handoff: data?.data || null });
 }
 
 // GET /api/shipments?action=box-notes[&saleId=<id>]

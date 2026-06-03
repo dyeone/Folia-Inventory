@@ -179,6 +179,14 @@ export const api = {
   // keys passed are touched server-side; returns the full updated box row.
   setBoxPackaging: ({ shipmentBoxId, boxSizeId, weightOz, serviceKey }) =>
     request('/shipments', { method: 'POST', body: { action: 'set-box-packaging', shipmentBoxId, boxSizeId, weightOz, serviceKey } }).then(r => r.box),
+  // Packer cross-device handoff: the iPad sends an open box's items to the
+  // packer's phone (same login), which polls getPhoneHandoff and shows them
+  // as a find-list. Returns { ok, sentAt } so the sender can mark its own
+  // send as seen and avoid popping its own handoff back at itself.
+  sendBoxToPhone: (box) =>
+    request('/shipments', { method: 'POST', body: { action: 'send-to-phone', box } }),
+  getPhoneHandoff: () =>
+    request('/shipments?action=phone-handoff').then(r => r.handoff),
   // provider: 'shipstation' (default) | 'shippo'. serviceKey (one of the
   // three offered services) drives the carrier + per-provider codes; when
   // omitted the legacy item-carrier + saved defaults are used (ShipStation).
