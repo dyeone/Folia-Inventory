@@ -591,21 +591,27 @@ export function PackingView({
   // as a one-click cleanup banner so the operator can clear them in bulk.
   const duplicateBoxes = groups.flatMap(g => g.boxes).filter(b => duplicateBoxIds.has(b.id));
 
+  // Which boxes start expanded. Rows are collapsed by default to keep the
+  // list calm; we auto-expand only the box the operator is clearly focused
+  // on — a scan/lookup target, or the sole survivor of a search/filter — so
+  // the fast path (scan → see contents → act) needs no extra click.
+  const readyVisibleIds = filteredReady.flatMap(g => g.boxes.map(b => b.id));
+  const shippedVisibleIds = filteredShipped.groups.flatMap(g => g.boxes.map(b => b.id));
+  const readyExpandSet = new Set();
+  if (scannedBoxId) readyExpandSet.add(scannedBoxId);
+  if (readyVisibleIds.length === 1) readyExpandSet.add(readyVisibleIds[0]);
+  const shippedExpandSet = new Set();
+  if (scannedBoxId) shippedExpandSet.add(scannedBoxId);
+  if (shippedVisibleIds.length === 1) shippedExpandSet.add(shippedVisibleIds[0]);
+
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-            <Package className="w-5 h-5 text-emerald-600" /> Shipping
-          </h2>
-          <p className="text-sm text-gray-500 mt-0.5">
-            Every package with at least one item still to ship, consolidated by buyer
-            across sale events.
-          </p>
-        </div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+          <Package className="w-5 h-5 text-emerald-600" /> Shipping
+        </h2>
         {/* Camera-based scan buttons — mobile only. Desktop uses the
-            always-on scan strip below; the modal these open is
-            redundant with that strip. */}
+            always-on scan strip below. */}
         <div className="shrink-0 flex items-center gap-2 sm:hidden">
           <button
             type="button"
@@ -693,82 +699,95 @@ export function PackingView({
         </div>
       </div>
 
-      {/* Sort + carrier controls for the Ready section. Affect grouping
-          order and box visibility. Selection state is global to all
-          open boxes (visible after filters), so the "Print N labels"
-          summary in the Ready header reflects whatever's selected. */}
-      <div className="flex items-center gap-3 flex-wrap text-xs">
-        <div className="flex items-center gap-1.5">
-          <span className="text-gray-500 font-medium">Sort</span>
+      {/* Ready / Shipped split — the primary navigation. Underline tabs
+          keep it light; counts live here so they aren't repeated in a
+          section header below. */}
+      <div className="flex items-center gap-1 border-b border-gray-200">
+        {[
+          { value: 'ready', label: 'Ready to ship', count: totalBoxes },
+          { value: 'shipped', label: 'Shipped', count: shipped.totalBoxes },
+        ].map(tab => {
+          const active = subTab === tab.value;
+          return (
+            <button
+              key={tab.value}
+              onClick={() => setSubTab(tab.value)}
+              className={`flex items-center gap-1.5 px-3 py-2 -mb-px border-b-2 text-sm whitespace-nowrap transition ${
+                active
+                  ? 'border-emerald-600 text-emerald-700 font-medium'
+                  : 'border-transparent text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              {tab.label}
+              <span className={`text-xs ${active ? 'text-emerald-600' : 'text-gray-400'}`}>
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Filters — sort + carrier + contents in one quiet row. Active
+          chips share the single emerald accent (instead of per-option
+          blue/amber/sky) so the toolbar reads as one calm band. */}
+      <div className="flex items-center gap-x-4 gap-y-2 flex-wrap text-xs">
+        <label className="flex items-center gap-1.5">
+          <span className="text-gray-400">Sort</span>
           <select
             value={readySort}
             onChange={(e) => setReadySort(e.target.value)}
-            className="text-xs border border-gray-300 rounded-md py-1 px-2 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            className="text-xs border border-gray-200 rounded-md py-1 px-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
           >
-            <option value="created-desc">Created · newest</option>
-            <option value="created-asc">Created · oldest</option>
-            <option value="customer">Customer · A–Z</option>
-            <option value="items-desc">Items · most</option>
-            <option value="items-asc">Items · fewest</option>
-            <option value="carrier-usps">Carrier · USPS first</option>
-            <option value="carrier-ups">Carrier · UPS first</option>
+            <option value="created-desc">Newest</option>
+            <option value="created-asc">Oldest</option>
+            <option value="customer">Customer A–Z</option>
+            <option value="items-desc">Most items</option>
+            <option value="items-asc">Fewest items</option>
+            <option value="carrier-usps">USPS first</option>
+            <option value="carrier-ups">UPS first</option>
           </select>
-        </div>
+        </label>
         <div className="flex items-center gap-1">
-          <span className="text-gray-500 font-medium mr-1">Carrier</span>
+          <span className="text-gray-400 mr-0.5">Carrier</span>
           {[
             { v: 'all', label: 'All' },
             { v: 'usps', label: 'USPS' },
             { v: 'ups', label: 'UPS' },
-          ].map(c => {
-            const active = readyCarrierFilter === c.v;
-            return (
-              <button
-                key={c.v}
-                type="button"
-                onClick={() => setReadyCarrierFilter(c.v)}
-                className={`px-2.5 py-1 rounded-md font-medium transition ${
-                  active
-                    ? c.v === 'ups'
-                      ? 'bg-amber-100 text-amber-900 ring-1 ring-amber-300'
-                      : c.v === 'usps'
-                      ? 'bg-blue-100 text-blue-900 ring-1 ring-blue-300'
-                      : 'bg-gray-900 text-white'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {c.label}
-              </button>
-            );
-          })}
+          ].map(c => (
+            <button
+              key={c.v}
+              type="button"
+              onClick={() => setReadyCarrierFilter(c.v)}
+              className={`px-2 py-1 rounded-md font-medium transition ${
+                readyCarrierFilter === c.v
+                  ? 'bg-emerald-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
         </div>
         <div className="flex items-center gap-1">
-          <span className="text-gray-500 font-medium mr-1">Contents</span>
+          <span className="text-gray-400 mr-0.5">Contents</span>
           {[
             { v: 'all', label: 'All' },
             { v: 'tc', label: 'TC' },
             { v: 'anthurium', label: 'Anthurium' },
-          ].map(c => {
-            const active = contentFilter === c.v;
-            return (
-              <button
-                key={c.v}
-                type="button"
-                onClick={() => setContentFilter(c.v)}
-                className={`px-2.5 py-1 rounded-md font-medium transition ${
-                  active
-                    ? c.v === 'tc'
-                      ? 'bg-sky-100 text-sky-900 ring-1 ring-sky-300'
-                      : c.v === 'anthurium'
-                      ? 'bg-emerald-100 text-emerald-900 ring-1 ring-emerald-300'
-                      : 'bg-gray-900 text-white'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {c.label}
-              </button>
-            );
-          })}
+          ].map(c => (
+            <button
+              key={c.v}
+              type="button"
+              onClick={() => setContentFilter(c.v)}
+              className={`px-2 py-1 rounded-md font-medium transition ${
+                contentFilter === c.v
+                  ? 'bg-emerald-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
         </div>
         {selectedBoxIds.size > 0 && (
           <div className="ml-auto flex items-center gap-2">
@@ -778,7 +797,7 @@ export function PackingView({
             <button
               type="button"
               onClick={clearSelection}
-              className="px-2 py-1 rounded-md text-gray-600 hover:bg-gray-100"
+              className="px-2 py-1 rounded-md text-gray-500 hover:bg-gray-100"
             >
               Clear
             </button>
@@ -786,9 +805,8 @@ export function PackingView({
         )}
       </div>
 
-      {/* Active-filter banner shown when scannedBoxId is set. Dismissing
-          here clears the filter and the list goes back to showing every
-          box. */}
+      {/* Active-filter banner shown when a box was scanned / looked up.
+          Clearing it returns the list to every box. */}
       {scannedBoxId && (
         <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2 text-sm text-emerald-900">
           <ScanLine className="w-4 h-4 text-emerald-600 shrink-0" />
@@ -806,43 +824,13 @@ export function PackingView({
         </div>
       )}
 
-      {/* Inner-page sub-tabs. Same chip-tab pattern used elsewhere
-          (PackingBoxesPane's carrier filter) so the visual language is
-          consistent. Counts live in the tab labels so the operator can
-          see the workload split before clicking. */}
-      <div className="bg-white rounded-xl border border-gray-200 px-1 py-1 flex gap-0.5 overflow-x-auto">
-        {[
-          { value: 'ready', label: 'Ready to ship', count: totalBoxes },
-          { value: 'shipped', label: 'Shipped', count: shipped.totalBoxes },
-        ].map(tab => {
-          const active = subTab === tab.value;
-          return (
-            <button
-              key={tab.value}
-              onClick={() => setSubTab(tab.value)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition ${
-                active ? 'bg-emerald-600 text-white font-medium' : 'text-gray-700 hover:bg-gray-100'
-              }`}
-            >
-              {tab.label}
-              <span className={`text-xs ${active ? 'text-emerald-100' : 'text-gray-400'}`}>
-                {tab.count}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
       {subTab === 'ready' && (
         <>
           <section className="space-y-2">
             <div className="flex items-center justify-between gap-2 flex-wrap">
-              <h3 className="text-sm font-medium text-gray-700">
-                Ready to ship
-                <span className="text-gray-400 font-normal ml-1">
-                  · {totalBoxes} {totalBoxes === 1 ? 'box' : 'boxes'} · {groups.length} {groups.length === 1 ? 'buyer' : 'buyers'} · {totalItems} {totalItems === 1 ? 'item' : 'items'}
-                </span>
-              </h3>
+              <span className="text-xs text-gray-400">
+                {totalBoxes} {totalBoxes === 1 ? 'box' : 'boxes'} · {groups.length} {groups.length === 1 ? 'buyer' : 'buyers'} · {totalItems} {totalItems === 1 ? 'item' : 'items'}
+              </span>
               <div className="flex items-center gap-2 flex-wrap">
                 {isAdmin && (
                   <button
@@ -951,6 +939,7 @@ export function PackingView({
                   <BuyerGroupCard
                     key={g.key}
                     group={g}
+                    expandSet={readyExpandSet}
                     sales={sales}
                     shipmentsByBox={shipmentsByBox}
                     boxNotesByBox={boxNotesByBox}
@@ -1061,12 +1050,9 @@ export function PackingView({
           chevron drill-in still works for label-PDF retrieval. */}
       {subTab === 'shipped' && (
         <section className="space-y-2">
-          <h3 className="text-sm font-medium text-gray-700">
-            Shipped
-            <span className="text-gray-400 font-normal ml-1">
-              · {shipped.totalBoxes} {shipped.totalBoxes === 1 ? 'box' : 'boxes'} · {shipped.groups.length} {shipped.groups.length === 1 ? 'buyer' : 'buyers'} · {shipped.totalItems} {shipped.totalItems === 1 ? 'item' : 'items'}
-            </span>
-          </h3>
+          <span className="text-xs text-gray-400">
+            {shipped.totalBoxes} {shipped.totalBoxes === 1 ? 'box' : 'boxes'} · {shipped.groups.length} {shipped.groups.length === 1 ? 'buyer' : 'buyers'} · {shipped.totalItems} {shipped.totalItems === 1 ? 'item' : 'items'}
+          </span>
           {shippedShipping.boxes > 0 && (
             <div className="grid grid-cols-3 gap-2">
               <SummaryStat
@@ -1108,6 +1094,7 @@ export function PackingView({
                 <BuyerGroupCard
                   key={g.key}
                   group={g}
+                  expandSet={shippedExpandSet}
                   sales={sales}
                   shipmentsByBox={shipmentsByBox}
                   boxNotesByBox={boxNotesByBox}
@@ -1346,7 +1333,7 @@ function addressOneLine(addr) {
 }
 
 function BuyerGroupCard({
-  group, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onBought, onCancelLabel,
+  group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onBought, onCancelLabel,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
@@ -1383,6 +1370,7 @@ function BuyerGroupCard({
           <BoxRow
             key={box.id}
             box={{ ...box, ...(boxNotesByBox?.[box.id] || {}) }}
+            defaultExpanded={expandSet ? expandSet.has(box.id) : false}
             sale={salesById.get(box.saleId)}
             salesById={salesById}
             shipment={shipmentsByBox[box.id]}
@@ -1631,7 +1619,7 @@ function BoxRow({
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
   onSaveNote, boxSizes, onSavePackaging, onBought, onCancelLabel,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
-  isSelected, onToggleSelected,
+  isSelected, onToggleSelected, defaultExpanded,
 }) {
   // Box-level pack rollup. unpackedSoldCount = items still 'sold' and
   // not yet packed; pack-all flips them all to packed in one click.
@@ -1646,18 +1634,24 @@ function BoxRow({
   const partial = shipped > 0 && shipped < total;
   const allShipped = total > 0 && shipped === total;
 
-  // Every box defaults to expanded — the operator wants the item
-  // detail visible without an extra click on both Ready and Shipped.
-  // User can still collapse individual rows by clicking the body.
-  const [expanded, setExpanded] = useState(true);
+  // Collapsed by default to keep each buyer card calm; the parent expands
+  // the operator's focused box (a scan/lookup target or the sole survivor
+  // of a filter) via defaultExpanded. Clicking the header toggles either way.
+  const [expanded, setExpanded] = useState(!!defaultExpanded);
   const [editingTracking, setEditingTracking] = useState(false);
   const [trackingDraft, setTrackingDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  // Honor a later expand request (e.g. the operator scans/searches down to
+  // this box) by adjusting state during render when defaultExpanded flips on
+  // — React's documented alternative to an effect-driven setState cascade.
+  // A manual collapse of some other row is never stomped.
+  const [prevDefaultExpanded, setPrevDefaultExpanded] = useState(defaultExpanded);
+  if (defaultExpanded !== prevDefaultExpanded) {
+    setPrevDefaultExpanded(defaultExpanded);
+    if (defaultExpanded) setExpanded(true);
+  }
   const carrierKey = (box.carrier || 'usps').toLowerCase();
   const carrierLabel = carrierKey.toUpperCase();
-  const carrierClass = carrierKey === 'ups'
-    ? 'bg-amber-100 text-amber-800'
-    : 'bg-blue-100 text-blue-800';
 
   // For shipped boxes there's nothing left to act on — hide the
   // primary action button and the inline tracking editor. Chevron
@@ -1732,6 +1726,36 @@ function BoxRow({
     ? 'text-emerald-700'
     : 'text-gray-600';
 
+  // The single most-relevant action, surfaced on the collapsed row so the
+  // common path (scan → ship) doesn't require expanding first. The full set
+  // (edit, pack-all, print, cancel, open-in-sale) lives in the expanded
+  // toolbar below.
+  const primaryAction = !action ? null
+    : action.kind === 'ship' ? (
+      <button
+        onClick={handleMarkShipped}
+        disabled={busy}
+        className="text-xs font-medium px-2.5 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-60 flex items-center gap-1 shrink-0"
+      >
+        {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+        Mark shipped
+      </button>
+    ) : action.kind === 'buy-label' ? (
+      <button
+        onClick={(e) => { stop(e); onBuyLabel(); }}
+        className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1 shrink-0"
+      >
+        <Truck className="w-3 h-3" /> Buy label
+      </button>
+    ) : action.kind === 'enter-tracking' ? (
+      <button
+        onClick={(e) => { stop(e); setExpanded(true); setEditingTracking(true); }}
+        className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1 shrink-0"
+      >
+        <Pencil className="w-3 h-3" /> Enter tracking
+      </button>
+    ) : null;
+
   return (
     <div className={`rounded-lg border transition ${
       isSelected
@@ -1766,7 +1790,8 @@ function BoxRow({
               className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 shrink-0 cursor-pointer"
             />
           )}
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${carrierClass}`}>
+          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-gray-500 shrink-0">
+            <span className={`w-1.5 h-1.5 rounded-full ${carrierKey === 'ups' ? 'bg-amber-500' : 'bg-blue-500'}`} />
             {carrierLabel}
           </span>
           <BoxContentBadges box={box} />
@@ -1783,14 +1808,8 @@ function BoxRow({
           )}
           <div className="flex-1" />
           <span className={`text-xs shrink-0 ${statusClass}`}>{statusLabel}</span>
-          <button
-            type="button"
-            onClick={(e) => { stop(e); onOpen(); }}
-            title="Open in sale view"
-            className="p-1 -mr-1 text-gray-400 hover:text-emerald-700 hover:bg-emerald-50 rounded shrink-0"
-          >
-            <ChevronRight className="w-4 h-4" />
-          </button>
+          {!expanded && primaryAction}
+          <ChevronRight className={`w-4 h-4 text-gray-300 shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`} />
         </div>
 
         {/* Row 2 — sale info. Plenty of room to display the full sale
@@ -1818,11 +1837,15 @@ function BoxRow({
           </div>
         )}
 
-        {/* Row 3 — actions. Renders when the box is still actionable OR has a
-            printable label (so shipped boxes can still reprint). Wraps on
-            overflow so action buttons can't get pushed off screen. */}
-        {(action || canPrintLabel || canCancelLabel) && (
-          <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+      </div>
+
+      {expanded && (
+        <>
+          {/* Action toolbar — the full set for the focused box. The collapsed
+              row carries only the primary action; everything else (edit,
+              pack-all, print, cancel, open-in-sale) lives here so it's only
+              on screen for the one box the operator opened. */}
+          <div className="px-3 py-2 border-t border-gray-100 flex items-center gap-1.5 flex-wrap">
             {action && isAdmin && onEditItems && (
               <button
                 onClick={(e) => { stop(e); onEditItems(); }}
@@ -1900,6 +1923,15 @@ function BoxRow({
                 <Receipt className="w-3 h-3" /> Print slip
               </button>
             )}
+            {onOpen && (
+              <button
+                onClick={(e) => { stop(e); onOpen(); }}
+                title="Open this box in its full sale view"
+                className="text-xs font-medium px-2 py-1 rounded-md text-gray-500 hover:bg-gray-100 hover:text-gray-700 flex items-center gap-1"
+              >
+                Open in sale <ChevronRight className="w-3 h-3" />
+              </button>
+            )}
             {action && (
               <button
                 onClick={handleMarkShipped}
@@ -1911,11 +1943,6 @@ function BoxRow({
               </button>
             )}
           </div>
-        )}
-      </div>
-
-      {expanded && (
-        <>
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
           <LabelInfoRow shipment={shipment} feeCollected={box.shippingFeeCollected} showToast={showToast} />
