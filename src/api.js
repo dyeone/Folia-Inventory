@@ -177,8 +177,8 @@ export const api = {
     request('/shipments', { method: 'POST', body: { action: 'set-box-note', shipmentBoxId, note } }).then(r => r.box),
   // Per-box packaging selection (box size + weight + service). Only the
   // keys passed are touched server-side; returns the full updated box row.
-  setBoxPackaging: ({ shipmentBoxId, boxSizeId, weightOz, serviceKey }) =>
-    request('/shipments', { method: 'POST', body: { action: 'set-box-packaging', shipmentBoxId, boxSizeId, weightOz, serviceKey } }).then(r => r.box),
+  setBoxPackaging: ({ shipmentBoxId, boxSizeId, weightOz, serviceKey, carrierOverride }) =>
+    request('/shipments', { method: 'POST', body: { action: 'set-box-packaging', shipmentBoxId, boxSizeId, weightOz, serviceKey, carrierOverride } }).then(r => r.box),
   // Packer cross-device handoff: the iPad sends an open box's items to the
   // packer's phone (same login), which polls getPhoneHandoff and shows them
   // as a find-list. Returns { ok, sentAt } so the sender can mark its own

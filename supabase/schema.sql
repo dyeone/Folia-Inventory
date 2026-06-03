@@ -428,23 +428,29 @@ alter table shipments    enable row level security;
 --   serviceKey → one of the three offered services (see 0022 check)
 
 create table if not exists shipment_boxes (
-  id           text        primary key,            -- = shipmentBoxId on inventory_items
-  note         text,
-  "boxSizeId"  text,
-  "weightOz"   numeric,
-  "serviceKey" text,
-  "updatedAt"  timestamptz not null default now(),
-  "updatedBy"  text
+  id                text        primary key,            -- = shipmentBoxId on inventory_items
+  note              text,
+  "boxSizeId"       text,
+  "weightOz"        numeric,
+  "serviceKey"      text,
+  "carrierOverride" text,
+  "updatedAt"       timestamptz not null default now(),
+  "updatedBy"       text
 );
 alter table shipment_boxes add column if not exists "boxSizeId" text;
 alter table shipment_boxes add column if not exists "weightOz"  numeric;
 alter table shipment_boxes add column if not exists "serviceKey" text;
+alter table shipment_boxes add column if not exists "carrierOverride" text;
 do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'shipment_boxes_servicekey_check') then
     alter table shipment_boxes add constraint shipment_boxes_servicekey_check
       check ("serviceKey" is null or "serviceKey" in
         ('usps_priority','ups_2nd_day_air','ups_next_day_air_saver'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'shipment_boxes_carrieroverride_check') then
+    alter table shipment_boxes add constraint shipment_boxes_carrieroverride_check
+      check ("carrierOverride" is null or "carrierOverride" in ('usps','ups'));
   end if;
 end $$;
 

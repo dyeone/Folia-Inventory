@@ -20,6 +20,7 @@ import { NewBoxModal } from './NewBoxModal.jsx';
 import { EditBoxItemsModal } from './EditBoxItemsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
+import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
@@ -288,6 +289,7 @@ export function PackingView({
         boxSizeId: saved.boxSizeId ?? null,
         weightOz: saved.weightOz ?? null,
         serviceKey: saved.serviceKey ?? null,
+        carrierOverride: saved.carrierOverride ?? null,
         updatedAt: saved.updatedAt,
         updatedBy: saved.updatedBy,
       },
@@ -332,12 +334,12 @@ export function PackingView({
   // is in 'shipped' or 'delivered'. Both views use the same buyer
   // grouping for layout consistency.
   const { groups, totalBoxes, totalItems } = useMemo(
-    () => groupBoxesByBuyer(inventoryItems, sales, READY_PREDICATE),
-    [inventoryItems, sales]
+    () => groupBoxesByBuyer(inventoryItems, sales, READY_PREDICATE, boxNotesByBox),
+    [inventoryItems, sales, boxNotesByBox]
   );
   const shipped = useMemo(
-    () => groupBoxesByBuyer(inventoryItems, sales, SHIPPED_PREDICATE),
-    [inventoryItems, sales]
+    () => groupBoxesByBuyer(inventoryItems, sales, SHIPPED_PREDICATE, boxNotesByBox),
+    [inventoryItems, sales, boxNotesByBox]
   );
 
   // Sales in 'packing' status that haven't had their orders uploaded yet —
@@ -506,9 +508,8 @@ export function PackingView({
   // an Anthurium box. TC is the complement — a box with a tissue-culture
   // item and NO anthurium at all — so a mixed box that contains anthurium
   // never shows under TC (TC boxes hold no anthurium inside).
-  const isAnthurium = (i) => (i.variety || '').toLowerCase() === 'anthurium';
   const matchContents = (box) => {
-    const hasAnthurium = box.items.some(isAnthurium);
+    const hasAnthurium = box.items.some(isAnthuriumItem);
     if (contentFilter === 'tc') return box.items.some(i => i.type === 'tc') && !hasAnthurium;
     if (contentFilter === 'anthurium') return hasAnthurium;
     return true;
@@ -1241,7 +1242,7 @@ function findShippedDuplicateBoxIds(items) {
   return dupes;
 }
 
-function groupBoxesByBuyer(items, sales, predicate) {
+function groupBoxesByBuyer(items, sales, predicate, boxNotesByBox = {}) {
   // First, assemble every (live) box from item rows. A box exists once an
   // item has a shipmentBoxId — that's what the post-upload apply step
   // stamps on. We always consider items in 'sold'/'shipped'/'delivered'
@@ -1260,6 +1261,10 @@ function groupBoxesByBuyer(items, sales, predicate) {
         buyer: item.buyer || '',
         buyerUsername: item.buyerUsername || '',
         buyerAddress: item.buyerAddress || {},
+        // stampedCarrier = the value written on items at apply time (encodes
+        // the legacy UPS-upgrade-line rule). carrier (the effective one) is
+        // resolved from contents + any override in the post-loop below.
+        stampedCarrier: item.shipmentCarrier || 'usps',
         carrier: item.shipmentCarrier || 'usps',
         items: [],
       };
@@ -1283,6 +1288,11 @@ function groupBoxesByBuyer(items, sales, predicate) {
     }
     box.openedAt = earliest;
     box.shippingFeeCollected = feeCollected;
+    // Effective carrier: a per-box override wins, else anthurium → UPS, else
+    // the stamped carrier. Computed here (once items are all attached) so the
+    // badge, carrier filter/sort, and label flow all agree.
+    box.carrierOverride = boxNotesByBox?.[box.id]?.carrierOverride ?? null;
+    box.carrier = resolveBoxCarrier(box.items, box.carrierOverride, box.stampedCarrier);
   }
 
   const openBoxes = [...boxMap.values()].filter(predicate);
@@ -1610,6 +1620,48 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Per-box carrier control. The default is content-derived (any anthurium item
+// makes it a UPS box); this lets the operator override that by hand. "Auto"
+// clears the override and reverts to the derived default (shown inline).
+// Persists via onSave({ carrierOverride }) — the same shipment_boxes row as
+// packaging + notes — so the choice survives reloads and wins over the rule.
+function CarrierToggle({ box, onSave, showToast }) {
+  const [busy, setBusy] = useState(false);
+  const override = (box.carrierOverride || '').toLowerCase();
+  const auto = derivedBoxCarrier(box.items, box.stampedCarrier);
+  const set = async (value) => {
+    if (busy || value === (override || null)) return;
+    setBusy(true);
+    try { await onSave({ carrierOverride: value }); }
+    catch (e) { showToast?.(e?.message || 'Save failed'); }
+    finally { setBusy(false); }
+  };
+  const chip = (active, label, value, sub) => (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); set(value); }}
+      disabled={busy}
+      className={`px-2 py-1 rounded-md font-medium transition disabled:opacity-60 ${
+        active ? 'bg-emerald-600 text-white' : 'text-gray-600 hover:bg-gray-100'
+      }`}
+    >
+      {label}
+      {sub && <span className={active ? 'text-emerald-100' : 'text-gray-400'}> · {sub}</span>}
+    </button>
+  );
+  return (
+    <div className="px-3 py-2 border-t border-gray-100 bg-gray-50/40 flex items-center gap-1.5 text-xs">
+      <span className="text-gray-400 mr-0.5">Carrier</span>
+      {chip(override === 'usps', 'USPS', 'usps')}
+      {chip(override === 'ups', 'UPS', 'ups')}
+      {chip(!override, 'Auto', null, !override ? auto.toUpperCase() : null)}
+      {!!override && (
+        <span className="text-gray-400 ml-1">overrides auto ({auto.toUpperCase()})</span>
+      )}
     </div>
   );
 }
@@ -1946,6 +1998,11 @@ function BoxRow({
           <AddressCopyStrip box={box} showToast={showToast} />
           <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
           <LabelInfoRow shipment={shipment} feeCollected={box.shippingFeeCollected} showToast={showToast} />
+          {/* Carrier — defaults from contents (anthurium → UPS); operator can
+              override here. Hidden once a label is bought (carrier is locked). */}
+          {onSavePackaging && !allShipped && !liveShipment && (
+            <CarrierToggle box={box} onSave={onSavePackaging} showToast={showToast} />
+          )}
           {/* Quote panel — hidden while a label is active; reappears once the
               label is cancelled (liveShipment goes null). */}
           {onSavePackaging && !allShipped && !liveShipment && (
@@ -2142,9 +2199,9 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
     setTimeout(() => setActionToast(null), 2500);
   };
 
-  // Group sold items by shipmentBoxId. Each group is a "box". The carrier
-  // is read off the first item in the box — apply-time stamps the same
-  // value on every item in the group.
+  // Group sold items by shipmentBoxId. Each group is a "box". The effective
+  // carrier is resolved from contents (anthurium → UPS) + any per-box override,
+  // falling back to the value stamped on items at apply time.
   const boxes = useMemo(() => {
     const map = new Map();
     for (const item of saleItems) {
@@ -2155,6 +2212,7 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
           recipientName: item.buyer || '(unknown)',
           username: item.buyerUsername || '',
           address: item.buyerAddress || {},
+          stampedCarrier: item.shipmentCarrier || 'usps',
           carrier: item.shipmentCarrier || 'usps',
           items: [],
           shippingFeeCollected: 0,
@@ -2164,10 +2222,14 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
       b.items.push(item);
       b.shippingFeeCollected += parseFloat(item.orderShippingFee) || 0;
     }
+    for (const b of map.values()) {
+      b.carrierOverride = boxNotesByBox?.[b.id]?.carrierOverride ?? null;
+      b.carrier = resolveBoxCarrier(b.items, b.carrierOverride, b.stampedCarrier);
+    }
     return [...map.values()].sort((a, b) =>
       (a.recipientName || '').localeCompare(b.recipientName || '')
     );
-  }, [saleItems]);
+  }, [saleItems, boxNotesByBox]);
 
   // Carrier filter: 'all' | 'usps' | 'ups'. Default to 'all' so opening
   // the pane still shows everything, but counts in the tab labels make
@@ -2260,6 +2322,7 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
                   boxSizeId: saved.boxSizeId ?? null,
                   weightOz: saved.weightOz ?? null,
                   serviceKey: saved.serviceKey ?? null,
+                  carrierOverride: saved.carrierOverride ?? null,
                   updatedAt: saved.updatedAt,
                   updatedBy: saved.updatedBy,
                 },

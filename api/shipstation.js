@@ -180,9 +180,10 @@ async function buyLabel(req, res, userId) {
   }
 
   // Pull all items in this box (for the buyer name + address + carrier).
+  // variety is needed to apply the anthurium → UPS carrier rule below.
   const { data: items, error: itemsErr } = await supabase
     .from('inventory_items')
-    .select('id, sku, buyer, "buyerUsername", "buyerAddress", "shipmentCarrier", "saleId"')
+    .select('id, sku, variety, buyer, "buyerUsername", "buyerAddress", "shipmentCarrier", "saleId"')
     .eq('shipmentBoxId', shipmentBoxId);
   if (itemsErr) { const e = new Error(itemsErr.message); e.status = 500; throw e; }
   if (!items || items.length === 0) {
@@ -196,12 +197,21 @@ async function buyLabel(req, res, userId) {
 
   // Resolve the service. A serviceKey (new rate-shop flow) picks the carrier
   // + per-provider codes from the shared catalog; without one we fall back
-  // to the box's item-derived carrier + saved defaults (legacy Buy-label).
+  // to the box's content-derived carrier + saved defaults (legacy Buy-label).
   const svc = serviceKey ? SHIPPING_SERVICES.find(s => s.key === serviceKey) : null;
   if (serviceKey && !svc) {
     const e = new Error(`Unknown serviceKey: ${serviceKey}`); e.status = 400; throw e;
   }
-  const carrier = svc ? svc.provider : (sample.shipmentCarrier || 'usps');
+  // Content rule (mirrors src/packing/carrier.js): a per-box override wins,
+  // else any anthurium item → UPS, else the stamped carrier. Select '*' so a
+  // missing carrierOverride column (pre-migration) degrades to no override
+  // rather than erroring.
+  const { data: boxRow } = await supabase
+    .from('shipment_boxes').select('*').eq('id', shipmentBoxId).maybeSingle();
+  const override = boxRow?.carrierOverride ? String(boxRow.carrierOverride).toLowerCase() : null;
+  const hasAnthurium = items.some(i => (i.variety || '').toLowerCase() === 'anthurium');
+  const derivedCarrier = override || (hasAnthurium ? 'ups' : (sample.shipmentCarrier || 'usps'));
+  const carrier = svc ? svc.provider : derivedCarrier;
   const carrierDefaults = settings.carriers?.[carrier] || {};
 
   const pkg = settings.defaultPackage || {};
