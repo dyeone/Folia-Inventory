@@ -22,4 +22,9 @@ contextBridge.exposeInMainWorld('bridge', {
 contextBridge.exposeInMainWorld('app', {
   openBridgeFolder: () => ipcRenderer.invoke('app:open-bridge-folder'),
   openLogFile:      () => ipcRenderer.invoke('app:open-log-file'),
+
+  getVersion:       () => ipcRenderer.invoke('app:get-version'),
+  checkForUpdates:  () => ipcRenderer.invoke('app:check-for-updates'),
+  downloadUpdate:   (url) => ipcRenderer.invoke('app:download-update', url),
+  onUpdateStatus:   (cb) => ipcRenderer.on('app:update-status', (_e, s) => cb(s)),
 });

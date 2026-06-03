@@ -10,8 +10,22 @@
 <body>
   <header class="app-header">
     <div class="title">Folia Bridge</div>
-    <div class="muted small" id="bridge-dir-label"></div>
+    <div class="row gap-sm header-meta">
+      <span class="muted small" id="version-label"></span>
+      <button id="btn-check-update" class="btn btn-text small">Check for updates</button>
+    </div>
   </header>
+
+  <div id="update-banner" class="update-banner hidden">
+    <div class="update-banner-text">
+      <strong id="update-title">Update available</strong>
+      <span class="muted small" id="update-notes"></span>
+    </div>
+    <div class="row gap-sm">
+      <button id="btn-download-update" class="btn btn-primary btn-sm">Download</button>
+      <button id="btn-dismiss-update" class="btn btn-text btn-sm">Dismiss</button>
+    </div>
+  </div>
 
   <main>
     <section class="card">
