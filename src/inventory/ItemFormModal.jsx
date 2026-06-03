@@ -67,6 +67,18 @@ export function ItemFormModal({
     return nextSkuForCode(v?.code, existingItems);
   }, [isEditing, form.sku, pick.varietyId, varieties, existingItems]);
 
+  // Quantity > 1 (add only) expands into that many separate, sequentially
+  // numbered SKUs — each quantity 1. The server does the expansion (see
+  // addItem in App.jsx); this just previews the range so adding a whole
+  // variety in one shot is obvious. Editing always touches the one SKU.
+  const addQty = isEditing ? 1 : Math.max(1, parseInt(form.quantity, 10) || 1);
+  const skuPreview = useMemo(() => {
+    if (addQty <= 1) return sku || '—';
+    const m = String(sku).match(/^(.*-)(\d+)$/);
+    if (!m) return sku || '—';
+    return `${sku} → ${m[1]}${parseInt(m[2], 10) + addQty - 1}`;
+  }, [sku, addQty]);
+
   const recalcIdeal = (netCost, profitRate) => {
     const c = parseFloat(netCost);
     const p = parseFloat(profitRate);
@@ -146,8 +158,10 @@ export function ItemFormModal({
         />
 
         <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-xs">
-          <span className="text-gray-500">{isEditing ? 'SKU' : 'SKU (auto-assigned)'}</span>
-          <span className="font-mono font-bold text-gray-900">{sku || '—'}</span>
+          <span className="text-gray-500">
+            {isEditing ? 'SKU' : addQty > 1 ? `SKUs (auto-assigned · ${addQty})` : 'SKU (auto-assigned)'}
+          </span>
+          <span className="font-mono font-bold text-gray-900">{skuPreview}</span>
         </div>
 
         <div className="border-t border-gray-200 pt-3">
