@@ -30,7 +30,6 @@ const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 
 const ChangePasswordModal = lazyNamed(() => import('./auth/ChangePasswordModal.jsx'), 'ChangePasswordModal');
 const ItemFormModal = lazyNamed(() => import('./inventory/ItemFormModal.jsx'), 'ItemFormModal');
-const BatchVarietyModal = lazyNamed(() => import('./inventory/BatchVarietyModal.jsx'), 'BatchVarietyModal');
 const ConvertModal = lazyNamed(() => import('./inventory/ConvertModal.jsx'), 'ConvertModal');
 const BulkImportModal = lazyNamed(() => import('./inventory/BulkImportModal.jsx'), 'BulkImportModal');
 const CatalogModal = lazyNamed(() => import('./inventory/CatalogModal.jsx'), 'CatalogModal');
@@ -134,7 +133,6 @@ function StaffOrAdminInventory() {
   // Holds a partial item draft when "Add to this cultivar" is clicked from
   // an inventory group header — pre-seeds the add form's variety/species.
   const [addPrefill, setAddPrefill] = useState(null);
-  const [showBatchModal, setShowBatchModal] = useState(false);
   const [showConvertModal, setShowConvertModal] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [showSaleModal, setShowSaleModal] = useState(false);
@@ -559,11 +557,8 @@ function StaffOrAdminInventory() {
             <button onClick={() => setShowBulkModal(true)} className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition">
               <Upload className="w-4 h-4" /> Import
             </button>
-            <button onClick={() => setShowAddModal(true)} className="hidden md:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition">
-              <Plus className="w-4 h-4" /> Single
-            </button>
-            <button onClick={() => setShowBatchModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-medium rounded-lg transition">
-              <Layers className="w-4 h-4" /><span className="hidden sm:inline">Add Variety</span>
+            <button onClick={() => setShowAddModal(true)} className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-medium rounded-lg transition">
+              <Plus className="w-4 h-4" /><span className="hidden sm:inline">Add</span>
             </button>
             <div className="relative">
               <button
@@ -1202,46 +1197,6 @@ function StaffOrAdminInventory() {
             setAddPrefill(null);
           }}
           onClose={() => { setShowAddModal(false); setAddPrefill(null); }}
-        />
-      )}
-      {showBatchModal && (
-        <BatchVarietyModal
-          existingItems={items}
-          varieties={varieties}
-          species={species}
-          onCreateVariety={addVariety}
-          onCreateSpecies={addSpecies}
-          onSave={async (newItems) => {
-            try {
-              // Strip client IDs and timestamps — server generates them,
-              // and server re-generates SKUs to guard against races.
-              const clean = newItems.map(({ id: _id, createdAt: _createdAt, createdBy: _createdBy, modifiedAt: _modifiedAt, modifiedBy: _modifiedBy, sku: _sku, ...rest }) => ({
-                ...rest,
-                status: rest.status || 'available',
-              }));
-              const before = new Set(items.map(i => i.id));
-              await api.upsertItems(clean);
-              const fresh = await api.getItems();
-              applyItemsFresh(fresh);
-              const sorted = [...fresh]
-                .filter(i => !i.deletedAt)
-                .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-              const justAdded = sorted.filter(i => !before.has(i.id));
-              setShowBatchModal(false);
-              if (justAdded.length > 0) {
-                const firstSku = justAdded[justAdded.length - 1]?.sku;
-                const lastSku = justAdded[0]?.sku;
-                setAddSummary({
-                  title: `Added ${justAdded.length} ${justAdded.length === 1 ? 'item' : 'items'}`,
-                  detail: firstSku === lastSku ? firstSku : `${firstSku} → ${lastSku}`,
-                  items: justAdded,
-                });
-              }
-            } catch (e) {
-              showToast(e.message || 'Failed to add items', 'error');
-            }
-          }}
-          onClose={() => setShowBatchModal(false)}
         />
       )}
       {editingItem && (
