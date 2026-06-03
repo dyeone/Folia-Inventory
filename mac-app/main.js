@@ -12,6 +12,14 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { BridgeRunner } = require('./bridge-runner.js');
+const { checkForUpdate } = require('./updater.js');
+
+// Re-check for a newer build every 6h so an operator who leaves the window
+// open for days still learns about a release without restarting. The
+// renderer also checks on load and on demand — this just covers the
+// long-idle case, and only pushes when there's actually something new.
+const UPDATE_POLL_MS = 6 * 60 * 60 * 1000;
+let updateTimer = null;
 
 // In dev the bridge lives in the sibling folder; when packaged via
 // electron-builder, extraResources copies it into Contents/Resources.
@@ -56,6 +64,13 @@ app.whenReady().then(() => {
 
   createWindow();
 
+  updateTimer = setInterval(async () => {
+    const result = await runUpdateCheck();
+    if (result.status === 'update-available') {
+      mainWindow?.webContents.send('app:update-status', result);
+    }
+  }, UPDATE_POLL_MS);
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -70,8 +85,21 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  if (updateTimer) clearInterval(updateTimer);
   runner?.stop();
 });
+
+// Where the bridge talks to Vercel — same value the update check hits at
+// {base}/api/bridge?action=mac-version. Tolerate the legacy BRIDGE_URL key
+// (see renderer applyConfig for why both are read).
+function currentApiBase() {
+  const cfg = runner?.readEnv() || {};
+  return cfg.FOLIA_API_URL || cfg.BRIDGE_URL || '';
+}
+
+function runUpdateCheck() {
+  return checkForUpdate({ apiBase: currentApiBase(), currentVersion: app.getVersion() });
+}
 
 // ─── IPC ───────────────────────────────────────────────────────────────
 ipcMain.handle('bridge:start', async () => {
@@ -104,4 +132,17 @@ ipcMain.handle('app:open-log-file', async () => {
     return;
   }
   await shell.openPath(file);
+});
+
+ipcMain.handle('app:get-version', () => app.getVersion());
+ipcMain.handle('app:check-for-updates', () => runUpdateCheck());
+ipcMain.handle('app:download-update', async (_e, url) => {
+  // The URL is our own API's payload, but openExternal hands whatever it's
+  // given to the OS's default scheme handler — so gate it to http(s) before
+  // opening, in case the app_settings row ever holds something malformed.
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return { ok: false, error: 'Invalid download URL' };
+  }
+  await shell.openExternal(url);
+  return { ok: true };
 });

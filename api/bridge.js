@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 //   POST  ?action=generate-token   web → mint bridge token (user auth)
 //   GET   ?action=next             bridge → claim oldest pending (bridge auth)
 //   POST  ?action=complete         bridge → report done/failed   (bridge auth)
+//   GET   ?action=mac-version      mac app → latest published build (public)
 //
 // Bridge auth = Authorization: Bearer <users.bridgeToken>. User auth =
 // userId in query (GET) or body (POST), matching the rest of the API.
@@ -48,6 +49,7 @@ export default wrap(async (req, res) => {
     case 'complete':        return complete(req, res);
     case 'status':          return status(req, res);
     case 'health':          return health(req, res);
+    case 'mac-version':     return macVersion(req, res);
     default: {
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
@@ -199,6 +201,34 @@ async function health(req, res) {
     online,
     lastSeen,
     queued: queuedCount || 0,
+  });
+}
+
+// Update check for the macOS Bridge app. Public — no auth: the app polls
+// this on launch and on demand, possibly before a bridge token is set, and
+// the payload is non-sensitive (a version string + a public DMG URL). The
+// release pointer lives in app_settings(id='mac_release') so shipping a new
+// build is a one-row bump, no API redeploy:
+//
+//   { version: "0.2.2",
+//     url:     "https://…/Folia Bridge-0.2.2-universal.dmg",
+//     notes:   "What changed in this build" }
+//
+// When no row exists yet, every field comes back null and the app treats
+// that as "nothing published" (no false update prompt).
+async function macVersion(req, res) {
+  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+  const { data, error } = await supabase
+    .from('app_settings')
+    .select('data')
+    .eq('id', 'mac_release')
+    .maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const rel = data?.data || {};
+  return res.status(200).json({
+    version: rel.version || null,
+    url: rel.url || null,
+    notes: rel.notes || null,
   });
 }
 

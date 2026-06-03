@@ -27,6 +27,13 @@ const els = {
   btnOpenLog:    $('btn-open-log'),
   btnClearLog:   $('btn-clear-log'),
   chkAutoscroll: $('chk-autoscroll'),
+  versionLabel:  $('version-label'),
+  btnCheckUpdate: $('btn-check-update'),
+  updateBanner:  $('update-banner'),
+  updateTitle:   $('update-title'),
+  updateNotes:   $('update-notes'),
+  btnDownloadUpdate: $('btn-download-update'),
+  btnDismissUpdate:  $('btn-dismiss-update'),
 };
 
 // ── State rendering ──────────────────────────────────────────────────
@@ -124,8 +131,70 @@ els.btnSaveCfg.addEventListener('click', async () => {
 els.btnClearLog.addEventListener('click', () => { els.log.textContent = ''; });
 els.btnOpenLog.addEventListener('click',  () => window.app.openLogFile());
 
+// ── Updates ──────────────────────────────────────────────────────────
+// No silent auto-update (the app is unsigned — see updater.js). We surface
+// a banner when a newer build is published and let the operator download
+// it. baseVersionLabel keeps the plain "vX.Y.Z" the header shows at rest;
+// a manual check temporarily swaps in a status suffix.
+let baseVersionLabel = '';
+let pendingUpdateUrl = null;
+
+function applyUpdate(result, { manual = false } = {}) {
+  if (result?.status === 'update-available') {
+    pendingUpdateUrl = result.url || null;
+    els.updateTitle.textContent = `Update available — v${result.latest}`;
+    els.updateNotes.textContent = result.notes || '';
+    els.updateNotes.classList.toggle('hidden', !result.notes);
+    // No URL means the published row is missing its download link — show
+    // the banner so the operator knows, but the button can't do anything.
+    els.btnDownloadUpdate.disabled = !pendingUpdateUrl;
+    els.updateBanner.classList.remove('hidden');
+  } else {
+    els.updateBanner.classList.add('hidden');
+  }
+
+  // A manual check deserves explicit feedback in the header; the silent
+  // auto-check stays quiet unless there's actually an update.
+  if (manual) {
+    els.versionLabel.textContent =
+      result?.status === 'up-to-date'        ? `${baseVersionLabel} · up to date` :
+      result?.status === 'update-available'  ? baseVersionLabel :
+      result?.status === 'error'             ? `${baseVersionLabel} · check failed` :
+      result?.status === 'unknown'           ? `${baseVersionLabel} · no build published` :
+      baseVersionLabel;
+  }
+}
+
+async function checkForUpdates({ manual = false } = {}) {
+  if (manual) {
+    els.btnCheckUpdate.disabled = true;
+    els.btnCheckUpdate.textContent = 'Checking…';
+  }
+  try {
+    applyUpdate(await window.app.checkForUpdates(), { manual });
+  } finally {
+    if (manual) {
+      els.btnCheckUpdate.disabled = false;
+      els.btnCheckUpdate.textContent = 'Check for updates';
+    }
+  }
+}
+
+els.btnCheckUpdate.addEventListener('click', () => checkForUpdates({ manual: true }));
+els.btnDownloadUpdate.addEventListener('click', () => {
+  if (pendingUpdateUrl) window.app.downloadUpdate(pendingUpdateUrl);
+});
+els.btnDismissUpdate.addEventListener('click', () => {
+  els.updateBanner.classList.add('hidden');
+});
+// Periodic re-checks from the main process (long-idle window).
+window.app.onUpdateStatus((result) => applyUpdate(result));
+
 // Initial paint — pull current state + config from main.
 (async () => {
   applyState(await window.bridge.getState());
   applyConfig(await window.bridge.getConfig());
+  baseVersionLabel = `v${await window.app.getVersion()}`;
+  els.versionLabel.textContent = baseVersionLabel;
+  checkForUpdates();  // silent on launch — only the banner speaks up
 })();

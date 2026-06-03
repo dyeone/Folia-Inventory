@@ -25,11 +25,16 @@ body {
 .app-header {
   -webkit-app-region: drag;
   padding: 18px 24px 4px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
 }
 .app-header .title {
   font-size: 17px;
   font-weight: 600;
 }
+.header-meta { -webkit-app-region: no-drag; }
+#version-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .muted { color: var(--muted); }
 .small { font-size: 11px; }
 .hidden { display: none; }
@@ -181,3 +186,24 @@ main {
 
 .row { display: flex; align-items: center; }
 .gap-sm { gap: 8px; }
+
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 24px 0;
+  padding: 10px 14px;
+  background: var(--emerald-bg);
+  border: 1px solid #a7f3d0;
+  border-radius: 8px;
+}
+.update-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.update-banner-text strong { font-size: 13px; }
+.update-banner-text .small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.btn-sm { padding: 4px 12px; }
