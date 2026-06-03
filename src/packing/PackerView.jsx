@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
+import { derivedBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
@@ -106,6 +107,7 @@ export function PackerView({ onLogout }) {
           buyer: item.buyer || '',
           buyerUsername: item.buyerUsername || '',
           buyerAddress: item.buyerAddress || {},
+          stampedCarrier: item.shipmentCarrier || 'usps',
           carrier: item.shipmentCarrier || 'usps',
           items: [],
         };
@@ -115,6 +117,10 @@ export function PackerView({ onLogout }) {
     }
     const out = {};
     for (const box of map.values()) {
+      // Carrier follows the content rule (anthurium → UPS) so the packer's
+      // badge matches the office. A manual per-box override is set/honored in
+      // the main Shipping tab; the packer view shows the content default.
+      box.carrier = derivedBoxCarrier(box.items, box.stampedCarrier);
       if (box.items.some(i => i.status === 'sold')) out[box.code] = box;
     }
     return out;

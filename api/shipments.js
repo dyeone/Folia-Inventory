@@ -287,8 +287,9 @@ async function setBoxNote(req, res, userId) {
 // touched, so saving a service doesn't wipe a previously-saved size. Empty
 // string / null clears a field. Mirrors set-box-note's upsert pattern.
 const VALID_SERVICE_KEYS = ['usps_priority', 'ups_2nd_day_air', 'ups_next_day_air_saver'];
+const VALID_CARRIERS = ['usps', 'ups'];
 async function setBoxPackaging(req, res, userId) {
-  const { shipmentBoxId, boxSizeId, weightOz, serviceKey } = req.body || {};
+  const { shipmentBoxId, boxSizeId, weightOz, serviceKey, carrierOverride } = req.body || {};
   if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
   }
@@ -304,11 +305,20 @@ async function setBoxPackaging(req, res, userId) {
     }
     patch.serviceKey = serviceKey || null;
   }
+  // Per-box carrier override (operator flip). null/'' clears it so the carrier
+  // reverts to the content-derived default (anthurium → UPS, else stamped).
+  if ('carrierOverride' in req.body) {
+    const c = carrierOverride ? String(carrierOverride).toLowerCase() : null;
+    if (c && !VALID_CARRIERS.includes(c)) {
+      const e = new Error(`Invalid carrierOverride: ${carrierOverride}`); e.status = 400; throw e;
+    }
+    patch.carrierOverride = c;
+  }
 
   const { data, error } = await supabase
     .from('shipment_boxes')
     .upsert(patch, { onConflict: 'id' })
-    .select('id, note, "boxSizeId", "weightOz", "serviceKey", "updatedAt", "updatedBy"')
+    .select('*') // '*' so a pre-migration missing carrierOverride column doesn't 400
     .single();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ box: data });
@@ -385,7 +395,9 @@ async function boxNotes(req, res) {
   const saleId = req.query?.saleId;
   let query = supabase
     .from('shipment_boxes')
-    .select('id, note, "boxSizeId", "weightOz", "serviceKey", "updatedAt", "updatedBy"');
+    // '*' so a pre-migration missing carrierOverride column doesn't 400 and
+    // break all box note/packaging loading. Fields are read by name below.
+    .select('*');
   if (saleId) {
     const { data: items, error: itemsErr } = await supabase
       .from('inventory_items')
@@ -404,6 +416,7 @@ async function boxNotes(req, res) {
     boxSizeId: r.boxSizeId ?? null,
     weightOz: r.weightOz ?? null,
     serviceKey: r.serviceKey ?? null,
+    carrierOverride: r.carrierOverride ?? null,
     updatedAt: r.updatedAt,
     updatedBy: r.updatedBy,
   }]));
