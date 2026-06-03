@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
-  Ruler, ChevronRight, Loader2, PackageCheck,
+  Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search,
 } from 'lucide-react';
 import { api } from '../api.js';
+import { AuthContext } from '../AuthContext.js';
+import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
+import { useIsMobile } from '../ui/useIsMobile.js';
 
 // Full-screen workflow for the 'packer' role, tuned for an iPad at a
 // packing table with a USB/Bluetooth barcode scanner.
@@ -42,6 +45,23 @@ export function PackerView({ onLogout }) {
 
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
+
+  // Cross-device handoff. The packer runs this same UI on an iPad (the wide
+  // "control" device, which gets the Send-to-phone button) and a phone (which
+  // shows the find-list). useIsMobile splits them at the sm breakpoint.
+  //
+  // Transport: Supabase Realtime broadcast when configured (instant), else a
+  // polled app_settings row (~2.5s). Both are namespaced by the packer's user
+  // id, so the iPad + phone must be the same login.
+  const { currentUser } = useContext(AuthContext);
+  const isMobile = useIsMobile();
+  const [handoff, setHandoff] = useState(null);     // box snapshot to show on the phone
+  const channelRef = useRef(null);                  // live realtime channel (or null)
+  // Polling-fallback bookkeeping. lastSentRef seeds on the first poll so a
+  // stale handoff from a previous session doesn't pop on load; it's updated
+  // when we send (so a device never pops its own send) and when we show one.
+  const lastSentRef = useRef(null);
+  const handoffReadyRef = useRef(false);
 
   const refresh = async () => {
     setErr('');
@@ -236,6 +256,97 @@ export function PackerView({ onLogout }) {
     }
   };
 
+  // Realtime transport (preferred). Subscribe to a per-packer broadcast
+  // channel; a 'box' event from the other device pops the find-list. self is
+  // false so the sender never receives its own broadcast.
+  useEffect(() => {
+    if (!REALTIME_CONFIGURED || !currentUser?.id) return undefined;
+    let active = true;
+    let bound = null; // { client, channel }
+    getRealtimeClient().then(client => {
+      if (!active || !client) return;
+      const channel = client.channel(`packer-handoff-${currentUser.id}`, {
+        config: { broadcast: { self: false } },
+      });
+      channel.on('broadcast', { event: 'box' }, ({ payload }) => {
+        if (payload?.box) setHandoff(payload.box);
+      });
+      channel.subscribe();
+      bound = { client, channel };
+      channelRef.current = channel;
+    });
+    return () => {
+      active = false;
+      channelRef.current = null;
+      if (bound) bound.client.removeChannel(bound.channel);
+    };
+  }, [currentUser?.id]);
+
+  // Polling fallback — only when realtime isn't configured. The first result
+  // seeds the baseline (no pop); afterwards a changed sentAt pops the overlay.
+  // The sender suppresses its own send via lastSentRef.
+  useEffect(() => {
+    if (REALTIME_CONFIGURED) return undefined;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const h = await api.getPhoneHandoff();
+        if (cancelled) return;
+        const sentAt = h?.sentAt || null;
+        if (!handoffReadyRef.current) {
+          lastSentRef.current = sentAt;
+          handoffReadyRef.current = true;
+          return;
+        }
+        if (sentAt && sentAt !== lastSentRef.current) {
+          lastSentRef.current = sentAt;
+          if (h?.box) setHandoff(h.box);
+        }
+      } catch { /* ignore transient poll errors */ }
+    };
+    tick();
+    const id = setInterval(tick, 2500);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  // Send the open box's items to the packer's phone — via realtime broadcast
+  // when connected, otherwise the durable app_settings row the phone polls.
+  const sendToPhone = async (box) => {
+    const snapshot = {
+      id: box.id,
+      code: box.code,
+      buyer: box.buyer,
+      buyerUsername: box.buyerUsername,
+      carrier: box.carrier,
+      items: box.items.map(i => ({
+        id: i.id, sku: i.sku, name: i.name, variety: i.variety,
+        quantity: i.quantity, lotNumber: i.lotNumber, notes: i.notes,
+        packedAt: i.packedAt, status: i.status,
+      })),
+    };
+    if (REALTIME_CONFIGURED) {
+      const channel = channelRef.current;
+      if (!channel) { showToast('Phone link still connecting — try again', 3000); return; }
+      try {
+        const status = await channel.send({ type: 'broadcast', event: 'box', payload: { box: snapshot } });
+        showToast(
+          status === 'ok' ? 'Sent to your phone 📱' : 'Sent — make sure your phone is on the packing screen',
+          status === 'ok' ? 1800 : 3500,
+        );
+      } catch (e) {
+        showToast(`Send failed: ${e.message || 'unknown'}`, 4000);
+      }
+      return;
+    }
+    try {
+      const r = await api.sendBoxToPhone(snapshot);
+      if (r?.sentAt) lastSentRef.current = r.sentAt;
+      showToast('Sent to your phone 📱', 1800);
+    } catch (e) {
+      showToast(`Send failed: ${e.message || 'unknown'}`, 4000);
+    }
+  };
+
   if (loading) return <FullScreenMessage><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Loading boxes…</FullScreenMessage>;
   if (err) {
     return (
@@ -278,6 +389,7 @@ export function PackerView({ onLogout }) {
             onPickSize={(sizeId) => saveBoxSize(activeBox.id, sizeId)}
             onMarkPacked={handleMarkPacked}
             onCamera={() => setCameraMode('item')}
+            onSendToPhone={isMobile ? null : () => sendToPhone(activeBox)}
             onDone={() => goToBox(null)}
           />
         : <LandingGrid
@@ -294,6 +406,7 @@ export function PackerView({ onLogout }) {
           onClose={() => setCameraMode(null)}
         />
       )}
+      {handoff && <PhoneHandoffOverlay box={handoff} onClose={() => setHandoff(null)} />}
       {toast && <Toast text={toast} />}
     </div>
   );
@@ -454,7 +567,7 @@ function BoxCard({ box, sizeName, onOpen }) {
 
 // Active-box pane: progress header, item grid, and — once everything is
 // packed — the box-size question.
-function BoxPane({ box, boxSizes, currentSizeId, savingSize, onPickSize, onMarkPacked, onCamera, onDone }) {
+function BoxPane({ box, boxSizes, currentSizeId, savingSize, onPickSize, onMarkPacked, onCamera, onSendToPhone, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -513,11 +626,22 @@ function BoxPane({ box, boxSizes, currentSizeId, savingSize, onPickSize, onMarkP
           own Done button once everything is packed. */}
       {!allPacked && (
         <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3 pb-safe">
-          <div className="max-w-5xl mx-auto">
+          <div className="max-w-5xl mx-auto flex gap-3">
+            {/* iPad-only: push this box's item list to the packer's phone so
+                they can walk the racks and find items hands-free. */}
+            {onSendToPhone && (
+              <button
+                type="button"
+                onClick={onSendToPhone}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-blue-600 text-white rounded-xl active:bg-blue-800"
+              >
+                <Smartphone className="w-5 h-5" /> Send to phone
+              </button>
+            )}
             <button
               type="button"
               onClick={onCamera}
-              className="w-full flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50"
             >
               <Camera className="w-5 h-5" /> Or scan with camera
             </button>
@@ -642,6 +766,109 @@ function ItemCard({ item, onMarkPacked }) {
         )}
       </div>
       <ItemNotes raw={item.notes} />
+    </div>
+  );
+}
+
+// Full-screen find-list shown on the packer's phone when the iPad sends a
+// box over. Items are sorted by variety/name (the order they're shelved) and
+// filterable, so the packer can walk the racks and pull each one.
+function PhoneHandoffOverlay({ box, onClose }) {
+  const [q, setQ] = useState('');
+  const items = (box.items || []).slice().sort((a, b) =>
+    `${a.variety || ''} ${a.name || ''}`.toLowerCase()
+      .localeCompare(`${b.variety || ''} ${b.name || ''}`.toLowerCase()),
+  );
+  const ql = q.trim().toLowerCase();
+  const filtered = ql
+    ? items.filter(i =>
+        [i.sku, i.name, i.variety, i.lotNumber].filter(Boolean).join(' ').toLowerCase().includes(ql))
+    : items;
+  const total = items.length;
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-white flex flex-col pt-safe">
+      <div className="flex-shrink-0 bg-blue-600 text-white px-4 py-3 flex items-center gap-3">
+        <Smartphone className="w-6 h-6 flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold text-lg leading-tight truncate">
+            Find {total} item{total === 1 ? '' : 's'}
+          </div>
+          <div className="text-sm text-blue-100 leading-tight truncate">
+            <span className="font-mono tracking-wide">{box.code}</span>
+            {box.buyer ? ` · ${box.buyer}` : box.buyerUsername ? ` · @${box.buyerUsername}` : ''}
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label="Close"
+          className="w-12 h-12 -mr-2 rounded-full flex items-center justify-center hover:bg-blue-700 active:bg-blue-800"
+        >
+          <X className="w-6 h-6" />
+        </button>
+      </div>
+
+      <div className="flex-shrink-0 px-3 py-2 border-b border-gray-200 bg-gray-50">
+        <div className="flex items-center gap-2 px-3 h-11 rounded-xl border border-gray-300 bg-white">
+          <Search className="w-5 h-5 text-gray-400 flex-shrink-0" />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Filter by SKU, name, variety…"
+            className="flex-1 min-w-0 bg-transparent outline-none text-base text-gray-900 placeholder:text-gray-400"
+          />
+          {q && (
+            <button onClick={() => setQ('')} aria-label="Clear filter" className="text-gray-400 p-1">
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-3 py-3">
+        <div className="space-y-2">
+          {filtered.length === 0 ? (
+            <div className="text-center text-sm text-gray-500 py-12">No items match “{q}”.</div>
+          ) : filtered.map((it, idx) => {
+            const packed = !!it.packedAt;
+            return (
+              <div
+                key={it.id || it.sku || idx}
+                className={`px-3 py-3 rounded-xl border-2 ${packed ? 'bg-gray-50 border-gray-200' : 'bg-white border-blue-200'}`}
+              >
+                <div className="flex items-center gap-2.5">
+                  {packed
+                    ? <Check className="w-6 h-6 text-emerald-600 shrink-0" />
+                    : <div className="w-6 h-6 rounded-full border-2 border-blue-300 shrink-0" />}
+                  <div className="flex-1 min-w-0">
+                    <div className={`text-base font-mono ${packed ? 'text-gray-400 line-through' : 'text-blue-800 font-semibold'}`}>
+                      {it.sku || '(no SKU)'}
+                    </div>
+                    {(it.name || it.variety) && (
+                      <div className={`text-sm break-words ${packed ? 'text-gray-400' : 'text-gray-700'}`}>
+                        {[it.name, it.variety].filter(Boolean).join(' · ')}
+                      </div>
+                    )}
+                    {it.lotNumber && <div className="text-xs text-gray-400 font-mono">Lot #{it.lotNumber}</div>}
+                  </div>
+                  {it.quantity > 1 && <span className="text-sm font-medium text-gray-600 shrink-0">×{it.quantity}</span>}
+                </div>
+                <ItemNotes raw={it.notes} />
+              </div>
+            );
+          })}
+        </div>
+        <div className="h-6 pb-safe" />
+      </div>
+
+      <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3 pb-safe">
+        <button
+          onClick={onClose}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
+        >
+          <Check className="w-5 h-5" /> Done
+        </button>
+      </div>
     </div>
   );
 }
