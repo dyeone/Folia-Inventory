@@ -15,7 +15,7 @@ inbound port, no tunnel, no cert juggling, no LAN setup.
 
 ```bash
 git clone https://github.com/dyeone/Folia-Inventory.git
-cd Folia-Inventory/bridge && ./setup.sh <BRIDGE_TOKEN>
+cd Folia-Inventory/mac-app/bridge && ./setup.sh <BRIDGE_TOKEN>
 ```
 
 `setup.sh` handles everything — installs Homebrew deps, sets up
@@ -92,7 +92,7 @@ After first-time setup, this is the only command you need each session
 (or click "Start bridge" in the mac-app, which runs the same script):
 
 ```bash
-cd bridge && npm start
+cd mac-app/bridge && npm start
 ```
 
 `npm start` runs `./start.sh`, which calls `./reconnect.sh` to prep the

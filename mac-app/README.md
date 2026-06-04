@@ -1,6 +1,6 @@
 # Folia Bridge — macOS helper app
 
-Wraps the existing Node bridge (`../bridge/`) in a window UI so the
+Wraps the Node bridge (bundled at `bridge/`) in a window UI so the
 operator can start/stop the bridge, reconnect the phone, edit the
 Vercel config, and tail logs without leaving the terminal open.
 
@@ -8,7 +8,7 @@ Vercel config, and tail logs without leaving the terminal open.
 
 ```
 +----------------------+      spawn      +-------------------+
-| Electron main.js     | --------------> | ../bridge/start.sh |
+| Electron main.js     | --------------> | bridge/start.sh    |
 | (BrowserWindow + IPC)|                 | (node index.js)    |
 +----------+-----------+ <-- stdout/err-+--------------------+
            |
@@ -20,9 +20,10 @@ Vercel config, and tail logs without leaving the terminal open.
 +----------------------+
 ```
 
-The bridge source code stays in `../bridge/` — the mac app references
-it at runtime in dev, and electron-builder copies it into
-`Contents/Resources/bridge/` when packaging a `.app`.
+The bridge lives inside this app at `bridge/` — one source of truth.
+In dev the app runs it from there directly; electron-builder copies the
+same folder into `Contents/Resources/bridge/` when packaging a `.app`,
+so the bridge and the app always ship together and can't drift.
 
 ## Dev
 
@@ -47,11 +48,11 @@ Developer ID and the `electron-builder` mac signing config.
 
 ## What the app actually does
 
-- **Start / Stop / Restart**: spawn `bash ../bridge/start.sh` and
+- **Start / Stop / Restart**: spawn `bash bridge/start.sh` and
   watch its stdout/stderr. Killing the window quits the bridge too.
-- **Reconnect phone**: runs `../bridge/reconnect.sh` standalone (uses
+- **Reconnect phone**: runs `bridge/reconnect.sh` standalone (uses
   the helper-reported target from Vercel, falls back to mDNS).
-- **Config**: reads + writes `../bridge/.env` so `BRIDGE_URL` and
+- **Config**: reads + writes `bridge/.env` so `BRIDGE_URL` and
   `BRIDGE_TOKEN` can be set without `vi`.
 - **Logs**: every line streams to the window AND is tee'd to
   `~/Library/Logs/folia-bridge/bridge.log` for diagnosis after the
