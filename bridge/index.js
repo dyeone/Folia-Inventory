@@ -123,6 +123,47 @@ async function adbDump() {
   return adbShell('uiautomator dump --compressed /sdcard/ui.xml && cat /sdcard/ui.xml');
 }
 
+// ─── Device link recovery ────────────────────────────────────────────────
+// During a long live the phone's adb link can drop (USB suspend, sleep,
+// cable jostle, re-enumeration). Every adb command then fails with "device
+// not found" / "device offline" / a transport timeout, and no dump path
+// can run until the link is back. Recognize those failures and actively
+// kick adb to re-establish the device, instead of failing every scan until
+// someone replugs the cable.
+
+// "device" when the phone is connected and ready; anything else otherwise.
+async function adbDeviceState() {
+  try { return (await adb('get-state')).trim(); }
+  catch { return 'offline'; }
+}
+
+// Reset the host adb daemon and poll until the device reports "device",
+// then re-add the u2 host forward (it dies with the link). Returns true if
+// the link came back. Only call when the device is actually gone.
+//
+// NB: `adb reconnect` does NOT recover a wedged link on this rig — it drops
+// the device further and it stays gone. Restarting the adb server forces a
+// USB re-enumeration that brings it back immediately (verified on the
+// Pixel 8). kill-server/start-server are GLOBAL commands, so they must run
+// WITHOUT the `-s <serial>` flag adb() would otherwise add.
+async function recoverDevice(timeoutMs = 20_000) {
+  console.warn(`[${new Date().toISOString()}] device link lost — restarting adb server`);
+  try { await exec('adb', ['kill-server'], { encoding: 'utf8' }); } catch { /* daemon may be down */ }
+  await new Promise(r => setTimeout(r, 800));
+  try { await exec('adb', ['start-server'], { encoding: 'utf8' }); } catch { /* starts lazily otherwise */ }
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await adbDeviceState() === 'device') {
+      try { await adb('forward', 'tcp:9008', 'tcp:9008'); } catch { /* re-added on relaunch too */ }
+      console.log(`[${new Date().toISOString()}] device link restored`);
+      return true;
+    }
+    await new Promise(r => setTimeout(r, 600));
+  }
+  console.error(`[${new Date().toISOString()}] device did not return within ${Math.round(timeoutMs / 1000)}s — check the USB cable and that the phone is awake`);
+  return false;
+}
+
 // In-place u2 server relaunch — same command the README documents for
 // post-reboot recovery, and the same recovery reconnect.sh performs.
 const U2_RELAUNCH_CMD =
@@ -140,6 +181,14 @@ const U2_BIND_PROBE_MS = 300;
 // JAR, then poll u2Dump() until it answers. Returns that first successful
 // dump so the caller doesn't re-probe. Throws if the server never binds.
 async function relaunchU2() {
+  // If the device link itself dropped, no adb command will run until it's
+  // back — heal it first. (When the device is fine and only u2 died, this
+  // is a cheap no-op: a single get-state, no disruptive reconnect.)
+  if (await adbDeviceState() !== 'device') {
+    if (!await recoverDevice()) {
+      throw new Error('device disconnected — adb reconnect did not bring it back (check USB cable / wake the phone)');
+    }
+  }
   try { await adbShell('pkill', '-f', 'com.wetest.uia2'); } catch { /* nothing to kill */ }
   // Let the old process release port 9008 before the new one rebinds —
   // both shell scripts sleep 1 s here for the same reason.
@@ -225,6 +274,13 @@ async function dumpUI() {
     } catch {
       markU2Unhealthy();
     }
+  }
+  // adbDump is the last-resort fallback for older Androids. When the device
+  // link is down it can only fail (and on Android 16 it's SIGKILL'd even
+  // when connected) — skip the doomed ~10s attempt and surface a clear,
+  // actionable message instead of a cryptic "uiautomator dump … failed".
+  if (await adbDeviceState() !== 'device') {
+    throw new Error('phone disconnected — check the USB cable and that the phone is awake, then it will reconnect automatically');
   }
   return adbDump();
 }
