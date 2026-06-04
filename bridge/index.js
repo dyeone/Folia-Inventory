@@ -444,9 +444,20 @@ function isManagerSheet(xml) {
   });
 }
 
+// True while the soft keyboard is shown — the IME contributes nodes under
+// its own "...inputmethod..." package to the hierarchy dump. Used to wait
+// for the keyboard to actually clear before tapping a field that sits in
+// its footprint (e.g. the Quick-listing price row), instead of a blind
+// sleep that's either too short (tap lands on a key) or wastefully long.
+function keyboardUp(xml) {
+  return /package="[^"]*inputmethod/i.test(xml);
+}
+
 // Poll dumpUI() until test(xml) holds (form rendered, sheet up, …).
-// Returns the matching dump so the caller doesn't re-fetch it.
-async function waitForXml(test, timeoutMs, intervalMs = 200) {
+// Returns the matching dump so the caller doesn't re-fetch it. A u2 dump
+// is ~90ms, so a tight interval detects a transition quickly without
+// hammering the device.
+async function waitForXml(test, timeoutMs, intervalMs = 120) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const xml = await dumpUI();
@@ -562,7 +573,10 @@ function findFieldByLabel(xml, labels) {
 // selected="true" attribute OR by the mode's amount label appearing (the
 // switch relabels the amount field). Either signal alone suffices, which
 // covers both listing surfaces regardless of which attributes they expose.
-async function selectModeTab(cfg) {
+// Accepts the form's dump (from openListingForm) to seed the first check
+// without re-dumping, and returns the last dump it saw so the caller can
+// locate the title field from it.
+async function selectModeTab(cfg, seedXml) {
   const want = cfg.tab.trim().toLowerCase();
   const wantLabel = cfg.priceLabels[0].trim().toLowerCase();
   const pickTab = (xml) => {
@@ -576,7 +590,7 @@ async function selectModeTab(cfg) {
     !!findNode(xml, a => descFirstLine(a) === wantLabel);
 
   const deadline = Date.now() + 4000;
-  let xml = await dumpUI();
+  let xml = seedXml || await dumpUI();
   let tab = pickTab(xml);
   while (!tab && Date.now() < deadline) {
     await sleep(200);
@@ -587,14 +601,14 @@ async function selectModeTab(cfg) {
     throw new Error(`listing mode tab "${cfg.tab}" not found — open Palmstreet's listing form, or update MODE_CONFIG if the tab was renamed`);
   }
   while (Date.now() < deadline) {
-    if (onTab(xml, tab)) return;
+    if (onTab(xml, tab)) return xml;
     await tapBoundsAttr(tab.bounds);
-    await sleep(350);  // let the form re-render for the selected mode
+    await sleep(180);  // brief settle; the re-dump below confirms or re-taps
     xml = await dumpUI();
     tab = pickTab(xml);
     if (!tab) break;
   }
-  if (tab && onTab(xml, tab)) return;
+  if (tab && onTab(xml, tab)) return xml;
   throw new Error(`listing mode tab "${cfg.tab}" did not become selected`);
 }
 
@@ -635,7 +649,9 @@ export async function listing({ sku, name, grossCost, price, mode }) {
   const amount = amountForMode(modeKey, { price, grossCost });
 
   // ── 1. Open the listing form for this mode ────────────────────────
-  await openListingForm(modeKey);
+  // openListingForm returns the form's dump; we thread it through the tab
+  // select and title lookup so each step reuses it instead of re-dumping.
+  let xml = await openListingForm(modeKey);
 
   // ── 2. Select the mode tab ────────────────────────────────────────
   // If the tab can't be found: for auction (the default + legacy path
@@ -644,39 +660,57 @@ export async function listing({ sku, name, grossCost, price, mode }) {
   // proceeding would post the wrong listing type at the wrong price, so
   // fail loudly instead.
   try {
-    await selectModeTab(cfg);
+    xml = await selectModeTab(cfg, xml);
   } catch (e) {
     if (modeKey !== 'auction') throw e;
     console.warn(`[${new Date().toISOString()}] ${e.message} — proceeding on the current tab (auction default)`);
+    xml = await dumpUI();
   }
+ 
 
   // ── 3. Type the title ─────────────────────────────────────────────
   // The title field is a plain View until focused, at which point it
-  // becomes an EditText. Re-dump after the tab switch (which re-renders
-  // and can scroll the form) and locate the field by its "/60" counter —
-  // the same widget on both Quick listing and the full New-listing form.
-  const formXml = await waitForXml(xml => !!findTitleField(xml), 4000);
-  const titleField = formXml && findTitleField(formXml);
+  // becomes an EditText. Locate it by its "/60" counter — the same widget
+  // on both Quick listing and the full New-listing form. Reuse the dump
+  // selectModeTab left us; only re-poll if the field isn't there yet (the
+  // tab switch can briefly re-flow the form).
+  let formXml = xml;
+  let titleField = findTitleField(formXml);
+  if (!titleField) {
+    formXml = await waitForXml(x => !!findTitleField(x), 4000);
+    titleField = formXml && findTitleField(formXml);
+  }
   if (!titleField) {
     await checkPalmstreetForeground();
     throw new Error('listing form title field not found after selecting the mode tab');
   }
+  // Does the title already hold text (a reused, un-pinned previous form)?
+  // The "/60" counter reads "0/60" when empty and "<n>/60" otherwise. Only
+  // clear when non-empty — a fresh scan skips the 64-keystroke MOVE_END +
+  // backspaces entirely (the common live case).
+  const titleHasText = !!findNode(formXml, a =>
+    (a['content-desc'] || '').split('\n').some(l => /^[1-9]\d*\/60$/.test(l.trim())));
   await tapBoundsAttr(titleField.bounds);
-  await sleep(300);  // keyboard slides up, the field gains focus
-  // MOVE_END + a generous run of backspaces clears any prior title (a
-  // no-op on a fresh, empty field; only matters if openNewListingForm
-  // reused an un-pinned previous form). 60 is the title's max length.
-  await adbShell('input', 'keyevent', '123', ...Array(64).fill('67'));
+  await sleep(160);  // field gains focus (input text targets it regardless of kb anim)
+  if (titleHasText) {
+    // MOVE_END + a generous run of backspaces; 60 is the title's max length.
+    await adbShell('input', 'keyevent', '123', ...Array(64).fill('67'));
+  }
   await typeText(title);
-  // Dismiss the soft keyboard so the amount field below is reachable and
-  // the operator can see the filled form. KEYCODE_BACK only hides the
-  // keyboard here — it doesn't close the New-listing form.
+  // Dismiss the soft keyboard. KEYCODE_BACK only hides the keyboard here —
+  // it doesn't close the form. The amount step waits for it to clear.
   await adbShell('input', 'keyevent', '4');
-  await sleep(400);
 
   // ── 4. Pre-fill the amount ────────────────────────────────────────
   let prefilled = ['title'];
   if (amount) {
+    // Wait for the title's keyboard to actually clear before locating and
+    // tapping the amount field: on Quick listing the price row sits inside
+    // the keyboard's footprint, so tapping while it's still up lands on a
+    // key. This poll returns the instant the keyboard is gone (usually
+    // well under the old fixed 400ms) and never taps too early. Reuse its
+    // dump for the first field lookup.
+    let kbXml = await waitForXml(x => !keyboardUp(x), 1500);
     // Find the amount EditText by anchoring to the mode's price label
     // ("Price" / "Starting Price" / "Giveaway Value"). Re-dump rather
     // than reuse pre-title bounds: focusing/typing the title scrolls the
@@ -684,15 +718,16 @@ export async function listing({ sku, name, grossCost, price, mode }) {
     // or keyboard dismiss can leave a transient frame where the label is
     // absent from the dump.
     let amountTarget = null;
-    const deadline = Date.now() + 4000;
+    const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
-      const found = findFieldByLabel(await dumpUI(), cfg.priceLabels);
+      const found = findFieldByLabel(kbXml || await dumpUI(), cfg.priceLabels);
       if (found) { amountTarget = found.bounds; break; }
-      await sleep(150);
+      kbXml = null;  // first pass reused the keyboard-clear dump; re-dump after
+      await sleep(120);
     }
     if (amountTarget) {
       await tapBoundsAttr(amountTarget);
-      await sleep(250);  // keyboard slides up for the amount field
+      await sleep(160);  // keyboard slides up for the amount field
       // MOVE_END + backspaces clears the field's default (usually "1").
       // `input keyevent` takes a variadic keycode list, so one round-trip
       // clears the field; overshooting a short default is a no-op.
@@ -722,19 +757,30 @@ function openListingForm(modeKey) {
 // an un-pinned previous scan → done. Otherwise wake the auto-hidden
 // sidebar and tap "Listing". Retries once; foreground check on failure so
 // a backgrounded app gives a clear message, not a node-not-found error.
+// Returns the dump of the open overlay so the caller can reuse it (tab
+// select, title lookup) instead of re-dumping.
 async function openQuickListing() {
-  if (isQuickListing(await dumpUI())) return;
+  const x0 = await dumpUI();
+  if (isQuickListing(x0)) return x0;
 
   async function attempt(timeoutMs) {
     await adbShell('input', 'tap', '540', '700');  // wake hidden sidebar
     await tap({ contentDesc: 'Listing', timeoutMs: 8000 });
-    return !!(await waitForXml(isQuickListing, timeoutMs));
+    const x = await waitForXml(isQuickListing, timeoutMs);
+    if (!x) return null;
+    // The overlay is present but still sliding in — its node bounds are
+    // mid-animation. Let it settle and re-dump so the caller's first tab
+    // tap lands on final bounds instead of retrying through the slide.
+    await sleep(250);
+    return await dumpUI();
   }
 
   try {
-    if (await attempt(5000)) return;
+    let x = await attempt(5000);
+    if (x) return x;
     console.warn(`[${new Date().toISOString()}] Quick-listing overlay didn't open — retrying once`);
-    if (await attempt(4000)) return;
+    x = await attempt(4000);
+    if (x) return x;
   } catch (e) {
     await checkPalmstreetForeground();
     throw e;
@@ -751,12 +797,13 @@ async function openQuickListing() {
 //     "Shop" to raise the manager sheet, then Create
 // Retries once, and runs a foreground check on failure so a backgrounded
 // Palmstreet surfaces a clear message instead of a node-not-found error.
+// Returns the dump of the open New-listing form so the caller can reuse it.
 async function openNewListingForm() {
   const xml0 = await dumpUI();
-  if (isNewListingForm(xml0)) return;
+  if (isNewListingForm(xml0)) return xml0;
 
-  // Tap Create (⊕) on a manager sheet, then wait for the form. Returns
-  // whether the form came up.
+  // Tap Create (⊕) on a manager sheet, then wait for the form. Returns the
+  // form's dump, or null on timeout.
   async function tapCreate(sheetXml, timeoutMs) {
     const { w, h } = await screenSize();
     const create = findCreateButton(sheetXml, h);
@@ -768,13 +815,19 @@ async function openNewListingForm() {
       await adbShell('input', 'tap',
         String(Math.round(w * 0.909)), String(Math.round(h * 0.904)));
     }
-    return !!(await waitForXml(isNewListingForm, timeoutMs));
+    const x = await waitForXml(isNewListingForm, timeoutMs);
+    if (!x) return null;
+    await sleep(250);  // let the form settle so tab bounds are final
+    return await dumpUI();
   }
 
   // Already on the manager sheet (operator opened it, or a previous scan
   // left it up)? Skip the sidebar dance and go straight to Create —
   // wake-tapping (540,700) would otherwise tap a listing row in the sheet.
-  if (isManagerSheet(xml0) && await tapCreate(xml0, 5000)) return;
+  if (isManagerSheet(xml0)) {
+    const x = await tapCreate(xml0, 5000);
+    if (x) return x;
+  }
 
   async function attempt(timeoutMs) {
     // Wake the auto-hidden sidebar (no-op outside a live / when already
@@ -785,15 +838,17 @@ async function openNewListingForm() {
     await tap({ contentDesc: 'Shop', timeoutMs: 8000 });
     const surface = await waitForXml(
       xml => isNewListingForm(xml) || isManagerSheet(xml), timeoutMs);
-    if (!surface) return false;
-    if (isNewListingForm(surface)) return true;  // jumped straight to the form
+    if (!surface) return null;
+    if (isNewListingForm(surface)) return surface;  // jumped straight to the form
     return tapCreate(surface, timeoutMs);
   }
 
   try {
-    if (await attempt(5000)) return;
+    let x = await attempt(5000);
+    if (x) return x;
     console.warn(`[${new Date().toISOString()}] New-listing form didn't open — retrying once`);
-    if (await attempt(4000)) return;
+    x = await attempt(4000);
+    if (x) return x;
   } catch (e) {
     await checkPalmstreetForeground();
     throw e;
