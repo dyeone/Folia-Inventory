@@ -19,6 +19,15 @@ set -euo pipefail
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 
+# A wedged adb link won't show the phone in `adb devices` until the host
+# daemon is restarted — `adb reconnect` doesn't un-wedge it on this rig, but
+# kill-server/start-server forces a USB re-enumeration that brings it back.
+# Do that first so "Reconnect phone" recovers a dropped link, not just a
+# stale forward.
+echo "→ Restarting adb server"
+adb kill-server  >/dev/null 2>&1 || true
+adb start-server >/dev/null 2>&1 || true
+
 USB_SERIAL=$(adb devices \
   | awk 'NR>1 && $2=="device" {print $1}' \
   | head -n 1)

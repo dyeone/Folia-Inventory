@@ -66,9 +66,9 @@ class BridgeRunner extends EventEmitter {
     const usbMatch = line.match(/(?:Bridge\s+(?:pinned to|will use)\s+device|Found USB device)\s+(\S+)/i);
     if (usbMatch) {
       this._setState({ phoneConnected: true, phoneTarget: usbMatch[1] });
-    } else if (/device back\b/i.test(line)) {
+    } else if (/device back\b|device link restored/i.test(line)) {
       this._setState({ phoneConnected: true });
-    } else if (/device dropped|no devices\/emulators found|device offline|device not found/i.test(line)) {
+    } else if (/device dropped|device link lost|device unresponsive|no devices\/emulators found|device offline|device not found/i.test(line)) {
       this._setState({ phoneConnected: false });
     }
 
@@ -86,7 +86,7 @@ class BridgeRunner extends EventEmitter {
     // is fine, so the operator can't tell a live outage from old news.
     if (this.state.lastError &&
         (/\bjob\s+\S+\s+done\s*$/i.test(line) ||
-         /recovered|resuming fast path|re-kicked|back on fast path|device back\b/i.test(line))) {
+         /recovered|resuming fast path|re-kicked|back on fast path|device back\b|device link restored/i.test(line))) {
       this._setState({ lastError: null });
     }
     this._setState({ lastLogAt: new Date().toISOString() });
