@@ -1,6 +1,6 @@
 {
   "name": "folia-bridge-mac",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "private": true,
   "description": "macOS helper app — wraps the Folia Bridge Node service in a window UI and manages the ADB connection to the operator's Android phone.",
   "main": "main.js",
@@ -24,7 +24,13 @@
       {
         "from": "bridge",
         "to": "bridge",
-        "filter": ["**/*", "!.env", "!.bridge-device", "!.wireless-target", "!node_modules/**/*"]
+        "filter": [
+          "**/*",
+          "!.env",
+          "!.bridge-device",
+          "!.wireless-target",
+          "!node_modules/**/*"
+        ]
       }
     ],
     "mac": {
@@ -32,7 +38,9 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["universal"]
+          "arch": [
+            "universal"
+          ]
         }
       ],
       "identity": null,
