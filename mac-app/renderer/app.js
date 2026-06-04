@@ -32,6 +32,10 @@ const els = {
   updateBanner:  $('update-banner'),
   updateTitle:   $('update-title'),
   updateNotes:   $('update-notes'),
+  updateProgress:    $('update-progress'),
+  updateProgressBar: $('update-progress-bar'),
+  updateStatusLine:  $('update-status-line'),
+  btnInstallUpdate:  $('btn-install-update'),
   btnDownloadUpdate: $('btn-download-update'),
   btnDismissUpdate:  $('btn-dismiss-update'),
 };
@@ -132,21 +136,36 @@ els.btnClearLog.addEventListener('click', () => { els.log.textContent = ''; });
 els.btnOpenLog.addEventListener('click',  () => window.app.openLogFile());
 
 // ── Updates ──────────────────────────────────────────────────────────
-// No silent auto-update (the app is unsigned — see updater.js). We surface
-// a banner when a newer build is published and let the operator download
-// it. baseVersionLabel keeps the plain "vX.Y.Z" the header shows at rest;
-// a manual check temporarily swaps in a status suffix.
+// The app is unsigned, so Squirrel can't silent-update it — but "Update &
+// restart" does the manual drag for the operator: download the DMG with a
+// progress bar, swap it over the running bundle, relaunch. "Download
+// manually" is the always-there fallback (opens the DMG). baseVersionLabel
+// keeps the plain "vX.Y.Z" the header shows at rest.
 let baseVersionLabel = '';
 let pendingUpdateUrl = null;
+let installing = false;
+
+function setProgress({ percent = null, indeterminate = false } = {}) {
+  els.updateProgress.classList.remove('hidden');
+  els.updateProgress.classList.toggle('indeterminate', indeterminate);
+  if (!indeterminate) els.updateProgressBar.style.width = `${percent ?? 0}%`;
+}
+function setStatusLine(text, { error = false } = {}) {
+  els.updateStatusLine.textContent = text || '';
+  els.updateStatusLine.classList.toggle('hidden', !text);
+  els.updateStatusLine.classList.toggle('is-error', error);
+}
 
 function applyUpdate(result, { manual = false } = {}) {
+  if (installing) return;   // don't let a background re-check disturb an install in flight
   if (result?.status === 'update-available') {
     pendingUpdateUrl = result.url || null;
     els.updateTitle.textContent = `Update available — v${result.latest}`;
     els.updateNotes.textContent = result.notes || '';
     els.updateNotes.classList.toggle('hidden', !result.notes);
     // No URL means the published row is missing its download link — show
-    // the banner so the operator knows, but the button can't do anything.
+    // the banner so the operator knows, but the buttons can't do anything.
+    els.btnInstallUpdate.disabled  = !pendingUpdateUrl;
     els.btnDownloadUpdate.disabled = !pendingUpdateUrl;
     els.updateBanner.classList.remove('hidden');
   } else {
@@ -180,11 +199,55 @@ async function checkForUpdates({ manual = false } = {}) {
   }
 }
 
+// Live progress from the main process during a one-click install.
+window.app.onUpdateProgress((p) => {
+  if (p.phase === 'downloading') {
+    setProgress(p.percent == null ? { indeterminate: true } : { percent: p.percent });
+    setStatusLine(p.percent == null ? 'Downloading…' : `Downloading… ${p.percent}%`);
+  } else if (p.phase === 'installing') {
+    setProgress({ indeterminate: true });
+    setStatusLine('Installing…');
+  } else if (p.phase === 'relaunching') {
+    setProgress({ indeterminate: true });
+    setStatusLine('Restarting Folia Bridge…');
+  } else if (p.phase === 'error') {
+    setStatusLine(p.error || 'Update failed', { error: true });
+  }
+});
+
 els.btnCheckUpdate.addEventListener('click', () => checkForUpdates({ manual: true }));
+
+els.btnInstallUpdate.addEventListener('click', async () => {
+  if (!pendingUpdateUrl || installing) return;
+  installing = true;
+  els.btnInstallUpdate.disabled = true;
+  els.btnDownloadUpdate.disabled = true;
+  els.btnInstallUpdate.textContent = 'Updating…';
+  setStatusLine('Starting…');
+  setProgress({ percent: 0 });
+  const res = await window.app.installUpdate(pendingUpdateUrl);
+  // On success the app relaunches and this window goes away; we only reach
+  // here on failure (or the dev fallback that opened the browser).
+  installing = false;
+  els.btnInstallUpdate.textContent = 'Update & restart';
+  els.btnInstallUpdate.disabled = false;
+  els.btnDownloadUpdate.disabled = false;
+  els.updateProgress.classList.add('hidden');
+  if (res && res.ok === false) {
+    setStatusLine(
+      res.fellBackToManual
+        ? 'Couldn’t auto-install — opened the installer. Drag Folia Bridge into Applications, then reopen.'
+        : (res.error || 'Update failed'),
+      { error: true },
+    );
+  }
+});
+
 els.btnDownloadUpdate.addEventListener('click', () => {
   if (pendingUpdateUrl) window.app.downloadUpdate(pendingUpdateUrl);
 });
 els.btnDismissUpdate.addEventListener('click', () => {
+  if (installing) return;
   els.updateBanner.classList.add('hidden');
 });
 // Periodic re-checks from the main process (long-idle window).

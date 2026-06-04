@@ -18,12 +18,20 @@
 
   <div id="update-banner" class="update-banner hidden">
     <div class="update-banner-text">
-      <strong id="update-title">Update available</strong>
+      <div class="update-banner-head">
+        <span class="update-spark" aria-hidden="true">↑</span>
+        <strong id="update-title">Update available</strong>
+      </div>
       <span class="muted small" id="update-notes"></span>
+      <div id="update-progress" class="update-progress hidden">
+        <div id="update-progress-bar" class="update-progress-bar"></div>
+      </div>
+      <span class="small hidden" id="update-status-line"></span>
     </div>
-    <div class="row gap-sm">
-      <button id="btn-download-update" class="btn btn-primary btn-sm">Download</button>
-      <button id="btn-dismiss-update" class="btn btn-text btn-sm">Dismiss</button>
+    <div class="row gap-sm update-actions">
+      <button id="btn-install-update" class="btn btn-primary btn-sm">Update &amp; restart</button>
+      <button id="btn-download-update" class="btn btn-text btn-sm">Download manually</button>
+      <button id="btn-dismiss-update" class="btn btn-text btn-sm">Later</button>
     </div>
   </div>
 
