@@ -930,34 +930,28 @@ function runJob(job) {
   }
 }
 
-// "no devices/emulators found" is what adb prints when the phone has
-// momentarily dropped off the USB bus (cable jiggle, hub power blip,
-// phone slept briefly). Don't blow the whole job — wait for the device
-// to come back, then retry once. `adb wait-for-device` blocks until at
-// least one device is connected, with a hard cap so we don't sit there
-// forever if the operator gave up and unplugged the phone.
+// "device not found" / "no devices/emulators found" is what adb prints
+// when the phone drops off the USB bus mid-job (cable jiggle, hub power
+// blip, phone slept). A job is a chain of taps/dumps, so the drop can
+// surface from any adb call, not just a dump.
 function isDeviceGoneError(err) {
   return /no devices\/emulators found|device offline|device not found|device '\S+' not found/i
     .test(err?.message || '');
 }
 
-async function waitForDeviceWithTimeout(timeoutMs) {
-  await Promise.race([
-    adb('wait-for-device'),
-    new Promise((_, rej) => setTimeout(() => rej(new Error('device did not return within ' + timeoutMs + 'ms')), timeoutMs)),
-  ]);
-}
-
+// Don't blow the whole job on a drop — recover the link and retry once.
+// We must ACTIVELY recover (recoverDevice restarts the adb server, the
+// only thing that re-enumerates a wedged Pixel-8 link), NOT just passively
+// `adb wait-for-device`: a wedged link never comes back on its own, so a
+// passive wait only ever times out ("device did not return within 10s").
 async function handleJob(job) {
   try {
     return await runJob(job);
   } catch (e) {
     if (!isDeviceGoneError(e)) throw e;
-    console.warn(`[${new Date().toISOString()}] device dropped mid-job (${e.message}); waiting up to 10s for reconnect…`);
-    try {
-      await waitForDeviceWithTimeout(10_000);
-    } catch (waitErr) {
-      throw new Error(`${e.message} (and ${waitErr.message})`);
+    console.warn(`[${new Date().toISOString()}] device dropped mid-job (${e.message}); recovering the adb link…`);
+    if (!(await recoverDevice())) {
+      throw new Error(`${e.message} — phone did not come back; check the USB cable and that it's awake`);
     }
     console.log(`[${new Date().toISOString()}] device back — retrying job ${job.id}`);
     return runJob(job);
