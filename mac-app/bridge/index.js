@@ -885,19 +885,33 @@ async function openQuickListing() {
 // Palmstreet surfaces a clear message instead of a node-not-found error.
 // Returns the dump of the open New-listing form so the caller can reuse it.
 async function openNewListingForm() {
-  const xml0 = await dumpUI();
-  if (isNewListingForm(xml0)) return xml0;
-
-  // Tap Create (⊕) on a manager sheet, then wait for the form. Returns the
-  // form's dump, or null on timeout.
+  // Tap Create (⊕) on the manager sheet, then wait for the form. The sheet
+  // SLIDES IN: isManagerSheet goes true (~300ms) well BEFORE the
+  // Manage/Import/Create buttons actually render (~580ms). Tapping Create on
+  // that first frame lands on an un-rendered target and misses, leaving us on
+  // the sheet — and then the retry can't find "Shop" ("node not found: Shop").
+  // Poll until the Create button is actually present, then tap its real bounds.
   async function tapCreate(sheetXml, timeoutMs) {
     const { w, h } = await screenSize();
-    const create = findCreateButton(sheetXml, h);
+    // The manager sheet slides UP: the Create button exists almost at once but
+    // keeps MOVING (e.g. y≈2380 → 2191) for ~0.6s, and a tap mid-slide misses,
+    // leaving us on the sheet so the retry can't find "Shop". Wait for its
+    // bounds to STOP changing (two equal reads) before tapping its final spot.
+    let prev = findCreateButton(sheetXml, h);
+    let create = prev;
+    const settleDeadline = Date.now() + 2500;
+    while (Date.now() < settleDeadline) {
+      await sleep(150);
+      const cur = findCreateButton(await dumpUI(), h);
+      if (cur) create = cur;
+      if (cur && prev && cur.bounds === prev.bounds) break;  // animation settled
+      prev = cur;
+    }
     if (create) {
       await tapBoundsAttr(create.bounds);
     } else {
-      // No node matched — fall back to a proportional tap on the bar's
-      // right-most slot (Create sits at ~91% width, ~90% height).
+      // Create never resolved to a node — fall back to a proportional tap on
+      // the bar's right-most slot (Create sits at ~91% width, ~90% height).
       await adbShell('input', 'tap',
         String(Math.round(w * 0.909)), String(Math.round(h * 0.904)));
     }
@@ -907,30 +921,28 @@ async function openNewListingForm() {
     return await dumpUI();
   }
 
-  // Already on the manager sheet (operator opened it, or a previous scan
-  // left it up)? Skip the sidebar dance and go straight to Create —
-  // wake-tapping (540,700) would otherwise tap a listing row in the sheet.
-  if (isManagerSheet(xml0)) {
-    const x = await tapCreate(xml0, 5000);
-    if (x) return x;
-  }
-
-  // A Quick-listing overlay left up by a prior auction/buy_now scan sits on
-  // top of the live and hides its sidebar, so the "Shop" button isn't in the
-  // hierarchy underneath — the sidebar wake + tap below would never find it
-  // ("node not found: Shop"). Dismiss the overlay with BACK to return to the
-  // live first. Only give_away hits this: auction/buy_now reuse the overlay
-  // (openQuickListing returns it as-is) rather than needing a different surface.
-  if (isQuickListing(xml0)) {
-    await adbShell('input', 'keyevent', '4');  // close overlay → back to the live
-    await sleep(450);                           // let it close and the live settle
-  }
-
+  // One navigation attempt, self-correcting from wherever Palmstreet sits.
+  // Re-evaluating the surface each attempt is what lets the retry RECOVER:
+  // if a prior attempt missed Create and left us on the sheet, this taps
+  // Create instead of hunting a "Shop" button that isn't on the sheet.
   async function attempt(timeoutMs) {
-    // Wake the auto-hidden sidebar (no-op outside a live / when already
-    // visible), then tap "Shop" to raise the manager sheet. Wide timeout
-    // rides through Palmstreet's post-sale "SOLD" animation, which can
-    // hide the sidebar for several seconds.
+    const cur = await dumpUI();
+    // Already on the New-listing form (un-pinned previous scan) → done.
+    if (isNewListingForm(cur)) return cur;
+    // On the manager sheet (operator opened it, or a prior Create missed) →
+    // go straight to Create; wake-tapping here would hit a listing row.
+    if (isManagerSheet(cur)) return tapCreate(cur, timeoutMs);
+    // A Quick-listing overlay from a prior auction/buy_now scan covers the
+    // live and hides its sidebar, so "Shop" isn't in the hierarchy underneath.
+    // Dismiss it with BACK to return to the live. (Only give_away hits this —
+    // auction/buy_now reuse the overlay instead of needing a different surface.)
+    if (isQuickListing(cur)) {
+      await adbShell('input', 'keyevent', '4');  // close overlay → back to the live
+      await sleep(450);                           // let it close and the live settle
+    }
+    // On the live: wake the auto-hidden sidebar, then tap "Shop". The wide
+    // Shop timeout rides through Palmstreet's post-sale "SOLD" animation,
+    // which can hide the sidebar for several seconds.
     await adbShell('input', 'tap', '540', '700');
     await tap({ contentDesc: 'Shop', timeoutMs: 8000 });
     const surface = await waitForXml(
