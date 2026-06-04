@@ -1,7 +1,7 @@
 // Electron main process. Owns:
 //   - the single browser window (the bridge dashboard)
-//   - the Node child process running ../bridge/index.js
-//   - the ADB reconnect helper (../bridge/reconnect.sh)
+//   - the Node child process running bridge/index.js
+//   - the ADB reconnect helper (bridge/reconnect.sh)
 //
 // Communication with the renderer goes through ipcMain — see preload.js
 // for the surfaced channels. Logs from the bridge subprocess are
@@ -21,12 +21,14 @@ const { checkForUpdate } = require('./updater.js');
 const UPDATE_POLL_MS = 6 * 60 * 60 * 1000;
 let updateTimer = null;
 
-// In dev the bridge lives in the sibling folder; when packaged via
-// electron-builder, extraResources copies it into Contents/Resources.
+// The bridge ships inside this app: in dev it's the bundled `bridge/`
+// subfolder; when packaged, electron-builder's extraResources copies that
+// same folder into Contents/Resources/bridge. One source, no separate
+// top-level checkout to drift out of sync.
 function locateBridgeDir() {
   const packaged = path.join(process.resourcesPath || '', 'bridge');
   if (fs.existsSync(path.join(packaged, 'index.js'))) return packaged;
-  return path.resolve(__dirname, '..', 'bridge');
+  return path.resolve(__dirname, 'bridge');
 }
 
 let mainWindow = null;

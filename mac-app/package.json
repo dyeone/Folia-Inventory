@@ -21,9 +21,9 @@
     ],
     "extraResources": [
       {
-        "from": "../bridge",
+        "from": "bridge",
         "to": "bridge",
-        "filter": ["**/*", "!.env", "!node_modules/**/*"]
+        "filter": ["**/*", "!.env", "!.bridge-device", "!.wireless-target", "!node_modules/**/*"]
       }
     ],
     "mac": {

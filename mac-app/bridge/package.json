@@ -1,0 +1,11 @@
+{
+  "name": "folia-bridge",
+  "version": "0.2.3",
+  "private": true,
+  "type": "module",
+  "description": "Local ADB poller that drives the Palmstreet Android app from Folia. Bundled inside the Folia Bridge Mac app (mac-app/bridge); the Mac app's package.json version is canonical and they ship together.",
+  "scripts": {
+    "start": "./start.sh",
+    "serve": "node index.js"
+  }
+}
