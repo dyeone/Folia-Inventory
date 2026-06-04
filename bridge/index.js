@@ -359,58 +359,160 @@ async function checkPalmstreetForeground() {
   }
 }
 
-// Locate the Quick-listing form's Starting Price EditText by anchoring
-// to the "Starting Price" content-desc View that sits to its left. More
-// robust than position-in-document-order: the title field above can
-// wrap to two lines on long names, which shifts the price down out of
-// the (cached) bounds we captured at form-open.
-function findPriceField(xml) {
-  const label = findNode(xml, a => a['content-desc'] === 'Starting Price');
-  if (!label) return null;
-  const lb = parseBounds(label.bounds);
-  if (!lb) return null;
-  // Same-row EditText: vertical center inside the label's y-range,
-  // give or take a few pixels for half-row alignment differences.
-  const SLOP = 30;
-  const candidates = findAllNodes(xml, a => {
-    if (!(a.class || '').endsWith('EditText')) return false;
-    const b = parseBounds(a.bounds);
-    if (!b) return false;
-    return b.cy >= lb.y1 - SLOP && b.cy <= lb.y2 + SLOP;
-  });
-  return candidates[0] || null;
+// Listing modes map to the three tabs at the top of Palmstreet's
+// add-listing form. Each tab relabels the amount field, so we anchor the
+// amount input to a per-mode label. If Palmstreet renames a tab or a
+// field, update the strings here — they're matched case-insensitively
+// against each node's text / content-desc.
+const MODE_CONFIG = {
+  auction:   { tab: 'Auction',  priceLabels: ['Starting Price'] },
+  buy_now:   { tab: 'Buy Now',  priceLabels: ['Price'] },
+  give_away: { tab: 'Giveaway', priceLabels: ['Giveaway value'] },
+};
+
+// Format a dollar figure for typing: whole numbers get no decimals,
+// everything else two places (so 25 → "25", 24.9 → "24.90").
+function formatAmount(n) {
+  return Number.isInteger(n) ? String(n) : n.toFixed(2);
 }
 
-// Palmstreet "Quick listing" automation — title-only.
+// Which dollar figure fills the amount field, per mode:
+//   auction   → gross cost rounded UP (a floor to bid up from during the
+//               live; avoids awkward $9.46-style starting prices)
+//   buy_now   → the resolved listing price (the actual sale price)
+//   give_away → the resolved listing price (the item's retail value)
+// Returns null when the source figure is missing — the caller then leaves
+// Palmstreet's own default in the field.
+function amountForMode(mode, { price, grossCost }) {
+  if (mode === 'auction') {
+    // Guard null/'' explicitly: Number(null) and Number('') are both 0,
+    // which would type a "0" floor instead of leaving Palmstreet's default.
+    if (grossCost == null || grossCost === '') return null;
+    const c = Number(grossCost);
+    return Number.isFinite(c) ? String(Math.ceil(c)) : null;
+  }
+  if (price == null || price === '') return null;
+  const p = Number(price);
+  return Number.isFinite(p) && p > 0 ? formatAmount(p) : null;
+}
+
+// The form's two visible inputs (title + amount). y2 < 1700 filters out
+// the host view's chat-input EditText that sits below the listing sheet.
+function formEditTexts(xml) {
+  return findAllNodes(xml, a => {
+    if (!(a.class || '').endsWith('EditText')) return false;
+    const b = parseBounds(a.bounds);
+    return b && b.y2 < 1700;
+  });
+}
+
+// Poll dumpUI() until the Quick-listing form exposes its inputs. The
+// initial open requires the "Pin & Run" button as a render signal to
+// avoid a mid-animation false positive; after a tab switch the form is
+// already up, so requirePinRun=false just waits for the two EditTexts to
+// settle (a mode tab might not carry the same Pin & Run label).
+async function grabFormFields(timeoutMs, requirePinRun = true) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const xml = await dumpUI();
+    const ready = requirePinRun
+      ? !!findNode(xml, a => a['content-desc'] === 'Pin & Run')
+      : true;
+    if (ready) {
+      const fields = formEditTexts(xml);
+      if (fields.length >= 2) return fields;
+    }
+    await sleep(200);
+  }
+  return null;
+}
+
+// Locate an EditText by the label View sitting to its left. Tries each
+// candidate label in turn (case-insensitive against text / content-desc)
+// and returns the same-row EditText. More robust than document-order
+// position: a long title can wrap to a second line and shift every field
+// below it down, invalidating cached bounds.
+function findFieldByLabel(xml, labels) {
+  const SLOP = 30;
+  for (const label of labels) {
+    const want = label.trim().toLowerCase();
+    const lbl = findNode(xml, a =>
+      (a['content-desc'] || '').trim().toLowerCase() === want ||
+      (a.text || '').trim().toLowerCase() === want);
+    if (!lbl) continue;
+    const lb = parseBounds(lbl.bounds);
+    if (!lb) continue;
+    const candidates = findAllNodes(xml, a => {
+      if (!(a.class || '').endsWith('EditText')) return false;
+      const b = parseBounds(a.bounds);
+      if (!b) return false;
+      return b.cy >= lb.y1 - SLOP && b.cy <= lb.y2 + SLOP;
+    });
+    if (candidates[0]) return candidates[0];
+  }
+  return null;
+}
+
+// Select the Auction / Buy Now / Giveaway tab at the top of the open
+// form. Palmstreet remembers the last-used tab, so this is often a no-op,
+// but we assert it every scan so a "Buy Now" scan never lands on an
+// Auction form left over from the previous one. Prefer a clickable match
+// so a stray occurrence of the word elsewhere on screen (a chat line, the
+// video) can't be tapped instead of the tab.
+async function selectModeTab(tabLabel) {
+  const want = tabLabel.trim().toLowerCase();
+  const pick = (xml) => {
+    const all = findAllNodes(xml, a =>
+      (a.text || '').trim().toLowerCase() === want ||
+      (a['content-desc'] || '').trim().toLowerCase() === want);
+    return all.find(a => a.clickable === 'true') || all[0] || null;
+  };
+  let node = pick(await dumpUI());
+  const deadline = Date.now() + 2500;
+  while (!node && Date.now() < deadline) {
+    await sleep(200);
+    node = pick(await dumpUI());
+  }
+  if (!node) {
+    throw new Error(`listing mode tab "${tabLabel}" not found — open Palmstreet's add-listing form, or update MODE_CONFIG if the tab was renamed`);
+  }
+  await tapBoundsAttr(node.bounds);
+  await sleep(400);  // let the form re-render for the selected mode
+}
+
+// Palmstreet "Quick listing" automation — mode-aware (Auction / Buy Now /
+// Giveaway).
 //
-// During a live, scanning a SKU should open the Quick-listing form and
-// pre-fill the plant name. The operator then sets price, quantity,
-// image, and taps "Pin & Run" themselves. That split keeps the bridge
-// simple, avoids the keyboard-shift complications around the price
-// field, and gives the operator a final review before posting.
+// During a live, scanning a SKU opens the Quick-listing form, selects the
+// operator's chosen mode tab, and pre-fills the title + amount. The
+// operator still sets quantity/image and taps "Pin & Run" themselves —
+// that split keeps a human in the loop for the final post.
 //
 // Steps:
-//   1. tap sidebar "Listing"
-//   2. wait for the form to render (Pin & Run visible)
-//   3. tap the title EditText (first EditText in form, by doc order)
-//   4. wait ~400 ms for the soft keyboard to slide up
-//   5. type the name
-async function listing({ sku, name, grossCost }) {
+//   1. tap sidebar "Listing" (open the form)
+//   2. wait for the form to render (Pin & Run + 2 EditTexts)
+//   3. select the mode tab (Auction / Buy Now / Giveaway)
+//   4. re-grab fields — the tab switch relabels the amount field
+//   5. type the title into the first EditText
+//   6. anchor to the mode's amount label and type the amount
+async function listing({ sku, name, grossCost, price, mode }) {
   if (typeof name !== 'string' || !name) throw new Error('name required');
+  // Unknown / missing mode falls back to auction — that's the original
+  // single-mode behavior, so an older web build that doesn't send `mode`
+  // keeps working unchanged.
+  const modeKey = MODE_CONFIG[mode] ? mode : 'auction';
+  const cfg = MODE_CONFIG[modeKey];
+
   // Title format on Palmstreet: "SKU - NAME". Operator scans during a
   // live to look up the inventory item later by SKU; the plant name
   // alone isn't unique. Bare name when sku is missing (shouldn't
   // happen in the Live Scan flow, but be defensive).
   const title = sku ? `${sku} - ${name}` : name;
 
-  // Gross cost = what the operator paid for the item. Pre-fill into
-  // the Starting Price field as a floor — they bid up from there
-  // during the live. Round UP to the next whole dollar (Math.ceil)
-  // so the starting bid is always at or above cost and there are no
-  // awkward $9.46-style starting prices on a live auction.
-  const startingPrice = grossCost != null && Number.isFinite(Number(grossCost))
-    ? String(Math.ceil(Number(grossCost)))
-    : null;
+  // Amount string for this mode (see amountForMode): auction uses the
+  // gross-cost floor, buy_now/give_away use the resolved listing price.
+  // Null when the source figure is missing — we leave the default.
+  const amount = amountForMode(modeKey, { price, grossCost });
 
   // Open the listing form and grab the title+price EditTexts in one go.
   // Factored so we can retry once if the first attempt fails — the
@@ -437,20 +539,7 @@ async function listing({ sku, name, grossCost }) {
     // path still resolves on the first dump (~280 ms) so this doesn't
     // hurt happy-path latency.
     await tap({ contentDesc: 'Listing', timeoutMs: 8000 });
-    const deadline = Date.now() + formDeadlineMs;
-    while (Date.now() < deadline) {
-      const xml = await dumpUI();
-      if (findNode(xml, a => a['content-desc'] === 'Pin & Run')) {
-        const fields = findAllNodes(xml, a => {
-          if (!(a.class || '').endsWith('EditText')) return false;
-          const b = parseBounds(a.bounds);
-          return b && b.y2 < 1700;
-        });
-        if (fields.length >= 2) return fields;
-      }
-      await sleep(200);
-    }
-    return null;
+    return grabFormFields(formDeadlineMs);
   }
 
   // Pre-check: is the form already open from a previous scan that the
@@ -461,11 +550,7 @@ async function listing({ sku, name, grossCost }) {
   // happy path of back-to-back scans.
   function grabFieldsIfOpen(xml) {
     if (!findNode(xml, a => a['content-desc'] === 'Pin & Run')) return null;
-    const fields = findAllNodes(xml, a => {
-      if (!(a.class || '').endsWith('EditText')) return false;
-      const b = parseBounds(a.bounds);
-      return b && b.y2 < 1700;
-    });
+    const fields = formEditTexts(xml);
     return fields.length >= 2 ? fields : null;
   }
 
@@ -489,7 +574,28 @@ async function listing({ sku, name, grossCost }) {
     await checkPalmstreetForeground();
     throw new Error('listing form did not open (or rendered incompletely)');
   }
-  const editTexts = await openOrDiagnose();
+  await openOrDiagnose();
+
+  // Select the mode tab, then re-grab the inputs from a fresh dump.
+  // Switching tabs relabels the amount field and can re-render the
+  // EditTexts, so any bounds captured before the switch are stale.
+  //
+  // If the tab can't be found: for auction (the default + legacy path
+  // that worked before tabs existed) warn and proceed on whatever tab is
+  // active — never worse than the old behavior. For buy_now/give_away,
+  // proceeding would post the wrong listing type at the wrong price, so
+  // fail loudly instead.
+  try {
+    await selectModeTab(cfg.tab);
+  } catch (e) {
+    if (modeKey !== 'auction') throw e;
+    console.warn(`[${new Date().toISOString()}] ${e.message} — proceeding on the current tab (auction default)`);
+  }
+  const editTexts = await grabFormFields(4000, false);
+  if (!editTexts) {
+    await checkPalmstreetForeground();
+    throw new Error(`listing form fields not found after selecting the "${cfg.tab}" tab`);
+  }
 
   await tapBoundsAttr(editTexts[0].bounds);
   await sleep(220);
@@ -512,64 +618,57 @@ async function listing({ sku, name, grossCost }) {
   // modal.
   await adbShell('input', 'keyevent', '4');
 
-  // Pre-fill the Starting Price with the item's gross cost (rounded up).
-  // Defaults in the form are "1" / "1" / "11"; clear before typing.
+  // Pre-fill the amount field for this mode. Defaults in the form are
+  // small placeholders; clear before typing.
   //
   // The title field has a 0/60 counter and grows downward when a long
-  // title wraps to a second line, shifting the Starting Price field
-  // below the bounds we captured at form-open. So we re-dump after
-  // dismissing the keyboard and anchor to the "Starting Price"
-  // content-desc View label (always on the left of the price input)
-  // rather than relying on cached bounds.
+  // title wraps to a second line, shifting the amount field below the
+  // bounds we captured at form-open. So we re-dump after dismissing the
+  // keyboard and anchor to the mode's amount label (always a View on the
+  // left of the input) rather than relying on cached bounds.
   let prefilled = ['title'];
-  if (startingPrice) {
-    // Try to find the label-anchored Starting Price field. Retry for up
-    // to ~5 s — back-to-back scans can leave the form in a transient
-    // re-render state where the label is briefly absent from the dump.
-    let priceTarget = null;
+  if (amount) {
+    // Try to find the label-anchored amount field. Retry for up to ~5 s —
+    // back-to-back scans can leave the form in a transient re-render
+    // state where the label is briefly absent from the dump.
+    let amountTarget = null;
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
       await sleep(120);
-      const found = findPriceField(await dumpUI());
-      if (found) { priceTarget = found.bounds; break; }
+      const found = findFieldByLabel(await dumpUI(), cfg.priceLabels);
+      if (found) { amountTarget = found.bounds; break; }
     }
     // Fallback: if the label still isn't in the dump, re-dump and take
-    // the second EditText with y2<1700 from the FRESH tree. We can't
-    // use the editTexts captured at form-open: if the title wrapped to
-    // two lines after we typed it, every field below it shifted down,
-    // and the cached bounds for editTexts[1] now point at where the
-    // title's second line is — typing the price there would put the
-    // digits in the title field. A fresh dump's editTexts[1] has the
-    // current bounds.
-    if (!priceTarget) {
-      const xmlFresh = await dumpUI();
-      const freshEditTexts = findAllNodes(xmlFresh, a => {
-        if (!(a.class || '').endsWith('EditText')) return false;
-        const b = parseBounds(a.bounds);
-        return b && b.y2 < 1700;
-      });
-      if (freshEditTexts.length >= 2) {
-        console.warn(`[${new Date().toISOString()}] Starting Price label not found — using fresh editTexts[1]`);
-        priceTarget = freshEditTexts[1].bounds;
+    // the second EditText (y2<1700) from the FRESH tree. We can't use the
+    // editTexts captured above: if the title wrapped to two lines after
+    // we typed it, every field below shifted down, and the cached bounds
+    // for editTexts[1] now point at the title's second line — typing the
+    // amount there would land in the title field. A fresh dump's
+    // editTexts[1] has the current bounds.
+    if (!amountTarget) {
+      const fresh = formEditTexts(await dumpUI());
+      if (fresh.length >= 2) {
+        console.warn(`[${new Date().toISOString()}] "${cfg.priceLabels[0]}" label not found — using fresh editTexts[1]`);
+        amountTarget = fresh[1].bounds;
       }
     }
-    if (priceTarget) {
-      await tapBoundsAttr(priceTarget);
-      await sleep(220);  // keyboard slides up for the price field
+    if (amountTarget) {
+      await tapBoundsAttr(amountTarget);
+      await sleep(220);  // keyboard slides up for the amount field
       // MOVE_END + 8 backspaces in a single adb call. `input keyevent`
       // accepts a variadic keycode list, so one round-trip clears the
       // field instead of nine. Overshooting on a 1- or 2-digit default
       // is a no-op, so 8 is safe regardless of the default's length.
       await adbShell('input', 'keyevent', '123', '67', '67', '67', '67', '67', '67', '67', '67');
-      await typeText(startingPrice);
+      await typeText(amount);
       await adbShell('input', 'keyevent', '4');  // dismiss keyboard again
-      prefilled.push('startingPrice');
+      prefilled.push('amount');
     } else {
-      console.warn(`[${new Date().toISOString()}] couldn't locate Starting Price field after title — leaving default`);
+      console.warn(`[${new Date().toISOString()}] couldn't locate "${cfg.priceLabels[0]}" field after title — leaving default`);
     }
   }
 
-  return { sku, name, title, startingPrice, prefilled };
+  return { sku, name, title, mode: modeKey, amount, prefilled };
 }
 
 // ─── Job dispatch ───────────────────────────────────────────────────────────
