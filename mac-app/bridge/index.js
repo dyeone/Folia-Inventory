@@ -915,6 +915,17 @@ async function openNewListingForm() {
     if (x) return x;
   }
 
+  // A Quick-listing overlay left up by a prior auction/buy_now scan sits on
+  // top of the live and hides its sidebar, so the "Shop" button isn't in the
+  // hierarchy underneath — the sidebar wake + tap below would never find it
+  // ("node not found: Shop"). Dismiss the overlay with BACK to return to the
+  // live first. Only give_away hits this: auction/buy_now reuse the overlay
+  // (openQuickListing returns it as-is) rather than needing a different surface.
+  if (isQuickListing(xml0)) {
+    await adbShell('input', 'keyevent', '4');  // close overlay → back to the live
+    await sleep(450);                           // let it close and the live settle
+  }
+
   async function attempt(timeoutMs) {
     // Wake the auto-hidden sidebar (no-op outside a live / when already
     // visible), then tap "Shop" to raise the manager sheet. Wide timeout
