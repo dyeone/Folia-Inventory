@@ -50,8 +50,9 @@ Developer ID and the `electron-builder` mac signing config.
 
 - **Start / Stop / Restart**: spawn `bash bridge/start.sh` and
   watch its stdout/stderr. Killing the window quits the bridge too.
-- **Reconnect phone**: runs `bridge/reconnect.sh` standalone (uses
-  the helper-reported target from Vercel, falls back to mDNS).
+- **Reconnect phone**: runs `bridge/reconnect.sh` standalone — re-finds
+  the USB device, re-establishes the tcp:9008 forward, and relaunches the
+  u2 server if it died. USB-only; no wireless ADB.
 - **Config**: reads + writes `bridge/.env` so `BRIDGE_URL` and
   `BRIDGE_TOKEN` can be set without `vi`.
 - **Logs**: every line streams to the window AND is tee'd to
