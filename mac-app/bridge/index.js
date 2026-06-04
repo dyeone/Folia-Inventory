@@ -117,20 +117,21 @@ const adbShell = (...args) => adb('shell', ...args);
 // (server is already running on-device, no per-call instrumentation
 // spin-up). We keep using the slower ADB path as a fallback when the
 // server isn't reachable so the bridge degrades gracefully.
-async function u2Dump() {
+async function u2Rpc(method, params) {
   const r = await fetch(`${U2_URL}/jsonrpc/0`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0', id: 1,
-      method: 'dumpWindowHierarchy',
-      params: [false],  // compressed=false; compressed strips too many nodes
-    }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
   });
-  if (!r.ok) throw new Error(`u2 dump HTTP ${r.status}`);
+  if (!r.ok) throw new Error(`u2 ${method} HTTP ${r.status}`);
   const body = await r.json();
-  if (body.error) throw new Error(`u2 dump: ${body.error.message}`);
+  if (body.error) throw new Error(`u2 ${method}: ${body.error.message || body.error.code}`);
   return body.result;
+}
+
+async function u2Dump() {
+  // compressed=false; compressed strips too many nodes
+  return u2Rpc('dumpWindowHierarchy', [false]);
 }
 
 async function adbDump() {
@@ -389,20 +390,25 @@ async function tap({ x, y, resourceId, text, contentDesc, timeoutMs }) {
   throw new Error('tap needs x+y, resourceId, text, or contentDesc');
 }
 
-async function typeText(text) {
-  if (typeof text !== 'string') throw new Error('text required');
-  // `adb shell` rejoins our argv with spaces and re-runs it through
-  // the device's `sh -c`, so shell metacharacters in the text (parens,
-  // &, $, etc.) cause syntax errors before `input text` ever sees them.
-  // Single-quote the argument: inside single quotes the device shell
-  // preserves everything except a single quote, which we handle by
-  // closing the quote, escaping, and reopening.
-  //   %s is `input text`'s own escape for a space, so we still convert
-  //   spaces before wrapping (single quotes don't help with that since
-  //   the issue is `input text`'s parser, not the shell's).
+// Build the device-shell `input text` command for `text`. `adb shell`
+// re-runs our argument through the device's `sh -c`, so shell metacharacters
+// (parens, &, $, …) would cause syntax errors before `input text` sees them.
+// Single-quote the argument: inside single quotes the device shell preserves
+// everything except a single quote, which we close-escape-reopen.
+//   %s is `input text`'s own escape for a space, so convert spaces before
+//   wrapping (single quotes don't help — the issue is `input text`'s parser).
+// Returned as a string fragment so callers can chain it with the tap/clear/
+// keyevent that bracket it into ONE `adb shell` round-trip (each separate
+// round-trip costs ~100ms over USB).
+function inputTextCmd(text) {
   const inputArg = text.replace(/ /g, '%s');
   const shellArg = "'" + inputArg.replace(/'/g, "'\\''") + "'";
-  await adbShell('input', 'text', shellArg);
+  return `input text ${shellArg}`;
+}
+
+async function typeText(text) {
+  if (typeof text !== 'string') throw new Error('text required');
+  await adbShell(inputTextCmd(text));
   return { length: text.length };
 }
 
@@ -760,16 +766,24 @@ export async function listing({ sku, name, grossCost, price, mode }) {
   // backspaces entirely (the common live case).
   const titleHasText = !!findNode(formXml, a =>
     (a['content-desc'] || '').split('\n').some(l => /^[1-9]\d*\/60$/.test(l.trim())));
-  await tapBoundsAttr(titleField.bounds);
-  await sleep(160);  // field gains focus (input text targets it regardless of kb anim)
-  if (titleHasText) {
-    // MOVE_END + a generous run of backspaces; 60 is the title's max length.
-    await adbShell('input', 'keyevent', '123', ...Array(64).fill('67'));
-  }
-  await typeText(title);
-  // Dismiss the soft keyboard. KEYCODE_BACK only hides the keyboard here —
-  // it doesn't close the form. The amount step waits for it to clear.
-  await adbShell('input', 'keyevent', '4');
+  // Focus the field, let focus land, (clear if reused), type, then hide the
+  // keyboard — all in ONE adb round-trip. Each separate `adb shell` costs
+  // ~100ms over USB; the on-device `sleep` preserves the tap→type focus gap
+  // without the extra hops. (`input text` is char-by-char and stays the
+  // dominant cost; the u2 server can set text in one shot but can't reliably
+  // target one field among the form's several EditTexts, so we don't use it.)
+  const tb = parseBounds(titleField.bounds);
+  if (!tb) throw new Error('title field has no bounds');
+  // "/60" reads 0/60 when empty; only a reused, un-pinned form needs the
+  // MOVE_END + backspaces clear (a fresh scan skips those 64 keystrokes).
+  const titleClear = titleHasText
+    ? `input keyevent 123 ${Array(64).fill('67').join(' ')}; `
+    : '';
+  // KEYCODE_BACK at the end only hides the keyboard (not the form); the
+  // amount step waits for it to clear.
+  await adbShell(
+    `input tap ${tb.cx} ${tb.cy}; sleep 0.25; ${titleClear}${inputTextCmd(title)}; input keyevent 4`
+  );
 
   // ── 4. Pre-fill the amount ────────────────────────────────────────
   let prefilled = ['title'];
@@ -796,14 +810,16 @@ export async function listing({ sku, name, grossCost, price, mode }) {
       await sleep(120);
     }
     if (amountTarget) {
-      await tapBoundsAttr(amountTarget);
-      await sleep(160);  // keyboard slides up for the amount field
-      // MOVE_END + backspaces clears the field's default (usually "1").
-      // `input keyevent` takes a variadic keycode list, so one round-trip
-      // clears the field; overshooting a short default is a no-op.
-      await adbShell('input', 'keyevent', '123', '67', '67', '67', '67', '67', '67', '67', '67', '67', '67');
-      await typeText(amount);
-      await adbShell('input', 'keyevent', '4');  // dismiss keyboard again
+      const ab = parseBounds(amountTarget);
+      if (!ab) throw new Error('amount field has no bounds');
+      // One round-trip: focus, settle, clear the field's default (usually
+      // "1") with MOVE_END + backspaces, type the amount, hide the keyboard.
+      // Overshooting the backspaces on a short default is a harmless no-op.
+      await adbShell(
+        `input tap ${ab.cx} ${ab.cy}; sleep 0.25; ` +
+        `input keyevent 123 67 67 67 67 67 67 67 67 67 67; ` +
+        `${inputTextCmd(amount)}; input keyevent 4`
+      );
       prefilled.push('amount');
     } else {
       // Don't guess a field here: on this form a wrong guess would land
