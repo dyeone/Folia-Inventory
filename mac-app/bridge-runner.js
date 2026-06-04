@@ -19,9 +19,16 @@ const os = require('node:os');
 // operator can grep through them after a long shift.
 
 class BridgeRunner extends EventEmitter {
-  constructor({ bridgeDir }) {
+  constructor({ bridgeDir, configPath }) {
     super();
     this.bridgeDir = bridgeDir;
+    // Where the bridge's config (FOLIA_API_URL, BRIDGE_TOKEN, …) lives. The
+    // caller passes a path in the app's userData dir, which survives app
+    // updates — the old behavior kept it in bridgeDir/.env INSIDE the app
+    // bundle, so every update wiped it and the operator had to re-enter the
+    // URL + token. Fall back to the in-bundle path when no configPath is given
+    // (e.g. running the bridge standalone from the CLI).
+    this.configPath = configPath || path.join(bridgeDir, '.env');
     this.proc = null;
     this.reconnectProc = null;
     this.state = {
@@ -39,6 +46,26 @@ class BridgeRunner extends EventEmitter {
     fs.mkdirSync(logDir, { recursive: true });
     this._logFile = path.join(logDir, 'bridge.log');
     this._logStream = fs.createWriteStream(this._logFile, { flags: 'a' });
+
+    // One-time migration: if config still lives in the old in-bundle .env and
+    // we now have a persistent location, copy it across so an existing
+    // install's URL + token carry over on this upgrade.
+    this._migrateLegacyConfig();
+  }
+
+  // Copy a legacy in-bundle bridge/.env into the persistent configPath the
+  // first time we run with one, so the operator's settings survive the move.
+  // Best-effort: a failure here just means the config UI shows blanks once.
+  _migrateLegacyConfig() {
+    try {
+      const legacy = path.join(this.bridgeDir, '.env');
+      if (this.configPath !== legacy &&
+          !fs.existsSync(this.configPath) && fs.existsSync(legacy)) {
+        fs.mkdirSync(path.dirname(this.configPath), { recursive: true });
+        fs.copyFileSync(legacy, this.configPath);
+        this._line(`→ Migrated bridge config to ${this.configPath}`);
+      }
+    } catch { /* best-effort; config UI can re-enter */ }
   }
 
   logFilePath() { return this._logFile; }
@@ -107,8 +134,14 @@ class BridgeRunner extends EventEmitter {
       seen.add(p);
       return true;
     });
+    // Inject the persisted config (FOLIA_API_URL, BRIDGE_TOKEN, …) as env
+    // vars so the bridge gets it without an in-bundle .env. start.sh only
+    // sources bridgeDir/.env when that file exists (it no longer does — config
+    // lives in userData), and index.js reads these straight from process.env;
+    // either way the values flow through here, surviving app updates.
     return {
       ...process.env,
+      ...this.readEnv(),
       PATH: merged.join(':'),
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --unhandled-rejections=warn`.trim(),
     };
@@ -239,10 +272,11 @@ class BridgeRunner extends EventEmitter {
     });
   }
 
-  // bridge/.env config: BRIDGE_URL + BRIDGE_TOKEN (+ optional others).
-  // The mac app reads + edits this file directly so the operator never
-  // has to touch the terminal to configure the bridge.
-  envPath() { return path.join(this.bridgeDir, '.env'); }
+  // Bridge config (FOLIA_API_URL + BRIDGE_TOKEN + optional others). The mac
+  // app reads + edits this file directly so the operator never has to touch
+  // the terminal. Lives at configPath (the app's userData dir) so it survives
+  // app updates, not in the app bundle where every update would wipe it.
+  envPath() { return this.configPath; }
 
   readEnv() {
     const out = {};
@@ -272,6 +306,9 @@ class BridgeRunner extends EventEmitter {
       const needsQuote = /[\s#"]/.test(v);
       lines.push(`${k}=${needsQuote ? JSON.stringify(v) : v}`);
     }
+    // Ensure the parent dir exists — configPath lives in userData, which
+    // normally exists, but a first-ever write shouldn't depend on that.
+    fs.mkdirSync(path.dirname(this.envPath()), { recursive: true });
     fs.writeFileSync(this.envPath(), lines.join('\n') + '\n', 'utf-8');
   }
 }
