@@ -54,7 +54,11 @@ function createWindow() {
 
 app.whenReady().then(() => {
   const bridgeDir = locateBridgeDir();
-  runner = new BridgeRunner({ bridgeDir });
+  // Keep the bridge config (URL + token) in userData, NOT in the app bundle —
+  // userData persists across app updates, so the operator enters it once and
+  // never again. (The in-bundle bridge/.env was wiped by every update.)
+  const configPath = path.join(app.getPath('userData'), 'bridge.env');
+  runner = new BridgeRunner({ bridgeDir, configPath });
 
   // Stream every line of bridge stdout/stderr to the renderer. Renderer
   // owns the scrollback buffer + autoscroll.
