@@ -13,6 +13,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { BridgeRunner } = require('./bridge-runner.js');
 const { checkForUpdate } = require('./updater.js');
+const { downloadAndInstall } = require('./installer.js');
 
 // Re-check for a newer build every 6h so an operator who leaves the window
 // open for days still learns about a release without restarting. The
@@ -138,13 +139,56 @@ ipcMain.handle('app:open-log-file', async () => {
 
 ipcMain.handle('app:get-version', () => app.getVersion());
 ipcMain.handle('app:check-for-updates', () => runUpdateCheck());
+
+// Manual fallback: just open the DMG URL in the browser (the old behavior).
+// The URL is our own API's payload, but openExternal hands whatever it's
+// given to the OS's default scheme handler — so gate it to http(s) first,
+// in case the app_settings row ever holds something malformed.
 ipcMain.handle('app:download-update', async (_e, url) => {
-  // The URL is our own API's payload, but openExternal hands whatever it's
-  // given to the OS's default scheme handler — so gate it to http(s) before
-  // opening, in case the app_settings row ever holds something malformed.
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
     return { ok: false, error: 'Invalid download URL' };
   }
   await shell.openExternal(url);
   return { ok: true };
+});
+
+// The running app bundle (…/Folia Bridge.app), derived from the executable
+// path. Only meaningful when packaged.
+function currentAppBundle() {
+  return path.resolve(app.getPath('exe'), '..', '..', '..');
+}
+
+// One-click update: download the DMG with progress, swap it over the
+// running bundle, and relaunch. Falls back to opening the DMG for a manual
+// drag on any failure, so the operator is never stranded.
+ipcMain.handle('app:install-update', async (_e, url) => {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return { ok: false, error: 'Invalid download URL' };
+  }
+  const send = (p) => mainWindow?.webContents.send('app:update-progress', p);
+
+  // In dev (not a real .app bundle) we can't self-replace — open the DMG.
+  if (!app.isPackaged) {
+    await shell.openExternal(url);
+    return { ok: false, error: 'Running unpackaged — opened the download in your browser instead.' };
+  }
+
+  try {
+    await downloadAndInstall({ url, targetApp: currentAppBundle(), onProgress: send });
+    send({ phase: 'relaunching' });
+    await runner?.stop();          // clean bridge shutdown before we restart
+    app.relaunch();
+    app.exit(0);
+    return { ok: true };
+  } catch (e) {
+    // Auto-install failed — hand the operator the DMG (if we got it) or the
+    // URL so they can drag it over /Applications themselves.
+    send({ phase: 'error', error: e.message });
+    if (e.dmgPath && fs.existsSync(e.dmgPath)) {
+      await shell.openPath(e.dmgPath);   // mounts + shows the drag window
+    } else {
+      await shell.openExternal(url);
+    }
+    return { ok: false, error: e.message, fellBackToManual: true };
+  }
 });

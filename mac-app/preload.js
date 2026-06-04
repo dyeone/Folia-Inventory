@@ -26,5 +26,7 @@ contextBridge.exposeInMainWorld('app', {
   getVersion:       () => ipcRenderer.invoke('app:get-version'),
   checkForUpdates:  () => ipcRenderer.invoke('app:check-for-updates'),
   downloadUpdate:   (url) => ipcRenderer.invoke('app:download-update', url),
+  installUpdate:    (url) => ipcRenderer.invoke('app:install-update', url),
   onUpdateStatus:   (cb) => ipcRenderer.on('app:update-status', (_e, s) => cb(s)),
+  onUpdateProgress: (cb) => ipcRenderer.on('app:update-progress', (_e, p) => cb(p)),
 });
