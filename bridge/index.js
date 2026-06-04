@@ -408,15 +408,28 @@ function amountForMode(mode, { price, grossCost }) {
   return Number.isFinite(p) && p > 0 ? formatAmount(p) : null;
 }
 
-// ── New-listing form: surface detection + navigation ────────────────────
-// Palmstreet's create flow now has two surfaces:
-//   • the listing-manager sheet — a catalog of existing listings with a
-//     "Manage / Import / Create" bar along the bottom. The sidebar
-//     "Listing" button raises this during a live.
-//   • the "New listing" form — reached by tapping Create (⊕). This is
-//     where we set the mode tab, title and amount.
+// ── Listing surfaces: detection + navigation ────────────────────────────
+// Palmstreet has TWO listing creators, and they hold different modes:
+//   • "Quick listing" — the fast in-live overlay the sidebar "Listing"
+//     button raises. Tabs: Auction / Buy Now only (NO Giveaway). Has a
+//     "Pin & Run" button (create + pin to the live in one tap). This is
+//     where auction/buy_now go.
+//   • "New listing" — the full Shop form, reached via the sidebar "Shop"
+//     button → manager sheet → Create (⊕). Tabs: Auction / Buy Now /
+//     Giveaway. This is the only place Giveaway exists, so give_away
+//     goes here.
+// Both forms label tabs and fields the same way (multiline content-desc,
+// "/60" title counter), so selectModeTab / findTitleField / findFieldByLabel
+// work on either — only the entry path differs.
 
-// Only the form has a node whose content-desc first line is "New listing".
+// The Quick-listing overlay: its header reads "Quick listing" and it
+// carries the "Pin & Run" button.
+function isQuickListing(xml) {
+  return !!findNode(xml, a =>
+    descFirstLine(a) === 'quick listing' || a['content-desc'] === 'Pin & Run');
+}
+
+// Only the full form has a node whose content-desc first line is "New listing".
 function isNewListingForm(xml) {
   return !!findNode(xml, a => descFirstLine(a) === 'new listing');
 }
@@ -476,15 +489,35 @@ function findCreateButton(xml, screenH) {
     parseBounds(a.bounds).cx > parseBounds(best.bounds).cx ? a : best);
 }
 
-// The "Listing Title" input. Empty, Palmstreet labels it
-// "Listing Title\n0/60"; once typed into, just "<n>/60". Either way its
-// content-desc carries the "/60" character counter — a stable signal that
-// distinguishes it from the "/150" description field.
+// Return a tap target that focuses the "Listing Title" input. The two
+// forms structure it differently:
+//   • New listing — the whole title box is one wide View whose
+//     content-desc starts "Listing Title" (or just shows the "/60"
+//     counter). Tapping its center focuses the input.
+//   • Quick listing — the title is a real EditText, and the "/60" counter
+//     is a separate small badge in the top-right of the box. Tapping the
+//     badge focuses nothing, so we must return the EditText itself.
+// The "/60" counter is the stable anchor on both (vs the "/150"
+// description counter); we branch on whether it spans the box or is a badge.
 function findTitleField(xml) {
-  return findNode(xml, a => {
-    const cd = a['content-desc'] || '';
-    return descFirstLine(a) === 'listing title' || cd.includes('/60');
+  // New-listing: a labeled, full-width title box — tap it directly.
+  const box = findNode(xml, a => descFirstLine(a) === 'listing title');
+  if (box) return box;
+  // Otherwise anchor on the "/60" character counter.
+  const counter = findNode(xml, a => (a['content-desc'] || '').includes('/60'));
+  if (!counter) return null;
+  const cb = parseBounds(counter.bounds);
+  if (!cb) return null;
+  // A wide counter node IS the title box (New listing, unlabeled variant).
+  if (cb.x2 - cb.x1 > 400) return counter;
+  // Quick listing: small badge → the input is the EditText sharing its
+  // row (within ~120px vertically). Return that so the tap lands in it.
+  const et = findAllNodes(xml, a => {
+    if (!(a.class || '').endsWith('EditText')) return false;
+    const b = parseBounds(a.bounds);
+    return b && Math.abs(b.cy - cb.cy) <= 120;
   });
+  return et[0] || counter;
 }
 
 // Locate an EditText by the label View sitting to its left. Tries each
@@ -521,38 +554,64 @@ function findFieldByLabel(xml, labels) {
 // multiline ("Buy Now\nTab 2 of 3") so we match its first line. Prefer a
 // clickable match so a stray occurrence of the word elsewhere on screen
 // (a chat line, the video) can't be tapped instead of the tab.
-async function selectModeTab(tabLabel) {
-  const want = tabLabel.trim().toLowerCase();
-  const pick = (xml) => {
+//
+// Tap-and-verify: the Quick-listing overlay slides in and both forms
+// re-flow as the keyboard opens/closes, so a single tap on bounds read
+// mid-animation lands nowhere and silently leaves the wrong tab active.
+// Re-tap from a fresh dump until the tab is confirmed selected — by its
+// selected="true" attribute OR by the mode's amount label appearing (the
+// switch relabels the amount field). Either signal alone suffices, which
+// covers both listing surfaces regardless of which attributes they expose.
+async function selectModeTab(cfg) {
+  const want = cfg.tab.trim().toLowerCase();
+  const wantLabel = cfg.priceLabels[0].trim().toLowerCase();
+  const pickTab = (xml) => {
     const all = findAllNodes(xml, a =>
       descFirstLine(a) === want ||
       (a.text || '').trim().toLowerCase() === want);
     return all.find(a => a.clickable === 'true') || all[0] || null;
   };
-  let node = pick(await dumpUI());
-  const deadline = Date.now() + 2500;
-  while (!node && Date.now() < deadline) {
+  const onTab = (xml, tab) =>
+    (tab && tab.selected === 'true') ||
+    !!findNode(xml, a => descFirstLine(a) === wantLabel);
+
+  const deadline = Date.now() + 4000;
+  let xml = await dumpUI();
+  let tab = pickTab(xml);
+  while (!tab && Date.now() < deadline) {
     await sleep(200);
-    node = pick(await dumpUI());
+    xml = await dumpUI();
+    tab = pickTab(xml);
   }
-  if (!node) {
-    throw new Error(`listing mode tab "${tabLabel}" not found — open Palmstreet's add-listing form, or update MODE_CONFIG if the tab was renamed`);
+  if (!tab) {
+    throw new Error(`listing mode tab "${cfg.tab}" not found — open Palmstreet's listing form, or update MODE_CONFIG if the tab was renamed`);
   }
-  await tapBoundsAttr(node.bounds);
-  await sleep(400);  // let the form re-render for the selected mode
+  while (Date.now() < deadline) {
+    if (onTab(xml, tab)) return;
+    await tapBoundsAttr(tab.bounds);
+    await sleep(350);  // let the form re-render for the selected mode
+    xml = await dumpUI();
+    tab = pickTab(xml);
+    if (!tab) break;
+  }
+  if (tab && onTab(xml, tab)) return;
+  throw new Error(`listing mode tab "${cfg.tab}" did not become selected`);
 }
 
-// Palmstreet "New listing" automation — mode-aware (Auction / Buy Now /
+// Palmstreet listing automation — mode-aware (Auction / Buy Now /
 // Giveaway).
 //
-// During a live, scanning a SKU opens the New-listing form, selects the
-// operator's chosen mode tab, and pre-fills the title + amount. The
-// operator still sets quantity/image and taps "Pin" themselves — that
-// split keeps a human in the loop for the final post.
+// During a live, scanning a SKU opens the right listing creator for the
+// chosen mode, selects the mode tab, and pre-fills the title + amount.
+// The operator still sets quantity/image and taps the final button
+// ("Pin & Run" on Quick listing, "Pin" on the full form) themselves —
+// that split keeps a human in the loop for the final post.
 //
 // Steps:
-//   1. open the New-listing form (sidebar "Listing" → manager sheet →
-//      Create ⊕)
+//   1. open the listing form for this mode — Quick listing (sidebar
+//      "Listing") for auction/buy_now, the full New-listing form (sidebar
+//      "Shop" → Create ⊕) for give_away, which is the only surface with a
+//      Giveaway tab
 //   2. select the mode tab (Auction / Buy Now / Giveaway)
 //   3. type the title into the "Listing Title" field
 //   4. anchor to the mode's amount label and type the amount
@@ -575,8 +634,8 @@ export async function listing({ sku, name, grossCost, price, mode }) {
   // Null when the source figure is missing — we leave Palmstreet's default.
   const amount = amountForMode(modeKey, { price, grossCost });
 
-  // ── 1. Open the New-listing form ──────────────────────────────────
-  await openNewListingForm();
+  // ── 1. Open the listing form for this mode ────────────────────────
+  await openListingForm(modeKey);
 
   // ── 2. Select the mode tab ────────────────────────────────────────
   // If the tab can't be found: for auction (the default + legacy path
@@ -585,7 +644,7 @@ export async function listing({ sku, name, grossCost, price, mode }) {
   // proceeding would post the wrong listing type at the wrong price, so
   // fail loudly instead.
   try {
-    await selectModeTab(cfg.tab);
+    await selectModeTab(cfg);
   } catch (e) {
     if (modeKey !== 'auction') throw e;
     console.warn(`[${new Date().toISOString()}] ${e.message} — proceeding on the current tab (auction default)`);
@@ -594,12 +653,13 @@ export async function listing({ sku, name, grossCost, price, mode }) {
   // ── 3. Type the title ─────────────────────────────────────────────
   // The title field is a plain View until focused, at which point it
   // becomes an EditText. Re-dump after the tab switch (which re-renders
-  // and can scroll the form) and locate the field by its "/60" counter.
-  const formXml = await waitForXml(isNewListingForm, 4000);
+  // and can scroll the form) and locate the field by its "/60" counter —
+  // the same widget on both Quick listing and the full New-listing form.
+  const formXml = await waitForXml(xml => !!findTitleField(xml), 4000);
   const titleField = formXml && findTitleField(formXml);
   if (!titleField) {
     await checkPalmstreetForeground();
-    throw new Error('New-listing form title field not found after selecting the mode tab');
+    throw new Error('listing form title field not found after selecting the mode tab');
   }
   await tapBoundsAttr(titleField.bounds);
   await sleep(300);  // keyboard slides up, the field gains focus
@@ -650,12 +710,45 @@ export async function listing({ sku, name, grossCost, price, mode }) {
   return { sku, name, title, mode: modeKey, amount, prefilled };
 }
 
-// Navigate Palmstreet to its "New listing" form from wherever the app
-// currently sits:
+// Open the correct listing creator for the mode. give_away only exists in
+// the full Shop form (Quick listing has no Giveaway tab), so it routes
+// through openNewListingForm; auction/buy_now use the fast Quick-listing
+// overlay.
+function openListingForm(modeKey) {
+  return modeKey === 'give_away' ? openNewListingForm() : openQuickListing();
+}
+
+// Raise the "Quick listing" overlay (sidebar "Listing"). Already up from
+// an un-pinned previous scan → done. Otherwise wake the auto-hidden
+// sidebar and tap "Listing". Retries once; foreground check on failure so
+// a backgrounded app gives a clear message, not a node-not-found error.
+async function openQuickListing() {
+  if (isQuickListing(await dumpUI())) return;
+
+  async function attempt(timeoutMs) {
+    await adbShell('input', 'tap', '540', '700');  // wake hidden sidebar
+    await tap({ contentDesc: 'Listing', timeoutMs: 8000 });
+    return !!(await waitForXml(isQuickListing, timeoutMs));
+  }
+
+  try {
+    if (await attempt(5000)) return;
+    console.warn(`[${new Date().toISOString()}] Quick-listing overlay didn't open — retrying once`);
+    if (await attempt(4000)) return;
+  } catch (e) {
+    await checkPalmstreetForeground();
+    throw e;
+  }
+  await checkPalmstreetForeground();
+  throw new Error('Quick-listing overlay did not open — make sure Palmstreet is foregrounded and the live sidebar "Listing" button is reachable');
+}
+
+// Navigate Palmstreet to its full "New listing" form (the only surface
+// with a Giveaway tab) from wherever the app currently sits:
 //   • already on the form (an un-pinned previous scan) → done
 //   • on the manager sheet → tap Create (⊕)
 //   • elsewhere (a live with the sidebar hidden) → wake the sidebar, tap
-//     "Listing" to raise the manager sheet, then Create
+//     "Shop" to raise the manager sheet, then Create
 // Retries once, and runs a foreground check on failure so a backgrounded
 // Palmstreet surfaces a clear message instead of a node-not-found error.
 async function openNewListingForm() {
@@ -685,11 +778,11 @@ async function openNewListingForm() {
 
   async function attempt(timeoutMs) {
     // Wake the auto-hidden sidebar (no-op outside a live / when already
-    // visible), then tap "Listing" to raise the manager sheet. Wide
-    // timeout rides through Palmstreet's post-sale "SOLD" animation,
-    // which can hide the sidebar for several seconds.
+    // visible), then tap "Shop" to raise the manager sheet. Wide timeout
+    // rides through Palmstreet's post-sale "SOLD" animation, which can
+    // hide the sidebar for several seconds.
     await adbShell('input', 'tap', '540', '700');
-    await tap({ contentDesc: 'Listing', timeoutMs: 8000 });
+    await tap({ contentDesc: 'Shop', timeoutMs: 8000 });
     const surface = await waitForXml(
       xml => isNewListingForm(xml) || isManagerSheet(xml), timeoutMs);
     if (!surface) return false;
@@ -706,7 +799,7 @@ async function openNewListingForm() {
     throw e;
   }
   await checkPalmstreetForeground();
-  throw new Error('New-listing form did not open — make sure Palmstreet is foregrounded and the sidebar "Listing" → Create flow is reachable');
+  throw new Error('New-listing form did not open — make sure Palmstreet is foregrounded and the sidebar "Shop" → Create flow is reachable');
 }
 
 // ─── Job dispatch ───────────────────────────────────────────────────────────
