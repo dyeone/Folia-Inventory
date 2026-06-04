@@ -9,6 +9,27 @@ import { normalizeSku } from '../labels/boxCode.js';
 const SOLD_STATUSES = new Set(['sold', 'shipped', 'delivered']);
 const POLL_MS = 1500;
 
+// The three Palmstreet listing modes. `key` is what the bridge dispatches
+// on (matches MODE_CONFIG in bridge/index.js); `hint` tells the operator
+// which dollar figure fills the amount field on the phone.
+const MODES = [
+  { key: 'auction',   label: 'Auction',  hint: 'Starting price = cost' },
+  { key: 'buy_now',   label: 'Buy Now',  hint: 'Price = listing price' },
+  { key: 'give_away', label: 'Giveaway', hint: 'Value = listing price' },
+];
+const MODE_LABEL = Object.fromEntries(MODES.map(m => [m.key, m.label]));
+
+// Mirror the bridge's per-mode amount so each row shows the figure that
+// actually gets typed: auction uses the gross-cost floor (rounded up),
+// the other two use the resolved listing price.
+function displayAmount(mode, item, price) {
+  if (mode === 'auction') {
+    const c = Number(item.grossCost);
+    return Number.isFinite(c) && c > 0 ? Math.ceil(c) : null;
+  }
+  return Number.isFinite(price) && price > 0 ? price : null;
+}
+
 // Live Scan Mode — keep the input autofocused; every barcode scan
 // resolves the SKU locally and enqueues a Palmstreet listing job.
 // No per-scan confirmation: scan = list it.
@@ -24,6 +45,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
   // its own bridge job id (if it got that far) and a status for the badge.
   const [entries, setEntries] = useState([]);
   const [scanInput, setScanInput] = useState('');
+  const [mode, setMode] = useState('auction'); // session-wide listing mode
   const [error, setError] = useState('');
   const [forcePush, setForcePush] = useState(null); // { sku, item } when sold-block triggers
   const [bridgeStatus, setBridgeStatus] = useState({ online: false, queued: 0 });
@@ -85,11 +107,15 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
     return null;
   };
 
-  const pushItem = async (item, { forced = false } = {}) => {
+  const pushItem = async (item, { forced = false, mode: chosenMode } = {}) => {
+    // Capture the mode at scan time so a retry re-lists in the same mode
+    // even if the operator has since flipped the toggle.
+    const m = chosenMode || mode;
     const price = resolvePrice(item);
+    const amount = displayAmount(m, item, price);
     const tempId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     setEntries(prev => [
-      { tempId, sku: item.sku, name: item.name, variety: item.variety, price, state: 'queued', jobId: null, scannedAt: new Date().toISOString(), forced },
+      { tempId, sku: item.sku, name: item.name, variety: item.variety, price, amount, mode: m, state: 'queued', jobId: null, scannedAt: new Date().toISOString(), forced },
       ...prev,
     ].slice(0, 50));
     try {
@@ -98,8 +124,9 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
         payload: {
           sku: item.sku,
           name: item.name,
-          price,
-          grossCost: item.grossCost,  // bridge types this into the Starting Price field
+          price,                      // bridge uses this for buy_now / give_away
+          grossCost: item.grossCost,  // bridge uses this for the auction floor
+          mode: m,                    // 'auction' | 'buy_now' | 'give_away'
           forced,
         },
       });
@@ -185,6 +212,28 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
         </div>
 
         <div className="px-5 pt-4 flex-shrink-0">
+          <div className="mb-3">
+            <div className="flex rounded-xl border border-gray-200 bg-gray-100 p-1" role="group" aria-label="Listing mode">
+              {MODES.map(m => (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => setMode(m.key)}
+                  aria-pressed={mode === m.key}
+                  className={`flex-1 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
+                    mode === m.key
+                      ? 'bg-white text-emerald-700 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-gray-400 mt-1 px-1">
+              {MODES.find(m => m.key === mode)?.hint} · every scan lists as <span className="font-medium text-gray-500">{MODE_LABEL[mode]}</span>
+            </p>
+          </div>
           <form onSubmit={onSubmit}>
             <label className="block">
               <div className="relative">
@@ -231,7 +280,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
                   entry={e}
                   onRetry={() => {
                     const item = itemsBySku.get(normalizeSku(e.sku));
-                    if (item) pushItem(item, { forced: e.forced });
+                    if (item) pushItem(item, { forced: e.forced, mode: e.mode });
                   }}
                 />
               ))}
@@ -271,7 +320,10 @@ function BridgeBadge({ status }) {
 }
 
 function EntryRow({ entry, onRetry }) {
-  const { sku, name, variety, price, state, errorMsg, forced } = entry;
+  const { sku, name, variety, price, amount, mode, state, errorMsg, forced } = entry;
+  // Show the figure actually typed on the phone (auction = cost floor),
+  // falling back to the resolved price for older entries without `amount`.
+  const shown = amount != null ? amount : price;
   return (
     <div className="px-3 py-2.5">
       <div className="flex items-center gap-3">
@@ -283,10 +335,15 @@ function EntryRow({ entry, onRetry }) {
           <div className="text-xs text-gray-500 flex items-center gap-1.5">
             <span className="font-mono">{sku}</span>
             {variety && <span>· {variety}</span>}
+            {mode && (
+              <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-[10px] font-medium uppercase tracking-wide">
+                {MODE_LABEL[mode] || mode}
+              </span>
+            )}
           </div>
         </div>
         <div className="text-sm font-semibold text-gray-900 tabular-nums">
-          {price != null ? `$${price.toFixed(2)}` : '—'}
+          {shown != null ? `$${Number(shown).toFixed(2)}` : '—'}
         </div>
         <StateBadge state={state} errorMsg={errorMsg} />
         {state === 'failed' && onRetry && (
