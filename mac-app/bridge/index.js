@@ -87,12 +87,26 @@ const exec = promisify(execFile);
 
 // ─── ADB wrappers ───────────────────────────────────────────────────────────
 
+// Hard cap on any single adb call. Taps/keyevents/get-state finish in well
+// under a second; a uiautomator dump in a couple. The only way a call runs
+// long is a wedged transport (the phone dropped but adb is still waiting on
+// it) — without a timeout that hangs the whole bridge. 15s is generous for
+// the legit-slow cases and bounds the wedge so recovery can kick in.
+const ADB_TIMEOUT_MS = 15_000;
 async function adb(...args) {
   const fullArgs = DEVICE ? ['-s', DEVICE, ...args] : args;
   try {
-    const { stdout } = await exec('adb', fullArgs, { encoding: 'utf8', maxBuffer: 4 << 20 });
+    const { stdout } = await exec('adb', fullArgs, {
+      encoding: 'utf8', maxBuffer: 4 << 20, timeout: ADB_TIMEOUT_MS, killSignal: 'SIGKILL',
+    });
     return stdout;
   } catch (e) {
+    // A killed/timed-out call means the transport is wedged — surface it as
+    // a dropped device ("unresponsive") so isDeviceGoneError routes it to
+    // the same active recovery as an outright "device not found".
+    if (e.killed || e.signal === 'SIGKILL') {
+      throw new Error(`adb ${fullArgs.join(' ')} — device unresponsive (no reply in ${ADB_TIMEOUT_MS}ms)`);
+    }
     throw new Error(`adb ${fullArgs.join(' ')} failed: ${(e.stderr || e.message || '').trim()}`);
   }
 }
@@ -146,11 +160,11 @@ async function adbDeviceState() {
 // USB re-enumeration that brings it back immediately (verified on the
 // Pixel 8). kill-server/start-server are GLOBAL commands, so they must run
 // WITHOUT the `-s <serial>` flag adb() would otherwise add.
-async function recoverDevice(timeoutMs = 20_000) {
+export async function recoverDevice(timeoutMs = 20_000) {
   console.warn(`[${new Date().toISOString()}] device link lost — restarting adb server`);
-  try { await exec('adb', ['kill-server'], { encoding: 'utf8' }); } catch { /* daemon may be down */ }
+  try { await exec('adb', ['kill-server'], { encoding: 'utf8', timeout: 8000, killSignal: 'SIGKILL' }); } catch { /* daemon may be down */ }
   await new Promise(r => setTimeout(r, 800));
-  try { await exec('adb', ['start-server'], { encoding: 'utf8' }); } catch { /* starts lazily otherwise */ }
+  try { await exec('adb', ['start-server'], { encoding: 'utf8', timeout: 8000, killSignal: 'SIGKILL' }); } catch { /* starts lazily otherwise */ }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await adbDeviceState() === 'device') {
@@ -935,7 +949,7 @@ function runJob(job) {
 // blip, phone slept). A job is a chain of taps/dumps, so the drop can
 // surface from any adb call, not just a dump.
 function isDeviceGoneError(err) {
-  return /no devices\/emulators found|device offline|device not found|device '\S+' not found/i
+  return /no devices\/emulators found|device offline|device not found|device '\S+' not found|device unresponsive/i
     .test(err?.message || '');
 }
 
@@ -944,7 +958,7 @@ function isDeviceGoneError(err) {
 // only thing that re-enumerates a wedged Pixel-8 link), NOT just passively
 // `adb wait-for-device`: a wedged link never comes back on its own, so a
 // passive wait only ever times out ("device did not return within 10s").
-async function handleJob(job) {
+export async function handleJob(job) {
   try {
     return await runJob(job);
   } catch (e) {
