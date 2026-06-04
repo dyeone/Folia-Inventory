@@ -72,24 +72,43 @@ hits `GET {FOLIA_API_URL}/api/bridge?action=mac-version`, which reads the
 
 ### Publishing a new build
 
-1. `npm run dist` → `dist/Folia Bridge-X.Y.Z-universal.dmg`.
-2. Upload that DMG somewhere with a stable public URL (e.g. a public
-   Supabase Storage bucket).
-3. Point the release row at it (bump `version` to match `package.json`):
+One command does all of it — `publish-release.sh` builds the DMG, attaches
+it to a GitHub release, and moves the update pointer:
 
-   ```sql
-   insert into app_settings (id, data)
-   values ('mac_release', '{
-     "version": "0.2.2",
-     "url": "https://<public-host>/Folia%20Bridge-0.2.2-universal.dmg",
-     "notes": "What changed in this build"
-   }'::jsonb)
-   on conflict (id) do update set data = excluded.data;
-   ```
+```bash
+cd mac-app
+# bump "version" in package.json (and commit it) first, then:
+./publish-release.sh "What changed in this build"
+```
 
-   Every open app picks it up within 6h (or immediately on a manual
-   check). Until the row exists the check returns nulls and no banner
-   appears — so no false prompts.
+It (1) runs `npm run dist`, (2) creates/updates GitHub release
+`folia-bridge-v<version>` on the (public) repo with the DMG as a
+space-free public asset, and (3) upserts the `app_settings` row
+`id='mac_release'` to `{version, url, notes}` — then verifies the live
+`mac-version` API serves the new version and the asset downloads.
+
+Prereqs: `gh` (authenticated), `node`, `python3`, and a repo-root
+`.env.local` with `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`.
+
+Why GitHub Releases and not Supabase Storage: this project's Supabase
+Storage caps uploads at 50 MB and the DMG is ~170 MB. To move hosting,
+change only the `url` written to the row — the version check stays on the
+Folia API.
+
+Open apps pick up a new version within 6h or on a manual check. Until the
+row exists the check returns nulls and no banner appears, so no false
+prompts.
+
+To set the pointer by hand instead of the script:
+
+```sql
+insert into app_settings (id, data) values ('mac_release', '{
+  "version": "0.2.3",
+  "url": "https://github.com/<owner>/<repo>/releases/download/folia-bridge-v0.2.3/folia-bridge-0.2.3-universal.dmg",
+  "notes": "What changed in this build"
+}'::jsonb)
+on conflict (id) do update set data = excluded.data;
+```
 
 ## Limitations / next steps
 
