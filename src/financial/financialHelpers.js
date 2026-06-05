@@ -141,7 +141,14 @@ export function shippingRollup(items, shipmentsByBox) {
 // from the shipments table, and date each box by when its items shipped
 // (max shippedAt, falling back to soldAt). A box is skipped only if it maps to
 // a shipments row that was voided or was a test label.
-// Returns one record per box: { tc, plant, ts } (ts = ship time in ms, 0 = unknown).
+// Anthurium isn't a column — the genus lives in the item's variety (most) or
+// name. Match case-insensitively across both.
+function isAnthurium(i) {
+  return /anthurium/i.test(`${i.variety || ''} ${i.name || ''}`);
+}
+
+// Returns one record per box: { tc, plant, anth, ts }. tc/plant/anth are item
+// counts (anth = anthurium items); ts = ship time in ms (0 = unknown).
 export function buildBoxes(items, shipmentsByBox) {
   const byBox = new Map();
   for (const i of items) {
@@ -149,8 +156,9 @@ export function buildBoxes(items, shipmentsByBox) {
     const ship = shipmentsByBox?.[i.shipmentBoxId];
     if (ship && (ship.voidedAt || ship.isTestLabel)) continue;
     let b = byBox.get(i.shipmentBoxId);
-    if (!b) { b = { tc: 0, plant: 0, ts: 0 }; byBox.set(i.shipmentBoxId, b); }
+    if (!b) { b = { tc: 0, plant: 0, anth: 0, ts: 0 }; byBox.set(i.shipmentBoxId, b); }
     if (i.type === 'tc') b.tc += 1; else b.plant += 1;
+    if (isAnthurium(i)) b.anth += 1;
     const t = i.shippedAt ? new Date(i.shippedAt).getTime()
             : i.soldAt ? new Date(i.soldAt).getTime() : 0;
     if (t > b.ts) b.ts = t;  // the box ships when its last item ships
@@ -173,9 +181,10 @@ export function boxStats(boxes) {
   };
 }
 
-// How many boxes shipped in [from, to) by box ship time.
-export function boxesBetween(boxes, from, to) {
+// How many boxes shipped in [from, to) by box ship time. Pass an optional
+// predicate to count only matching boxes (e.g. b => b.tc > 0 for TC boxes).
+export function boxesBetween(boxes, from, to, pred) {
   let n = 0;
-  for (const b of boxes) if (b.ts >= from && b.ts < to) n += 1;
+  for (const b of boxes) if (b.ts >= from && b.ts < to && (!pred || pred(b))) n += 1;
   return n;
 }

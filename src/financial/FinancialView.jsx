@@ -3,7 +3,7 @@ import {
   DollarSign, TrendingUp, Receipt, Percent, ShoppingBag, Tag,
   Download, Calendar, Search, Upload, Truck,
   AlertCircle, Check, RotateCcw, FileText, X,
-  Box, Leaf, FlaskConical, Package,
+  Box, Leaf, FlaskConical, Package, Sprout,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api } from '../api.js';
@@ -147,13 +147,22 @@ function Overview({ items, sales, range, shipmentsByBox }) {
   const boxWeek = useMemo(() => {
     const now = new Date().getTime();
     const W = 7 * 86400_000;
+    const tw = [now - W, now], lw = [now - 2 * W, now - W];
     return {
-      thisWeek: boxesBetween(boxes, now - W, now),
-      lastWeek: boxesBetween(boxes, now - 2 * W, now - W),
+      thisWeek:     boxesBetween(boxes, ...tw),
+      lastWeek:     boxesBetween(boxes, ...lw),
+      tcThisWeek:   boxesBetween(boxes, ...tw, b => b.tc > 0),
+      tcLastWeek:   boxesBetween(boxes, ...lw, b => b.tc > 0),
+      anthThisWeek: boxesBetween(boxes, ...tw, b => b.anth > 0),
+      anthLastWeek: boxesBetween(boxes, ...lw, b => b.anth > 0),
     };
   }, [boxes]);
-  const boxDelta = boxWeek.thisWeek - boxWeek.lastWeek;
-  const boxDeltaLabel = boxDelta === 0 ? '±0' : boxDelta > 0 ? `▲ ${boxDelta}` : `▼ ${Math.abs(boxDelta)}`;
+  // "▲ 3 vs 5 last week" style sub for a this-week / last-week pair.
+  const weekSub = (cur, prev) => {
+    const d = cur - prev;
+    const arrow = d === 0 ? '±0' : d > 0 ? `▲ ${d}` : `▼ ${Math.abs(d)}`;
+    return `${arrow} vs ${prev} last week`;
+  };
 
   const perSale = useMemo(() => {
     const rows = sales.map(sale => {
@@ -265,17 +274,33 @@ function Overview({ items, sales, range, shipmentsByBox }) {
             <Box className="w-4 h-4 text-gray-400" /> Shipping &amp; boxes
           </h3>
           <span className="text-xs text-gray-500">
-            averages over all {boxAgg.boxes} boxes · weekly = last 7 days
+            weekly = last 7 days · averages over all {boxAgg.boxes} boxes
           </span>
         </div>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 p-4">
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 p-4">
+          {/* Weekly box throughput */}
           <Kpi
             icon={Box}
             label="Boxes this week"
             value={boxWeek.thisWeek}
-            sub={`${boxDeltaLabel} vs ${boxWeek.lastWeek} last week`}
+            sub={weekSub(boxWeek.thisWeek, boxWeek.lastWeek)}
             tone={boxWeek.thisWeek >= boxWeek.lastWeek ? 'emerald' : 'amber'}
           />
+          <Kpi
+            icon={FlaskConical}
+            label="TC boxes this week"
+            value={boxWeek.tcThisWeek}
+            sub={weekSub(boxWeek.tcThisWeek, boxWeek.tcLastWeek)}
+            tone={boxWeek.tcThisWeek >= boxWeek.tcLastWeek ? 'blue' : 'amber'}
+          />
+          <Kpi
+            icon={Sprout}
+            label="Anthurium boxes this week"
+            value={boxWeek.anthThisWeek}
+            sub={weekSub(boxWeek.anthThisWeek, boxWeek.anthLastWeek)}
+            tone={boxWeek.anthThisWeek >= boxWeek.anthLastWeek ? 'emerald' : 'amber'}
+          />
+          {/* All-time averages per box */}
           <Kpi
             icon={Leaf}
             label="Avg plants / box"
