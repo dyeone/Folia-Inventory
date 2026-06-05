@@ -35,6 +35,11 @@ export function fmtPct(n) {
   if (n === null || n === undefined || isNaN(n)) return '—';
   return `${n >= 0 ? '+' : ''}${n.toFixed(0)}%`;
 }
+// One-decimal average (e.g. "3.7"); '—' when there's no data.
+export function fmt1(n) {
+  if (n === null || n === undefined || isNaN(n)) return '—';
+  return n.toFixed(1);
+}
 
 export function inRange(item, range) {
   if (range.id === 'all') return true;
@@ -127,4 +132,50 @@ export function shippingRollup(items, shipmentsByBox) {
     boxes += 1;
   }
   return { cost, collected, net: collected - cost, boxes };
+}
+
+// ── Box throughput / contents ────────────────────────────────────────────
+// A "box" is one shipmentBoxId on the items. Most boxes ship off-app
+// (Palmstreet/USPS) and have NO shipments row — there are far more distinct
+// shipmentBoxIds than shipments rows — so we derive boxes from the ITEMS, not
+// from the shipments table, and date each box by when its items shipped
+// (max shippedAt, falling back to soldAt). A box is skipped only if it maps to
+// a shipments row that was voided or was a test label.
+// Returns one record per box: { tc, plant, ts } (ts = ship time in ms, 0 = unknown).
+export function buildBoxes(items, shipmentsByBox) {
+  const byBox = new Map();
+  for (const i of items) {
+    if (!i.shipmentBoxId) continue;
+    const ship = shipmentsByBox?.[i.shipmentBoxId];
+    if (ship && (ship.voidedAt || ship.isTestLabel)) continue;
+    let b = byBox.get(i.shipmentBoxId);
+    if (!b) { b = { tc: 0, plant: 0, ts: 0 }; byBox.set(i.shipmentBoxId, b); }
+    if (i.type === 'tc') b.tc += 1; else b.plant += 1;
+    const t = i.shippedAt ? new Date(i.shippedAt).getTime()
+            : i.soldAt ? new Date(i.soldAt).getTime() : 0;
+    if (t > b.ts) b.ts = t;  // the box ships when its last item ships
+  }
+  return [...byBox.values()];
+}
+
+// Average contents across boxes: tissue cultures (item.type 'tc') vs plants
+// (everything else) vs all items, per box.
+export function boxStats(boxes) {
+  const n = boxes.length;
+  let tc = 0, plant = 0;
+  for (const b of boxes) { tc += b.tc; plant += b.plant; }
+  return {
+    boxes: n,
+    totalTc: tc, totalPlant: plant, totalItems: tc + plant,
+    avgTc: n ? tc / n : null,
+    avgPlant: n ? plant / n : null,
+    avgItems: n ? (tc + plant) / n : null,
+  };
+}
+
+// How many boxes shipped in [from, to) by box ship time.
+export function boxesBetween(boxes, from, to) {
+  let n = 0;
+  for (const b of boxes) if (b.ts >= from && b.ts < to) n += 1;
+  return n;
 }

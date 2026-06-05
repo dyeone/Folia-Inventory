@@ -3,13 +3,15 @@ import {
   DollarSign, TrendingUp, Receipt, Percent, ShoppingBag, Tag,
   Download, Calendar, Search, Upload, Truck,
   AlertCircle, Check, RotateCcw, FileText, X,
+  Box, Leaf, FlaskConical, Package,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { api } from '../api.js';
 import { parseCashflow, buildRefundUpdates } from './parseCashflow.js';
 import {
   SOLD_STATUSES, RANGES, todayIso, daysAgoIso,
-  fmt$, fmt$2, fmtPct, inRange, rollup, effectiveRevenue, shippingRollup,
+  fmt$, fmt$2, fmtPct, fmt1, inRange, rollup, effectiveRevenue, shippingRollup,
+  buildBoxes, boxStats, boxesBetween,
 } from './financialHelpers.js';
 import { Kpi, PctBadge, StatusBadge, MonthlyDelta, ProfitTrendByName } from './FinancialChrome.jsx';
 
@@ -137,6 +139,22 @@ function Overview({ items, sales, range, shipmentsByBox }) {
     [itemsInRange, shipmentsByBox]
   );
 
+  // Box throughput + contents — operational stats over ALL boxes (not the
+  // date range): how many boxes go out weekly and what a typical box holds.
+  // Boxes are item-derived because most ship off-app with no shipments row.
+  const boxes = useMemo(() => buildBoxes(items, shipmentsByBox), [items, shipmentsByBox]);
+  const boxAgg = useMemo(() => boxStats(boxes), [boxes]);
+  const boxWeek = useMemo(() => {
+    const now = new Date().getTime();
+    const W = 7 * 86400_000;
+    return {
+      thisWeek: boxesBetween(boxes, now - W, now),
+      lastWeek: boxesBetween(boxes, now - 2 * W, now - W),
+    };
+  }, [boxes]);
+  const boxDelta = boxWeek.thisWeek - boxWeek.lastWeek;
+  const boxDeltaLabel = boxDelta === 0 ? '±0' : boxDelta > 0 ? `▲ ${boxDelta}` : `▼ ${Math.abs(boxDelta)}`;
+
   const perSale = useMemo(() => {
     const rows = sales.map(sale => {
       const saleItems = items.filter(i => i.saleId === sale.id);
@@ -239,6 +257,47 @@ function Overview({ items, sales, range, shipmentsByBox }) {
           sub="buyers paid − label cost"
           tone={shipping.net < 0 ? 'red' : 'emerald'}
         />
+      </section>
+
+      <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+          <h3 className="font-medium text-gray-900 flex items-center gap-2">
+            <Box className="w-4 h-4 text-gray-400" /> Shipping &amp; boxes
+          </h3>
+          <span className="text-xs text-gray-500">
+            averages over all {boxAgg.boxes} boxes · weekly = last 7 days
+          </span>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 p-4">
+          <Kpi
+            icon={Box}
+            label="Boxes this week"
+            value={boxWeek.thisWeek}
+            sub={`${boxDeltaLabel} vs ${boxWeek.lastWeek} last week`}
+            tone={boxWeek.thisWeek >= boxWeek.lastWeek ? 'emerald' : 'amber'}
+          />
+          <Kpi
+            icon={Leaf}
+            label="Avg plants / box"
+            value={fmt1(boxAgg.avgPlant)}
+            sub={`${boxAgg.totalPlant} plants shipped`}
+            tone="emerald"
+          />
+          <Kpi
+            icon={FlaskConical}
+            label="Avg TCs / box"
+            value={fmt1(boxAgg.avgTc)}
+            sub={`${boxAgg.totalTc} TCs shipped`}
+            tone="blue"
+          />
+          <Kpi
+            icon={Package}
+            label="Avg items / box"
+            value={fmt1(boxAgg.avgItems)}
+            sub={`${boxAgg.totalItems} items in ${boxAgg.boxes} boxes`}
+            tone="gray"
+          />
+        </div>
       </section>
 
       <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
