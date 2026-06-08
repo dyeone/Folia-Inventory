@@ -299,3 +299,16 @@ main {
   0%   { margin-left: -40%; }
   100% { margin-left: 100%; }
 }
+
+/* ── Watch live panel ─────────────────────────────────────────────────── */
+.live-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+.live-table th, .live-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); }
+.live-table th { color: var(--muted); font-weight: 600; font-size: 11px; }
+.live-table td.num, .live-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.live-table tbody tr:last-child td { border-bottom: 0; }
+.live-feed-wrap { margin-top: 12px; }
+.live-feed { margin-top: 4px; max-height: 140px; overflow-y: auto; font-variant-numeric: tabular-nums; }
+.live-feed > div { padding: 2px 0; border-bottom: 1px solid var(--faint); }
+.live-raw { margin-top: 12px; }
+.live-raw summary { cursor: pointer; }
+.live-raw .log { margin-top: 6px; max-height: 160px; }

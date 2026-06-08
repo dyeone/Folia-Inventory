@@ -78,6 +78,12 @@ class BridgeRunner extends EventEmitter {
   }
 
   _line(line, fromStderr = false) {
+    // Live-monitor snapshots are a structured side-channel ("[[LIVE]] {json}"),
+    // not log noise — parse, emit to listeners, and skip the scrollback/file.
+    if (line.startsWith('[[LIVE]] ')) {
+      try { this.emit('live', JSON.parse(line.slice(9))); } catch { /* malformed — drop */ }
+      return;
+    }
     const stamped = `[${new Date().toISOString()}] ${line}`;
     this._logStream.write(stamped + '\n');
     this.emit('log', line);
@@ -227,6 +233,22 @@ class BridgeRunner extends EventEmitter {
       }
       setTimeout(() => { try { proc.kill('SIGKILL'); } catch { /* already gone */ } }, 4000);
     });
+  }
+
+  // "Watch live" toggle — a flag file the bridge's poll loop checks. Creating
+  // it turns on the live-screen scraper (idle cycles only); removing it turns
+  // it off (the default). Same dir the bridge resolves its own .watch-live from.
+  watchFlagPath() { return path.join(this.bridgeDir, '.watch-live'); }
+  isWatchLive() { try { return fs.existsSync(this.watchFlagPath()); } catch { return false; } }
+  setWatchLive(on) {
+    try {
+      if (on) fs.writeFileSync(this.watchFlagPath(), String(Date.now()));
+      else fs.rmSync(this.watchFlagPath(), { force: true });
+      this._line(`→ Watch live ${on ? 'ON' : 'off'}`);
+    } catch (e) {
+      this._line(`✗ watch-live toggle failed: ${e.message}`, true);
+    }
+    return this.isWatchLive();
   }
 
   // Re-run bridge/reconnect.sh — re-pins the USB device, refreshes the

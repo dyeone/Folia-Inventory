@@ -68,6 +68,11 @@ app.whenReady().then(() => {
   runner.on('state', (state) => {
     mainWindow?.webContents.send('bridge:state', state);
   });
+  // Live-monitor snapshots (Watch live panel). Best-effort screen scrape of the
+  // Palmstreet live; the renderer derives a sold feed by diffing snapshots.
+  runner.on('live', (snap) => {
+    mainWindow?.webContents.send('live:update', snap);
+  });
 
   createWindow();
 
@@ -123,6 +128,8 @@ ipcMain.handle('bridge:reconnect-phone', async () => {
   return runner.reconnectPhone();
 });
 ipcMain.handle('bridge:get-state', () => runner.getState());
+ipcMain.handle('live:set-watch', (_e, on) => ({ watching: runner.setWatchLive(!!on) }));
+ipcMain.handle('live:get-watch', () => ({ watching: runner.isWatchLive() }));
 ipcMain.handle('bridge:get-config', () => runner.readEnv());
 ipcMain.handle('bridge:save-config', async (_e, cfg) => {
   runner.writeEnv(cfg);

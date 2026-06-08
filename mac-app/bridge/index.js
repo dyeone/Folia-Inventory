@@ -45,6 +45,11 @@ const DEVICE = process.env.BRIDGE_DEVICE || '';
 const POLL_MS = parseInt(process.env.POLL_MS || '50', 10);
 const U2_URL = (process.env.U2_URL ?? 'http://localhost:9008').replace(/\/$/, '');
 const U2_ENABLED = U2_URL.toLowerCase() !== 'off';
+// "Watch live" flag file. The Mac app creates/removes it (BridgeRunner
+// .setWatchLive) to toggle the live monitor; the poll loop only scrapes the
+// live screen while it exists, so monitoring is OFF (zero extra dumps) by
+// default and can never touch the listing automation unless turned on.
+const WATCH_FLAG = resolve(here, '.watch-live');
 
 if (!API_URL || !TOKEN) {
   console.error('Missing FOLIA_API_URL or BRIDGE_TOKEN. Create bridge/.env (see README).');
@@ -1038,13 +1043,71 @@ const completeJob = (id, result, error) =>
     body: JSON.stringify({ action: 'complete', id, result, error }),
   });
 
+// ─── Live monitor (prototype) ─────────────────────────────────────────────
+// Best-effort read of the Palmstreet live screen so the Mac app can show what's
+// selling in real time. This is screen-scraping: the authoritative per-item
+// price/buyer still comes from the post-live Palmstreet export (Validate
+// Sales). Only runs while the .watch-live flag exists (Mac app toggles it), and
+// only on idle cycles (never mid-listing), so it can't disturb the automation.
+// Parsing below is calibrated from observed live nodes and WILL need tuning
+// against a real broadcast — `raw` ships the verbatim price nodes for that.
+const PRICE_RE = /\$\s?([\d,]+(?:\.\d{1,2})?)/;
+const TIMER_RE = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+
+function parseLiveSnapshot(xml) {
+  const tags = xml.match(/<node\s[^>]*>/g) || [];
+  const listings = [];
+  const raw = [];
+  let current = null;
+  for (const tag of tags) {
+    const cd = (parseAttrs(tag)['content-desc'] || '').trim();
+    if (!cd) continue;
+    // The host card carries the currently-pinned item on the line after "Host".
+    if (!current && /(^|\n)Host(\n|$)/.test(cd)) {
+      const parts = cd.split('\n').map(s => s.trim());
+      const hi = parts.findIndex(p => p === 'Host');
+      if (hi >= 0 && parts[hi + 1]) current = parts[hi + 1];
+    }
+    if (cd.includes('$')) {
+      const m = PRICE_RE.exec(cd);
+      if (!m) continue;
+      const price = parseFloat(m[1].replace(/,/g, ''));
+      const lines = cd.split('\n').map(s => s.trim()).filter(Boolean);
+      const label = lines.find(l => !PRICE_RE.test(l) && !TIMER_RE.test(l)) || lines[0];
+      const timer = lines.find(l => TIMER_RE.test(l)) || null;
+      listings.push({ label, price, timer });
+      raw.push(cd.replace(/\n/g, ' · '));
+    }
+  }
+  return { live: !!(current || listings.length), at: Date.now(), current, listings, raw };
+}
+
+let lastMonitorAt = 0;
+let monitorBackoffUntil = 0;
+const MONITOR_INTERVAL_MS = 1500;
+
+async function maybeMonitor() {
+  if (!U2_ENABLED) return;
+  const t = Date.now();
+  if (t < monitorBackoffUntil || t - lastMonitorAt < MONITOR_INTERVAL_MS) return;
+  if (!existsSync(WATCH_FLAG)) return;  // watch is off → no scraping at all
+  lastMonitorAt = t;
+  try {
+    console.log(`[[LIVE]] ${JSON.stringify(parseLiveSnapshot(await dumpUI()))}`);
+  } catch (e) {
+    // A device hiccup shouldn't make monitoring hammer adb recovery — back off.
+    monitorBackoffUntil = Date.now() + 10_000;
+    console.log(`[[LIVE]] ${JSON.stringify({ live: false, at: Date.now(), error: e.message })}`);
+  }
+}
+
 // ─── Main loop ──────────────────────────────────────────────────────────────
 
 let consecutiveErrors = 0;
 
 async function pollOnce() {
   const { job } = await nextJob();
-  if (!job) return;
+  if (!job) return false;
   consecutiveErrors = 0;
   console.log(`[${new Date().toISOString()}] job ${job.id} (${job.action}) claimed`);
   let result = null, error = null;
@@ -1061,6 +1124,7 @@ async function pollOnce() {
     // by another bridge once it goes stale. Loud log so the operator sees it.
     console.error(`[${new Date().toISOString()}] failed to report job ${job.id}:`, reportErr.message);
   }
+  return true;
 }
 
 async function main() {
@@ -1084,7 +1148,9 @@ async function main() {
 
   while (true) {
     try {
-      await pollOnce();
+      const ranJob = await pollOnce();
+      // On idle cycles (no job), scrape the live screen if watching is on.
+      if (!ranJob) await maybeMonitor();
     } catch (e) {
       consecutiveErrors += 1;
       // Back off exponentially up to 30s when the API is unreachable

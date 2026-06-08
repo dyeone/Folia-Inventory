@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld('bridge', {
   onState: (cb) => ipcRenderer.on('bridge:state', (_e, state) => cb(state)),
 });
 
+contextBridge.exposeInMainWorld('live', {
+  setWatch: (on) => ipcRenderer.invoke('live:set-watch', on),
+  getWatch: () => ipcRenderer.invoke('live:get-watch'),
+  onUpdate: (cb) => ipcRenderer.on('live:update', (_e, snap) => cb(snap)),
+});
+
 contextBridge.exposeInMainWorld('app', {
   openBridgeFolder: () => ipcRenderer.invoke('app:open-bridge-folder'),
   openLogFile:      () => ipcRenderer.invoke('app:open-log-file'),

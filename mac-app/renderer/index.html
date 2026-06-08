@@ -90,6 +90,40 @@
 
     <section class="card">
       <div class="card-head">
+        <h2>Watch live</h2>
+        <div class="row gap-sm">
+          <span id="live-status" class="pill pill-gray">off</span>
+          <button id="btn-watch-toggle" class="btn btn-text">Start watching</button>
+        </div>
+      </div>
+      <div id="live-empty" class="muted small">
+        Turn on watching during a Palmstreet live to see items and prices as they go.
+        Prototype — best-effort screen read; exact numbers still come from the sales export.
+      </div>
+      <div id="live-body" class="hidden">
+        <div class="status-grid">
+          <div class="status-cell"><div class="status-label">Current item</div><div id="live-current" class="status-value">—</div></div>
+          <div class="status-cell"><div class="status-label">On screen</div><div id="live-count" class="status-value">0</div></div>
+          <div class="status-cell"><div class="status-label">Top price</div><div id="live-top" class="status-value">—</div></div>
+          <div class="status-cell"><div class="status-label">Updated</div><div id="live-updated" class="status-value">—</div></div>
+        </div>
+        <table class="live-table" id="live-listings">
+          <thead><tr><th>Item</th><th class="num">Price</th><th class="num">Timer</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="live-feed-wrap">
+          <div class="status-label">Recently closed <span class="muted">(estimated — left the screen)</span></div>
+          <div id="live-feed" class="live-feed muted small">nothing yet</div>
+        </div>
+        <details class="live-raw">
+          <summary class="small muted">Raw nodes (for calibration)</summary>
+          <pre id="live-raw" class="log small"></pre>
+        </details>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
         <h2>Live log</h2>
         <div class="row gap-sm">
           <button id="btn-open-log"    class="btn btn-text">Open file</button>
