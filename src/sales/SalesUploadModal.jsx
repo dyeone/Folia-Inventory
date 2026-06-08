@@ -5,6 +5,7 @@ import {
 import * as XLSX from 'xlsx';
 import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
 import { matchInventory } from '../packing/matchInventory.js';
+import { normalizeSku } from '../labels/boxCode.js';
 import { BoxesList, SummaryStat } from '../packing/PackingView.jsx';
 
 // Validate Sales modal — global, not per-sale-event.
@@ -34,6 +35,47 @@ function sameInstant(a, b) {
   const ta = new Date(a).getTime();
   const tb = new Date(b).getTime();
   return !isNaN(ta) && !isNaN(tb) && ta === tb;
+}
+
+const norm = (s) => String(s || '').toLowerCase().trim();
+
+// Does this incoming order line belong to the SAME shipment as the
+// already-shipped inventory item it matched by SKU? Strictest rule (operator's
+// choice): order #, buyer, full address, and sold date must ALL line up. Any
+// mismatch means the same physical SKU is going out in a different box — a
+// likely double-sale. (Order # is skipped only when BOTH sides lack one, so a
+// legacy shipped row with no order # falls back to buyer+address+date instead
+// of false-flagging every re-upload.)
+function isSameShipment(box, it, inv) {
+  const a = inv.buyerAddress || {};
+  const oid1 = norm(it.orderNumber), oid2 = norm(inv.orderId);
+  const orderMatch = (!oid1 && !oid2) ? true : oid1 === oid2;
+  const buyerMatch = norm(box.recipientName) === norm(inv.buyer);
+  const addrMatch =
+    norm(box.street1) === norm(a.street1) &&
+    norm(box.city) === norm(a.city) &&
+    norm(box.state) === norm(a.state) &&
+    norm(box.zip) === norm(a.zip);
+  const dateMatch = sameInstant(it.orderDate, inv.soldAt) || sameInstant(it.orderDate, inv.orderDate);
+  return orderMatch && buyerMatch && addrMatch && dateMatch;
+}
+
+// Classify what apply will DO with one matched order line:
+//   'fresh'         — available/listed SKU → mark sold (+ place in box)
+//   'topup'         — SKU already in an OPEN box → backfill missing data
+//   'same_shipment' — SKU already SHIPPED and this is that same shipment
+//                     (re-upload) → leave it completely alone
+//   'double_sale'   — SKU already SHIPPED but a different box/date → flag the
+//                     shipped item and create a flagged second-sale line
+//   'unmatched'     — no inventory SKU → placeholder
+function classifyLine(box, it, match) {
+  if (!match?.item) return 'unmatched';
+  if (!match.alreadyInBox) return 'fresh';
+  const inv = match.item;
+  if (inv.status === 'shipped' || inv.status === 'delivered') {
+    return isSameShipment(box, it, inv) ? 'same_shipment' : 'double_sale';
+  }
+  return 'topup';
 }
 
 export function SalesUploadModal({ items, onApply, onClose }) {
@@ -72,25 +114,29 @@ export function SalesUploadModal({ items, onApply, onClose }) {
     if (!boxes) return null;
     return boxes.map(box => ({
       ...box,
-      items: box.items.map(item => ({
-        ...item,
-        match: matchInventory(item, items),
-      })),
+      items: box.items.map(item => {
+        const match = matchInventory(item, items);
+        return { ...item, match, dispo: classifyLine(box, item, match) };
+      }),
     }));
   }, [boxes, items]);
 
   const summary = useMemo(() => {
     if (!resolved) return null;
-    let totalItems = 0, matched = 0, alreadyInBox = 0, unmatched = 0;
+    let totalItems = 0, matched = 0, alreadyInBox = 0, unmatched = 0, sameShipment = 0, doubleSale = 0;
     for (const box of resolved) {
       for (const it of box.items) {
         totalItems += 1;
-        if (it.match?.alreadyInBox) alreadyInBox += 1;
-        else if (it.match?.item) matched += 1;
-        else unmatched += 1;
+        switch (it.dispo) {
+          case 'fresh': matched += 1; break;
+          case 'topup': alreadyInBox += 1; break;
+          case 'same_shipment': sameShipment += 1; break;
+          case 'double_sale': doubleSale += 1; break;
+          default: unmatched += 1;
+        }
       }
     }
-    return { totalItems, matched, alreadyInBox, unmatched };
+    return { totalItems, matched, alreadyInBox, unmatched, sameShipment, doubleSale };
   }, [resolved]);
 
   // Buyer+address → existing OPEN box id, so new orders for the same
@@ -142,6 +188,12 @@ export function SalesUploadModal({ items, onApply, onClose }) {
     if (!resolved) return;
     const updates = [];
     const now = new Date().toISOString();
+    // The reviewFlag column may not be migrated yet (0026). select('*') exposes
+    // the key on every row once it exists, so probe the loaded inventory and
+    // only write reviewFlag when it's there — Validate Sales must never break on
+    // a DB that hasn't run the migration. Detection + the second-sale line still
+    // happen; only the badge waits for the column.
+    const supportsReviewFlag = items.some(i => 'reviewFlag' in i);
     for (const box of resolved) {
       // If this buyer already has an OPEN box, merge new lines into it.
       // Otherwise use the fresh per-upload id from parsePalmstreetOrders.
@@ -171,17 +223,58 @@ export function SalesUploadModal({ items, onApply, onClose }) {
       // different notes (the packer sees the right note next to the
       // right item instead of a box-level rollup).
       for (const it of box.items) {
-        if (it.match?.alreadyInBox) {
-          // Inventory row is already placed in a box (open or shipped). We
-          // never duplicate it or move it between boxes — but we DO top up
-          // data an earlier import didn't capture (notably order date +
-          // shipping fee, which only started being saved recently). Order
-          // date / shipping fee are refreshed from the file, and soldAt is
-          // realigned to the order date so the sold time reflects when the
-          // buyer ordered. Buyer / price / notes are filled only when
-          // missing, so a manual correction is never clobbered. status and
-          // shipmentBoxId are deliberately left alone — re-validating must
-          // not revert a shipped box or shuffle placement.
+        // Already shipped AND this is the same shipment as before (a re-upload
+        // of the same order). Per the operator's rule, leave it completely
+        // alone — don't even top up.
+        if (it.dispo === 'same_shipment') continue;
+
+        // Already shipped, but this order line is a DIFFERENT box/date — the
+        // same physical SKU looks like it sold twice. Flag the shipped item AND
+        // drop a flagged second-sale line so the operator can decide how to
+        // handle it. The deterministic DBL-<sku>-<order> SKU keeps re-uploads
+        // idempotent (skip if that flagged line already exists).
+        if (it.dispo === 'double_sale') {
+          const inv = it.match.item;
+          if (supportsReviewFlag && inv.reviewFlag !== 'double_sale') {
+            updates.push({ id: inv.id, reviewFlag: 'double_sale' });
+          }
+          const dupSku = `DBL-${normalizeSku(inv.sku)}-${norm(it.orderNumber) || it.rowKey}`.slice(0, 60);
+          const exists = items.some(x => !x.deletedAt && normalizeSku(x.sku) === normalizeSku(dupSku));
+          if (!exists) {
+            const line = {
+              sku: dupSku,
+              type: inv.type === 'tc' ? 'tc' : 'plant',
+              name: (it.title || inv.name || 'Item').slice(0, 200),
+              variety: inv.variety || null,
+              quantity: it.quantity || 1,
+              status: 'sold',
+              lotKind: 'unmatched',
+              saleId: fallbackSaleId,
+              salePrice: it.price > 0 ? it.price : 0,
+              soldAt: it.orderDate || now,
+              buyer: box.recipientName,
+              buyerUsername: box.username,
+              buyerAddress,
+              shipmentBoxId: effectiveBoxId,
+              shipmentCarrier: box.carrier || 'usps',
+              orderId: it.orderNumber || null,
+              orderDate: it.orderDate || null,
+              orderShippingFee: it.orderShippingFee ?? null,
+              notes: `⚠ Possible double-sale of SKU ${inv.sku} (already shipped${inv.shipmentBoxId ? ` in box ${inv.shipmentBoxId}` : ''}). ${it.notes || ''}`.trim().slice(0, 500),
+            };
+            if (supportsReviewFlag) line.reviewFlag = 'double_sale';
+            updates.push(line);
+          }
+          continue;
+        }
+
+        if (it.dispo === 'topup') {
+          // Inventory row already placed in an OPEN box. Never duplicate it or
+          // move it between boxes — but DO top up data an earlier import didn't
+          // capture (order date + shipping fee), realign soldAt to the order
+          // date, and fill buyer / price / notes only when missing so a manual
+          // correction is never clobbered. status and shipmentBoxId are left
+          // alone — re-validating must not revert a box or shuffle placement.
           const inv = it.match.item;
           const patch = { id: inv.id };
           if (it.orderDate && !sameInstant(inv.orderDate, it.orderDate)) patch.orderDate = it.orderDate;
@@ -338,7 +431,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                 </button>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 <SummaryStat label="Boxes" value={resolved.length} tone="emerald" />
                 <SummaryStat
                   label="Will mark sold"
@@ -348,14 +441,36 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                 <SummaryStat
                   label="Already in a box"
                   value={summary.alreadyInBox}
-                  tone={summary.alreadyInBox > 0 ? 'gray' : 'gray'}
+                  tone="gray"
+                />
+                <SummaryStat
+                  label="Already shipped"
+                  value={summary.sameShipment}
+                  sub={summary.sameShipment > 0 ? 'left as-is' : null}
+                  tone="gray"
                 />
                 <SummaryStat
                   label="Unmatched"
                   value={summary.unmatched}
                   tone={summary.unmatched > 0 ? 'amber' : 'gray'}
                 />
+                <SummaryStat
+                  label="⚠ Double-sale"
+                  value={summary.doubleSale}
+                  sub={summary.doubleSale > 0 ? 'flagged for review' : null}
+                  tone={summary.doubleSale > 0 ? 'red' : 'gray'}
+                />
               </div>
+
+              {summary.doubleSale > 0 && (
+                <div className="flex items-start gap-2 bg-red-50 border border-red-200 text-red-800 text-sm px-3 py-2 rounded-lg">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>
+                    <span className="font-medium">{summary.doubleSale} possible double-sale{summary.doubleSale === 1 ? '' : 's'}.</span>{' '}
+                    These SKUs were already shipped in a different box (order #, buyer, address, or date don&apos;t match). Each shipped item gets flagged, and a flagged second-sale line is added to the new buyer&apos;s box — review them in the Shipping tab.
+                  </span>
+                </div>
+              )}
 
               <BoxesList boxes={resolved} />
             </>
@@ -380,6 +495,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
               <Check className="w-4 h-4" /> Update Inventory · {summary?.matched || 0} matched
               {summary?.unmatched > 0 && <> + {summary.unmatched} unmatched</>}
               {summary?.alreadyInBox > 0 && <> · {summary.alreadyInBox} updated</>}
+              {summary?.doubleSale > 0 && <> · {summary.doubleSale} flagged</>}
             </button>
           </div>
         )}
