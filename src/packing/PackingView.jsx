@@ -1534,7 +1534,7 @@ function AddressCopyStrip({ box, showToast }) {
   );
 }
 
-function BoxItemsList({ box, salesById, onTogglePacked }) {
+function BoxItemsList({ box, salesById, onTogglePacked, onResolveReview }) {
   // Hide already-shipped items in open boxes — the operator only cares
   // about what's left to pack. Shipped boxes (every item is shipped)
   // skip the filter so the archive view still shows the full contents.
@@ -1641,6 +1641,25 @@ function BoxItemsList({ box, salesById, onTogglePacked }) {
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 no-underline">
                     packed
                   </span>
+                )}
+                {item.reviewFlag === 'double_sale' && (
+                  onResolveReview ? (
+                    <button
+                      type="button"
+                      onClick={() => onResolveReview(item)}
+                      title="Possible double-sale — this SKU was already shipped in a different box. Click to clear the flag once you've handled it."
+                      className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-800 hover:bg-red-200 active:bg-red-300 no-underline"
+                    >
+                      ⚠ double-sale?
+                    </button>
+                  ) : (
+                    <span
+                      title="Possible double-sale — this SKU was already shipped in a different box."
+                      className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-red-100 text-red-800 no-underline"
+                    >
+                      ⚠ double-sale?
+                    </span>
+                  )
                 )}
               </div>
               <div className="flex items-center gap-1.5 text-[11px] text-gray-500 flex-wrap mt-0.5">

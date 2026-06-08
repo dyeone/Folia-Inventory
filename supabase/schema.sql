@@ -141,6 +141,19 @@ create index if not exists inventory_items_orderid_idx on inventory_items ("orde
 -- the item level rather than a separate shipments row so the Packing tab
 -- can group by carrier without an extra join.
 alter table inventory_items add column if not exists "shipmentCarrier" text default 'usps';
+
+-- Per-item review flag. Validate Sales sets 'double_sale' on the already-
+-- shipped item AND on the new flagged second-sale line when a SKU appears to
+-- have sold twice (order #/buyer/address/date don't match the shipped box).
+-- null = nothing to review. See migration 0026.
+alter table inventory_items add column if not exists "reviewFlag" text;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'inventory_items_reviewflag_check') then
+    alter table inventory_items add constraint inventory_items_reviewflag_check
+      check ("reviewFlag" is null or "reviewFlag" in ('double_sale'));
+  end if;
+end $$;
 do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'inventory_items_shipcarrier_check') then
