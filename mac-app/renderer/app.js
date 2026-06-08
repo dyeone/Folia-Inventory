@@ -38,6 +38,17 @@ const els = {
   btnInstallUpdate:  $('btn-install-update'),
   btnDownloadUpdate: $('btn-download-update'),
   btnDismissUpdate:  $('btn-dismiss-update'),
+  liveStatus:    $('live-status'),
+  btnWatchToggle: $('btn-watch-toggle'),
+  liveEmpty:     $('live-empty'),
+  liveBody:      $('live-body'),
+  liveCurrent:   $('live-current'),
+  liveCount:     $('live-count'),
+  liveTop:       $('live-top'),
+  liveUpdated:   $('live-updated'),
+  liveListings:  $('live-listings'),
+  liveFeed:      $('live-feed'),
+  liveRaw:       $('live-raw'),
 };
 
 // ── State rendering ──────────────────────────────────────────────────
@@ -134,6 +145,84 @@ els.btnSaveCfg.addEventListener('click', async () => {
 
 els.btnClearLog.addEventListener('click', () => { els.log.textContent = ''; });
 els.btnOpenLog.addEventListener('click',  () => window.app.openLogFile());
+
+// ── Watch live (prototype) ───────────────────────────────────────────
+// The bridge scrapes the Palmstreet live screen while watching is on and
+// streams snapshots here. We render the current snapshot and derive a rough
+// "recently closed" feed by noticing items that left the screen. Exact
+// numbers reconcile from the Palmstreet sales export, not this.
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+));
+
+let watching = false;
+let prevLabels = new Set();
+const closedFeed = [];                 // {label, price, at}
+const lastPriceByLabel = new Map();
+
+function applyWatch(on) {
+  watching = !!on;
+  els.liveStatus.className = 'pill ' + (on ? 'pill-emerald' : 'pill-gray');
+  els.liveStatus.textContent = on ? 'watching' : 'off';
+  els.btnWatchToggle.textContent = on ? 'Stop watching' : 'Start watching';
+  if (!on) {
+    els.liveBody.classList.add('hidden');
+    els.liveEmpty.classList.remove('hidden');
+    els.liveEmpty.textContent =
+      'Turn on watching during a Palmstreet live to see items and prices as they go.';
+  }
+}
+
+function renderLive(snap) {
+  if (!snap || !watching) return;
+  if (!snap.live) {
+    els.liveBody.classList.add('hidden');
+    els.liveEmpty.classList.remove('hidden');
+    els.liveEmpty.textContent = snap.error
+      ? `Watching… phone unreachable (${snap.error})`
+      : 'Watching… waiting for a live (open Palmstreet and go live).';
+    return;
+  }
+  els.liveEmpty.classList.add('hidden');
+  els.liveBody.classList.remove('hidden');
+
+  const listings = snap.listings || [];
+  els.liveCurrent.textContent = snap.current || '—';
+  els.liveCount.textContent = String(listings.length);
+  const top = listings.reduce((m, l) => Math.max(m, Number(l.price) || 0), 0);
+  els.liveTop.textContent = top > 0 ? `$${top}` : '—';
+  els.liveUpdated.textContent = new Date(snap.at || Date.now()).toLocaleTimeString();
+
+  const tb = els.liveListings.querySelector('tbody');
+  tb.innerHTML = listings.map(l =>
+    `<tr><td>${esc(l.label || '—')}</td><td class="num">${l.price != null ? '$' + esc(l.price) : '—'}</td><td class="num">${esc(l.timer || '')}</td></tr>`
+  ).join('');
+  for (const l of listings) if (l.label) lastPriceByLabel.set(l.label, l.price);
+
+  // Rough sold feed: a label present a moment ago and gone now = likely closed.
+  const cur = new Set(listings.map(l => l.label).filter(Boolean));
+  for (const lbl of prevLabels) {
+    if (!cur.has(lbl)) closedFeed.unshift({ label: lbl, price: lastPriceByLabel.get(lbl), at: Date.now() });
+  }
+  prevLabels = cur;
+  if (closedFeed.length > 30) closedFeed.length = 30;
+  els.liveFeed.innerHTML = closedFeed.length
+    ? closedFeed.map(c => `<div>${new Date(c.at).toLocaleTimeString()} · ${esc(c.label)} · ${c.price != null ? '$' + esc(c.price) : '—'}</div>`).join('')
+    : 'nothing yet';
+
+  els.liveRaw.textContent = (snap.raw || []).join('\n');
+}
+
+els.btnWatchToggle.addEventListener('click', async () => {
+  els.btnWatchToggle.disabled = true;
+  try {
+    const res = await window.live.setWatch(!watching);
+    applyWatch(res?.watching);
+  } finally {
+    els.btnWatchToggle.disabled = false;
+  }
+});
+window.live.onUpdate(renderLive);
 
 // ── Updates ──────────────────────────────────────────────────────────
 // The app is unsigned, so Squirrel can't silent-update it — but "Update &
@@ -257,6 +346,7 @@ window.app.onUpdateStatus((result) => applyUpdate(result));
 (async () => {
   applyState(await window.bridge.getState());
   applyConfig(await window.bridge.getConfig());
+  applyWatch((await window.live.getWatch())?.watching);
   baseVersionLabel = `v${await window.app.getVersion()}`;
   els.versionLabel.textContent = baseVersionLabel;
   checkForUpdates();  // silent on launch — only the banner speaks up
