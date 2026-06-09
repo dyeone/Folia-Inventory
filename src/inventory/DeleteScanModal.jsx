@@ -12,55 +12,87 @@ const SOLD_STATUSES = new Set(['sold', 'shipped', 'delivered']);
 // destructive nothing happens per-scan: items are only staged, and the
 // actual delete goes through the parent's onBulkDelete (which shows the
 // shared ConfirmDialog and soft-deletes into Recently Deleted).
+// Error / skipped rows are just a scan log — cap them so a misreading
+// scanner can't grow the DOM without bound over a long session. Staged
+// rows are the pending delete list and are never dropped.
+const MAX_INFO_ROWS = 30;
+
 export function DeleteScanModal({ items, onBulkDelete, onClose }) {
+  // sku → all items carrying it. SKUs should be unique, but data issues
+  // have produced duplicates before — and here picking one arbitrarily
+  // would delete the wrong physical item, so ambiguous scans are blocked.
   const itemsBySku = useMemo(() => {
     const m = new Map();
-    for (const i of items) if (i.sku) m.set(i.sku.toUpperCase(), i);
+    for (const i of items) {
+      if (!i.sku) continue;
+      const key = i.sku.toUpperCase();
+      if (!m.has(key)) m.set(key, []);
+      m.get(key).push(i);
+    }
     return m;
   }, [items]);
 
   const [scanInput, setScanInput] = useState('');
   const [entries, setEntries] = useState([]);
+  // While the parent's ConfirmDialog is up (or the delete is in flight),
+  // scanning is frozen: the refocus effect below would otherwise steal
+  // focus from the dialog, and a scan landing mid-confirm would stage a
+  // row that is NOT in the pending delete set — then get wiped with it.
+  const [confirmPending, setConfirmPending] = useState(false);
   const inputRef = useRef(null);
 
   // Refocus the input on every render so HID-style scanners (which
   // type characters into whatever's focused) never miss a scan.
-  useEffect(() => { inputRef.current?.focus(); });
+  useEffect(() => { if (!confirmPending) inputRef.current?.focus(); });
 
   const stagedIds = useMemo(
     () => entries.filter(e => e.state === 'staged').map(e => e.itemId),
     [entries]
   );
 
+  // Prepend a row, keeping all staged rows but only the newest
+  // MAX_INFO_ROWS error/skipped rows.
+  const addRow = (row) => {
+    setEntries(prev => {
+      let infoCount = 0;
+      return [row, ...prev].filter(e => e.state === 'staged' || ++infoCount <= MAX_INFO_ROWS);
+    });
+  };
+
   const scanOne = (rawSku) => {
     const sku = rawSku.trim().toUpperCase();
     if (!sku) return;
-    const item = itemsBySku.get(sku);
+    const matches = itemsBySku.get(sku) || [];
 
     const baseRow = { tempId: `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, sku };
 
-    if (!item) {
-      setEntries(prev => [{ ...baseRow, state: 'error', message: 'SKU not found' }, ...prev]);
+    if (matches.length === 0) {
+      addRow({ ...baseRow, state: 'error', message: 'SKU not found' });
       return;
     }
+    if (matches.length > 1) {
+      addRow({ ...baseRow, state: 'error', message: `${matches.length} items share this SKU — delete from the table instead` });
+      return;
+    }
+    const item = matches[0];
     if (stagedIds.includes(item.id)) {
-      setEntries(prev => [{ ...baseRow, name: item.name, variety: item.variety, state: 'skipped', message: 'Already scanned' }, ...prev]);
+      addRow({ ...baseRow, name: item.name, variety: item.variety, state: 'skipped', message: 'Already scanned' });
       return;
     }
 
-    setEntries(prev => [{
+    addRow({
       ...baseRow,
       itemId: item.id,
       name: item.name,
       variety: item.variety,
       status: item.status,
       state: 'staged',
-    }, ...prev]);
+    });
   };
 
   const onSubmit = (e) => {
     e.preventDefault();
-    if (!scanInput) return;
+    if (!scanInput || confirmPending) return;
     scanOne(scanInput);
     setScanInput('');
   };
@@ -70,13 +102,19 @@ export function DeleteScanModal({ items, onBulkDelete, onClose }) {
   };
 
   const handleDelete = () => {
-    if (stagedIds.length === 0) return;
-    // Parent shows the shared ConfirmDialog (it stacks above this modal);
-    // the callback only fires after the delete actually went through.
-    onBulkDelete(stagedIds, () => {
-      setEntries([]);
-      onClose();
-    });
+    if (stagedIds.length === 0 || confirmPending) return;
+    setConfirmPending(true);
+    // Parent shows the shared ConfirmDialog (it stacks above this modal).
+    // Second callback fires only on a successful delete; the third fires
+    // on Cancel or failure, un-freezing scanning with the staging intact.
+    onBulkDelete(
+      stagedIds,
+      () => {
+        setEntries([]);
+        onClose();
+      },
+      () => setConfirmPending(false)
+    );
   };
 
   return (
@@ -112,7 +150,8 @@ export function DeleteScanModal({ items, onBulkDelete, onClose }) {
                 placeholder="Scan a SKU…"
                 autoComplete="off"
                 spellCheck={false}
-                className="w-full pl-12 pr-4 py-4 text-lg font-mono tabular-nums border-2 border-red-300 bg-red-50/40 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                disabled={confirmPending}
+                className="w-full pl-12 pr-4 py-4 text-lg font-mono tabular-nums border-2 border-red-300 bg-red-50/40 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 disabled:opacity-50"
               />
             </div>
           </form>
@@ -143,7 +182,7 @@ export function DeleteScanModal({ items, onBulkDelete, onClose }) {
           </div>
           <button
             onClick={handleDelete}
-            disabled={stagedIds.length === 0}
+            disabled={stagedIds.length === 0 || confirmPending}
             className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed rounded-lg transition"
           >
             <Trash2 className="w-4 h-4" />
