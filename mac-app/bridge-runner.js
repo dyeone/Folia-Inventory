@@ -244,7 +244,9 @@ class BridgeRunner extends EventEmitter {
     try {
       if (on) fs.writeFileSync(this.watchFlagPath(), String(Date.now()));
       else fs.rmSync(this.watchFlagPath(), { force: true });
-      this._line(`→ Watch live ${on ? 'ON' : 'off'}`);
+      this._line(on
+        ? `→ Watch live ON (snapshots recorded to ${path.join(this.bridgeDir, 'live-captures')} for calibration)`
+        : '→ Watch live off');
     } catch (e) {
       this._line(`✗ watch-live toggle failed: ${e.message}`, true);
     }
