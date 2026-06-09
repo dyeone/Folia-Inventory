@@ -216,6 +216,28 @@ export default wrap(async (req, res) => {
       // limits and come back as a generic 400. 200 per batch is well under
       // every reasonable proxy cap.
       const CHUNK = 200;
+      // Deleting inventory is admin-only — the UI gates were client-side
+      // only, leaving the endpoint open to any active user. One exception:
+      // any active user may purge UNMATCHED-* placeholder rows, because
+      // Validate Sales / box-delete cleanup creates and removes those as
+      // part of normal staff workflows.
+      if (user.role !== 'admin') {
+        if (!purge) {
+          const e = new Error('Only admins can delete items'); e.status = 403; throw e;
+        }
+        const skus = [];
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const { data, error } = await supabase
+            .from('inventory_items')
+            .select('sku')
+            .in('id', ids.slice(i, i + CHUNK));
+          if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+          skus.push(...(data || []));
+        }
+        if (skus.some(r => !(r.sku || '').startsWith('UNMATCHED-'))) {
+          const e = new Error('Only admins can delete items'); e.status = 403; throw e;
+        }
+      }
       if (purge) {
         // Hard delete — bypass the 30-day grace. Used by the Recently
         // Deleted tab's "Delete forever" action.

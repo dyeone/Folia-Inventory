@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react';
-import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Plus, Sprout } from 'lucide-react';
+import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 import { buildLookups, speciesForItem, computeIdealPrice, rateSourceLabel, displayPrice } from './pricing.js';
 import { CultivarRateInput } from './CultivarRateInput.jsx';
 import { AcclimationModal } from './AcclimationModal.jsx';
+import { DeleteScanModal } from './DeleteScanModal.jsx';
 
 // e.g. "May 8, 3:45 PM" (same year) or "May 8, 2024" (prior year).
 function fmtAddedAt(iso) {
@@ -92,6 +93,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   // Selection is local to this view; cleared whenever filters change or after an action.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [showAcclimation, setShowAcclimation] = useState(false);
+  const [showDeleteScan, setShowDeleteScan] = useState(false);
 
   // Drop selections that are no longer visible (e.g. filtered out) to avoid
   // acting on rows the user can't see.
@@ -180,6 +182,15 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           >
             <Sprout className="w-4 h-4" /> Acclimation Mode
           </button>
+          {isAdmin && onBulkDelete && (
+            <button
+              onClick={() => setShowDeleteScan(true)}
+              title="Scan SKUs in bulk to delete items"
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-700 border border-red-300 bg-red-50 rounded-lg hover:bg-red-100"
+            >
+              <ScanLine className="w-4 h-4" /> Scan to Delete
+            </button>
+          )}
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">
             <Download className="w-4 h-4" /> Export CSV
           </button>
@@ -761,6 +772,14 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           acclimatedRate={acclimatedRate}
           onStatusChange={onStatusChange}
           onClose={() => setShowAcclimation(false)}
+        />
+      )}
+
+      {showDeleteScan && (
+        <DeleteScanModal
+          items={allItems}
+          onBulkDelete={onBulkDelete}
+          onClose={() => setShowDeleteScan(false)}
         />
       )}
     </div>

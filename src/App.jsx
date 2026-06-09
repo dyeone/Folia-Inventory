@@ -325,6 +325,10 @@ function StaffOrAdminInventory() {
     return newArr.filter(x => oldMap.get(x.id) !== JSON.stringify(x));
   };
 
+  // Returns true on success, false on failure — callers that report
+  // success (toasts, clearing staged lists) must check it. On failure the
+  // optimistic update is rolled back so the UI doesn't silently diverge
+  // from the server.
   const saveItems = async (newItems) => {
     const oldItems = items;
     setItems(newItems);
@@ -342,8 +346,11 @@ function StaffOrAdminInventory() {
         const fresh = await api.getItems();
         applyItemsFresh(fresh);
       }
+      return true;
     } catch (e) {
+      setItems(oldItems);
       showToast(e.message || 'Save failed', 'error');
+      return false;
     }
   };
 
@@ -413,12 +420,12 @@ function StaffOrAdminInventory() {
     const item = items.find(i => i.id === id);
     setConfirmDialog({
       title: 'Delete item?',
-      message: `Permanently delete ${item?.sku || 'this item'}? This can't be undone.`,
+      message: `Move ${item?.sku || 'this item'} to Recently Deleted? It can be restored for 30 days.`,
       confirmLabel: 'Delete',
       danger: true,
-      onConfirm: () => {
-        saveItems(items.filter(i => i.id !== id));
-        showToast('Deleted');
+      onConfirm: async () => {
+        const ok = await saveItems(items.filter(i => i.id !== id));
+        if (ok) showToast('Deleted');
       },
     });
   };
@@ -818,21 +825,30 @@ function StaffOrAdminInventory() {
             onConvert={(item) => { setConvertingItem(item); setShowConvertModal(true); }}
             onPrintLabel={(item) => setLabelItems([item])}
             onBulkPrintLabel={(selected) => setLabelItems(selected)}
-            onBulkDelete={(ids, clear) => {
+            onBulkDelete={(ids, clear, onAbort) => {
               if (!isAdmin) {
                 showToast('Only admins can delete items', 'error');
+                onAbort?.();
                 return;
               }
               setConfirmDialog({
                 title: `Delete ${ids.length} ${ids.length === 1 ? 'item' : 'items'}?`,
-                message: `Permanently delete ${ids.length} ${ids.length === 1 ? 'item' : 'items'}? This can't be undone.`,
+                message: `Move ${ids.length} ${ids.length === 1 ? 'item' : 'items'} to Recently Deleted? They can be restored for 30 days.`,
                 confirmLabel: 'Delete',
                 danger: true,
+                // Scan-to-Delete freezes scanning while the dialog is up;
+                // onAbort un-freezes it on Cancel or on a failed delete so
+                // the staged list (the operator's record) survives.
+                onCancel: () => onAbort?.(),
                 onConfirm: async () => {
                   const idSet = new Set(ids);
-                  await saveItems(items.filter(i => !idSet.has(i.id)));
-                  showToast(`Deleted ${ids.length} ${ids.length === 1 ? 'item' : 'items'}`);
-                  clear?.();
+                  const ok = await saveItems(items.filter(i => !idSet.has(i.id)));
+                  if (ok) {
+                    showToast(`Deleted ${ids.length} ${ids.length === 1 ? 'item' : 'items'}`);
+                    clear?.();
+                  } else {
+                    onAbort?.();
+                  }
                 },
               });
             }}
@@ -1380,7 +1396,7 @@ function StaffOrAdminInventory() {
         <ConfirmDialog
           {...confirmDialog}
           onConfirm={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
-          onCancel={() => setConfirmDialog(null)}
+          onCancel={() => { confirmDialog.onCancel?.(); setConfirmDialog(null); }}
         />
       )}
 
