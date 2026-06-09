@@ -21,7 +21,10 @@
 
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFileSync, existsSync } from 'node:fs';
+import {
+  readFileSync, existsSync, mkdirSync, appendFileSync, writeFileSync,
+  readdirSync, unlinkSync,
+} from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -1053,10 +1056,17 @@ const completeJob = (id, result, error) =>
 // against a real broadcast — `raw` ships the verbatim price nodes for that.
 const PRICE_RE = /\$\s?([\d,]+(?:\.\d{1,2})?)/;
 const TIMER_RE = /^\d{1,2}:\d{2}(?::\d{2})?$/;
+const BIDS_RE  = /\(\s*\+\s*(\d+)\s*\)/;          // "$22 (+5)" → 5 bids
+// Sold / winner phrasings across live-commerce UIs. Best guesses until
+// calibrated against a real broadcast — every hit also lands verbatim in
+// `raw` and the capture files so the patterns can be tuned offline.
+const SOLD_RE  = /\b(sold(?:\s+to)?|won\s+by|winner|congrats|congratulations|purchased(?:\s+by)?)\b/i;
+const USER_RE  = /@([A-Za-z0-9_.]{2,30})/;
 
-function parseLiveSnapshot(xml) {
+export function parseLiveSnapshot(xml) {
   const tags = xml.match(/<node\s[^>]*>/g) || [];
   const listings = [];
+  const sold = [];
   const raw = [];
   let current = null;
   for (const tag of tags) {
@@ -1068,18 +1078,68 @@ function parseLiveSnapshot(xml) {
       const hi = parts.findIndex(p => p === 'Host');
       if (hi >= 0 && parts[hi + 1]) current = parts[hi + 1];
     }
-    if (cd.includes('$')) {
-      const m = PRICE_RE.exec(cd);
-      if (!m) continue;
-      const price = parseFloat(m[1].replace(/,/g, ''));
-      const lines = cd.split('\n').map(s => s.trim()).filter(Boolean);
+    const lines = cd.split('\n').map(s => s.trim()).filter(Boolean);
+    const priceMatch = PRICE_RE.exec(cd);
+    const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null;
+
+    if (SOLD_RE.test(cd)) {
+      // A sold/winner toast. Buyer from an @handle if present, else the line
+      // right after the sold phrase; label = first line that's none of those.
+      const soldLineIdx = lines.findIndex(l => SOLD_RE.test(l));
+      const buyer = USER_RE.exec(cd)?.[1]
+        || (soldLineIdx >= 0 && lines[soldLineIdx + 1] && !PRICE_RE.test(lines[soldLineIdx + 1])
+            ? lines[soldLineIdx + 1] : null);
+      const label = lines.find((l, i) =>
+        i !== soldLineIdx && l !== buyer && !PRICE_RE.test(l) && !TIMER_RE.test(l)) || null;
+      sold.push({ label, buyer, price, raw: cd.replace(/\n/g, ' · ') });
+      raw.push(cd.replace(/\n/g, ' · '));
+      continue;
+    }
+
+    if (price != null) {
       const label = lines.find(l => !PRICE_RE.test(l) && !TIMER_RE.test(l)) || lines[0];
       const timer = lines.find(l => TIMER_RE.test(l)) || null;
-      listings.push({ label, price, timer });
+      const bids = BIDS_RE.exec(cd) ? parseInt(BIDS_RE.exec(cd)[1], 10) : null;
+      listings.push({ label, price, timer, bids });
       raw.push(cd.replace(/\n/g, ' · '));
     }
   }
-  return { live: !!(current || listings.length), at: Date.now(), current, listings, raw };
+  return { live: !!(current || listings.length), at: Date.now(), current, listings, sold, raw };
+}
+
+// ── Capture recorder ──
+// While watching, persist what we saw so the parser can be calibrated
+// offline after the live: every parsed snapshot as one JSONL line (tiny),
+// plus the full UI dump but only when the on-screen set changes or every
+// 30s (a 40-minute live stays in the tens of MB). Pruned to the newest
+// CAPTURE_MAX_XML dumps. Best-effort everywhere — capture must never
+// break monitoring.
+const CAPTURE_DIR = resolve(here, 'live-captures');
+const CAPTURE_MAX_XML = 200;
+let captureSessionFile = null;
+let lastXmlCaptureAt = 0;
+let lastXmlKey = null;
+
+function captureSnapshot(snap, xml) {
+  try {
+    mkdirSync(CAPTURE_DIR, { recursive: true });
+    if (!captureSessionFile) {
+      captureSessionFile = resolve(
+        CAPTURE_DIR, `session-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`);
+    }
+    appendFileSync(captureSessionFile, JSON.stringify(snap) + '\n');
+    const key = [snap.current, ...snap.listings.map(l => l.label), ...snap.sold.map(s => s.raw)].join('|');
+    const t = Date.now();
+    if (key !== lastXmlKey || t - lastXmlCaptureAt >= 30_000) {
+      lastXmlKey = key;
+      lastXmlCaptureAt = t;
+      writeFileSync(resolve(CAPTURE_DIR, `ui-${t}.xml`), xml);
+      const xmls = readdirSync(CAPTURE_DIR).filter(f => f.startsWith('ui-') && f.endsWith('.xml')).sort();
+      for (const f of xmls.slice(0, Math.max(0, xmls.length - CAPTURE_MAX_XML))) {
+        unlinkSync(resolve(CAPTURE_DIR, f));
+      }
+    }
+  } catch { /* best-effort */ }
 }
 
 let lastMonitorAt = 0;
@@ -1093,7 +1153,10 @@ async function maybeMonitor() {
   if (!existsSync(WATCH_FLAG)) return;  // watch is off → no scraping at all
   lastMonitorAt = t;
   try {
-    console.log(`[[LIVE]] ${JSON.stringify(parseLiveSnapshot(await dumpUI()))}`);
+    const xml = await dumpUI();
+    const snap = parseLiveSnapshot(xml);
+    captureSnapshot(snap, xml);
+    console.log(`[[LIVE]] ${JSON.stringify(snap)}`);
   } catch (e) {
     // A device hiccup shouldn't make monitoring hammer adb recovery — back off.
     monitorBackoffUntil = Date.now() + 10_000;
