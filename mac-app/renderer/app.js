@@ -157,8 +157,11 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => (
 
 let watching = false;
 let prevLabels = new Set();
-const closedFeed = [];                 // {label, price, at}
+const closedFeed = [];                 // {label, price, buyer?, confirmed?, at}
 const lastPriceByLabel = new Map();
+// Sold toasts persist on screen across several 1.5s snapshots — dedupe by
+// the verbatim node text so each toast lands in the feed once.
+const seenSold = new Set();
 
 function applyWatch(on) {
   watching = !!on;
@@ -195,9 +198,26 @@ function renderLive(snap) {
 
   const tb = els.liveListings.querySelector('tbody');
   tb.innerHTML = listings.map(l =>
-    `<tr><td>${esc(l.label || '—')}</td><td class="num">${l.price != null ? '$' + esc(l.price) : '—'}</td><td class="num">${esc(l.timer || '')}</td></tr>`
+    `<tr><td>${esc(l.label || '—')}</td><td class="num">${l.price != null ? '$' + esc(l.price) : '—'}</td><td class="num">${l.bids != null ? '+' + esc(l.bids) : ''}</td><td class="num">${esc(l.timer || '')}</td></tr>`
   ).join('');
   for (const l of listings) if (l.label) lastPriceByLabel.set(l.label, l.price);
+
+  // Confirmed sales first: the bridge parsed an actual sold/winner toast,
+  // possibly with the buyer's handle.
+  for (const s of (snap.sold || [])) {
+    if (!s.raw || seenSold.has(s.raw)) continue;
+    seenSold.add(s.raw);
+    closedFeed.unshift({
+      label: s.label || s.raw, buyer: s.buyer, price: s.price,
+      confirmed: true, at: Date.now(),
+    });
+    // The toast names the item — don't double-report it when its listing
+    // card leaves the screen a beat later.
+    if (s.label) prevLabels.delete(s.label);
+  }
+  if (seenSold.size > 400) {
+    for (const k of seenSold) { seenSold.delete(k); if (seenSold.size <= 200) break; }
+  }
 
   // Rough sold feed: a label present a moment ago and gone now = likely closed.
   const cur = new Set(listings.map(l => l.label).filter(Boolean));
@@ -207,7 +227,9 @@ function renderLive(snap) {
   prevLabels = cur;
   if (closedFeed.length > 30) closedFeed.length = 30;
   els.liveFeed.innerHTML = closedFeed.length
-    ? closedFeed.map(c => `<div>${new Date(c.at).toLocaleTimeString()} · ${esc(c.label)} · ${c.price != null ? '$' + esc(c.price) : '—'}</div>`).join('')
+    ? closedFeed.map(c =>
+        `<div>${new Date(c.at).toLocaleTimeString()} · ${c.confirmed ? '✓ ' : ''}${esc(c.label)}${c.buyer ? ' → @' + esc(c.buyer) : ''} · ${c.price != null ? '$' + esc(c.price) : '—'}</div>`
+      ).join('')
     : 'nothing yet';
 
   els.liveRaw.textContent = (snap.raw || []).join('\n');
