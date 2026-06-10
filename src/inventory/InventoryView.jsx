@@ -92,6 +92,8 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
 
   // Selection is local to this view; cleared whenever filters change or after an action.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  // Range anchor for shift+click: the last item checkbox plainly clicked.
+  const [anchorId, setAnchorId] = useState(null);
   const [showAcclimation, setShowAcclimation] = useState(false);
   const [showDeleteScan, setShowDeleteScan] = useState(false);
 
@@ -100,13 +102,48 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   const visibleIds = useMemo(() => new Set(items.map(i => i.id)), [items]);
   const visibleSelected = [...selectedIds].filter(id => visibleIds.has(id));
 
-  const toggleSelect = (id) => {
+  // Item ids in on-screen order (expanded groups only) — the domain for
+  // shift+click range selection. Collapsed groups are skipped so a range
+  // never silently selects rows the user can't see.
+  const visibleFlatIds = useMemo(
+    () => groups.flatMap(g => expandedGroups.has(g.name) ? g.items.map(i => i.id) : []),
+    [groups, expandedGroups]
+  );
+
+  // Plain click toggles one item and drops the range anchor there.
+  // Shift+click applies the clicked checkbox's new state (checked or
+  // unchecked) to every visible item between the anchor and the click,
+  // then the anchor follows the click (Gmail semantics): chained
+  // shift+clicks still extend naturally, and shift+clicking back after
+  // an overshoot deselects the overshot tail instead of the head.
+  const toggleSelect = (id, shiftKey = false) => {
+    if (shiftKey && anchorId != null && anchorId !== id) {
+      const a = visibleFlatIds.indexOf(anchorId);
+      const b = visibleFlatIds.indexOf(id);
+      if (a !== -1 && b !== -1) {
+        const range = visibleFlatIds.slice(Math.min(a, b), Math.max(a, b) + 1);
+        const select = !selectedIds.has(id);
+        setSelectedIds(prev => {
+          const next = new Set(prev);
+          for (const rid of range) {
+            if (select) next.add(rid);
+            else next.delete(rid);
+          }
+          return next;
+        });
+        setAnchorId(id);
+        return;
+      }
+      // Anchor no longer on screen (collapsed / filtered out) — fall
+      // through to a plain toggle, which re-anchors at the clicked item.
+    }
     setSelectedIds(prev => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
+    setAnchorId(id);
   };
 
   const toggleSelectAll = () => {
@@ -114,7 +151,10 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
     setSelectedIds(allVisibleSelected ? new Set() : new Set(items.map(i => i.id)));
   };
 
-  const clearSelection = () => setSelectedIds(new Set());
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setAnchorId(null);
+  };
 
   const handleBulkPrint = () => {
     const selected = items.filter(i => selectedIds.has(i.id));
@@ -412,7 +452,12 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     <input
                       type="checkbox"
                       checked={checked}
-                      onChange={() => toggleSelect(item.id)}
+                      // onClick (not onChange) so shiftKey is readable —
+                      // change events aren't MouseEvents and don't carry it.
+                      onClick={(e) => toggleSelect(item.id, e.shiftKey)}
+                      onChange={() => {}}
+                      onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+                      title="Shift+click to select a range"
                       className="mt-1 w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 flex-shrink-0 cursor-pointer"
                     />
                     <div className="min-w-0 flex-1">
@@ -625,7 +670,12 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                           <input
                             type="checkbox"
                             checked={checked}
-                            onChange={() => toggleSelect(item.id)}
+                            // onClick (not onChange) so shiftKey is readable —
+                            // change events aren't MouseEvents and don't carry it.
+                            onClick={(e) => toggleSelect(item.id, e.shiftKey)}
+                            onChange={() => {}}
+                            onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+                            title="Shift+click to select a range"
                             className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                           />
                         </td>
