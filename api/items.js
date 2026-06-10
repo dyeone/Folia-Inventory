@@ -203,7 +203,15 @@ export default wrap(async (req, res) => {
           }
         }
       }
-      return res.status(200).json({ ok: true, inserted: inserts.length, updated: updates.length });
+      // Return the server-assigned ids of the rows we inserted so the client
+      // can identify exactly this batch (e.g. CSV-import undo / label print)
+      // without a fragile id-diff that a concurrent insert/restore could taint.
+      return res.status(200).json({
+        ok: true,
+        inserted: inserts.length,
+        updated: updates.length,
+        insertedIds: inserts.map(i => i.id),
+      });
     }
 
     case 'DELETE': {

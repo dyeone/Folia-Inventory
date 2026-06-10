@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense }
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
-  MoreHorizontal, X as XIcon,
+  MoreHorizontal, X as XIcon, RotateCcw,
 } from 'lucide-react';
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -193,6 +193,9 @@ function StaffOrAdminInventory() {
   const [boxLabelBoxes, setBoxLabelBoxes] = useState(null);
   // { items: [...], title: 'Added N items' } — summary dialog after creation
   const [addSummary, setAddSummary] = useState(null);
+  // After a CSV import: the exact rows just created, for the Print-labels /
+  // Undo-import summary modal.
+  const [importSummary, setImportSummary] = useState(null);
 
   const showToast = useCallback((msg, type = 'success') => {
     setToast({ msg, type });
@@ -1253,11 +1256,32 @@ function StaffOrAdminInventory() {
                 ...rest,
                 status: rest.status || 'available',
               }));
-              await api.upsertItems(clean);
+              // The server returns the ids it assigned to this batch, so we can
+              // identify exactly these rows — immune to a concurrent insert or
+              // restore on another device that an id-diff would sweep in.
+              const result = await api.upsertItems(clean);
+              const idSet = new Set(result?.insertedIds || []);
               const fresh = await api.getItems();
               applyItemsFresh(fresh);
-              showToast(`Imported ${clean.length} items`);
               setShowBulkModal(false);
+              // Sort by the numeric SKU suffix so the displayed range is the
+              // true low–high (the whole batch shares one createdAt, and the
+              // API returns rows in arbitrary order).
+              const skuSuffix = (sku) => {
+                const m = String(sku || '').match(/(\d+)\s*$/);
+                return m ? parseInt(m[1], 10) : 0;
+              };
+              const imported = fresh
+                .filter(f => idSet.has(f.id))
+                .sort((a, b) => skuSuffix(a.sku) - skuSuffix(b.sku));
+              if (imported.length) {
+                const skuRange = imported.length === 1
+                  ? imported[0].sku
+                  : `${imported[0].sku} – ${imported[imported.length - 1].sku}`;
+                setImportSummary({ items: imported, skuRange });
+              } else {
+                showToast(`Imported ${clean.length} items`);
+              }
             } catch (e) {
               showToast(e.message || 'Import failed', 'error');
             }
@@ -1389,6 +1413,71 @@ function StaffOrAdminInventory() {
           toast.type === 'error' ? 'bg-red-600' : 'bg-gray-900'
         }`}>
           {toast.msg}
+        </div>
+      )}
+
+      {/* Import summary — rendered BEFORE confirmDialog so the Undo
+          confirmation stacks above it. */}
+      {importSummary && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => setImportSummary(null)}>
+          <div className="bg-white rounded-xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="p-5">
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                  <Check className="w-5 h-5 text-emerald-600" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-semibold text-gray-900">
+                    Imported {importSummary.items.length} {importSummary.items.length === 1 ? 'item' : 'items'}
+                  </h3>
+                  <p className="text-sm text-gray-600 mt-1 font-mono truncate">{importSummary.skuRange}</p>
+                  <p className="text-xs text-gray-500 mt-1">Print labels for the new SKUs, or undo the whole import.</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-gray-50 px-5 py-3 flex flex-wrap items-center justify-end gap-2">
+              {isAdmin && (
+                <button
+                  onClick={() => {
+                    const imported = importSummary.items;
+                    const n = imported.length;
+                    setConfirmDialog({
+                      title: `Undo import of ${n} ${n === 1 ? 'item' : 'items'}?`,
+                      message: `Move all ${n} just-imported ${n === 1 ? 'item' : 'items'} to Recently Deleted? They can be restored for 30 days. Any new varieties or species the import created are kept.`,
+                      confirmLabel: 'Undo import',
+                      danger: true,
+                      onConfirm: async () => {
+                        try {
+                          await api.deleteItems(imported.map(i => i.id));
+                          const fresh = await api.getItems();
+                          applyItemsFresh(fresh);
+                          showToast(`Import undone — ${n} ${n === 1 ? 'item' : 'items'} removed`);
+                          setImportSummary(null);
+                        } catch (e) {
+                          showToast(e.message || 'Could not undo import', 'error');
+                        }
+                      },
+                    });
+                  }}
+                  className="flex items-center gap-1.5 px-4 py-2 text-sm text-red-700 bg-white border border-red-300 hover:bg-red-50 rounded-lg mr-auto"
+                >
+                  <RotateCcw className="w-4 h-4" /> Undo import
+                </button>
+              )}
+              <button
+                onClick={() => { setLabelItems(importSummary.items); setImportSummary(null); }}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm text-gray-700 bg-white border border-gray-300 hover:bg-gray-100 rounded-lg"
+              >
+                <Printer className="w-4 h-4" /> Print labels
+              </button>
+              <button
+                onClick={() => setImportSummary(null)}
+                className="px-4 py-2 text-sm text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
+              >
+                Done
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
