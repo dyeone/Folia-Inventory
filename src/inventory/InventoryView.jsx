@@ -75,11 +75,39 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   const expandAll = () => setExpandedGroups(new Set(groups.map(g => g.name)));
   const collapseAll = () => setExpandedGroups(new Set());
 
-  // Toggle selection of every item in a group. If all are already selected,
-  // clears them; otherwise adds them all to the selection.
-  const toggleGroupSelection = (groupItems) => {
+  // Plain click toggles every item in a group and drops the group range
+  // anchor on that header. Shift+click extends from the anchor group: every
+  // item in every group between the anchor and the clicked header takes the
+  // clicked group's new state — collapsed groups included, since selecting a
+  // range of cultivars should grab all their items whether expanded or not.
+  // The anchor follows the click (Gmail semantics), mirroring item shift+click.
+  const toggleGroupSelection = (groupItems, groupName, shiftKey = false) => {
     const ids = groupItems.map(i => i.id);
     const allSelected = ids.length > 0 && ids.every(id => selectedIds.has(id));
+
+    if (shiftKey && groupAnchor != null && groupAnchor !== groupName) {
+      const a = groups.findIndex(g => g.name === groupAnchor);
+      const b = groups.findIndex(g => g.name === groupName);
+      if (a !== -1 && b !== -1) {
+        const rangeIds = groups
+          .slice(Math.min(a, b), Math.max(a, b) + 1)
+          .flatMap(g => g.items.map(i => i.id));
+        const select = !allSelected;
+        setSelectedIds(prev => {
+          const next = new Set(prev);
+          for (const id of rangeIds) {
+            if (select) next.add(id);
+            else next.delete(id);
+          }
+          return next;
+        });
+        setGroupAnchor(groupName);
+        return;
+      }
+      // Anchor group no longer rendered (filtered out) — fall through to a
+      // plain toggle, which re-anchors on the clicked header.
+    }
+
     setSelectedIds(prev => {
       const next = new Set(prev);
       for (const id of ids) {
@@ -88,12 +116,19 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
       }
       return next;
     });
+    setGroupAnchor(groupName);
   };
 
-  // Selection is local to this view; cleared whenever filters change or after an action.
+  // Selection is local to this view and persists across filter / variety-tab
+  // changes (only the visible count and bulk-action targets are filtered to
+  // currently-visible items, via visibleSelected). It's reset by
+  // clearSelection — bulk print/delete and the selection bar's X button.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
-  // Range anchor for shift+click: the last item checkbox plainly clicked.
+  // Range anchors for shift+click: the last item checkbox / group header
+  // plainly clicked. Kept separate so item-level and group-level ranges
+  // don't interfere; both reset on clearSelection.
   const [anchorId, setAnchorId] = useState(null);
+  const [groupAnchor, setGroupAnchor] = useState(null);
   const [showAcclimation, setShowAcclimation] = useState(false);
   const [showDeleteScan, setShowDeleteScan] = useState(false);
 
@@ -154,6 +189,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   const clearSelection = () => {
     setSelectedIds(new Set());
     setAnchorId(null);
+    setGroupAnchor(null);
   };
 
   const handleBulkPrint = () => {
@@ -405,8 +441,13 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                         type="checkbox"
                         checked={allInGroupSelected}
                         ref={(el) => { if (el) el.indeterminate = !allInGroupSelected && someInGroupSelected; }}
-                        onChange={() => toggleGroupSelection(group.items)}
-                        onClick={(e) => e.stopPropagation()}
+                        // onClick (not onChange) so shiftKey is readable, and
+                        // stopPropagation so the checkbox doesn't toggle the
+                        // header's expand/collapse.
+                        onClick={(e) => { e.stopPropagation(); toggleGroupSelection(group.items, group.name, e.shiftKey); }}
+                        onChange={() => {}}
+                        onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+                        title="Shift+click to select a range of groups"
                         className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer flex-shrink-0"
                       />
                       <span className={`text-xs text-gray-500 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>▶</span>
@@ -622,7 +663,11 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             type="checkbox"
                             checked={allInGroupSelected}
                             ref={(el) => { if (el) el.indeterminate = !allInGroupSelected && someInGroupSelected; }}
-                            onChange={() => toggleGroupSelection(group.items)}
+                            // onClick (not onChange) so shiftKey is readable.
+                            onClick={(e) => toggleGroupSelection(group.items, group.name, e.shiftKey)}
+                            onChange={() => {}}
+                            onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+                            title="Shift+click to select a range of groups"
                             className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 cursor-pointer"
                           />
                         </td>
