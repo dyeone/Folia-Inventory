@@ -1403,6 +1403,15 @@ function StaffOrAdminInventory() {
           initialTab={catalogInitialTab}
           onVarietiesChange={setVarieties}
           onSpeciesChange={setSpecies}
+          onMergeSpecies={async (fromId, intoId) => {
+            // Combine two species, then refresh both species and items (the
+            // merge re-points item.speciesId + name server-side).
+            const result = await api.mergeSpecies({ fromId, intoId });
+            const [freshSpecies, freshItems] = await Promise.all([api.getSpecies(), api.getItems()]);
+            setSpecies([...freshSpecies].sort((a, b) => a.epithet.localeCompare(b.epithet)));
+            applyItemsFresh(freshItems);
+            return result;
+          }}
           onClose={() => setShowCatalogModal(false)}
           showToast={showToast}
           setConfirmDialog={setConfirmDialog}
