@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import {
   Upload, FileText, AlertTriangle, RefreshCw, Download, Loader2, Check,
   TrendingUp, DollarSign, Boxes, Truck, Percent, ShoppingCart, Search, X,
-  CalendarClock, Link2, Coins,
+  CalendarClock, Link2, Coins, FileImage, FileDown,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Modal } from '../ui/Modal.jsx';
@@ -11,7 +11,7 @@ import { fmt$, fmt$2, fmtPct } from '../financial/financialHelpers.js';
 import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
 import {
   evaluateSale, applyManualMatch, loadEval, saveEval,
-  LABOR_PER_BOX, SELLER_COMMISSION_RATE,
+  LABOR_PER_BOX, SHIPPING_COST_PER_BOX, SELLER_COMMISSION_RATE,
 } from './saleEval.js';
 
 // The live's calendar day (YYYY-MM-DD, local). Prefer the plain `date` field;
@@ -111,6 +111,7 @@ export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGen
           items={items}
           onMatch={onMatch}
           onReevaluate={() => { setView('upload'); setErr(''); }}
+          showToast={showToast}
         />
       )}
     </Modal>
@@ -191,31 +192,46 @@ function UploadView({ loading, fileName, err, hasExisting, onFile, onViewExistin
   );
 }
 
-function ReportView({ result, items, onMatch, onReevaluate }) {
+function ReportView({ result, items, onMatch, onReevaluate, showToast }) {
   const t = result.totals;
   const generated = result.generatedAt ? new Date(result.generatedAt) : null;
   const profitTone = t.grossProfit >= 0 ? 'blue' : 'red';
   const costedLots = t.matchedCount - t.costlessMatched; // lots that actually contributed cost
+  const reportRef = useRef(null);
+  const [exporting, setExporting] = useState('');
+
+  const onExport = async (format) => {
+    if (!reportRef.current || exporting) return;
+    setExporting(format);
+    try {
+      if (format === 'png') await exportReportPng(reportRef.current, result.saleName);
+      else await exportReportPdf(reportRef.current, result.saleName);
+    } catch (e) {
+      showToast?.(`Could not export ${format.toUpperCase()}: ${e.message || 'failed'}`, 'error');
+    }
+    setExporting('');
+  };
+  const btn = 'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg disabled:opacity-50';
 
   return (
-    <div className="space-y-5">
+    <div ref={reportRef} className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs text-gray-500">
           {generated && <>Generated {generated.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</>}
           {result.saleDay && <> · live day {result.saleDay}</>}
           {result.fileName && <> · {result.fileName}</>}
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => exportLinesCsv(result)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg"
-          >
-            <Download className="w-3.5 h-3.5" /> Export CSV
+        <div className="flex flex-wrap gap-2" data-export-hide>
+          <button onClick={() => onExport('png')} disabled={!!exporting} className={`${btn} text-gray-700 bg-white border border-gray-300 hover:bg-gray-50`}>
+            {exporting === 'png' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileImage className="w-3.5 h-3.5" />} PNG
           </button>
-          <button
-            onClick={onReevaluate}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-700 bg-white border border-emerald-300 hover:bg-emerald-50 rounded-lg"
-          >
+          <button onClick={() => onExport('pdf')} disabled={!!exporting} className={`${btn} text-gray-700 bg-white border border-gray-300 hover:bg-gray-50`}>
+            {exporting === 'pdf' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />} PDF
+          </button>
+          <button onClick={() => exportLinesCsv(result)} className={`${btn} text-gray-700 bg-white border border-gray-300 hover:bg-gray-50`}>
+            <Download className="w-3.5 h-3.5" /> CSV
+          </button>
+          <button onClick={onReevaluate} className={`${btn} text-emerald-700 bg-white border border-emerald-300 hover:bg-emerald-50`}>
             <RefreshCw className="w-3.5 h-3.5" /> Re-evaluate
           </button>
         </div>
@@ -260,6 +276,7 @@ function NetProfit({ totals }) {
     { label: 'COGS', value: t.cogs, neg: true },
     { label: `Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of gross sales)`, value: t.sellerCommission, neg: true },
     { label: `Labor ($${LABOR_PER_BOX} × ${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'})`, value: t.labor, neg: true },
+    { label: `Shipping cost ($${SHIPPING_COST_PER_BOX} × ${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'})`, value: t.shippingCost, neg: true },
   ];
   const netTone = t.netProfit >= 0 ? 'text-blue-700' : 'text-red-700';
 
@@ -534,7 +551,7 @@ function ItemizedTable({ lines }) {
     <div>
       <h4 className="text-sm font-medium text-gray-900 mb-2">All sales ({lines.length})</h4>
       <div className="border border-gray-200 rounded-lg overflow-hidden">
-        <div className="max-h-72 overflow-y-auto">
+        <div className="max-h-72 overflow-y-auto" data-export-expand>
           <table className="w-full text-xs">
             <thead className="bg-gray-50 sticky top-0">
               <tr className="text-gray-500 text-left">
@@ -609,17 +626,84 @@ function exportLinesCsv(result) {
   rows.push(['TOTALS', '', '', '', '', '', '', t.lots, t.grossSales.toFixed(2), t.shippingCollected.toFixed(2), t.cogs.toFixed(2), t.grossProfit.toFixed(2), `${t.matchedCount}/${t.lots}`, '', '']);
   rows.push(sumRow(`Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}%)`, t.sellerCommission));
   rows.push(sumRow(`Labor ($${LABOR_PER_BOX} x ${t.boxes} boxes)`, t.labor));
+  rows.push(sumRow(`Shipping cost ($${SHIPPING_COST_PER_BOX} x ${t.boxes} boxes)`, t.shippingCost));
   rows.push(sumRow('Net profit', t.netProfit));
   rows.push(['Net margin', '', '', '', '', '', '', '', '', '', '', t.netMargin == null ? '' : `${t.netMargin.toFixed(1)}%`]);
   const csv = [headers, ...rows].map(r => r.map(csvCell).join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8;' }), `${slugName(result.saleName)}-sales-eval.csv`);
+}
+
+// ── Image / PDF export ───────────────────────────────────────────────────────
+const slugName = (s) => (s || 'sale').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+
+function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const safeName = (result.saleName || 'sale').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
   a.href = url;
-  a.download = `${safeName}-sales-eval.csv`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+// Rasterize the report node. onclone expands inner-scroll regions and hides the
+// export buttons so the snapshot is the full report, not a clipped viewport.
+// html2canvas + jsPDF are dynamically imported so they stay out of the main bundle.
+async function captureReport(node) {
+  const { default: html2canvas } = await import('html2canvas');
+  return html2canvas(node, {
+    backgroundColor: '#ffffff',
+    scale: 2,
+    useCORS: true,
+    onclone: (doc) => {
+      doc.querySelectorAll('[data-export-expand]').forEach((el) => {
+        el.style.maxHeight = 'none';
+        el.style.overflow = 'visible';
+      });
+      doc.querySelectorAll('[data-export-hide]').forEach((el) => { el.style.display = 'none'; });
+    },
+  });
+}
+
+async function exportReportPng(node, saleName) {
+  const canvas = await captureReport(node);
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  if (!blob) throw new Error('canvas is empty');
+  downloadBlob(blob, `${slugName(saleName)}-report.png`);
+}
+
+async function exportReportPdf(node, saleName) {
+  const canvas = await captureReport(node);
+  const { jsPDF } = await import('jspdf');
+  const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+  const margin = 24;
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const imgW = pageW - margin * 2;
+  const fullImgH = (canvas.height * imgW) / canvas.width;
+  const contentH = pageH - margin * 2;
+
+  if (fullImgH <= contentH) {
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, imgW, fullImgH);
+  } else {
+    // Tall report: slice the canvas into page-height chunks across pages.
+    // max(1,…) guarantees the loop always advances (never a zero-height slice).
+    const slicePx = Math.max(1, Math.floor((contentH * canvas.width) / imgW));
+    let y = 0;
+    let first = true;
+    while (y < canvas.height) {
+      const h = Math.min(slicePx, canvas.height - y);
+      const slice = document.createElement('canvas');
+      slice.width = canvas.width;
+      slice.height = h;
+      slice.getContext('2d').drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+      if (!first) pdf.addPage();
+      pdf.addImage(slice.toDataURL('image/png'), 'PNG', margin, margin, imgW, (h * imgW) / canvas.width);
+      slice.width = 0; slice.height = 0; // release the slice canvas to cap peak memory
+      first = false;
+      y += h;
+    }
+  }
+  pdf.save(`${slugName(saleName)}-report.pdf`);
 }
