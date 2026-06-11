@@ -50,8 +50,10 @@ const num = (v) => {
 
 // Operating-cost assumptions for the net-profit waterfall.
 //   LABOR_PER_BOX           — flat labor we pay to pack/ship each box
+//   SHIPPING_COST_PER_BOX   — flat shipping-label cost we pay per box
 //   SELLER_COMMISSION_RATE  — the seller's cut of gross (product) sales
 export const LABOR_PER_BOX = 2;
+export const SHIPPING_COST_PER_BOX = 10;
 export const SELLER_COMMISSION_RATE = 0.15;
 
 // Local calendar day (YYYY-MM-DD) of an ISO/date value. Used to check each
@@ -164,16 +166,17 @@ export function aggregate(lines, meta = {}) {
   // the cashflow export, not these orders, so it isn't subtracted here.)
   const boxes = boxSet.size;
   const labor = boxes * LABOR_PER_BOX;
+  const shippingCost = boxes * SHIPPING_COST_PER_BOX;
   const sellerCommission = grossSales * SELLER_COMMISSION_RATE;
   const totalRevenue = grossSales + shippingCollected;
-  const netProfit = totalRevenue - cogs - labor - sellerCommission;
+  const netProfit = totalRevenue - cogs - labor - sellerCommission - shippingCost;
   const netMargin = grossSales > 0 ? (netProfit / grossSales) * 100 : null;
 
   const totals = {
     grossSales, shippingCollected, matchedRevenue, cogs, grossProfit, margin,
     excludedRevenue, lots, matchedCount, unmatchedCount, costlessMatched,
     orders: orderSet.size, buyers: buyerSet.size, avgSale,
-    boxes, labor, sellerCommission, totalRevenue, netProfit, netMargin,
+    boxes, labor, shippingCost, sellerCommission, totalRevenue, netProfit, netMargin,
   };
 
   // By-variety: matched lines grouped by variety; unmatched bucketed.
