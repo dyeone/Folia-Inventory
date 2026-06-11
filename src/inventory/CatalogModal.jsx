@@ -284,6 +284,7 @@ function SpeciesTab({ varieties, species, items, isAdmin, onChange, onMergeSpeci
     const ep = editEpithet.trim();
     if (!ep) { showToast?.('Name is required', 'error'); return; }
     const self = species.find(s => s.id === id);
+    if (!self) { showToast?.('Species no longer exists', 'error'); setEditing(null); return; }
     const targetVarietyId = editVarietyId || self.varietyId;
     // A species in the TARGET variety already named `ep` would hit the
     // (varietyId, epithet) unique constraint — whether we got here by renaming

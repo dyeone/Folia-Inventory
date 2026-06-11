@@ -9,9 +9,9 @@ export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   const user = await requireUser(userId);
 
-  // Combine two species into one (used when renaming a species to a name that
-  // already exists in the variety). Re-points everything, then removes the
-  // duplicate — see mergeSpecies.
+  // Combine two species into one (used when renaming or re-parenting a species
+  // to a name+variety that already exists). Re-points everything — items adopt
+  // the survivor's variety — then removes the duplicate; see mergeSpecies.
   if (req.method === 'POST' && req.body?.action === 'merge') {
     return mergeSpecies(req, res, userId, user);
   }
@@ -96,6 +96,14 @@ export default wrap(async (req, res) => {
       const wantsStructural = varietyId !== undefined || epithet !== undefined
         || commonName !== undefined || notes !== undefined || imageUrl !== undefined;
       if (wantsStructural) await requireAdmin(userId);
+
+      // Validate the target variety exists before the update, so a bad id gets
+      // a clean 400 (matching POST) instead of a raw FK 500.
+      if (varietyId !== undefined) {
+        const { data: vrow } = await supabase
+          .from('varieties').select('id').eq('id', varietyId).maybeSingle();
+        if (!vrow) { const e = new Error('Unknown variety'); e.status = 400; throw e; }
+      }
 
       const parseMoneyOrNull = (v, name) => {
         if (v === null || v === '') return null;
