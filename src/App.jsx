@@ -149,6 +149,9 @@ function StaffOrAdminInventory() {
   // "Financial Report" button appears immediately.
   const [saleEval, setSaleEval] = useState(null);
   const [evalVersion, setEvalVersion] = useState(0);
+  // Sale ids that have a saved evaluation in the DB — so the "Financial Report"
+  // button appears even on a device whose localStorage cache is empty.
+  const [evalSaleIds, setEvalSaleIds] = useState(() => new Set());
   const [editingItem, setEditingItem] = useState(null);
   const [convertingItem, setConvertingItem] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -270,6 +273,14 @@ function StaffOrAdminInventory() {
         showToast(e.message || 'Failed to load data', 'error');
       }
       setLoading(false);
+
+      // Which sales already have a saved evaluation report. Best-effort and
+      // isolated: a failure (older API, unmigrated table) just leaves the
+      // "Financial Report" button driven by the localStorage cache.
+      try {
+        const ids = await api.getSaleEvalIds();
+        setEvalSaleIds(new Set(ids));
+      } catch { /* localStorage fallback only */ }
 
       // Once the data is in, idle-prefetch the PDF/label chunks so the
       // first "Print label" tap doesn't have to download ~600 KB on the
@@ -935,6 +946,7 @@ function StaffOrAdminInventory() {
             onEvaluateSale={(sale) => setSaleEval({ sale, mode: 'evaluate' })}
             onViewReport={(sale) => setSaleEval({ sale, mode: 'report' })}
             evalVersion={evalVersion}
+            evalSaleIds={evalSaleIds}
             onSendToPacking={async (sale) => {
               try {
                 await api.upsertSales([{ id: sale.id, status: 'packing' }]);
@@ -1392,7 +1404,10 @@ function StaffOrAdminInventory() {
           items={items}
           mode={saleEval.mode}
           showToast={showToast}
-          onGenerated={() => setEvalVersion(v => v + 1)}
+          onGenerated={(saleId) => {
+            setEvalVersion(v => v + 1);
+            setEvalSaleIds(s => { const n = new Set(s); n.add(saleId); return n; });
+          }}
           onClose={() => setSaleEval(null)}
         />
       )}

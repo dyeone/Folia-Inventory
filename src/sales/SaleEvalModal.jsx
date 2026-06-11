@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Upload, FileText, AlertTriangle, RefreshCw, Download, Loader2, Check,
   TrendingUp, DollarSign, Boxes, Truck, Percent, ShoppingCart, Search, X,
@@ -10,7 +10,7 @@ import { Kpi } from '../financial/FinancialChrome.jsx';
 import { fmt$, fmt$2, fmtPct } from '../financial/financialHelpers.js';
 import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
 import {
-  evaluateSale, applyManualMatch, loadEval, saveEval,
+  evaluateSale, applyManualMatch, loadEval, fetchEval, storeEval,
   LABOR_PER_BOX, SHIPPING_COST_PER_BOX, SELLER_COMMISSION_RATE, OLD_PLANT_SKU_MAX,
 } from './saleEval.js';
 
@@ -36,13 +36,31 @@ function liveDayOf(sale) {
 //   'report' — the financial dashboard for the cached result.
 // `mode` ('evaluate' | 'report') picks the initial view.
 export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGenerated, onClose }) {
-  const existing = useMemo(() => loadEval(sale.id), [sale.id]);
   const saleDay = useMemo(() => liveDayOf(sale), [sale]);
-  const [result, setResult] = useState(mode === 'report' ? existing : null);
-  const [view, setView] = useState(mode === 'report' && existing ? 'report' : 'upload');
+  const cached = useMemo(() => loadEval(sale.id), [sale.id]); // instant localStorage value
+  const [result, setResult] = useState(mode === 'report' ? cached : null);
+  const [view, setView] = useState(mode === 'report' && cached ? 'report' : 'upload');
+  const [loadingExisting, setLoadingExisting] = useState(mode === 'report' && !cached);
   const [fileName, setFileName] = useState('');
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+
+  // Pull the saved report from the database (falls back to the localStorage
+  // cache), so a fresh device/browser still sees a previously-saved report.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const remote = await fetchEval(sale.id);
+      if (!alive) return;
+      if (remote) {
+        setResult((cur) => cur || remote); // don't clobber a freshly-generated report
+        if (mode === 'report') setView((v) => (v === 'upload' ? 'report' : v));
+      }
+      setLoadingExisting(false);
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sale.id]);
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -65,16 +83,14 @@ export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGen
         return;
       }
       const res = evaluateSale(boxes, items, { fileName: file.name, saleName: sale.name, saleDay });
-      const saved = saveEval(sale.id, res);
       setResult(res);
       setView('report');
-      onGenerated?.();
-      if (saved) {
+      const { cached: c, persisted } = await storeEval(sale.id, res);
+      onGenerated?.(sale.id);
+      if (c || persisted) {
         showToast?.(`Evaluated ${res.totals.lots} ${res.totals.lots === 1 ? 'sale' : 'sales'}`);
       } else {
-        // localStorage quota (or private-mode block): the report shows now, but
-        // hasEval() stays false so the "Financial Report" button won't appear.
-        showToast?.('Report shown, but too large to save — re-upload to view it again later.', 'error');
+        showToast?.('Report shown, but it could not be saved (no local space and the server was unreachable).', 'error');
       }
     } catch (e) {
       setErr(e.message || 'Could not read that file');
@@ -82,28 +98,32 @@ export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGen
     setLoading(false);
   };
 
-  // Manual match override (read-only — recompute + re-cache this report only).
-  const onMatch = (rowKey, item) => {
+  // Manual match override (read-only — recompute, then re-save to DB + cache).
+  const onMatch = async (rowKey, item) => {
     if (!result) return;
     const next = applyManualMatch(result, rowKey, item);
     setResult(next);
-    if (!saveEval(sale.id, next)) {
-      showToast?.('Match applied, but the report is too large to save — it may not persist.', 'error');
-    }
+    const { cached: c, persisted } = await storeEval(sale.id, next);
+    if (!c && !persisted) showToast?.('Match applied, but could not be saved.', 'error');
   };
 
   const title = view === 'report' ? `Financial Report — ${sale.name}` : `Evaluate Sales — ${sale.name}`;
 
   return (
     <Modal title={title} onClose={onClose} size="xl">
-      {view === 'upload' ? (
+      {loadingExisting && !result ? (
+        <div className="flex flex-col items-center justify-center gap-2 py-12 text-gray-500">
+          <Loader2 className="w-7 h-7 animate-spin" />
+          <span className="text-sm">Loading saved report…</span>
+        </div>
+      ) : view === 'upload' ? (
         <UploadView
           loading={loading}
           fileName={fileName}
           err={err}
-          hasExisting={!!existing}
+          hasExisting={!!result}
           onFile={handleFile}
-          onViewExisting={() => { setResult(existing); setView('report'); }}
+          onViewExisting={() => setView('report')}
         />
       ) : (
         <ReportView
@@ -352,35 +372,45 @@ function CommissionReport({ result, sectionRef, onPdf, exporting }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-2.5 mb-3">
-        <div className="rounded-lg border border-gray-200 bg-gray-50 p-2.5">
-          <div className="text-xs text-gray-500">Old plants — set aside</div>
-          <div className="text-sm font-semibold text-gray-900 mt-0.5 tabular-nums">{t.oldPlantCount} lots · {fmt$2(t.oldPlantRevenue)}</div>
-          <div className="text-[11px] text-gray-500">SKU &lt; {OLD_PLANT_SKU_MAX} · no commission</div>
+      {/* Commission owed — the headline figure */}
+      <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-4 flex items-center justify-between gap-3 mb-3">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-emerald-800/80">Commission owed to seller</div>
+          <div className="text-2xl sm:text-3xl font-bold text-emerald-700 tabular-nums leading-tight mt-0.5">{fmt$2(t.sellerCommission)}</div>
+          <div className="text-[11px] text-emerald-800/70 mt-1">
+            {rate}% of {t.commissionableCount} new {t.commissionableCount === 1 ? 'plant' : 'plants'} · {fmt$2(t.commissionBase)} in sales
+          </div>
         </div>
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2.5">
-          <div className="text-xs text-emerald-800/70">Commission-eligible</div>
-          <div className="text-sm font-semibold text-emerald-900 mt-0.5 tabular-nums">{t.commissionableCount} lots · {fmt$2(t.commissionBase)}</div>
-          <div className="text-[11px] text-emerald-800/70">SKU ≥ {OLD_PLANT_SKU_MAX} · pays {rate}%</div>
-        </div>
+        <Coins className="w-9 h-9 text-emerald-300 flex-shrink-0" />
       </div>
 
-      <div className="flex items-center justify-between border-t border-gray-200 pt-2 mb-2">
-        <span className="text-sm font-semibold text-gray-900">Commission owed to seller</span>
-        <span className="text-sm font-semibold text-emerald-700 tabular-nums">{fmt$2(t.sellerCommission)}</span>
+      {/* New (pays) vs old (set aside) split */}
+      <div className="grid grid-cols-2 gap-2.5 mb-3">
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/40 p-2.5">
+          <div className="text-[11px] font-medium text-emerald-800/70 uppercase tracking-wide">New · pays {rate}%</div>
+          <div className="text-sm font-semibold text-gray-900 mt-1 tabular-nums">{t.commissionableCount} lots · {fmt$2(t.commissionBase)}</div>
+          <div className="text-[11px] text-gray-500">SKU ≥ {OLD_PLANT_SKU_MAX}</div>
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+          <div className="text-[11px] font-medium text-gray-500 uppercase tracking-wide">Old · set aside</div>
+          <div className="text-sm font-semibold text-gray-900 mt-1 tabular-nums">{t.oldPlantCount} lots · {fmt$2(t.oldPlantRevenue)}</div>
+          <div className="text-[11px] text-gray-500">SKU &lt; {OLD_PLANT_SKU_MAX} · no commission</div>
+        </div>
       </div>
 
       {plants.length > 0 && (
+        <>
+        <div className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1.5">Per-plant breakdown</div>
         <div className="border border-gray-200 rounded-lg overflow-hidden">
           <div className="max-h-60 overflow-y-auto" data-export-expand>
             <table className="w-full text-xs">
               <thead className="bg-gray-50 sticky top-0">
-                <tr className="text-gray-500 text-left">
-                  <th className="px-2 py-1.5 font-medium">Buyer</th>
-                  <th className="px-2 py-1.5 font-medium">SKU</th>
-                  <th className="px-2 py-1.5 font-medium">Item</th>
-                  <th className="px-2 py-1.5 font-medium text-right">Sale</th>
-                  <th className="px-2 py-1.5 font-medium text-right">Commission</th>
+                <tr className="text-gray-500 text-left text-[11px] uppercase tracking-wide">
+                  <th className="px-2 py-2 font-medium">Buyer</th>
+                  <th className="px-2 py-2 font-medium">SKU</th>
+                  <th className="px-2 py-2 font-medium">Item</th>
+                  <th className="px-2 py-2 font-medium text-right">Sale</th>
+                  <th className="px-2 py-2 font-medium text-right">Comm.</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -399,6 +429,7 @@ function CommissionReport({ result, sectionRef, onPdf, exporting }) {
             </table>
           </div>
         </div>
+        </>
       )}
     </div>
   );

@@ -527,3 +527,12 @@ language sql stable as $$
   from inventory_items
   where sku ~ '-\d+$';
 $$;
+
+-- Per-sale-event "Evaluate Sales" report snapshot (read-only; see migration
+-- 0027). One row per sale; re-evaluating upserts. Whole result object as jsonb.
+create table if not exists sale_evaluations (
+  "saleId"    text        primary key references sales(id) on delete cascade,
+  result      jsonb       not null,
+  "updatedAt" timestamptz not null default now(),
+  "updatedBy" text
+);

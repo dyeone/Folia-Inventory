@@ -18,6 +18,7 @@
 // and brings it into the report, never touching the inventory row.
 
 import { normalizeSku } from '../labels/boxCode.js';
+import { api } from '../api.js';
 
 export const STORAGE_KEY = (saleId) => `sale-eval-${saleId}`;
 
@@ -56,6 +57,32 @@ export function saveEval(saleId, result) {
 
 export function hasEval(saleId) {
   return loadEval(saleId) != null;
+}
+
+// Persist to the database (durable, cross-device) AND the localStorage cache.
+// The DB write is best-effort: if it fails (offline, or the table isn't
+// migrated yet) the cache still holds the report this session. Returns the
+// localStorage save result so the caller can warn on a quota overflow.
+export async function storeEval(saleId, result) {
+  const cached = saveEval(saleId, result);
+  let persisted = false;
+  try { const r = await api.saveSaleEval(saleId, result); persisted = !!(r && r.ok); }
+  catch { persisted = false; }
+  return { cached, persisted };
+}
+
+// Load from the database first (so a fresh device/browser sees a saved report),
+// falling back to the localStorage cache. A DB hit refreshes the cache. A
+// version mismatch (older shape) is ignored — the operator re-evaluates.
+export async function fetchEval(saleId) {
+  try {
+    const remote = await api.getSaleEval(saleId);
+    if (remote && remote.version === RESULT_VERSION) {
+      saveEval(saleId, remote);
+      return remote;
+    }
+  } catch { /* fall back to cache */ }
+  return loadEval(saleId);
 }
 
 const num = (v) => {
