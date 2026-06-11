@@ -38,6 +38,7 @@ const LineupBuilder = lazyNamed(() => import('./sales/LineupBuilder.jsx'), 'Line
 const SalesUploadModal = lazyNamed(() => import('./sales/SalesUploadModal.jsx'), 'SalesUploadModal');
 const LiveScanModal = lazyNamed(() => import('./sales/LiveScanModal.jsx'), 'LiveScanModal');
 const LiveModal = lazyNamed(() => import('./sales/LiveModal.jsx'), 'LiveModal');
+const SaleEvalModal = lazyNamed(() => import('./sales/SaleEvalModal.jsx'), 'SaleEvalModal');
 const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
 const BoxLabelSheet = lazyNamed(() => import('./labels/BoxLabelSheet.jsx'), 'BoxLabelSheet');
 const PackerView = lazyNamed(() => import('./packing/PackerView.jsx'), 'PackerView');
@@ -143,6 +144,11 @@ function StaffOrAdminInventory() {
   const [showValidateSales, setShowValidateSales] = useState(false);
   const [showLiveScan, setShowLiveScan] = useState(false);
   const [liveSale, setLiveSale] = useState(null);
+  // { sale, mode: 'evaluate' | 'report' } for the read-only sales evaluation
+  // popup; evalVersion bumps after a report is generated so the per-sale
+  // "Financial Report" button appears immediately.
+  const [saleEval, setSaleEval] = useState(null);
+  const [evalVersion, setEvalVersion] = useState(0);
   const [editingItem, setEditingItem] = useState(null);
   const [convertingItem, setConvertingItem] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
@@ -926,6 +932,9 @@ function StaffOrAdminInventory() {
             onValidateSales={() => setShowValidateSales(true)}
             onStartLiveScan={() => setShowLiveScan(true)}
             onGoLive={(sale) => setLiveSale(sale)}
+            onEvaluateSale={(sale) => setSaleEval({ sale, mode: 'evaluate' })}
+            onViewReport={(sale) => setSaleEval({ sale, mode: 'report' })}
+            evalVersion={evalVersion}
             onSendToPacking={async (sale) => {
               try {
                 await api.upsertSales([{ id: sale.id, status: 'packing' }]);
@@ -1375,6 +1384,16 @@ function StaffOrAdminInventory() {
             }
           }}
           onClose={() => setShowValidateSales(false)}
+        />
+      )}
+      {saleEval && (
+        <SaleEvalModal
+          sale={saleEval.sale}
+          items={items}
+          mode={saleEval.mode}
+          showToast={showToast}
+          onGenerated={() => setEvalVersion(v => v + 1)}
+          onClose={() => setSaleEval(null)}
         />
       )}
       {editingSale && (
