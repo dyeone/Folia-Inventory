@@ -182,9 +182,10 @@ export default wrap(async (req, res) => {
 });
 
 // POST /api/species  body: { action: 'merge', fromId, intoId }
-// Combine `fromId` into `intoId` (both must be in the same variety). Used when
-// an admin renames a species to a name that already exists, so two duplicate
-// cultivars become one. Re-points every reference, then deletes the duplicate:
+// Combine `fromId` into `intoId`. Used when an admin renames (or re-parents) a
+// species to a name+variety that already exists, so two duplicate cultivars
+// become one. Items adopt the survivor's variety, so this also handles a
+// duplicate that was mis-categorized under two different varieties. Re-points every reference, then deletes the duplicate:
 //   1. inventory_items   → speciesId + denormalized name = survivor's epithet
 //   2. species_photos    → speciesId (both photo sets land on the survivor)
 //   3. delete the now-unreferenced `fromId` species.
@@ -211,9 +212,13 @@ async function mergeSpecies(req, res, userId, user) {
   const from = rows?.find(r => r.id === fromId);
   const into = rows?.find(r => r.id === intoId);
   if (!from || !into) { const e = new Error('Species not found'); e.status = 404; throw e; }
-  if (from.varietyId !== into.varietyId) {
-    const e = new Error('Can only combine species within the same variety'); e.status = 400; throw e;
-  }
+
+  // Items adopt the survivor's variety too — combine can move a species across
+  // varieties (e.g. fixing a duplicate that was mis-categorized under two).
+  const { data: vrow, error: vErr } = await supabase
+    .from('varieties').select('name').eq('id', into.varietyId).maybeSingle();
+  if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
+  const intoVarietyName = vrow?.name || null;
 
   // Refuse if the species being combined carries purchase-order history — its
   // PO lines have an ON DELETE RESTRICT FK (so the delete below would fail) and
@@ -230,10 +235,13 @@ async function mergeSpecies(req, res, userId, user) {
 
   const now = new Date().toISOString();
 
-  // 1. Re-point inventory items (alive + trashed) to the survivor + its name.
+  // 1. Re-point inventory items (alive + trashed) to the survivor — its
+  //    speciesId, denormalized name, and variety.
+  const itemPatch = { speciesId: intoId, name: into.epithet, modifiedAt: now, modifiedBy: user.displayName };
+  if (intoVarietyName) itemPatch.variety = intoVarietyName;
   const { data: movedItems, error: itErr } = await supabase
     .from('inventory_items')
-    .update({ speciesId: intoId, name: into.epithet, modifiedAt: now, modifiedBy: user.displayName })
+    .update(itemPatch)
     .eq('speciesId', fromId)
     .select('id');
   if (itErr) { const e = new Error(itErr.message); e.status = 500; throw e; }
