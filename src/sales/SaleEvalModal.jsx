@@ -218,8 +218,6 @@ function ReportView({ result, items, onMatch, onReevaluate, showToast }) {
   const profitTone = t.grossProfit >= 0 ? 'blue' : 'red';
   const costedLots = t.matchedCount - t.costlessMatched; // lots that actually contributed cost
   const reportRef = useRef(null);
-  const commissionRef = useRef(null);
-  const financialRef = useRef(null);
   const [exporting, setExporting] = useState('');
 
   const runExport = async (kind, fn) => {
@@ -234,8 +232,7 @@ function ReportView({ result, items, onMatch, onReevaluate, showToast }) {
       ? exportReportPng(reportRef.current, result.saleName)
       : exportReportPdf(reportRef.current, result.saleName)
   ));
-  const onCommissionPdf = () => runExport('commission-pdf', () =>
-    exportNodesToPdf([commissionRef.current, financialRef.current], `${slugName(result.saleName)}-commission.pdf`));
+  const onCommissionPdf = () => runExport('commission-pdf', () => exportCommissionPdf(result));
   const btn = 'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg disabled:opacity-50';
 
   return (
@@ -276,14 +273,14 @@ function ReportView({ result, items, onMatch, onReevaluate, showToast }) {
       <NetProfit totals={t} />
 
       {/* Seller commission report */}
-      <CommissionReport result={result} sectionRef={commissionRef} onPdf={onCommissionPdf} exporting={exporting} />
+      <CommissionReport result={result} onPdf={onCommissionPdf} exporting={exporting} />
 
       {/* Data-quality note + manual matching — working UI, excluded from exports */}
       <div data-export-hide><FlagsBanner result={result} /></div>
       <div data-export-hide><UnmatchedSection result={result} items={items} onMatch={onMatch} /></div>
 
-      {/* Financial breakdown — also captured into the commission PDF */}
-      <div ref={financialRef} className="space-y-5">
+      {/* Financial breakdown — on-screen; the commission PDF renders this as text */}
+      <div className="space-y-5">
         {result.byVariety.length > 0 && <ByVariety rows={result.byVariety} />}
         <TopSellers result={result} />
       </div>
@@ -340,7 +337,7 @@ function NetProfit({ totals }) {
   );
 }
 
-function CommissionReport({ result, sectionRef, onPdf, exporting }) {
+function CommissionReport({ result, onPdf, exporting }) {
   const t = result.totals;
   // All matched plants: new (commission-eligible) first by commission, then old
   // (set aside) by revenue. Both shown so the report covers every plant.
@@ -356,7 +353,7 @@ function CommissionReport({ result, sectionRef, onPdf, exporting }) {
   const cbtn = 'flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg disabled:opacity-50';
 
   return (
-    <div ref={sectionRef} className="border border-gray-200 rounded-xl p-4">
+    <div className="border border-gray-200 rounded-xl p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-1.5">
           <Coins className="w-4 h-4 text-gray-400" />
@@ -889,18 +886,116 @@ async function exportReportPdf(node, saleName) {
   pdf.save(`${slugName(saleName)}-report.pdf`);
 }
 
-// Capture several DOM nodes, each starting on its own page, into one PDF.
-// Used for the commission PDF: commission section + financial breakdown.
-async function exportNodesToPdf(nodes, filename) {
+// Crisp text-based commission report PDF (not a raster capture, so table rows
+// never get cut at a page break). Order: summary, then the financial breakdown
+// (by-variety + top sellers), then the full per-plant table last.
+async function exportCommissionPdf(result) {
   const { jsPDF } = await import('jspdf');
   const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
-  let first = true;
-  for (const node of nodes) {
-    if (!node) continue;
-    const canvas = await captureReport(node);
-    if (!first) pdf.addPage();
-    addCanvasPaged(pdf, canvas);
-    first = false;
+  const M = 40;
+  const pageW = pdf.internal.pageSize.getWidth();
+  const pageH = pdf.internal.pageSize.getHeight();
+  const right = pageW - M;
+  const t = result.totals;
+  const rate = Math.round(SELLER_COMMISSION_RATE * 100);
+  const EMERALD = [4, 120, 87];
+  const BLUE = [37, 99, 235];
+  const GRAY = [110, 110, 110];
+  let y = M;
+
+  const money = (n) => `$${(Number(n) || 0).toFixed(2)}`;
+  const ensure = (h) => { if (y + h > pageH - M) { pdf.addPage(); y = M; return true; } return false; };
+  const fit = (s, maxW) => {
+    let str = String(s ?? '');
+    if (pdf.getTextWidth(str) <= maxW) return str;
+    while (str.length > 1 && pdf.getTextWidth(`${str}…`) > maxW) str = str.slice(0, -1);
+    return `${str}…`;
+  };
+  // Reserve room for the heading PLUS the first unit of its section, so a heading
+  // never dangles alone at the bottom of a page (rowsBelow = pts to keep with it).
+  const heading = (label, rowsBelow = 13) => {
+    ensure(15 + rowsBelow);
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(12); pdf.setTextColor(0);
+    pdf.text(label, M, y); y += 15;
+  };
+
+  // Title + meta
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(16); pdf.setTextColor(0);
+  pdf.text(fit(`Commission Report — ${result.saleName || 'Sale'}`, right - M), M, y); y += 20;
+  const meta = [
+    result.generatedAt ? new Date(result.generatedAt).toLocaleString() : '',
+    result.saleDay ? `Live day ${result.saleDay}` : '',
+  ].filter(Boolean).join('   ·   ');
+  if (meta) { pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(...GRAY); pdf.text(meta, M, y); y += 18; }
+
+  // Commission owed (hero)
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11); pdf.setTextColor(0);
+  ensure(54); pdf.text('Commission owed to seller', M, y); y += 18;
+  pdf.setFontSize(22); pdf.setTextColor(...EMERALD); pdf.text(money(t.sellerCommission), M, y); y += 16;
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10); pdf.setTextColor(0);
+  pdf.text(`New (pays ${rate}%): ${t.commissionableCount} lots · ${money(t.commissionBase)}`, M, y); y += 14;
+  pdf.text(`Old (set aside): ${t.oldPlantCount} lots · ${money(t.oldPlantRevenue)}`, M, y); y += 22;
+
+  // Financial breakdown — BEFORE the per-plant items.
+  if (result.byVariety.length) {
+    heading('By variety');
+    const xRev = right - 95, xProf = right;
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
+    for (const r of result.byVariety) {
+      ensure(13);
+      pdf.setTextColor(0); pdf.text(fit(r.variety, xRev - M - 12), M, y);
+      pdf.text(money(r.revenue), xRev, y, { align: 'right' });
+      if (r.hasCost) { pdf.setTextColor(...BLUE); pdf.text(money(r.profit), xProf, y, { align: 'right' }); }
+      else { pdf.setTextColor(...GRAY); pdf.text('—', xProf, y, { align: 'right' }); }
+      y += 13;
+    }
+    y += 10;
   }
-  pdf.save(filename);
+  const topList = (label, lines, valueOf, color) => {
+    if (!lines.length) return;
+    heading(label);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
+    lines.forEach((l, i) => {
+      ensure(13);
+      pdf.setTextColor(0);
+      pdf.text(`${i + 1}. ${fit(`${l.title || l.sku}${l.sku ? ` · ${l.sku}` : ''}`, right - M - 70)}`, M, y);
+      pdf.setTextColor(...color); pdf.text(money(valueOf(l)), right, y, { align: 'right' });
+      y += 13;
+    });
+    y += 10;
+  };
+  topList('Top by revenue', result.topByRevenue, (l) => l.revenue, EMERALD);
+  topList('Top by profit', result.topByProfit, (l) => l.profit, BLUE);
+
+  // Per-plant breakdown — LAST. Row-aware pagination so rows never split.
+  const plants = result.lines
+    .filter((l) => l.matched)
+    .sort((a, b) => (a.oldPlant === b.oldPlant
+      ? (a.oldPlant ? b.revenue - a.revenue : b.commission - a.commission)
+      : (a.oldPlant ? 1 : -1)));
+  if (plants.length) {
+    const xSku = M + 95, xItem = M + 165, xSale = right - 70, xComm = right;
+    const itemW = xSale - xItem - 8;
+    const drawHead = () => {
+      pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8); pdf.setTextColor(...GRAY);
+      pdf.text('Buyer', M, y); pdf.text('SKU', xSku, y); pdf.text('Item', xItem, y);
+      pdf.text('Sale', xSale, y, { align: 'right' }); pdf.text('Comm.', xComm, y, { align: 'right' });
+      y += 4; pdf.setDrawColor(220); pdf.line(M, y, right, y); y += 9;
+      pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(0);
+    };
+    heading(`Per-plant breakdown (${plants.length})`, 26); // keep title + column header + first row together
+    drawHead();
+    for (const l of plants) {
+      if (ensure(13)) drawHead();
+      pdf.setTextColor(0); pdf.text(fit(l.buyer || '—', xSku - M - 6), M, y);
+      pdf.setTextColor(...GRAY); pdf.text(fit(l.itemSku || l.sku || '—', xItem - xSku - 6), xSku, y);
+      pdf.setTextColor(0); pdf.text(fit(`${l.title || '—'}${l.oldPlant ? '  (old)' : ''}`, itemW), xItem, y);
+      pdf.text(money(l.revenue), xSale, y, { align: 'right' });
+      if (l.oldPlant) { pdf.setTextColor(...GRAY); pdf.text('—', xComm, y, { align: 'right' }); }
+      else { pdf.setTextColor(...EMERALD); pdf.text(money(l.commission), xComm, y, { align: 'right' }); }
+      y += 13;
+    }
+  }
+
+  pdf.save(`${slugName(result.saleName)}-commission.pdf`);
 }
