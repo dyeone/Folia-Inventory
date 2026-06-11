@@ -9,17 +9,60 @@ function stripServerOwned(sale) {
   return clean;
 }
 
+// The sale_evaluations table ships via migration 0027, applied manually in
+// Supabase. Until it's applied, treat "table missing" as a soft no-op so the
+// client falls back to its localStorage cache instead of erroring.
+function isMissingTable(error) {
+  return !!error && (error.code === '42P01' || error.code === 'PGRST205'
+    || /does not exist|schema cache|find the table/i.test(error.message || ''));
+}
+
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   const user = await requireUser(userId);
 
   switch (req.method) {
     case 'GET': {
+      const action = req.query?.action;
+      // Load one sale's cached evaluation report.
+      if (action === 'eval') {
+        const saleId = req.query?.saleId;
+        if (!saleId) { const e = new Error('saleId required'); e.status = 400; throw e; }
+        const { data, error } = await supabase
+          .from('sale_evaluations').select('result').eq('saleId', saleId).maybeSingle();
+        if (error) {
+          if (isMissingTable(error)) return res.status(200).json({ evaluation: null, unmigrated: true });
+          const e = new Error(error.message); e.status = 500; throw e;
+        }
+        return res.status(200).json({ evaluation: data?.result ?? null });
+      }
+      // Which sale events have a saved evaluation (ids only — cheap, no blobs).
+      if (action === 'evalIds') {
+        const { data, error } = await supabase.from('sale_evaluations').select('saleId');
+        if (error) {
+          if (isMissingTable(error)) return res.status(200).json({ evalSaleIds: [], unmigrated: true });
+          const e = new Error(error.message); e.status = 500; throw e;
+        }
+        return res.status(200).json({ evalSaleIds: (data || []).map(r => r.saleId) });
+      }
       const { data, error } = await supabase.from('sales').select('*');
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ sales: data || [] });
     }
     case 'POST': {
+      // Save (upsert) a sale's evaluation report snapshot — read-only data,
+      // never touches inventory.
+      if (req.body?.action === 'saveEval') {
+        const { saleId, result } = req.body || {};
+        if (!saleId || !result) { const e = new Error('saleId and result required'); e.status = 400; throw e; }
+        const row = { saleId, result, updatedAt: new Date().toISOString(), updatedBy: user.displayName };
+        const { error } = await supabase.from('sale_evaluations').upsert(row, { onConflict: 'saleId' });
+        if (error) {
+          if (isMissingTable(error)) return res.status(200).json({ ok: false, unmigrated: true });
+          const e = new Error(error.message); e.status = 500; throw e;
+        }
+        return res.status(200).json({ ok: true });
+      }
       const { sales } = req.body || {};
       if (!Array.isArray(sales)) {
         const e = new Error('sales must be an array'); e.status = 400; throw e;

@@ -89,6 +89,13 @@ export const api = {
   upsertSales: (sales) => request('/sales', { method: 'POST', body: { sales } }),
   deleteSales: (ids) => request('/sales', { method: 'DELETE', body: { ids } }),
 
+  // Per-sale "Evaluate Sales" report snapshot (read-only; see migration 0027).
+  getSaleEval: (saleId) =>
+    request(`/sales?action=eval&saleId=${encodeURIComponent(saleId)}`).then(r => r.evaluation),
+  getSaleEvalIds: () => request('/sales?action=evalIds').then(r => r.evalSaleIds || []),
+  saveSaleEval: (saleId, result) =>
+    request('/sales', { method: 'POST', body: { action: 'saveEval', saleId, result } }),
+
   // Varieties (genus catalog)
   getVarieties: () => request('/varieties').then(r => r.varieties),
   createVariety: ({ name, code }) =>
