@@ -31,7 +31,7 @@ export function SalesView({
   sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
   onSendToPacking, onGoLive, onValidateSales, onStartLiveScan, isAdmin,
   onStageItems, onItemsChanged, showToast,
-  onEvaluateSale, onViewReport, evalVersion,
+  onEvaluateSale, onViewReport, evalVersion, evalSaleIds,
 }) {
   const [tab, setTab] = useState('active');
 
@@ -142,6 +142,7 @@ export function SalesView({
               onEvaluateSale={() => onEvaluateSale(sale)}
               onViewReport={() => onViewReport(sale)}
               evalVersion={evalVersion}
+              hasDbEval={!!evalSaleIds && evalSaleIds.has(sale.id)}
             />
           ))}
         </div>
@@ -153,13 +154,16 @@ export function SalesView({
 function SaleCard({
   sale, items, isAdmin,
   onBuildLineup, onExportCsv, onSendToPacking, onGoLive, onEdit, onDelete,
-  onEvaluateSale, onViewReport, evalVersion,
+  onEvaluateSale, onViewReport, evalVersion, hasDbEval,
 }) {
-  // Re-check localStorage when evalVersion bumps (a report was just generated)
-  // so the "Financial Report" button appears without a manual refresh. The
-  // `void evalVersion` makes the cache-bust dependency explicit — hasEval reads
-  // localStorage, which the deps linter can't see on its own.
-  const reportReady = useMemo(() => { void evalVersion; return hasEval(sale.id); }, [sale.id, evalVersion]);
+  // Show "Financial Report" if a report exists in the DB (hasDbEval) OR in this
+  // browser's localStorage cache. Re-check the cache when evalVersion bumps
+  // (a report was just generated); `void evalVersion` makes that cache-bust
+  // dependency explicit since hasEval reads localStorage the linter can't see.
+  const reportReady = useMemo(
+    () => { void evalVersion; return hasDbEval || hasEval(sale.id); },
+    [sale.id, evalVersion, hasDbEval],
+  );
   const saleLots = items.filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway');
   const giveaways = items.filter(i => i.saleId === sale.id && i.lotKind === 'giveaway');
   const totalAssigned = saleLots.length + giveaways.length;
