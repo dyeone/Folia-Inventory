@@ -5,18 +5,33 @@
 // cached in localStorage (per sale id) so the "Financial Report" button can
 // reopen it without re-uploading — same pattern as live state (see liveState.js).
 //
+// Reporting rules:
+//   - UNMATCHED lines are excluded from every report total/table. They stay
+//     available for manual matching (applyManualMatch) so the operator can pull
+//     them in; until matched they count for nothing.
+//   - Seller commission is paid only on NEW plants. A plant is "old" when its
+//     (matched item's) SKU number is below OLD_PLANT_SKU_MAX — those are set
+//     aside and pay no commission. Old plants still count in revenue/profit.
+//
 // Manual matching (applyManualMatch) lets the operator link an unmatched line
 // to an inventory item. That's still read-only: it overrides the line's cost
-// in THIS report only, never touching the inventory row.
+// and brings it into the report, never touching the inventory row.
 
 import { normalizeSku } from '../labels/boxCode.js';
 
 export const STORAGE_KEY = (saleId) => `sale-eval-${saleId}`;
 
 // Bump when the result shape changes. loadEval discards caches from an older
-// version (they lack fields this UI now needs, e.g. boxId / net-profit totals),
-// so the operator just re-uploads rather than rendering a half-broken report.
-export const RESULT_VERSION = 2;
+// version (they lack fields this UI now needs), so the operator just re-uploads.
+export const RESULT_VERSION = 3;
+
+// Operating-cost assumptions for the net-profit waterfall.
+export const LABOR_PER_BOX = 2;
+export const SHIPPING_COST_PER_BOX = 10;
+export const SELLER_COMMISSION_RATE = 0.15;
+// A matched plant whose SKU number is below this is an "old plant" — set aside,
+// no seller commission. Everything at/above it is a "new plant" and pays.
+export const OLD_PLANT_SKU_MAX = 3000;
 
 export function loadEval(saleId) {
   try {
@@ -48,17 +63,7 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-// Operating-cost assumptions for the net-profit waterfall.
-//   LABOR_PER_BOX           — flat labor we pay to pack/ship each box
-//   SHIPPING_COST_PER_BOX   — flat shipping-label cost we pay per box
-//   SELLER_COMMISSION_RATE  — the seller's cut of gross (product) sales
-export const LABOR_PER_BOX = 2;
-export const SHIPPING_COST_PER_BOX = 10;
-export const SELLER_COMMISSION_RATE = 0.15;
-
-// Local calendar day (YYYY-MM-DD) of an ISO/date value. Used to check each
-// order's date against the live's day. Local time matches how the orders
-// parser interprets Palmstreet's naive PDT timestamps.
+// Local calendar day (YYYY-MM-DD) of an ISO/date value.
 export function localDay(value) {
   if (!value) return null;
   const d = new Date(value);
@@ -69,9 +74,27 @@ export function localDay(value) {
   return `${y}-${m}-${day}`;
 }
 
+// The calendar day after a YYYY-MM-DD string (local). A live that starts at
+// night runs past midnight, so orders are expected across the live day and the
+// morning after — both are "on-window".
+function nextDay(day) {
+  const d = new Date(`${day}T00:00:00`);
+  if (isNaN(d.getTime())) return null;
+  d.setDate(d.getDate() + 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+// Trailing number in a SKU (ALO-142 -> 142, "142" -> 142). null if none.
+function parseSkuNumber(sku) {
+  const m = String(sku || '').match(/(\d+)\s*$/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
 // Cost/profit fields for a line given the matched item (or null). $0/negative
-// cost counts as "no known cost", matching financialHelpers.rollup so the two
-// views agree.
+// cost counts as "no known cost", matching financialHelpers.rollup.
 function costFor(item, revenue) {
   const rawCost = item ? num(item.grossCost ?? item.cost) : null;
   const hasCost = rawCost != null && rawCost > 0;
@@ -83,8 +106,6 @@ function costFor(item, revenue) {
 }
 
 // Build the per-line records from parsed Palmstreet boxes + inventory items.
-// Revenue comes from the CSV's Item Price (what the buyer paid); cost from the
-// matched item's grossCost.
 function buildLines(boxes, items) {
   const bySku = new Map(); // sku is globally unique on inventory_items
   for (const it of items) {
@@ -103,6 +124,7 @@ function buildLines(boxes, items) {
         rowKey: `${box.id}:${li.rowKey}`,
         boxId: box.id,
         sku: k || String(li.sku || ''),
+        itemSku: item?.sku || null,
         csvTitle: li.title || '',
         title: item?.name || li.title || '',
         variety: item?.variety || null,
@@ -125,64 +147,69 @@ function buildLines(boxes, items) {
   return lines;
 }
 
-// Roll a set of line records into the full report object. Pure and
-// re-runnable, so a manual match just patches one line and re-aggregates.
-// meta carries through generatedAt/fileName/saleName/saleDay so re-aggregation
-// preserves them.
+// Roll a set of line records into the full report object. Pure and re-runnable,
+// so a manual match just patches one line and re-aggregates. Reports cover
+// MATCHED lines only; commission is charged on NEW (non-old) plants only.
 export function aggregate(lines, meta = {}) {
   const saleDay = meta.saleDay || null;
-  const annotated = lines.map(l => ({
-    ...l,
-    offDay: !!(saleDay && l.orderDate && localDay(l.orderDate) !== saleDay),
-  }));
+  const allowedDays = saleDay ? new Set([saleDay, nextDay(saleDay)]) : null;
+
+  const annotated = lines.map(l => {
+    const effSku = l.matched ? (l.itemSku || l.sku) : l.sku;
+    const skuNum = parseSkuNumber(effSku);
+    const oldPlant = skuNum != null && skuNum < OLD_PLANT_SKU_MAX;
+    const offDay = !!(allowedDays && l.orderDate && !allowedDays.has(localDay(l.orderDate)));
+    const commission = l.matched && !oldPlant ? l.revenue * SELLER_COMMISSION_RATE : 0;
+    return { ...l, skuNum, oldPlant, offDay, commission };
+  });
+
+  // Reports exclude unmatched lines entirely.
+  const reported = annotated.filter(l => l.matched);
 
   let grossSales = 0, shippingCollected = 0, matchedRevenue = 0, cogs = 0;
-  let matchedCount = 0, unmatchedCount = 0, costlessMatched = 0;
+  let costlessMatched = 0, commissionBase = 0, oldPlantRevenue = 0, oldPlantCount = 0, sellerCommission = 0;
   const orderSet = new Set();
   const buyerSet = new Set();
   const boxSet = new Set();
   let undatedCount = 0;
-  for (const l of annotated) {
+  for (const l of reported) {
     grossSales += l.revenue;
     shippingCollected += l.shippingFee;
     if (l.orderNumber) orderSet.add(l.orderNumber.toLowerCase());
     buyerSet.add((l.username || l.buyer || '').toLowerCase().trim());
-    // Count a box for labor only if it carries a real (SKU'd) item — a
-    // coupon / free-shipping-only "box" ships nothing, so it gets no labor.
     if (l.boxId && l.sku) boxSet.add(l.boxId);
-    if (l.matched) matchedCount += 1; else unmatchedCount += 1;
-    if (l.hasCost) { matchedRevenue += l.revenue; cogs += l.cost; }
-    else if (l.matched) costlessMatched += 1;
+    if (l.hasCost) { matchedRevenue += l.revenue; cogs += l.cost; } else costlessMatched += 1;
+    if (l.oldPlant) { oldPlantRevenue += l.revenue; oldPlantCount += 1; }
+    else { commissionBase += l.revenue; sellerCommission += l.commission; }
     if (!l.orderDate) undatedCount += 1;
   }
+  const lots = reported.length;
+  const unmatchedCount = annotated.length - lots;
+  const commissionableCount = lots - oldPlantCount;
   const grossProfit = matchedRevenue - cogs;
   const margin = matchedRevenue > 0 ? (grossProfit / matchedRevenue) * 100 : null;
-  const excludedRevenue = grossSales - matchedRevenue;
-  const lots = annotated.length;
+  const excludedRevenue = grossSales - matchedRevenue; // matched-but-costless revenue
   const avgSale = lots > 0 ? grossSales / lots : null;
 
-  // Net-profit waterfall: shipping is income, COGS + per-box labor + the
-  // seller's commission on gross sales are costs. (Shipping label cost lives in
-  // the cashflow export, not these orders, so it isn't subtracted here.)
   const boxes = boxSet.size;
   const labor = boxes * LABOR_PER_BOX;
   const shippingCost = boxes * SHIPPING_COST_PER_BOX;
-  const sellerCommission = grossSales * SELLER_COMMISSION_RATE;
   const totalRevenue = grossSales + shippingCollected;
   const netProfit = totalRevenue - cogs - labor - sellerCommission - shippingCost;
   const netMargin = grossSales > 0 ? (netProfit / grossSales) * 100 : null;
 
   const totals = {
     grossSales, shippingCollected, matchedRevenue, cogs, grossProfit, margin,
-    excludedRevenue, lots, matchedCount, unmatchedCount, costlessMatched,
+    excludedRevenue, lots, matchedCount: lots, unmatchedCount, costlessMatched,
     orders: orderSet.size, buyers: buyerSet.size, avgSale,
     boxes, labor, shippingCost, sellerCommission, totalRevenue, netProfit, netMargin,
+    commissionBase, oldPlantRevenue, oldPlantCount, commissionableCount,
   };
 
-  // By-variety: matched lines grouped by variety; unmatched bucketed.
+  // By-variety (matched only).
   const vmap = new Map();
-  for (const l of annotated) {
-    const key = l.matched ? (l.variety || '(no variety)') : '(unmatched)';
+  for (const l of reported) {
+    const key = l.variety || '(no variety)';
     let r = vmap.get(key);
     if (!r) { r = { variety: key, revenue: 0, cost: 0, profit: 0, units: 0, hasCost: false }; vmap.set(key, r); }
     r.revenue += l.revenue;
@@ -191,13 +218,13 @@ export function aggregate(lines, meta = {}) {
   }
   const byVariety = [...vmap.values()].sort((a, b) => b.revenue - a.revenue);
 
-  const topByRevenue = [...annotated].sort((a, b) => b.revenue - a.revenue).slice(0, 8);
-  const topByProfit = annotated.filter(l => l.profit != null).sort((a, b) => b.profit - a.profit).slice(0, 8);
+  const topByRevenue = [...reported].sort((a, b) => b.revenue - a.revenue).slice(0, 8);
+  const topByProfit = reported.filter(l => l.profit != null).sort((a, b) => b.profit - a.profit).slice(0, 8);
 
-  // Flags: SKU sold across >1 distinct order (possible double-sale); unmatched
-  // lines; lines dated outside the live day.
+  // Flags: SKU sold across >1 distinct order (possible double-sale, matched
+  // only); unmatched lines (excluded from the report); off-window dates.
   const skuOrders = new Map();
-  for (const l of annotated) {
+  for (const l of reported) {
     if (!l.sku) continue;
     const orderKey = (l.orderNumber || l.buyer || '').toLowerCase().trim();
     if (!orderKey) continue;
@@ -210,7 +237,7 @@ export function aggregate(lines, meta = {}) {
     .map(([sku, set]) => ({ sku, count: set.size }))
     .sort((a, b) => b.count - a.count);
   const unmatchedLines = annotated.filter(l => !l.matched);
-  const offDayLines = annotated.filter(l => l.offDay);
+  const offDayLines = reported.filter(l => l.offDay);
 
   return {
     version: RESULT_VERSION,
@@ -242,6 +269,7 @@ export function applyManualMatch(result, rowKey, item) {
       ...l,
       title: item ? (item.name || l.csvTitle) : l.csvTitle,
       variety: item ? (item.variety || null) : null,
+      itemSku: item?.sku || null,
       cost: cf.cost,
       profit: cf.profit,
       matched: !!item,

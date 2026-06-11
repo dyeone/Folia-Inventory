@@ -11,7 +11,7 @@ import { fmt$, fmt$2, fmtPct } from '../financial/financialHelpers.js';
 import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
 import {
   evaluateSale, applyManualMatch, loadEval, saveEval,
-  LABOR_PER_BOX, SHIPPING_COST_PER_BOX, SELLER_COMMISSION_RATE,
+  LABOR_PER_BOX, SHIPPING_COST_PER_BOX, SELLER_COMMISSION_RATE, OLD_PLANT_SKU_MAX,
 } from './saleEval.js';
 
 // The live's calendar day (YYYY-MM-DD, local). Prefer the plain `date` field;
@@ -243,12 +243,15 @@ function ReportView({ result, items, onMatch, onReevaluate, showToast }) {
         <Kpi icon={Boxes} tone="amber" label="COGS" value={fmt$(t.cogs)} sub={`${costedLots} lots with cost`} />
         <Kpi icon={TrendingUp} tone={profitTone} label="Gross profit" value={fmt$(t.grossProfit)} sub="matched lots only" />
         <Kpi icon={Percent} tone={profitTone} label="Margin" value={fmtPct(t.margin)} sub="profit / matched rev" />
-        <Kpi icon={ShoppingCart} tone="gray" label="Lots sold" value={t.lots} sub={`${t.matchedCount} matched · ${t.unmatchedCount} unmatched`} />
+        <Kpi icon={ShoppingCart} tone="gray" label="Lots sold" value={t.lots} sub={`${t.commissionableCount} new · ${t.oldPlantCount} old`} />
         <Kpi icon={Truck} tone="gray" label="Shipping collected" value={fmt$(t.shippingCollected)} sub={`${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'}`} />
       </div>
 
       {/* Net-profit waterfall */}
       <NetProfit totals={t} />
+
+      {/* Seller commission report */}
+      <CommissionReport result={result} />
 
       {/* Data-quality checklist */}
       <FlagsBanner result={result} />
@@ -274,7 +277,7 @@ function NetProfit({ totals }) {
     { label: 'Gross sales', value: t.grossSales, neg: false },
     { label: 'Shipping collected', value: t.shippingCollected, neg: false },
     { label: 'COGS', value: t.cogs, neg: true },
-    { label: `Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of gross sales)`, value: t.sellerCommission, neg: true },
+    { label: `Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of new-plant sales)`, value: t.sellerCommission, neg: true },
     { label: `Labor ($${LABOR_PER_BOX} × ${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'})`, value: t.labor, neg: true },
     { label: `Shipping cost ($${SHIPPING_COST_PER_BOX} × ${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'})`, value: t.shippingCost, neg: true },
   ];
@@ -307,8 +310,82 @@ function NetProfit({ totals }) {
       </div>
       {t.excludedRevenue > 0.005 && (
         <p className="text-[11px] text-amber-700 mt-2">
-          COGS is missing for {fmt$2(t.excludedRevenue)} of unmatched sales — net profit is overstated until they're matched below.
+          {fmt$2(t.excludedRevenue)} of matched sales have no recorded cost — net profit overstates by their missing COGS.
         </p>
+      )}
+    </div>
+  );
+}
+
+function CommissionReport({ result }) {
+  const t = result.totals;
+  const eligible = useMemo(
+    () => result.lines.filter(l => l.matched && !l.oldPlant).sort((a, b) => b.commission - a.commission),
+    [result.lines],
+  );
+  const rate = Math.round(SELLER_COMMISSION_RATE * 100);
+
+  return (
+    <div className="border border-gray-200 rounded-xl p-4">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-1.5">
+          <Coins className="w-4 h-4 text-gray-400" />
+          <h4 className="text-sm font-medium text-gray-900">Seller commission ({rate}%)</h4>
+        </div>
+        <button
+          onClick={() => exportCommissionCsv(result)}
+          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg"
+          data-export-hide
+        >
+          <Download className="w-3.5 h-3.5" /> Commission CSV
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2.5 mb-3">
+        <div className="rounded-lg border border-gray-200 bg-gray-50 p-2.5">
+          <div className="text-xs text-gray-500">Old plants — set aside</div>
+          <div className="text-sm font-semibold text-gray-900 mt-0.5 tabular-nums">{t.oldPlantCount} lots · {fmt$2(t.oldPlantRevenue)}</div>
+          <div className="text-[11px] text-gray-500">SKU &lt; {OLD_PLANT_SKU_MAX} · no commission</div>
+        </div>
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-2.5">
+          <div className="text-xs text-emerald-800/70">Commission-eligible</div>
+          <div className="text-sm font-semibold text-emerald-900 mt-0.5 tabular-nums">{t.commissionableCount} lots · {fmt$2(t.commissionBase)}</div>
+          <div className="text-[11px] text-emerald-800/70">SKU ≥ {OLD_PLANT_SKU_MAX} · pays {rate}%</div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between border-t border-gray-200 pt-2 mb-2">
+        <span className="text-sm font-semibold text-gray-900">Commission owed to seller</span>
+        <span className="text-sm font-semibold text-emerald-700 tabular-nums">{fmt$2(t.sellerCommission)}</span>
+      </div>
+
+      {eligible.length > 0 && (
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <div className="max-h-60 overflow-y-auto" data-export-expand>
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr className="text-gray-500 text-left">
+                  <th className="px-2 py-1.5 font-medium">Buyer</th>
+                  <th className="px-2 py-1.5 font-medium">SKU</th>
+                  <th className="px-2 py-1.5 font-medium">Item</th>
+                  <th className="px-2 py-1.5 font-medium text-right">Sale</th>
+                  <th className="px-2 py-1.5 font-medium text-right">Commission</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {eligible.map(l => (
+                  <tr key={l.rowKey}>
+                    <td className="px-2 py-1.5 text-gray-700 truncate max-w-[7rem]" title={l.buyer}>{l.buyer || '—'}</td>
+                    <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">{l.itemSku || l.sku || '—'}</td>
+                    <td className="px-2 py-1.5 text-gray-900 truncate max-w-[10rem]" title={l.title}>{l.title || '—'}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-gray-900">{fmt$2(l.revenue)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-emerald-700">{fmt$2(l.commission)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -328,34 +405,38 @@ function Checkline({ ok, children }) {
 function FlagsBanner({ result }) {
   const t = result.totals;
   const { duplicateSkus, offDayLines, undatedCount } = result.flags;
-  const dataOk = t.excludedRevenue <= 0.005;
+  const matchOk = t.unmatchedCount === 0;
+  const costOk = t.excludedRevenue <= 0.005;
   const dayOk = !!result.saleDay && offDayLines.length === 0 && undatedCount === 0;
-  const dupOk = duplicateSkus.length === 0;
 
   return (
     <div className="space-y-1.5 text-sm bg-gray-50 border border-gray-200 rounded-lg p-3">
-      {/* Profit coverage */}
-      <Checkline ok={dataOk}>
-        {dataOk
-          ? 'Every sale line has a known cost — profit covers the whole live.'
-          : <>
-              <span className="font-medium tabular-nums">{fmt$2(t.excludedRevenue)}</span> in sales is excluded from profit
-              {' '}({t.unmatchedCount} unmatched{t.costlessMatched > 0 ? ` + ${t.costlessMatched} matched without a cost` : ''}).
-              Match them below to fold their cost in.
-            </>}
+      {/* Matched coverage — unmatched lines are excluded from the whole report */}
+      <Checkline ok={matchOk}>
+        {matchOk
+          ? 'Every sale line matched an inventory item.'
+          : <><span className="font-medium">{t.unmatchedCount}</span> unmatched line{t.unmatchedCount === 1 ? '' : 's'} excluded from this report — match {t.unmatchedCount === 1 ? 'it' : 'them'} below to include {t.unmatchedCount === 1 ? 'it' : 'them'}.</>}
       </Checkline>
 
-      {/* Same-day check */}
+      {/* Cost coverage among matched lines */}
+      {!costOk && (
+        <Checkline ok={false}>
+          <span className="font-medium tabular-nums">{fmt$2(t.excludedRevenue)}</span> of matched sales
+          {' '}({t.costlessMatched} lot{t.costlessMatched === 1 ? '' : 's'}) have no recorded cost — excluded from profit. Set the item cost, then re-evaluate.
+        </Checkline>
+      )}
+
+      {/* Same-day window — a night live runs past midnight, so day + next morning */}
       {result.saleDay ? (
         <Checkline ok={dayOk}>
           {dayOk
-            ? <>All {t.lots} sales are dated on the live day ({result.saleDay}).</>
+            ? <>All {t.lots} sales fall within the live window ({result.saleDay} + the morning after).</>
             : <>
                 {offDayLines.length > 0 && (
-                  <><span className="font-medium">{offDayLines.length}</span> sale{offDayLines.length === 1 ? '' : 's'} dated outside the live day ({result.saleDay}): <span className="font-medium">{offDayLines.slice(0, 6).map(l => l.sku || l.buyer || '?').join(', ')}</span>{offDayLines.length > 6 ? '…' : ''}. </>
+                  <><span className="font-medium">{offDayLines.length}</span> sale{offDayLines.length === 1 ? '' : 's'} dated outside the live window ({result.saleDay} + next morning): <span className="font-medium">{offDayLines.slice(0, 6).map(l => l.itemSku || l.sku || l.buyer || '?').join(', ')}</span>{offDayLines.length > 6 ? '…' : ''}. </>
                 )}
                 {undatedCount > 0 && <>{undatedCount} sale{undatedCount === 1 ? '' : 's'} have no order date to check. </>}
-                Wrong file, or orders bled from another day?
+                Wrong file?
               </>}
         </Checkline>
       ) : (
@@ -363,7 +444,7 @@ function FlagsBanner({ result }) {
       )}
 
       {/* Possible double-sales */}
-      {!dupOk && (
+      {duplicateSkus.length > 0 && (
         <Checkline ok={false}>
           {duplicateSkus.length} SKU{duplicateSkus.length === 1 ? '' : 's'} sold on more than one order (possible double-sale):{' '}
           <span className="font-medium">{duplicateSkus.slice(0, 8).map(d => `${d.sku} ×${d.count}`).join(', ')}</span>
@@ -546,10 +627,14 @@ function TopList({ title, lines, valueOf, tone = 'emerald' }) {
 }
 
 function ItemizedTable({ lines }) {
-  const sorted = useMemo(() => [...lines].sort((a, b) => b.revenue - a.revenue), [lines]);
+  // Reports exclude unmatched lines.
+  const matched = useMemo(
+    () => lines.filter(l => l.matched).sort((a, b) => b.revenue - a.revenue),
+    [lines],
+  );
   return (
     <div>
-      <h4 className="text-sm font-medium text-gray-900 mb-2">All sales ({lines.length})</h4>
+      <h4 className="text-sm font-medium text-gray-900 mb-2">All sales ({matched.length})</h4>
       <div className="border border-gray-200 rounded-lg overflow-hidden">
         <div className="max-h-72 overflow-y-auto" data-export-expand>
           <table className="w-full text-xs">
@@ -561,16 +646,17 @@ function ItemizedTable({ lines }) {
                 <th className="px-2 py-1.5 font-medium text-right">Sale</th>
                 <th className="px-2 py-1.5 font-medium text-right">Cost</th>
                 <th className="px-2 py-1.5 font-medium text-right">Profit</th>
+                <th className="px-2 py-1.5 font-medium text-right">Comm.</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {sorted.map(l => (
-                <tr key={l.rowKey} className={!l.matched ? 'bg-amber-50/50' : l.offDay ? 'bg-amber-50/30' : ''}>
+              {matched.map(l => (
+                <tr key={l.rowKey} className={l.offDay ? 'bg-amber-50/30' : ''}>
                   <td className="px-2 py-1.5 text-gray-700 truncate max-w-[7rem]" title={l.buyer}>{l.buyer || '—'}</td>
-                  <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">{l.sku || '—'}</td>
+                  <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">{l.itemSku || l.sku || '—'}</td>
                   <td className="px-2 py-1.5 text-gray-900 truncate max-w-[10rem]" title={l.title}>
                     {l.title || '—'}
-                    {!l.matched && <span className="ml-1 text-[10px] text-amber-700">unmatched</span>}
+                    {l.oldPlant && <span className="ml-1 text-[10px] text-gray-500">old</span>}
                     {l.manual && <span className="ml-1 text-[10px] text-blue-700">manual</span>}
                     {l.offDay && <span className="ml-1 text-[10px] text-amber-700 inline-flex items-center gap-0.5"><CalendarClock className="w-3 h-3" />off-day</span>}
                   </td>
@@ -579,6 +665,7 @@ function ItemizedTable({ lines }) {
                   <td className={`px-2 py-1.5 text-right tabular-nums ${l.profit == null ? 'text-gray-400' : l.profit >= 0 ? 'text-blue-700' : 'text-red-700'}`}>
                     {l.profit != null ? fmt$2(l.profit) : '—'}
                   </td>
+                  <td className="px-2 py-1.5 text-right tabular-nums text-emerald-700">{l.commission > 0 ? fmt$2(l.commission) : '—'}</td>
                 </tr>
               ))}
             </tbody>
@@ -602,16 +689,18 @@ function csvCell(v) {
 function exportLinesCsv(result) {
   const headers = [
     'Buyer', 'Username', 'Order', 'Order Date', 'SKU', 'Item', 'Variety',
-    'Qty', 'Sale Price', 'Shipping Fee', 'Cost', 'Profit', 'Matched', 'Manual', 'Off-day',
+    'Qty', 'Sale Price', 'Shipping Fee', 'Cost', 'Profit', 'Commission', 'Old plant', 'Manual', 'Off-day',
   ];
-  const rows = result.lines.map(l => [
+  // Reports exclude unmatched lines.
+  const rows = result.lines.filter(l => l.matched).map(l => [
     l.buyer, l.username, l.orderNumber,
     l.orderDate ? new Date(l.orderDate).toLocaleString() : '',
-    l.sku, l.title, l.variety || '',
+    l.itemSku || l.sku, l.title, l.variety || '',
     l.quantity, l.revenue.toFixed(2), l.shippingFee.toFixed(2),
     l.cost != null ? l.cost.toFixed(2) : '',
     l.profit != null ? l.profit.toFixed(2) : '',
-    l.matched ? 'yes' : 'no',
+    l.commission > 0 ? l.commission.toFixed(2) : '',
+    l.oldPlant ? 'yes' : 'no',
     l.manual ? 'yes' : 'no',
     l.offDay ? 'yes' : 'no',
   ]);
@@ -622,15 +711,43 @@ function exportLinesCsv(result) {
     r[11] = amount == null ? '' : amount.toFixed(2);
     return r;
   };
+  const totalsRow = Array(headers.length).fill('');
+  totalsRow[0] = 'TOTALS';
+  totalsRow[7] = t.lots;
+  totalsRow[8] = t.grossSales.toFixed(2);
+  totalsRow[9] = t.shippingCollected.toFixed(2);
+  totalsRow[10] = t.cogs.toFixed(2);
+  totalsRow[11] = t.grossProfit.toFixed(2);
+  totalsRow[12] = t.sellerCommission.toFixed(2);
   rows.push([]);
-  rows.push(['TOTALS', '', '', '', '', '', '', t.lots, t.grossSales.toFixed(2), t.shippingCollected.toFixed(2), t.cogs.toFixed(2), t.grossProfit.toFixed(2), `${t.matchedCount}/${t.lots}`, '', '']);
-  rows.push(sumRow(`Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}%)`, t.sellerCommission));
+  rows.push(totalsRow);
+  rows.push(sumRow(`Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of new plants)`, t.sellerCommission));
   rows.push(sumRow(`Labor ($${LABOR_PER_BOX} x ${t.boxes} boxes)`, t.labor));
   rows.push(sumRow(`Shipping cost ($${SHIPPING_COST_PER_BOX} x ${t.boxes} boxes)`, t.shippingCost));
   rows.push(sumRow('Net profit', t.netProfit));
   rows.push(['Net margin', '', '', '', '', '', '', '', '', '', '', t.netMargin == null ? '' : `${t.netMargin.toFixed(1)}%`]);
   const csv = [headers, ...rows].map(r => r.map(csvCell).join(',')).join('\n');
   downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8;' }), `${slugName(result.saleName)}-sales-eval.csv`);
+}
+
+// Commission-only export for handing to the seller: every commission-eligible
+// (new) plant with its 15% cut, plus the old-plants-set-aside summary.
+function exportCommissionCsv(result) {
+  const rate = Math.round(SELLER_COMMISSION_RATE * 100);
+  const headers = ['Buyer', 'Username', 'Order', 'SKU', 'Item', 'Sale Price', `Commission (${rate}%)`];
+  const eligible = result.lines
+    .filter(l => l.matched && !l.oldPlant)
+    .sort((a, b) => b.commission - a.commission);
+  const rows = eligible.map(l => [
+    l.buyer, l.username, l.orderNumber, l.itemSku || l.sku, l.title,
+    l.revenue.toFixed(2), l.commission.toFixed(2),
+  ]);
+  const t = result.totals;
+  rows.push([]);
+  rows.push(['COMMISSION OWED', '', '', '', `${t.commissionableCount} new lots`, t.commissionBase.toFixed(2), t.sellerCommission.toFixed(2)]);
+  rows.push([`Old plants set aside (SKU < ${OLD_PLANT_SKU_MAX})`, '', '', '', `${t.oldPlantCount} lots`, t.oldPlantRevenue.toFixed(2), '0.00']);
+  const csv = [headers, ...rows].map(r => r.map(csvCell).join(',')).join('\n');
+  downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8;' }), `${slugName(result.saleName)}-commission.csv`);
 }
 
 // ── Image / PDF export ───────────────────────────────────────────────────────

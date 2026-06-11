@@ -101,10 +101,16 @@ export function parsePalmstreetOrders(rows) {
     const buyerNote = String(pick(row, 'Buyer Order Note')).trim();
     const orderStatus = String(pick(row, 'Order Status')).trim().toLowerCase();
 
-    // Skip canceled orders entirely — the buyer never paid, the line shouldn't
-    // mark inventory sold or create a packing box. Matches 'canceled' (American)
-    // and 'cancelled' (British) case-insensitively.
-    if (orderStatus === 'canceled' || orderStatus === 'cancelled') return;
+    // Skip canceled orders entirely — they shouldn't mark inventory sold,
+    // create a packing box, or count in a sales report. Match the canceled
+    // STATE case-insensitively ('canceled' / 'cancelled', 'Order Canceled',
+    // 'Cancelled - refund', 'canceled by buyer', bare 'cancellation') but NOT a
+    // still-active 'cancellation requested/pending/under review' — that order
+    // hasn't been canceled yet and must still ship. This parser also feeds
+    // Validate Sales (which marks items sold), so being precise here matters.
+    const isCanceled = /cancel(l?ed|lation)/.test(orderStatus)
+      && !/request|pending|review/.test(orderStatus);
+    if (isCanceled) return;
 
     const title = String(pick(row, 'Item Title', 'Title')).trim();
     const sku = String(pick(row, 'SKU')).trim();
