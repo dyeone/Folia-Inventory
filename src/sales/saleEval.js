@@ -4,15 +4,27 @@
 // the result into headline financials + breakdowns. The computed result is
 // cached in localStorage (per sale id) so the "Financial Report" button can
 // reopen it without re-uploading — same pattern as live state (see liveState.js).
+//
+// Manual matching (applyManualMatch) lets the operator link an unmatched line
+// to an inventory item. That's still read-only: it overrides the line's cost
+// in THIS report only, never touching the inventory row.
 
 import { normalizeSku } from '../labels/boxCode.js';
 
 export const STORAGE_KEY = (saleId) => `sale-eval-${saleId}`;
 
+// Bump when the result shape changes. loadEval discards caches from an older
+// version (they lack fields this UI now needs, e.g. boxId / net-profit totals),
+// so the operator just re-uploads rather than rendering a half-broken report.
+export const RESULT_VERSION = 2;
+
 export function loadEval(saleId) {
   try {
     const raw = localStorage.getItem(STORAGE_KEY(saleId));
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    if (!obj || obj.version !== RESULT_VERSION) return null;
+    return obj;
   } catch {
     return null;
   }
@@ -28,11 +40,7 @@ export function saveEval(saleId, result) {
 }
 
 export function hasEval(saleId) {
-  try {
-    return localStorage.getItem(STORAGE_KEY(saleId)) != null;
-  } catch {
-    return false;
-  }
+  return loadEval(saleId) != null;
 }
 
 const num = (v) => {
@@ -40,44 +48,60 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
-// Build the evaluation from parsed Palmstreet boxes + the inventory items.
-// `boxes` is the output of parsePalmstreetOrders(); `items` is the live
-// inventory array. Returns a plain, JSON-serializable result object.
-//
-// Revenue comes from the CSV's Item Price (what the buyer actually paid);
-// cost comes from the matched item's grossCost. Profit and COGS are summed
-// ONLY over lines with a known cost, so an unmatched SKU (or a matched item
-// with no recorded cost) never silently inflates profit — that revenue is
-// surfaced separately as "excluded from profit".
-export function evaluateSale(boxes, items, meta = {}) {
-  // SKU → item, for cost lookup. sku is globally unique on inventory_items.
-  const bySku = new Map();
+// Operating-cost assumptions for the net-profit waterfall.
+//   LABOR_PER_BOX           — flat labor we pay to pack/ship each box
+//   SELLER_COMMISSION_RATE  — the seller's cut of gross (product) sales
+export const LABOR_PER_BOX = 2;
+export const SELLER_COMMISSION_RATE = 0.15;
+
+// Local calendar day (YYYY-MM-DD) of an ISO/date value. Used to check each
+// order's date against the live's day. Local time matches how the orders
+// parser interprets Palmstreet's naive PDT timestamps.
+export function localDay(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Cost/profit fields for a line given the matched item (or null). $0/negative
+// cost counts as "no known cost", matching financialHelpers.rollup so the two
+// views agree.
+function costFor(item, revenue) {
+  const rawCost = item ? num(item.grossCost ?? item.cost) : null;
+  const hasCost = rawCost != null && rawCost > 0;
+  return {
+    cost: item && hasCost ? rawCost : null,
+    profit: item && hasCost ? revenue - rawCost : null,
+    hasCost: !!(item && hasCost),
+  };
+}
+
+// Build the per-line records from parsed Palmstreet boxes + inventory items.
+// Revenue comes from the CSV's Item Price (what the buyer paid); cost from the
+// matched item's grossCost.
+function buildLines(boxes, items) {
+  const bySku = new Map(); // sku is globally unique on inventory_items
   for (const it of items) {
     if (it.deletedAt) continue;
     const k = normalizeSku(it.sku);
     if (k && !bySku.has(k)) bySku.set(k, it);
   }
-
   const lines = [];
-  const orderSet = new Set();
-  const buyerSet = new Set();
-
   for (const box of boxes) {
-    // A "buyer" is one person, keyed by username (else recipient name). A
-    // single buyer shipping to two addresses is two boxes but one buyer, so
-    // count buyers here — not boxes — to keep the KPI honest.
-    buyerSet.add((box.username || box.recipientName || box.id).toLowerCase().trim());
     for (const li of box.items) {
       const k = normalizeSku(li.sku);
       const item = k ? bySku.get(k) : null;
       const revenue = num(li.price) || 0;
-      const rawCost = item ? num(item.grossCost ?? item.cost) : null;
-      const hasCost = rawCost != null && rawCost > 0;
-      const profit = item && hasCost ? revenue - rawCost : null;
-      if (li.orderNumber) orderSet.add(li.orderNumber);
+      const cf = costFor(item, revenue);
       lines.push({
         rowKey: `${box.id}:${li.rowKey}`,
+        boxId: box.id,
         sku: k || String(li.sku || ''),
+        csvTitle: li.title || '',
         title: item?.name || li.title || '',
         variety: item?.variety || null,
         buyer: box.recipientName || '',
@@ -87,41 +111,74 @@ export function evaluateSale(boxes, items, meta = {}) {
         quantity: li.quantity || 1,
         revenue,
         shippingFee: num(li.orderShippingFee) || 0,
-        cost: item && hasCost ? rawCost : null,
-        profit,
+        cost: cf.cost,
+        profit: cf.profit,
         matched: !!item,
-        hasCost: !!(item && hasCost),
+        hasCost: cf.hasCost,
+        matchedItemId: item?.id || null,
+        manual: false,
       });
     }
   }
+  return lines;
+}
 
-  // Totals. Gross sales = everything buyers paid (matched or not). COGS and
-  // profit are like-for-like: only lines with a known cost.
+// Roll a set of line records into the full report object. Pure and
+// re-runnable, so a manual match just patches one line and re-aggregates.
+// meta carries through generatedAt/fileName/saleName/saleDay so re-aggregation
+// preserves them.
+export function aggregate(lines, meta = {}) {
+  const saleDay = meta.saleDay || null;
+  const annotated = lines.map(l => ({
+    ...l,
+    offDay: !!(saleDay && l.orderDate && localDay(l.orderDate) !== saleDay),
+  }));
+
   let grossSales = 0, shippingCollected = 0, matchedRevenue = 0, cogs = 0;
   let matchedCount = 0, unmatchedCount = 0, costlessMatched = 0;
-  for (const l of lines) {
+  const orderSet = new Set();
+  const buyerSet = new Set();
+  const boxSet = new Set();
+  let undatedCount = 0;
+  for (const l of annotated) {
     grossSales += l.revenue;
     shippingCollected += l.shippingFee;
+    if (l.orderNumber) orderSet.add(l.orderNumber.toLowerCase());
+    buyerSet.add((l.username || l.buyer || '').toLowerCase().trim());
+    // Count a box for labor only if it carries a real (SKU'd) item — a
+    // coupon / free-shipping-only "box" ships nothing, so it gets no labor.
+    if (l.boxId && l.sku) boxSet.add(l.boxId);
     if (l.matched) matchedCount += 1; else unmatchedCount += 1;
     if (l.hasCost) { matchedRevenue += l.revenue; cogs += l.cost; }
     else if (l.matched) costlessMatched += 1;
+    if (!l.orderDate) undatedCount += 1;
   }
   const grossProfit = matchedRevenue - cogs;
   const margin = matchedRevenue > 0 ? (grossProfit / matchedRevenue) * 100 : null;
-  const excludedRevenue = grossSales - matchedRevenue; // unmatched + costless-matched
-  const lots = lines.length;
+  const excludedRevenue = grossSales - matchedRevenue;
+  const lots = annotated.length;
   const avgSale = lots > 0 ? grossSales / lots : null;
+
+  // Net-profit waterfall: shipping is income, COGS + per-box labor + the
+  // seller's commission on gross sales are costs. (Shipping label cost lives in
+  // the cashflow export, not these orders, so it isn't subtracted here.)
+  const boxes = boxSet.size;
+  const labor = boxes * LABOR_PER_BOX;
+  const sellerCommission = grossSales * SELLER_COMMISSION_RATE;
+  const totalRevenue = grossSales + shippingCollected;
+  const netProfit = totalRevenue - cogs - labor - sellerCommission;
+  const netMargin = grossSales > 0 ? (netProfit / grossSales) * 100 : null;
 
   const totals = {
     grossSales, shippingCollected, matchedRevenue, cogs, grossProfit, margin,
     excludedRevenue, lots, matchedCount, unmatchedCount, costlessMatched,
     orders: orderSet.size, buyers: buyerSet.size, avgSale,
+    boxes, labor, sellerCommission, totalRevenue, netProfit, netMargin,
   };
 
-  // By-variety: matched lines grouped by their item's variety; unmatched
-  // lines bucketed under "(unmatched)".
+  // By-variety: matched lines grouped by variety; unmatched bucketed.
   const vmap = new Map();
-  for (const l of lines) {
+  for (const l of annotated) {
     const key = l.matched ? (l.variety || '(no variety)') : '(unmatched)';
     let r = vmap.get(key);
     if (!r) { r = { variety: key, revenue: 0, cost: 0, profit: 0, units: 0, hasCost: false }; vmap.set(key, r); }
@@ -131,16 +188,13 @@ export function evaluateSale(boxes, items, meta = {}) {
   }
   const byVariety = [...vmap.values()].sort((a, b) => b.revenue - a.revenue);
 
-  const topByRevenue = [...lines].sort((a, b) => b.revenue - a.revenue).slice(0, 8);
-  const topByProfit = lines.filter(l => l.profit != null).sort((a, b) => b.profit - a.profit).slice(0, 8);
+  const topByRevenue = [...annotated].sort((a, b) => b.revenue - a.revenue).slice(0, 8);
+  const topByProfit = annotated.filter(l => l.profit != null).sort((a, b) => b.profit - a.profit).slice(0, 8);
 
-  // Flags: a SKU sold on more than one distinct ORDER in this upload is a
-  // possible double-sale. Key on order identity (order number, else buyer);
-  // skip lines with neither so a blank-order export can't manufacture a flag
-  // off otherwise-unique row keys. Two units of one SKU in the SAME order
-  // collapse to one key and aren't flagged — that's quantity, not a double-sale.
+  // Flags: SKU sold across >1 distinct order (possible double-sale); unmatched
+  // lines; lines dated outside the live day.
   const skuOrders = new Map();
-  for (const l of lines) {
+  for (const l of annotated) {
     if (!l.sku) continue;
     const orderKey = (l.orderNumber || l.buyer || '').toLowerCase().trim();
     if (!orderKey) continue;
@@ -152,18 +206,51 @@ export function evaluateSale(boxes, items, meta = {}) {
     .filter(([, set]) => set.size > 1)
     .map(([sku, set]) => ({ sku, count: set.size }))
     .sort((a, b) => b.count - a.count);
-  const unmatchedLines = lines.filter(l => !l.matched);
+  const unmatchedLines = annotated.filter(l => !l.matched);
+  const offDayLines = annotated.filter(l => l.offDay);
 
   return {
-    version: 1,
-    generatedAt: new Date().toISOString(),
+    version: RESULT_VERSION,
+    generatedAt: meta.generatedAt || new Date().toISOString(),
     fileName: meta.fileName || null,
     saleName: meta.saleName || null,
+    saleDay,
     totals,
-    lines,
+    lines: annotated,
     byVariety,
     topByRevenue,
     topByProfit,
-    flags: { duplicateSkus, unmatchedLines },
+    flags: { duplicateSkus, unmatchedLines, offDayLines, undatedCount },
   };
+}
+
+export function evaluateSale(boxes, items, meta = {}) {
+  return aggregate(buildLines(boxes, items), meta);
+}
+
+// Override one line's match with a chosen inventory item (or null to clear,
+// reverting to unmatched). Re-aggregates so totals/flags reflect it. Read-only:
+// the inventory item is never modified.
+export function applyManualMatch(result, rowKey, item) {
+  const lines = result.lines.map(l => {
+    if (l.rowKey !== rowKey) return l;
+    const cf = costFor(item, l.revenue);
+    return {
+      ...l,
+      title: item ? (item.name || l.csvTitle) : l.csvTitle,
+      variety: item ? (item.variety || null) : null,
+      cost: cf.cost,
+      profit: cf.profit,
+      matched: !!item,
+      hasCost: cf.hasCost,
+      matchedItemId: item?.id || null,
+      manual: !!item,
+    };
+  });
+  return aggregate(lines, {
+    generatedAt: result.generatedAt,
+    fileName: result.fileName,
+    saleName: result.saleName,
+    saleDay: result.saleDay,
+  });
 }
