@@ -1,22 +1,43 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
-  Upload, FileText, AlertTriangle, RefreshCw, Download, Loader2,
-  TrendingUp, DollarSign, Boxes, Truck, Percent, Tag, ShoppingCart,
+  Upload, FileText, AlertTriangle, RefreshCw, Download, Loader2, Check,
+  TrendingUp, DollarSign, Boxes, Truck, Percent, ShoppingCart, Search, X,
+  CalendarClock, Link2, Coins,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Kpi } from '../financial/FinancialChrome.jsx';
 import { fmt$, fmt$2, fmtPct } from '../financial/financialHelpers.js';
 import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
-import { evaluateSale, loadEval, saveEval } from './saleEval.js';
+import {
+  evaluateSale, applyManualMatch, loadEval, saveEval,
+  LABOR_PER_BOX, SELLER_COMMISSION_RATE,
+} from './saleEval.js';
+
+// The live's calendar day (YYYY-MM-DD, local). Prefer the plain `date` field;
+// fall back to startTime. Used to check every order is dated on the live day.
+function liveDayOf(sale) {
+  if (sale?.date && /^\d{4}-\d{2}-\d{2}/.test(sale.date)) return sale.date.slice(0, 10);
+  if (sale?.startTime) {
+    const d = new Date(sale.startTime);
+    if (!isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    }
+  }
+  return null;
+}
 
 // Per-live sales evaluation popup. Two views:
-//   'upload' — pick a Palmstreet orders CSV; parse + compute (READ-ONLY,
+//   'upload' — drop/pick a Palmstreet orders CSV; parse + compute (READ-ONLY,
 //              never touches inventory) and cache the result per sale id.
 //   'report' — the financial dashboard for the cached result.
 // `mode` ('evaluate' | 'report') picks the initial view.
 export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGenerated, onClose }) {
   const existing = useMemo(() => loadEval(sale.id), [sale.id]);
+  const saleDay = useMemo(() => liveDayOf(sale), [sale]);
   const [result, setResult] = useState(mode === 'report' ? existing : null);
   const [view, setView] = useState(mode === 'report' && existing ? 'report' : 'upload');
   const [fileName, setFileName] = useState('');
@@ -43,7 +64,7 @@ export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGen
         setLoading(false);
         return;
       }
-      const res = evaluateSale(boxes, items, { fileName: file.name, saleName: sale.name });
+      const res = evaluateSale(boxes, items, { fileName: file.name, saleName: sale.name, saleDay });
       const saved = saveEval(sale.id, res);
       setResult(res);
       setView('report');
@@ -53,13 +74,22 @@ export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGen
       } else {
         // localStorage quota (or private-mode block): the report shows now, but
         // hasEval() stays false so the "Financial Report" button won't appear.
-        // Tell the operator instead of letting it silently vanish.
         showToast?.('Report shown, but too large to save — re-upload to view it again later.', 'error');
       }
     } catch (e) {
       setErr(e.message || 'Could not read that file');
     }
     setLoading(false);
+  };
+
+  // Manual match override (read-only — recompute + re-cache this report only).
+  const onMatch = (rowKey, item) => {
+    if (!result) return;
+    const next = applyManualMatch(result, rowKey, item);
+    setResult(next);
+    if (!saveEval(sale.id, next)) {
+      showToast?.('Match applied, but the report is too large to save — it may not persist.', 'error');
+    }
   };
 
   const title = view === 'report' ? `Financial Report — ${sale.name}` : `Evaluate Sales — ${sale.name}`;
@@ -76,13 +106,21 @@ export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGen
           onViewExisting={() => { setResult(existing); setView('report'); }}
         />
       ) : (
-        <ReportView result={result} onReevaluate={() => { setView('upload'); setErr(''); }} />
+        <ReportView
+          result={result}
+          items={items}
+          onMatch={onMatch}
+          onReevaluate={() => { setView('upload'); setErr(''); }}
+        />
       )}
     </Modal>
   );
 }
 
 function UploadView({ loading, fileName, err, hasExisting, onFile, onViewExisting }) {
+  const fileRef = useRef(null);
+  const [dragging, setDragging] = useState(false);
+
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-2 text-sm text-gray-600 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
@@ -95,10 +133,24 @@ function UploadView({ loading, fileName, err, hasExisting, onFile, onViewExistin
         </p>
       </div>
 
-      <label className={`block border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition ${
-        loading ? 'border-gray-200 bg-gray-50' : 'border-emerald-300 hover:border-emerald-400 hover:bg-emerald-50/40'
-      }`}>
+      <div
+        onDragOver={(e) => { if (loading) return; e.preventDefault(); if (!dragging) setDragging(true); }}
+        onDragLeave={(e) => { if (e.currentTarget.contains(e.relatedTarget)) return; setDragging(false); }}
+        onDrop={(e) => {
+          if (loading) return;
+          e.preventDefault();
+          setDragging(false);
+          onFile(e.dataTransfer?.files?.[0]);
+        }}
+        onClick={() => !loading && fileRef.current?.click()}
+        className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition ${
+          loading ? 'border-gray-200 bg-gray-50 cursor-default'
+          : dragging ? 'border-emerald-500 bg-emerald-50'
+          : 'border-emerald-300 hover:border-emerald-400 hover:bg-emerald-50/40'
+        }`}
+      >
         <input
+          ref={fileRef}
           type="file"
           accept=".xlsx,.xls,.csv"
           className="hidden"
@@ -113,11 +165,13 @@ function UploadView({ loading, fileName, err, hasExisting, onFile, onViewExistin
         ) : (
           <div className="flex flex-col items-center gap-2">
             <Upload className="w-7 h-7 text-emerald-600" />
-            <span className="text-sm font-medium text-gray-900">Choose orders CSV / XLSX</span>
+            <span className="text-sm font-medium text-gray-900">
+              {dragging ? 'Drop the file to evaluate' : 'Drop, or choose orders CSV / XLSX'}
+            </span>
             <span className="text-xs text-gray-500">Palmstreet → Orders → Export</span>
           </div>
         )}
-      </label>
+      </div>
 
       {err && (
         <div className="flex items-center gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
@@ -137,7 +191,7 @@ function UploadView({ loading, fileName, err, hasExisting, onFile, onViewExistin
   );
 }
 
-function ReportView({ result, onReevaluate }) {
+function ReportView({ result, items, onMatch, onReevaluate }) {
   const t = result.totals;
   const generated = result.generatedAt ? new Date(result.generatedAt) : null;
   const profitTone = t.grossProfit >= 0 ? 'blue' : 'red';
@@ -148,6 +202,7 @@ function ReportView({ result, onReevaluate }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs text-gray-500">
           {generated && <>Generated {generated.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</>}
+          {result.saleDay && <> · live day {result.saleDay}</>}
           {result.fileName && <> · {result.fileName}</>}
         </div>
         <div className="flex gap-2">
@@ -173,11 +228,17 @@ function ReportView({ result, onReevaluate }) {
         <Kpi icon={TrendingUp} tone={profitTone} label="Gross profit" value={fmt$(t.grossProfit)} sub="matched lots only" />
         <Kpi icon={Percent} tone={profitTone} label="Margin" value={fmtPct(t.margin)} sub="profit / matched rev" />
         <Kpi icon={ShoppingCart} tone="gray" label="Lots sold" value={t.lots} sub={`${t.matchedCount} matched · ${t.unmatchedCount} unmatched`} />
-        <Kpi icon={Truck} tone="gray" label="Shipping collected" value={fmt$(t.shippingCollected)} sub={t.avgSale != null ? `avg sale ${fmt$2(t.avgSale)}` : null} />
+        <Kpi icon={Truck} tone="gray" label="Shipping collected" value={fmt$(t.shippingCollected)} sub={`${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'}`} />
       </div>
 
-      {/* Data-quality flags */}
+      {/* Net-profit waterfall */}
+      <NetProfit totals={t} />
+
+      {/* Data-quality checklist */}
       <FlagsBanner result={result} />
+
+      {/* Manual matching of unmatched lines */}
+      <UnmatchedSection result={result} items={items} onMatch={onMatch} />
 
       {/* By variety */}
       {result.byVariety.length > 0 && <ByVariety rows={result.byVariety} />}
@@ -191,38 +252,207 @@ function ReportView({ result, onReevaluate }) {
   );
 }
 
+function NetProfit({ totals }) {
+  const t = totals;
+  const rows = [
+    { label: 'Gross sales', value: t.grossSales, neg: false },
+    { label: 'Shipping collected', value: t.shippingCollected, neg: false },
+    { label: 'COGS', value: t.cogs, neg: true },
+    { label: `Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of gross sales)`, value: t.sellerCommission, neg: true },
+    { label: `Labor ($${LABOR_PER_BOX} × ${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'})`, value: t.labor, neg: true },
+  ];
+  const netTone = t.netProfit >= 0 ? 'text-blue-700' : 'text-red-700';
+
+  return (
+    <div className="border border-gray-200 rounded-xl p-4">
+      <div className="flex items-center gap-1.5 mb-2">
+        <Coins className="w-4 h-4 text-gray-400" />
+        <h4 className="text-sm font-medium text-gray-900">Net profit</h4>
+      </div>
+      <div className="space-y-1 text-sm">
+        {rows.map(r => (
+          <div key={r.label} className="flex items-center justify-between">
+            <span className="text-gray-600">{r.label}</span>
+            <span className={`tabular-nums ${r.neg ? 'text-red-600' : 'text-gray-900'}`}>
+              {r.neg ? '- ' : '+ '}{fmt$2(r.value)}
+            </span>
+          </div>
+        ))}
+        <div className="border-t border-gray-200 my-1.5" />
+        <div className="flex items-center justify-between">
+          <span className="font-semibold text-gray-900">Net profit</span>
+          <span className={`font-semibold tabular-nums ${netTone}`}>{fmt$2(t.netProfit)}</span>
+        </div>
+        <div className="flex items-center justify-between text-xs text-gray-500">
+          <span>Net margin (net profit / gross sales)</span>
+          <span className="tabular-nums">{fmtPct(t.netMargin)}</span>
+        </div>
+      </div>
+      {t.excludedRevenue > 0.005 && (
+        <p className="text-[11px] text-amber-700 mt-2">
+          COGS is missing for {fmt$2(t.excludedRevenue)} of unmatched sales — net profit is overstated until they're matched below.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function Checkline({ ok, children }) {
+  return (
+    <div className={`flex items-start gap-2 ${ok ? 'text-emerald-700' : 'text-amber-900'}`}>
+      {ok
+        ? <Check className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
+        : <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />}
+      <span>{children}</span>
+    </div>
+  );
+}
+
 function FlagsBanner({ result }) {
   const t = result.totals;
-  const dups = result.flags.duplicateSkus;
-  const showExcluded = t.excludedRevenue > 0.005;
-  if (!showExcluded && dups.length === 0) {
-    return (
-      <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-        Every sale line matched an inventory item with a recorded cost — profit covers the whole live.
-      </div>
-    );
-  }
+  const { duplicateSkus, offDayLines, undatedCount } = result.flags;
+  const dataOk = t.excludedRevenue <= 0.005;
+  const dayOk = !!result.saleDay && offDayLines.length === 0 && undatedCount === 0;
+  const dupOk = duplicateSkus.length === 0;
+
   return (
-    <div className="space-y-2 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-lg p-3">
-      {showExcluded && (
-        <div className="flex items-start gap-2">
-          <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-          <span>
-            <span className="font-medium tabular-nums">{fmt$2(t.excludedRevenue)}</span> in sales is excluded from profit
-            {' '}({t.unmatchedCount} unmatched line{t.unmatchedCount === 1 ? '' : 's'}
-            {t.costlessMatched > 0 ? ` + ${t.costlessMatched} matched without a recorded cost` : ''}).
-            Fix the SKU or set the item cost, then re-evaluate.
-          </span>
-        </div>
+    <div className="space-y-1.5 text-sm bg-gray-50 border border-gray-200 rounded-lg p-3">
+      {/* Profit coverage */}
+      <Checkline ok={dataOk}>
+        {dataOk
+          ? 'Every sale line has a known cost — profit covers the whole live.'
+          : <>
+              <span className="font-medium tabular-nums">{fmt$2(t.excludedRevenue)}</span> in sales is excluded from profit
+              {' '}({t.unmatchedCount} unmatched{t.costlessMatched > 0 ? ` + ${t.costlessMatched} matched without a cost` : ''}).
+              Match them below to fold their cost in.
+            </>}
+      </Checkline>
+
+      {/* Same-day check */}
+      {result.saleDay ? (
+        <Checkline ok={dayOk}>
+          {dayOk
+            ? <>All {t.lots} sales are dated on the live day ({result.saleDay}).</>
+            : <>
+                {offDayLines.length > 0 && (
+                  <><span className="font-medium">{offDayLines.length}</span> sale{offDayLines.length === 1 ? '' : 's'} dated outside the live day ({result.saleDay}): <span className="font-medium">{offDayLines.slice(0, 6).map(l => l.sku || l.buyer || '?').join(', ')}</span>{offDayLines.length > 6 ? '…' : ''}. </>
+                )}
+                {undatedCount > 0 && <>{undatedCount} sale{undatedCount === 1 ? '' : 's'} have no order date to check. </>}
+                Wrong file, or orders bled from another day?
+              </>}
+        </Checkline>
+      ) : (
+        <Checkline ok={false}>This live has no date set, so order dates couldn't be checked.</Checkline>
       )}
-      {dups.length > 0 && (
-        <div className="flex items-start gap-2">
-          <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-          <span>
-            {dups.length} SKU{dups.length === 1 ? '' : 's'} sold on more than one order (possible double-sale):{' '}
-            <span className="font-medium">{dups.slice(0, 8).map(d => `${d.sku} ×${d.count}`).join(', ')}</span>
-            {dups.length > 8 ? '…' : ''}
-          </span>
+
+      {/* Possible double-sales */}
+      {!dupOk && (
+        <Checkline ok={false}>
+          {duplicateSkus.length} SKU{duplicateSkus.length === 1 ? '' : 's'} sold on more than one order (possible double-sale):{' '}
+          <span className="font-medium">{duplicateSkus.slice(0, 8).map(d => `${d.sku} ×${d.count}`).join(', ')}</span>
+          {duplicateSkus.length > 8 ? '…' : ''}
+        </Checkline>
+      )}
+    </div>
+  );
+}
+
+function UnmatchedSection({ result, items, onMatch }) {
+  const unmatched = result.flags.unmatchedLines;
+  const manual = result.lines.filter(l => l.manual);
+  if (unmatched.length === 0 && manual.length === 0) return null;
+
+  return (
+    <div>
+      <h4 className="text-sm font-medium text-gray-900 mb-1 flex items-center gap-1.5">
+        <Link2 className="w-4 h-4 text-gray-400" /> Unmatched lines
+        {unmatched.length > 0 && <span className="text-gray-400 font-normal">({unmatched.length})</span>}
+      </h4>
+      <p className="text-xs text-gray-500 mb-2">
+        No inventory SKU matched these. Match one to fold its cost into profit — this only affects
+        this report, never your inventory.
+      </p>
+      <div className="space-y-1.5">
+        {unmatched.map(l => (
+          <div key={l.rowKey} className="flex flex-col sm:flex-row sm:items-center gap-2 bg-amber-50/60 border border-amber-200 rounded-lg px-3 py-2">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-gray-900 truncate">{l.title || l.sku || '—'}</div>
+              <div className="text-[11px] text-gray-500 truncate">
+                {l.buyer || '—'} · {l.sku || 'no SKU'} · {fmt$2(l.revenue)}
+                {l.offDay && <span className="text-amber-700"> · off-day</span>}
+              </div>
+            </div>
+            <ItemPicker items={items} onPick={(item) => onMatch(l.rowKey, item)} />
+          </div>
+        ))}
+        {manual.map(l => (
+          <div key={l.rowKey} className="flex items-center gap-2 bg-blue-50/60 border border-blue-200 rounded-lg px-3 py-2">
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-gray-900 truncate">
+                {l.title}
+                <span className="ml-1.5 text-[10px] font-medium text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded-full">manual</span>
+              </div>
+              <div className="text-[11px] text-gray-500 truncate">
+                {l.sku || 'no SKU'} · cost {l.cost != null ? fmt$2(l.cost) : '—'} · profit {l.profit != null ? fmt$2(l.profit) : '—'}
+              </div>
+            </div>
+            <button
+              onClick={() => onMatch(l.rowKey, null)}
+              className="flex items-center gap-1 px-2 py-1 text-xs text-gray-600 hover:text-red-600 hover:bg-red-50 rounded"
+            >
+              <X className="w-3.5 h-3.5" /> Clear
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Inline searchable item picker (suggestions render below the input rather than
+// absolutely, so they never clip against the scrollable modal).
+function ItemPicker({ items, onPick }) {
+  const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
+  const live = useMemo(() => items.filter(i => !i.deletedAt), [items]);
+  const suggestions = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return [];
+    return live
+      .filter(i => `${i.name || ''} ${i.sku || ''} ${i.variety || ''}`.toLowerCase().includes(s))
+      .slice(0, 12);
+  }, [live, q]);
+
+  return (
+    <div className="w-full sm:w-60 flex-shrink-0">
+      <div className="relative">
+        <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+        <input
+          value={q}
+          onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          placeholder="Match to item…"
+          className="w-full pl-8 pr-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        />
+      </div>
+      {open && suggestions.length > 0 && (
+        <div className="mt-1 border border-gray-200 rounded-lg bg-white max-h-44 overflow-y-auto shadow-sm">
+          {suggestions.map(i => {
+            const c = parseFloat(i.grossCost ?? i.cost);
+            return (
+              <button
+                key={i.id}
+                onClick={() => { onPick(i); setQ(''); setOpen(false); }}
+                className="w-full px-3 py-1.5 text-left hover:bg-emerald-50"
+              >
+                <div className="text-sm text-gray-900 truncate">{i.name || '(no name)'}</div>
+                <div className="text-[11px] text-gray-500 truncate">
+                  {i.sku}{i.variety ? ` · ${i.variety}` : ''}{Number.isFinite(c) ? ` · cost ${fmt$2(c)}` : ' · no cost'}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -318,12 +548,14 @@ function ItemizedTable({ lines }) {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {sorted.map(l => (
-                <tr key={l.rowKey} className={l.matched ? '' : 'bg-amber-50/50'}>
+                <tr key={l.rowKey} className={!l.matched ? 'bg-amber-50/50' : l.offDay ? 'bg-amber-50/30' : ''}>
                   <td className="px-2 py-1.5 text-gray-700 truncate max-w-[7rem]" title={l.buyer}>{l.buyer || '—'}</td>
                   <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">{l.sku || '—'}</td>
                   <td className="px-2 py-1.5 text-gray-900 truncate max-w-[10rem]" title={l.title}>
                     {l.title || '—'}
                     {!l.matched && <span className="ml-1 text-[10px] text-amber-700">unmatched</span>}
+                    {l.manual && <span className="ml-1 text-[10px] text-blue-700">manual</span>}
+                    {l.offDay && <span className="ml-1 text-[10px] text-amber-700 inline-flex items-center gap-0.5"><CalendarClock className="w-3 h-3" />off-day</span>}
                   </td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-gray-900">{fmt$2(l.revenue)}</td>
                   <td className="px-2 py-1.5 text-right tabular-nums text-gray-500">{l.cost != null ? fmt$2(l.cost) : '—'}</td>
@@ -353,7 +585,7 @@ function csvCell(v) {
 function exportLinesCsv(result) {
   const headers = [
     'Buyer', 'Username', 'Order', 'Order Date', 'SKU', 'Item', 'Variety',
-    'Qty', 'Sale Price', 'Shipping Fee', 'Cost', 'Profit', 'Matched',
+    'Qty', 'Sale Price', 'Shipping Fee', 'Cost', 'Profit', 'Matched', 'Manual', 'Off-day',
   ];
   const rows = result.lines.map(l => [
     l.buyer, l.username, l.orderNumber,
@@ -363,10 +595,22 @@ function exportLinesCsv(result) {
     l.cost != null ? l.cost.toFixed(2) : '',
     l.profit != null ? l.profit.toFixed(2) : '',
     l.matched ? 'yes' : 'no',
+    l.manual ? 'yes' : 'no',
+    l.offDay ? 'yes' : 'no',
   ]);
   const t = result.totals;
+  const sumRow = (label, amount) => {
+    const r = Array(headers.length).fill('');
+    r[0] = label;
+    r[11] = amount == null ? '' : amount.toFixed(2);
+    return r;
+  };
   rows.push([]);
-  rows.push(['TOTALS', '', '', '', '', '', '', t.lots, t.grossSales.toFixed(2), t.shippingCollected.toFixed(2), t.cogs.toFixed(2), t.grossProfit.toFixed(2), `${t.matchedCount}/${t.lots}`]);
+  rows.push(['TOTALS', '', '', '', '', '', '', t.lots, t.grossSales.toFixed(2), t.shippingCollected.toFixed(2), t.cogs.toFixed(2), t.grossProfit.toFixed(2), `${t.matchedCount}/${t.lots}`, '', '']);
+  rows.push(sumRow(`Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}%)`, t.sellerCommission));
+  rows.push(sumRow(`Labor ($${LABOR_PER_BOX} x ${t.boxes} boxes)`, t.labor));
+  rows.push(sumRow('Net profit', t.netProfit));
+  rows.push(['Net margin', '', '', '', '', '', '', '', '', '', '', t.netMargin == null ? '' : `${t.netMargin.toFixed(1)}%`]);
   const csv = [headers, ...rows].map(r => r.map(csvCell).join(',')).join('\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
