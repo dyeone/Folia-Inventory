@@ -1412,6 +1412,7 @@ function StaffOrAdminInventory() {
             applyItemsFresh(freshItems);
             return result;
           }}
+          onItemsRefresh={async () => applyItemsFresh(await api.getItems())}
           onClose={() => setShowCatalogModal(false)}
           showToast={showToast}
           setConfirmDialog={setConfirmDialog}

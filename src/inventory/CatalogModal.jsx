@@ -7,7 +7,7 @@ import { api } from '../api.js';
 // edit or delete (the API enforces this too).
 export function CatalogModal({
   varieties, species, items, isAdmin, initialTab = 'species',
-  onVarietiesChange, onSpeciesChange, onMergeSpecies,
+  onVarietiesChange, onSpeciesChange, onMergeSpecies, onItemsRefresh,
   onClose, showToast, setConfirmDialog,
 }) {
   const [tab, setTab] = useState(initialTab);
@@ -50,6 +50,7 @@ export function CatalogModal({
           isAdmin={isAdmin}
           onChange={onSpeciesChange}
           onMergeSpecies={onMergeSpecies}
+          onItemsRefresh={onItemsRefresh}
           showToast={showToast}
           setConfirmDialog={setConfirmDialog}
         />
@@ -221,7 +222,7 @@ function VarietiesTab({ varieties, species, isAdmin, onChange, showToast, setCon
   );
 }
 
-function SpeciesTab({ varieties, species, items, isAdmin, onChange, onMergeSpecies, showToast, setConfirmDialog }) {
+function SpeciesTab({ varieties, species, items, isAdmin, onChange, onMergeSpecies, onItemsRefresh, showToast, setConfirmDialog }) {
   const [filterVarietyId, setFilterVarietyId] = useState('all');
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
@@ -231,6 +232,7 @@ function SpeciesTab({ varieties, species, items, isAdmin, onChange, onMergeSpeci
   const [editing, setEditing] = useState(null);
   const [editEpithet, setEditEpithet] = useState('');
   const [editCommon, setEditCommon] = useState('');
+  const [editVarietyId, setEditVarietyId] = useState('');
   const [busy, setBusy] = useState(false);
 
   const itemCountBySpecies = useMemo(() => {
@@ -275,23 +277,29 @@ function SpeciesTab({ varieties, species, items, isAdmin, onChange, onMergeSpeci
     setEditing(s.id);
     setEditEpithet(s.epithet);
     setEditCommon(s.commonName || '');
+    setEditVarietyId(s.varietyId);
   };
 
   const saveEdit = async (id) => {
     const ep = editEpithet.trim();
     if (!ep) { showToast?.('Name is required', 'error'); return; }
     const self = species.find(s => s.id === id);
-    // Renaming to a name that already exists in this variety would hit the
-    // (varietyId, epithet) unique constraint. Offer to combine the two
-    // instead — re-points all items + history onto the existing one.
+    if (!self) { showToast?.('Species no longer exists', 'error'); setEditing(null); return; }
+    const targetVarietyId = editVarietyId || self.varietyId;
+    // A species in the TARGET variety already named `ep` would hit the
+    // (varietyId, epithet) unique constraint — whether we got here by renaming
+    // or by moving the species to a different variety. Offer to combine the
+    // two instead (items + photos move onto the existing one, adopting its
+    // variety) rather than erroring on the duplicate key.
     const collide = self && species.find(
-      s => s.id !== id && s.varietyId === self.varietyId && s.epithet === ep
+      s => s.id !== id && s.varietyId === targetVarietyId && s.epithet === ep
     );
     if (collide && onMergeSpecies) {
       const n = itemCountBySpecies[id] || 0;
+      const inVariety = varietyById[targetVarietyId]?.name;
       setConfirmDialog?.({
         title: `Combine into "${collide.epithet}"?`,
-        message: `"${collide.epithet}" already exists in this variety. Combine "${self.epithet}" into it? Its ${n} item${n === 1 ? '' : 's'} and photos move to "${collide.epithet}", and "${self.epithet}" is removed. This can't be undone. (A species with its own purchase-order history can't be auto-combined.)`,
+        message: `"${collide.epithet}" already exists${inVariety ? ` in ${inVariety}` : ''}. Combine "${self.epithet}" into it? Its ${n} item${n === 1 ? '' : 's'} and photos move to "${collide.epithet}"${inVariety ? ` (${inVariety})` : ''}, and "${self.epithet}" is removed. This can't be undone. (A species with its own purchase-order history can't be auto-combined.)`,
         confirmLabel: 'Combine',
         danger: true,
         onConfirm: async () => {
@@ -310,11 +318,22 @@ function SpeciesTab({ varieties, species, items, isAdmin, onChange, onMergeSpeci
     }
     setBusy(true);
     try {
+      const varietyChanged = targetVarietyId !== self.varietyId;
+      const epithetChanged = ep !== self.epithet;
       await api.updateSpecies({
         id,
-        patch: { epithet: ep, commonName: editCommon.trim() || null },
+        patch: {
+          epithet: ep,
+          commonName: editCommon.trim() || null,
+          ...(varietyChanged ? { varietyId: targetVarietyId } : {}),
+        },
       });
-      onChange(species.map(s => s.id === id ? { ...s, epithet: ep, commonName: editCommon.trim() || null } : s));
+      onChange(species.map(s => s.id === id
+        ? { ...s, epithet: ep, commonName: editCommon.trim() || null, varietyId: targetVarietyId }
+        : s));
+      // An epithet or variety change cascades item.name/variety server-side,
+      // so refresh items — the species-only update wouldn't reflect it.
+      if (varietyChanged || epithetChanged) await onItemsRefresh?.();
       setEditing(null);
       showToast?.('Species updated');
     } catch (e) {
@@ -416,6 +435,9 @@ function SpeciesTab({ varieties, species, items, isAdmin, onChange, onMergeSpeci
             <div key={s.id} className="px-3 py-2.5">
               {editing === s.id ? (
                 <div className="space-y-2">
+                  <select value={editVarietyId} onChange={(e) => setEditVarietyId(e.target.value)} className="input" title="Variety">
+                    {varieties.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                  </select>
                   <input value={editEpithet} onChange={(e) => setEditEpithet(e.target.value)} className="input" />
                   <input value={editCommon} onChange={(e) => setEditCommon(e.target.value)} className="input" placeholder="Common name (optional)" />
                   <div className="flex justify-end gap-2">
