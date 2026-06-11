@@ -2,8 +2,10 @@ import { useMemo, useState } from 'react';
 import {
   Plus, Calendar, Layers, Download, Trash2, Edit2, PackageOpen,
   Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock, Radio, Tag,
+  BarChart3, FileText,
 } from 'lucide-react';
 import { PreSaleTab } from './PreSaleTab.jsx';
+import { hasEval } from './saleEval.js';
 const STATUS_META = {
   ongoing:  { label: 'Ongoing',  cls: 'bg-emerald-100 text-emerald-800', icon: Clock },
   packing:  { label: 'Packing',  cls: 'bg-blue-100 text-blue-800',       icon: PackageOpen },
@@ -29,6 +31,7 @@ export function SalesView({
   sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
   onSendToPacking, onGoLive, onValidateSales, onStartLiveScan, isAdmin,
   onStageItems, onItemsChanged, showToast,
+  onEvaluateSale, onViewReport, evalVersion,
 }) {
   const [tab, setTab] = useState('active');
 
@@ -136,6 +139,9 @@ export function SalesView({
               onGoLive={() => onGoLive(sale)}
               onEdit={() => onEdit(sale)}
               onDelete={() => onDelete(sale.id)}
+              onEvaluateSale={() => onEvaluateSale(sale)}
+              onViewReport={() => onViewReport(sale)}
+              evalVersion={evalVersion}
             />
           ))}
         </div>
@@ -147,7 +153,13 @@ export function SalesView({
 function SaleCard({
   sale, items, isAdmin,
   onBuildLineup, onExportCsv, onSendToPacking, onGoLive, onEdit, onDelete,
+  onEvaluateSale, onViewReport, evalVersion,
 }) {
+  // Re-check localStorage when evalVersion bumps (a report was just generated)
+  // so the "Financial Report" button appears without a manual refresh. The
+  // `void evalVersion` makes the cache-bust dependency explicit — hasEval reads
+  // localStorage, which the deps linter can't see on its own.
+  const reportReady = useMemo(() => { void evalVersion; return hasEval(sale.id); }, [sale.id, evalVersion]);
   const saleLots = items.filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway');
   const giveaways = items.filter(i => i.saleId === sale.id && i.lotKind === 'giveaway');
   const totalAssigned = saleLots.length + giveaways.length;
@@ -269,6 +281,25 @@ function SaleCard({
           </div>
         </div>
       )}
+
+      <div className="mt-3 pt-3 border-t border-gray-100 flex gap-2">
+        <button
+          onClick={onEvaluateSale}
+          title="Upload a Palmstreet orders CSV to evaluate this live's sales — read-only, no item status changes"
+          className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100"
+        >
+          <BarChart3 className="w-3.5 h-3.5" /> Evaluate Sales
+        </button>
+        {reportReady && (
+          <button
+            onClick={onViewReport}
+            title="View the financial report generated from the uploaded orders"
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white"
+          >
+            <FileText className="w-3.5 h-3.5" /> Financial Report
+          </button>
+        )}
+      </div>
     </div>
   );
 }
