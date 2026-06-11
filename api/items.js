@@ -96,6 +96,7 @@ export default wrap(async (req, res) => {
   // The action travels in the query string for GET, body for POST.
   const action = req.method === 'GET' ? req.query?.action : req.body?.action;
   if (action === 'convert') return convertItem(req, res, user);
+  if (action === 'rename-names') return renameNames(req, res, user);
 
   switch (req.method) {
     case 'GET': {
@@ -348,4 +349,39 @@ async function convertItem(req, res, user) {
     plant,
     tc: { ...tc, status: 'converted', convertedToPlantId: plant.id, modifiedAt: now, modifiedBy: user.displayName },
   });
+}
+
+// POST /api/items?action=rename-names  (body action: 'rename-names')
+// Body: { userId, action: 'rename-names', renames: [{ ids: [...], name }] }
+// Bulk-rename item names (the Inventory "Edit Names" tool). Each group is one
+// set-based UPDATE by id — atomic per group (a group can never be left
+// half-renamed) and one round-trip per chunk instead of per item (no timeout
+// on large renames). Renaming two groups to the same name merges them.
+async function renameNames(req, res, user) {
+  if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+  const { renames } = req.body || {};
+  if (!Array.isArray(renames) || renames.length === 0) {
+    const e = new Error('renames required'); e.status = 400; throw e;
+  }
+  const now = new Date().toISOString();
+  // ids go in the URL (?id=in.(...)) so chunk to stay under proxy URL limits,
+  // matching the DELETE path.
+  const CHUNK = 200;
+  let renamed = 0;
+  for (const r of renames) {
+    const name = typeof r?.name === 'string' ? r.name.trim() : '';
+    const ids = Array.isArray(r?.ids) ? r.ids.filter(id => typeof id === 'string' && id) : [];
+    if (!name || ids.length === 0) continue;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const batch = ids.slice(i, i + CHUNK);
+      const { data, error } = await supabase
+        .from('inventory_items')
+        .update({ name, modifiedAt: now, modifiedBy: user.displayName })
+        .in('id', batch)
+        .select('id');
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      renamed += data?.length || 0;
+    }
+  }
+  return res.status(200).json({ ok: true, renamed });
 }

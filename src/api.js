@@ -69,6 +69,10 @@ export const api = {
   // Items
   getItems: () => request('/items').then(r => r.items),
   upsertItems: (items) => request('/items', { method: 'POST', body: { items } }),
+  // Bulk-rename item names by group: renames = [{ ids: [...], name }].
+  // Each group is one atomic set-based UPDATE server-side.
+  renameItemNames: (renames) =>
+    request('/items', { method: 'POST', body: { action: 'rename-names', renames } }),
   // Soft delete: items move to the Recently Deleted tab and stay
   // recoverable for 30 days before being purged on read.
   deleteItems: (ids) => request('/items', { method: 'DELETE', body: { ids } }),

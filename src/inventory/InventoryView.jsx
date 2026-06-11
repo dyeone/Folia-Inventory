@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine } from 'lucide-react';
+import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
@@ -7,6 +7,7 @@ import { buildLookups, speciesForItem, computeIdealPrice, rateSourceLabel, displ
 import { CultivarRateInput } from './CultivarRateInput.jsx';
 import { AcclimationModal } from './AcclimationModal.jsx';
 import { DeleteScanModal } from './DeleteScanModal.jsx';
+import { BulkRenameModal } from './BulkRenameModal.jsx';
 
 // e.g. "May 8, 3:45 PM" (same year) or "May 8, 2024" (prior year).
 function fmtAddedAt(iso) {
@@ -20,7 +21,7 @@ function fmtAddedAt(iso) {
   return `${datePart}, ${timePart}`;
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onBulkRename, onStatusChange, isAdmin }) {
   const isMobile = useIsMobile();
   // O(1) lookups for speciesForItem / computeIdealPrice — built once per
   // varieties/species change instead of linear-scanning per item per render.
@@ -131,6 +132,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   const [groupAnchor, setGroupAnchor] = useState(null);
   const [showAcclimation, setShowAcclimation] = useState(false);
   const [showDeleteScan, setShowDeleteScan] = useState(false);
+  const [showBulkRename, setShowBulkRename] = useState(false);
 
   // Drop selections that are no longer visible (e.g. filtered out) to avoid
   // acting on rows the user can't see.
@@ -265,6 +267,15 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               className="flex items-center gap-1.5 px-3 py-2 text-sm text-red-700 border border-red-300 bg-red-50 rounded-lg hover:bg-red-100"
             >
               <ScanLine className="w-4 h-4" /> Scan to Delete
+            </button>
+          )}
+          {onBulkRename && (
+            <button
+              onClick={() => setShowBulkRename(true)}
+              title="Rename cultivar names in bulk"
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-indigo-700 border border-indigo-300 bg-indigo-50 rounded-lg hover:bg-indigo-100"
+            >
+              <Pencil className="w-4 h-4" /> Edit Names
             </button>
           )}
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">
@@ -875,6 +886,17 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           items={allItems}
           onBulkDelete={onBulkDelete}
           onClose={() => setShowDeleteScan(false)}
+        />
+      )}
+
+      {showBulkRename && (
+        <BulkRenameModal
+          items={allItems}
+          onApply={async (updates, summary) => {
+            const ok = await onBulkRename(updates, summary);
+            if (ok) setShowBulkRename(false);
+          }}
+          onClose={() => setShowBulkRename(false)}
         />
       )}
     </div>

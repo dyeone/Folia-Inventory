@@ -855,6 +855,23 @@ function StaffOrAdminInventory() {
                 },
               });
             }}
+            onBulkRename={async (renames, summary) => {
+              // renames: [{ ids, name }] per changed group. Each group is one
+              // atomic server-side update. Refresh on success AND failure so a
+              // partial cross-group apply (some groups renamed, others not) is
+              // reflected and the operator can re-run. Returns true → modal
+              // closes only on full success.
+              try {
+                await api.renameItemNames(renames);
+                applyItemsFresh(await api.getItems());
+                showToast(`Renamed ${summary.items} ${summary.items === 1 ? 'item' : 'items'} across ${summary.names} ${summary.names === 1 ? 'name' : 'names'}`);
+                return true;
+              } catch (e) {
+                try { applyItemsFresh(await api.getItems()); } catch { /* surface original error */ }
+                showToast(e.message || 'Rename failed', 'error');
+                return false;
+              }
+            }}
             onStatusChange={(id, status) => {
               const updates = { status };
               if (status === 'sold') updates.soldAt = new Date().toISOString();
