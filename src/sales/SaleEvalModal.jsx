@@ -198,19 +198,24 @@ function ReportView({ result, items, onMatch, onReevaluate, showToast }) {
   const profitTone = t.grossProfit >= 0 ? 'blue' : 'red';
   const costedLots = t.matchedCount - t.costlessMatched; // lots that actually contributed cost
   const reportRef = useRef(null);
+  const commissionRef = useRef(null);
+  const financialRef = useRef(null);
   const [exporting, setExporting] = useState('');
 
-  const onExport = async (format) => {
-    if (!reportRef.current || exporting) return;
-    setExporting(format);
-    try {
-      if (format === 'png') await exportReportPng(reportRef.current, result.saleName);
-      else await exportReportPdf(reportRef.current, result.saleName);
-    } catch (e) {
-      showToast?.(`Could not export ${format.toUpperCase()}: ${e.message || 'failed'}`, 'error');
-    }
+  const runExport = async (kind, fn) => {
+    if (exporting) return;
+    setExporting(kind);
+    try { await fn(); }
+    catch (e) { showToast?.(`Could not export: ${e.message || 'failed'}`, 'error'); }
     setExporting('');
   };
+  const onExport = (format) => runExport(format, () => (
+    format === 'png'
+      ? exportReportPng(reportRef.current, result.saleName)
+      : exportReportPdf(reportRef.current, result.saleName)
+  ));
+  const onCommissionPdf = () => runExport('commission-pdf', () =>
+    exportNodesToPdf([commissionRef.current, financialRef.current], `${slugName(result.saleName)}-commission.pdf`));
   const btn = 'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg disabled:opacity-50';
 
   return (
@@ -251,19 +256,17 @@ function ReportView({ result, items, onMatch, onReevaluate, showToast }) {
       <NetProfit totals={t} />
 
       {/* Seller commission report */}
-      <CommissionReport result={result} />
+      <CommissionReport result={result} sectionRef={commissionRef} onPdf={onCommissionPdf} exporting={exporting} />
 
-      {/* Data-quality checklist */}
-      <FlagsBanner result={result} />
+      {/* Data-quality note + manual matching — working UI, excluded from exports */}
+      <div data-export-hide><FlagsBanner result={result} /></div>
+      <div data-export-hide><UnmatchedSection result={result} items={items} onMatch={onMatch} /></div>
 
-      {/* Manual matching of unmatched lines */}
-      <UnmatchedSection result={result} items={items} onMatch={onMatch} />
-
-      {/* By variety */}
-      {result.byVariety.length > 0 && <ByVariety rows={result.byVariety} />}
-
-      {/* Top sellers */}
-      <TopSellers result={result} />
+      {/* Financial breakdown — also captured into the commission PDF */}
+      <div ref={financialRef} className="space-y-5">
+        {result.byVariety.length > 0 && <ByVariety rows={result.byVariety} />}
+        <TopSellers result={result} />
+      </div>
 
       {/* Itemized table */}
       <ItemizedTable lines={result.lines} />
@@ -317,28 +320,36 @@ function NetProfit({ totals }) {
   );
 }
 
-function CommissionReport({ result }) {
+function CommissionReport({ result, sectionRef, onPdf, exporting }) {
   const t = result.totals;
-  const eligible = useMemo(
-    () => result.lines.filter(l => l.matched && !l.oldPlant).sort((a, b) => b.commission - a.commission),
+  // All matched plants: new (commission-eligible) first by commission, then old
+  // (set aside) by revenue. Both shown so the report covers every plant.
+  const plants = useMemo(
+    () => result.lines.filter(l => l.matched).sort((a, b) => (
+      a.oldPlant === b.oldPlant
+        ? (a.oldPlant ? b.revenue - a.revenue : b.commission - a.commission)
+        : (a.oldPlant ? 1 : -1)
+    )),
     [result.lines],
   );
   const rate = Math.round(SELLER_COMMISSION_RATE * 100);
+  const cbtn = 'flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg disabled:opacity-50';
 
   return (
-    <div className="border border-gray-200 rounded-xl p-4">
-      <div className="flex items-center justify-between gap-2 mb-2">
+    <div ref={sectionRef} className="border border-gray-200 rounded-xl p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-1.5">
           <Coins className="w-4 h-4 text-gray-400" />
           <h4 className="text-sm font-medium text-gray-900">Seller commission ({rate}%)</h4>
         </div>
-        <button
-          onClick={() => exportCommissionCsv(result)}
-          className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg"
-          data-export-hide
-        >
-          <Download className="w-3.5 h-3.5" /> Commission CSV
-        </button>
+        <div className="flex gap-2" data-export-hide>
+          <button onClick={onPdf} disabled={!!exporting} className={cbtn}>
+            {exporting === 'commission-pdf' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />} Commission PDF
+          </button>
+          <button onClick={() => exportCommissionCsv(result)} className={cbtn}>
+            <Download className="w-3.5 h-3.5" /> Commission CSV
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2.5 mb-3">
@@ -359,7 +370,7 @@ function CommissionReport({ result }) {
         <span className="text-sm font-semibold text-emerald-700 tabular-nums">{fmt$2(t.sellerCommission)}</span>
       </div>
 
-      {eligible.length > 0 && (
+      {plants.length > 0 && (
         <div className="border border-gray-200 rounded-lg overflow-hidden">
           <div className="max-h-60 overflow-y-auto" data-export-expand>
             <table className="w-full text-xs">
@@ -373,13 +384,15 @@ function CommissionReport({ result }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {eligible.map(l => (
-                  <tr key={l.rowKey}>
+                {plants.map(l => (
+                  <tr key={l.rowKey} className={l.oldPlant ? 'bg-gray-50/60' : ''}>
                     <td className="px-2 py-1.5 text-gray-700 truncate max-w-[7rem]" title={l.buyer}>{l.buyer || '—'}</td>
                     <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">{l.itemSku || l.sku || '—'}</td>
-                    <td className="px-2 py-1.5 text-gray-900 truncate max-w-[10rem]" title={l.title}>{l.title || '—'}</td>
+                    <td className="px-2 py-1.5 text-gray-900 truncate max-w-[10rem]" title={l.title}>
+                      {l.title || '—'}{l.oldPlant && <span className="ml-1 text-[10px] text-gray-500">old</span>}
+                    </td>
                     <td className="px-2 py-1.5 text-right tabular-nums text-gray-900">{fmt$2(l.revenue)}</td>
-                    <td className="px-2 py-1.5 text-right tabular-nums text-emerald-700">{fmt$2(l.commission)}</td>
+                    <td className="px-2 py-1.5 text-right tabular-nums text-emerald-700">{l.oldPlant ? '—' : fmt$2(l.commission)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -734,18 +747,24 @@ function exportLinesCsv(result) {
 // (new) plant with its 15% cut, plus the old-plants-set-aside summary.
 function exportCommissionCsv(result) {
   const rate = Math.round(SELLER_COMMISSION_RATE * 100);
-  const headers = ['Buyer', 'Username', 'Order', 'SKU', 'Item', 'Sale Price', `Commission (${rate}%)`];
-  const eligible = result.lines
-    .filter(l => l.matched && !l.oldPlant)
-    .sort((a, b) => b.commission - a.commission);
-  const rows = eligible.map(l => [
+  const headers = ['Buyer', 'Username', 'Order', 'SKU', 'Item', 'Type', 'Sale Price', `Commission (${rate}%)`];
+  // All matched plants: new (with commission) and old (set aside, $0).
+  const plants = result.lines
+    .filter(l => l.matched)
+    .sort((a, b) => (
+      a.oldPlant === b.oldPlant
+        ? (a.oldPlant ? b.revenue - a.revenue : b.commission - a.commission)
+        : (a.oldPlant ? 1 : -1)
+    ));
+  const rows = plants.map(l => [
     l.buyer, l.username, l.orderNumber, l.itemSku || l.sku, l.title,
-    l.revenue.toFixed(2), l.commission.toFixed(2),
+    l.oldPlant ? 'old' : 'new', l.revenue.toFixed(2),
+    l.oldPlant ? '0.00' : l.commission.toFixed(2),
   ]);
   const t = result.totals;
   rows.push([]);
-  rows.push(['COMMISSION OWED', '', '', '', `${t.commissionableCount} new lots`, t.commissionBase.toFixed(2), t.sellerCommission.toFixed(2)]);
-  rows.push([`Old plants set aside (SKU < ${OLD_PLANT_SKU_MAX})`, '', '', '', `${t.oldPlantCount} lots`, t.oldPlantRevenue.toFixed(2), '0.00']);
+  rows.push(['COMMISSION OWED', '', '', '', `${t.commissionableCount} new lots`, 'new', t.commissionBase.toFixed(2), t.sellerCommission.toFixed(2)]);
+  rows.push([`Old plants set aside (SKU < ${OLD_PLANT_SKU_MAX})`, '', '', '', `${t.oldPlantCount} lots`, 'old', t.oldPlantRevenue.toFixed(2), '0.00']);
   const csv = [headers, ...rows].map(r => r.map(csvCell).join(',')).join('\n');
   downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8;' }), `${slugName(result.saleName)}-commission.csv`);
 }
@@ -779,6 +798,17 @@ async function captureReport(node) {
         el.style.overflow = 'visible';
       });
       doc.querySelectorAll('[data-export-hide]').forEach((el) => { el.style.display = 'none'; });
+      // Un-clip truncated text so item/buyer/variety names aren't cut mid-word
+      // in the capture — the main cause of the "weird" exported layout.
+      // overflowWrap lets a long unspaced token (cultivar name / SKU) wrap
+      // instead of forcing the table wider than the captured node.
+      doc.querySelectorAll('.truncate').forEach((el) => {
+        el.style.overflow = 'visible';
+        el.style.textOverflow = 'clip';
+        el.style.whiteSpace = 'normal';
+        el.style.maxWidth = 'none';
+        el.style.overflowWrap = 'anywhere';
+      });
     },
   });
 }
@@ -790,37 +820,56 @@ async function exportReportPng(node, saleName) {
   downloadBlob(blob, `${slugName(saleName)}-report.png`);
 }
 
-async function exportReportPdf(node, saleName) {
-  const canvas = await captureReport(node);
-  const { jsPDF } = await import('jspdf');
-  const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+// Add a canvas to the PDF starting at the top of the current page, slicing
+// across pages if it's taller than one page. max(1,…) guards the loop.
+function addCanvasPaged(pdf, canvas) {
   const margin = 24;
   const pageW = pdf.internal.pageSize.getWidth();
   const pageH = pdf.internal.pageSize.getHeight();
   const imgW = pageW - margin * 2;
   const fullImgH = (canvas.height * imgW) / canvas.width;
   const contentH = pageH - margin * 2;
-
   if (fullImgH <= contentH) {
     pdf.addImage(canvas.toDataURL('image/png'), 'PNG', margin, margin, imgW, fullImgH);
-  } else {
-    // Tall report: slice the canvas into page-height chunks across pages.
-    // max(1,…) guarantees the loop always advances (never a zero-height slice).
-    const slicePx = Math.max(1, Math.floor((contentH * canvas.width) / imgW));
-    let y = 0;
-    let first = true;
-    while (y < canvas.height) {
-      const h = Math.min(slicePx, canvas.height - y);
-      const slice = document.createElement('canvas');
-      slice.width = canvas.width;
-      slice.height = h;
-      slice.getContext('2d').drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
-      if (!first) pdf.addPage();
-      pdf.addImage(slice.toDataURL('image/png'), 'PNG', margin, margin, imgW, (h * imgW) / canvas.width);
-      slice.width = 0; slice.height = 0; // release the slice canvas to cap peak memory
-      first = false;
-      y += h;
-    }
+    return;
   }
+  const slicePx = Math.max(1, Math.floor((contentH * canvas.width) / imgW));
+  let y = 0;
+  let first = true;
+  while (y < canvas.height) {
+    const h = Math.min(slicePx, canvas.height - y);
+    const slice = document.createElement('canvas');
+    slice.width = canvas.width;
+    slice.height = h;
+    slice.getContext('2d').drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+    if (!first) pdf.addPage();
+    pdf.addImage(slice.toDataURL('image/png'), 'PNG', margin, margin, imgW, (h * imgW) / canvas.width);
+    slice.width = 0; slice.height = 0; // release the slice canvas to cap peak memory
+    first = false;
+    y += h;
+  }
+}
+
+async function exportReportPdf(node, saleName) {
+  const canvas = await captureReport(node);
+  const { jsPDF } = await import('jspdf');
+  const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+  addCanvasPaged(pdf, canvas);
   pdf.save(`${slugName(saleName)}-report.pdf`);
+}
+
+// Capture several DOM nodes, each starting on its own page, into one PDF.
+// Used for the commission PDF: commission section + financial breakdown.
+async function exportNodesToPdf(nodes, filename) {
+  const { jsPDF } = await import('jspdf');
+  const pdf = new jsPDF({ unit: 'pt', format: 'a4' });
+  let first = true;
+  for (const node of nodes) {
+    if (!node) continue;
+    const canvas = await captureReport(node);
+    if (!first) pdf.addPage();
+    addCanvasPaged(pdf, canvas);
+    first = false;
+  }
+  pdf.save(filename);
 }
