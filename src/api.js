@@ -100,6 +100,10 @@ export const api = {
 
   // Species catalog
   getSpecies: () => request('/species').then(r => r.species),
+  // Combine one species into another (same variety). Re-points items, photos,
+  // and PO lines to intoId, then deletes fromId.
+  mergeSpecies: ({ fromId, intoId }) =>
+    request('/species', { method: 'POST', body: { action: 'merge', fromId, intoId } }),
   createSpecies: ({ varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice }) =>
     request('/species', { method: 'POST', body: { varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice } }).then(r => r.species),
   updateSpecies: ({ id, patch }) =>

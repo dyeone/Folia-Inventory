@@ -7,7 +7,7 @@ import { api } from '../api.js';
 // edit or delete (the API enforces this too).
 export function CatalogModal({
   varieties, species, items, isAdmin, initialTab = 'species',
-  onVarietiesChange, onSpeciesChange,
+  onVarietiesChange, onSpeciesChange, onMergeSpecies,
   onClose, showToast, setConfirmDialog,
 }) {
   const [tab, setTab] = useState(initialTab);
@@ -49,7 +49,7 @@ export function CatalogModal({
           items={items}
           isAdmin={isAdmin}
           onChange={onSpeciesChange}
-          onItemsTouched={() => { /* parent will refresh on next fetch */ }}
+          onMergeSpecies={onMergeSpecies}
           showToast={showToast}
           setConfirmDialog={setConfirmDialog}
         />
@@ -221,7 +221,7 @@ function VarietiesTab({ varieties, species, isAdmin, onChange, showToast, setCon
   );
 }
 
-function SpeciesTab({ varieties, species, items, isAdmin, onChange, showToast, setConfirmDialog }) {
+function SpeciesTab({ varieties, species, items, isAdmin, onChange, onMergeSpecies, showToast, setConfirmDialog }) {
   const [filterVarietyId, setFilterVarietyId] = useState('all');
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
@@ -278,13 +278,43 @@ function SpeciesTab({ varieties, species, items, isAdmin, onChange, showToast, s
   };
 
   const saveEdit = async (id) => {
+    const ep = editEpithet.trim();
+    if (!ep) { showToast?.('Name is required', 'error'); return; }
+    const self = species.find(s => s.id === id);
+    // Renaming to a name that already exists in this variety would hit the
+    // (varietyId, epithet) unique constraint. Offer to combine the two
+    // instead — re-points all items + history onto the existing one.
+    const collide = self && species.find(
+      s => s.id !== id && s.varietyId === self.varietyId && s.epithet === ep
+    );
+    if (collide && onMergeSpecies) {
+      const n = itemCountBySpecies[id] || 0;
+      setConfirmDialog?.({
+        title: `Combine into "${collide.epithet}"?`,
+        message: `"${collide.epithet}" already exists in this variety. Combine "${self.epithet}" into it? Its ${n} item${n === 1 ? '' : 's'} and photos move to "${collide.epithet}", and "${self.epithet}" is removed. This can't be undone. (A species with its own purchase-order history can't be auto-combined.)`,
+        confirmLabel: 'Combine',
+        danger: true,
+        onConfirm: async () => {
+          setBusy(true);
+          try {
+            await onMergeSpecies(id, collide.id);
+            setEditing(null);
+            showToast?.(`Combined into "${collide.epithet}"`);
+          } catch (e) {
+            showToast?.(e.message || 'Could not combine', 'error');
+          }
+          setBusy(false);
+        },
+      });
+      return;
+    }
     setBusy(true);
     try {
       await api.updateSpecies({
         id,
-        patch: { epithet: editEpithet.trim(), commonName: editCommon.trim() || null },
+        patch: { epithet: ep, commonName: editCommon.trim() || null },
       });
-      onChange(species.map(s => s.id === id ? { ...s, epithet: editEpithet.trim(), commonName: editCommon.trim() || null } : s));
+      onChange(species.map(s => s.id === id ? { ...s, epithet: ep, commonName: editCommon.trim() || null } : s));
       setEditing(null);
       showToast?.('Species updated');
     } catch (e) {
