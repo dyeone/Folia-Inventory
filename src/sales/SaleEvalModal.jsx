@@ -634,15 +634,10 @@ function ByVariety({ rows }) {
 }
 
 function TopSellers({ result }) {
-  const { topByRevenue, topByProfit } = result;
+  const { topByRevenue } = result;
   if (topByRevenue.length === 0) return null;
   return (
-    <div className="grid sm:grid-cols-2 gap-4">
-      <TopList title="Top by revenue" lines={topByRevenue} valueOf={(l) => fmt$2(l.revenue)} />
-      {topByProfit.length > 0 && (
-        <TopList title="Top by profit" lines={topByProfit} valueOf={(l) => fmt$2(l.profit)} tone="blue" />
-      )}
-    </div>
+    <TopList title="Top by revenue" lines={topByRevenue} valueOf={(l) => fmt$2(l.revenue)} />
   );
 }
 
@@ -918,6 +913,12 @@ async function exportCommissionPdf(result) {
     pdf.setFont('helvetica', 'bold'); pdf.setFontSize(12); pdf.setTextColor(0);
     pdf.text(label, M, y); y += 15;
   };
+  // Horizontal bar: light track + colored fill (frac 0..1). Used for the charts.
+  const drawBar = (x, top, w, h, frac, color) => {
+    pdf.setFillColor(238, 240, 243); pdf.rect(x, top, w, h, 'F');
+    const fw = Math.max(1.5, Math.min(1, Math.max(0, frac || 0)) * w);
+    pdf.setFillColor(...color); pdf.rect(x, top, fw, h, 'F');
+  };
 
   // Title + meta
   pdf.setFont('helvetica', 'bold'); pdf.setFontSize(16); pdf.setTextColor(0);
@@ -932,24 +933,43 @@ async function exportCommissionPdf(result) {
   pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11); pdf.setTextColor(0);
   ensure(54); pdf.text('Commission owed to seller', M, y); y += 18;
   pdf.setFontSize(22); pdf.setTextColor(...EMERALD); pdf.text(money(t.sellerCommission), M, y); y += 16;
-  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10); pdf.setTextColor(0);
-  pdf.text(`New (pays ${rate}%): ${t.commissionableCount} lots · ${money(t.commissionBase)}`, M, y); y += 14;
-  pdf.text(`Old (set aside): ${t.oldPlantCount} lots · ${money(t.oldPlantRevenue)}`, M, y); y += 22;
+  // New vs old revenue split chart (drives the commission basis).
+  const splitTotal = t.commissionBase + t.oldPlantRevenue;
+  const xSplitBar = M + 105, xSplitEnd = right - 135, splitW = xSplitEnd - xSplitBar;
+  const splitRow = (label, lots, rev, color) => {
+    ensure(15);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(0);
+    pdf.text(label, M, y);
+    drawBar(xSplitBar, y - 6, splitW, 7, splitTotal ? rev / splitTotal : 0, color);
+    const pct = splitTotal ? Math.round((rev / splitTotal) * 100) : 0;
+    pdf.setTextColor(...GRAY);
+    pdf.text(`${lots} lots · ${money(rev)} (${pct}%)`, right, y, { align: 'right' });
+    y += 15;
+  };
+  splitRow(`New (pays ${rate}%)`, t.commissionableCount, t.commissionBase, EMERALD);
+  splitRow('Old (set aside)', t.oldPlantCount, t.oldPlantRevenue, [156, 163, 175]);
+  y += 12;
 
   // Financial breakdown — BEFORE the per-plant items.
   if (result.byVariety.length) {
-    heading('By variety');
+    heading('By variety', 15);
     const xRev = right - 95, xProf = right;
-    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
+    const xBar = M + 120, barW = (xRev - 58) - (M + 120);
+    const maxRev = Math.max(1, ...result.byVariety.map((r) => r.revenue));
     for (const r of result.byVariety) {
-      ensure(13);
-      pdf.setTextColor(0); pdf.text(fit(r.variety, xRev - M - 12), M, y);
-      pdf.text(money(r.revenue), xRev, y, { align: 'right' });
+      ensure(15);
+      pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(0);
+      pdf.text(fit(r.variety, 110), M, y);
+      drawBar(xBar, y - 6, barW, 7, r.revenue / maxRev, EMERALD);
+      pdf.setTextColor(0); pdf.text(money(r.revenue), xRev, y, { align: 'right' });
       if (r.hasCost) { pdf.setTextColor(...BLUE); pdf.text(money(r.profit), xProf, y, { align: 'right' }); }
       else { pdf.setTextColor(...GRAY); pdf.text('—', xProf, y, { align: 'right' }); }
-      y += 13;
+      y += 15;
     }
-    y += 10;
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7); pdf.setTextColor(...GRAY);
+    pdf.text('revenue', xRev, y, { align: 'right' });
+    pdf.text('profit', xProf, y, { align: 'right' });
+    y += 12;
   }
   const topList = (label, lines, valueOf, color) => {
     if (!lines.length) return;
@@ -965,7 +985,6 @@ async function exportCommissionPdf(result) {
     y += 10;
   };
   topList('Top by revenue', result.topByRevenue, (l) => l.revenue, EMERALD);
-  topList('Top by profit', result.topByProfit, (l) => l.profit, BLUE);
 
   // Per-plant breakdown — LAST. Row-aware pagination so rows never split.
   const plants = result.lines
