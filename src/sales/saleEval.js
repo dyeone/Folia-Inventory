@@ -24,8 +24,8 @@ export const STORAGE_KEY = (saleId) => `sale-eval-${saleId}`;
 
 // Bump when the result shape OR a stored calculation changes. loadEval/fetchEval
 // discard caches from an older version, so the operator re-uploads and the report
-// recomputes. (v4: old/new plant cutoff moved from SKU 3000 to 2466.)
-export const RESULT_VERSION = 4;
+// recomputes. (v5: old/new plant cutoff is SKU 2380; was 2466, was 3000.)
+export const RESULT_VERSION = 5;
 
 // Operating-cost assumptions for the net-profit waterfall.
 export const LABOR_PER_BOX = 2;
@@ -33,8 +33,8 @@ export const SHIPPING_COST_PER_BOX = 10;
 export const SELLER_COMMISSION_RATE = 0.15;
 // A matched plant whose SKU number is below this is an "old plant" — set aside,
 // no seller commission. Everything at/above it is a "new plant" and pays.
-// SKU < 2466 → old; SKU >= 2466 → new (so 2466 itself is the first new plant).
-export const OLD_PLANT_SKU_MAX = 2466;
+// SKU < 2380 → old; SKU >= 2380 → new (so 2380 itself is the first new plant).
+export const OLD_PLANT_SKU_MAX = 2380;
 
 export function loadEval(saleId) {
   try {
