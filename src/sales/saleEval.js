@@ -24,13 +24,23 @@ export const STORAGE_KEY = (saleId) => `sale-eval-${saleId}`;
 
 // Bump when the result shape OR a stored calculation changes. loadEval/fetchEval
 // discard caches from an older version, so the operator re-uploads and the report
-// recomputes. (v5: old/new plant cutoff is SKU 2380; was 2466, was 3000.)
-export const RESULT_VERSION = 5;
+// recomputes. (v6: commission is now 15% of revenue NET of Palmstreet selling +
+// payment fees; totals carry the platform fees. v5: cutoff SKU 2380.)
+export const RESULT_VERSION = 6;
 
 // Operating-cost assumptions for the net-profit waterfall.
 export const LABOR_PER_BOX = 2;
 export const SHIPPING_COST_PER_BOX = 10;
 export const SELLER_COMMISSION_RATE = 0.15;
+// Palmstreet platform fees — https://palmstreet.app/blog/fees-on-palmstreet
+// Selling fee (6.9%) applies to item price + shipping. Payment (Stripe) fee is
+// the regular-order rate: 2.9% of (item + shipping) + $0.30 per order. We assume
+// regular Stripe — installment (Affirm/AfterPay/Klarna ~6%) and PayPal
+// (3.49% + $0.49) differ, and the orders CSV doesn't carry the payment method.
+// Sales tax isn't in the CSV either, so the payment fee here excludes tax.
+export const PALMSTREET_SELLING_FEE_RATE = 0.069;
+export const PALMSTREET_PAYMENT_FEE_RATE = 0.029;
+export const PALMSTREET_PAYMENT_FEE_FIXED = 0.30; // per order
 // A matched plant whose SKU number is below this is an "old plant" — set aside,
 // no seller commission. Everything at/above it is a "new plant" and pays.
 // SKU < 2380 → old; SKU >= 2380 → new (so 2380 itself is the first new plant).
@@ -188,15 +198,21 @@ export function aggregate(lines, meta = {}) {
     const skuNum = parseSkuNumber(effSku);
     const oldPlant = skuNum != null && skuNum < OLD_PLANT_SKU_MAX;
     const offDay = !!(allowedDays && l.orderDate && !allowedDays.has(localDay(l.orderDate)));
-    const commission = l.matched && !oldPlant ? l.revenue * SELLER_COMMISSION_RATE : 0;
-    return { ...l, skuNum, oldPlant, offDay, commission };
+    // Palmstreet % fees on this plant's item price (the per-order $0.30 is
+    // order-level, applied in totals — not attributed to a single plant).
+    const sellingFee = l.revenue * PALMSTREET_SELLING_FEE_RATE;
+    const paymentFee = l.revenue * PALMSTREET_PAYMENT_FEE_RATE;
+    const netRevenue = l.revenue - sellingFee - paymentFee;
+    // Commission is 15% of revenue AFTER Palmstreet fees, new plants only.
+    const commission = l.matched && !oldPlant ? netRevenue * SELLER_COMMISSION_RATE : 0;
+    return { ...l, skuNum, oldPlant, offDay, sellingFee, paymentFee, netRevenue, commission };
   });
 
   // Reports exclude unmatched lines entirely.
   const reported = annotated.filter(l => l.matched);
 
   let grossSales = 0, shippingCollected = 0, matchedRevenue = 0, cogs = 0;
-  let costlessMatched = 0, commissionBase = 0, oldPlantRevenue = 0, oldPlantCount = 0, sellerCommission = 0;
+  let costlessMatched = 0, commissionBase = 0, commissionBaseNet = 0, oldPlantRevenue = 0, oldPlantCount = 0, sellerCommission = 0;
   const orderSet = new Set();
   const buyerSet = new Set();
   const boxSet = new Set();
@@ -209,7 +225,7 @@ export function aggregate(lines, meta = {}) {
     if (l.boxId && l.sku) boxSet.add(l.boxId);
     if (l.hasCost) { matchedRevenue += l.revenue; cogs += l.cost; } else costlessMatched += 1;
     if (l.oldPlant) { oldPlantRevenue += l.revenue; oldPlantCount += 1; }
-    else { commissionBase += l.revenue; sellerCommission += l.commission; }
+    else { commissionBase += l.revenue; commissionBaseNet += l.netRevenue; sellerCommission += l.commission; }
     if (!l.orderDate) undatedCount += 1;
   }
   const lots = reported.length;
@@ -224,7 +240,12 @@ export function aggregate(lines, meta = {}) {
   const labor = boxes * LABOR_PER_BOX;
   const shippingCost = boxes * SHIPPING_COST_PER_BOX;
   const totalRevenue = grossSales + shippingCollected;
-  const netProfit = totalRevenue - cogs - labor - sellerCommission - shippingCost;
+  // Palmstreet fees apply to everything sold (item + shipping); payment fee adds
+  // a $0.30 fixed charge per order. (Sales tax isn't in the CSV, so excluded.)
+  const palmstreetSellingFee = PALMSTREET_SELLING_FEE_RATE * totalRevenue;
+  const palmstreetPaymentFee = PALMSTREET_PAYMENT_FEE_RATE * totalRevenue + PALMSTREET_PAYMENT_FEE_FIXED * orderSet.size;
+  const palmstreetFees = palmstreetSellingFee + palmstreetPaymentFee;
+  const netProfit = totalRevenue - palmstreetFees - cogs - labor - sellerCommission - shippingCost;
   const netMargin = grossSales > 0 ? (netProfit / grossSales) * 100 : null;
 
   const totals = {
@@ -232,7 +253,8 @@ export function aggregate(lines, meta = {}) {
     excludedRevenue, lots, matchedCount: lots, unmatchedCount, costlessMatched,
     orders: orderSet.size, buyers: buyerSet.size, avgSale,
     boxes, labor, shippingCost, sellerCommission, totalRevenue, netProfit, netMargin,
-    commissionBase, oldPlantRevenue, oldPlantCount, commissionableCount,
+    palmstreetSellingFee, palmstreetPaymentFee, palmstreetFees,
+    commissionBase, commissionBaseNet, oldPlantRevenue, oldPlantCount, commissionableCount,
   };
 
   // By-variety (matched only).
