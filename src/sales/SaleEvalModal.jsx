@@ -12,6 +12,7 @@ import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
 import {
   evaluateSale, applyManualMatch, loadEval, fetchEval, storeEval,
   LABOR_PER_BOX, SHIPPING_COST_PER_BOX, SELLER_COMMISSION_RATE, OLD_PLANT_SKU_MAX,
+  PALMSTREET_SELLING_FEE_RATE, PALMSTREET_PAYMENT_FEE_RATE, PALMSTREET_PAYMENT_FEE_FIXED,
 } from './saleEval.js';
 
 // The live's calendar day (YYYY-MM-DD, local). Prefer the plain `date` field;
@@ -296,8 +297,10 @@ function NetProfit({ totals }) {
   const rows = [
     { label: 'Gross sales', value: t.grossSales, neg: false },
     { label: 'Shipping collected', value: t.shippingCollected, neg: false },
+    { label: `Palmstreet selling fee (${(PALMSTREET_SELLING_FEE_RATE * 100).toFixed(1)}%)`, value: t.palmstreetSellingFee, neg: true },
+    { label: `Palmstreet payment fee (${(PALMSTREET_PAYMENT_FEE_RATE * 100).toFixed(1)}% + $${PALMSTREET_PAYMENT_FEE_FIXED.toFixed(2)}/order)`, value: t.palmstreetPaymentFee, neg: true },
     { label: 'COGS', value: t.cogs, neg: true },
-    { label: `Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of new-plant sales)`, value: t.sellerCommission, neg: true },
+    { label: `Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of new-plant sales net of fees)`, value: t.sellerCommission, neg: true },
     { label: `Labor ($${LABOR_PER_BOX} × ${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'})`, value: t.labor, neg: true },
     { label: `Shipping cost ($${SHIPPING_COST_PER_BOX} × ${t.boxes} ${t.boxes === 1 ? 'box' : 'boxes'})`, value: t.shippingCost, neg: true },
   ];
@@ -375,7 +378,10 @@ function CommissionReport({ result, onPdf, exporting }) {
           <div className="text-xs font-medium text-emerald-800/80">Commission owed to seller</div>
           <div className="text-2xl sm:text-3xl font-bold text-emerald-700 tabular-nums leading-tight mt-0.5">{fmt$2(t.sellerCommission)}</div>
           <div className="text-[11px] text-emerald-800/70 mt-1">
-            {rate}% of {t.commissionableCount} new {t.commissionableCount === 1 ? 'plant' : 'plants'} · {fmt$2(t.commissionBase)} in sales
+            {rate}% of {fmt$2(t.commissionBaseNet)} net · {t.commissionableCount} new {t.commissionableCount === 1 ? 'plant' : 'plants'}
+          </div>
+          <div className="text-[10px] text-emerald-800/60 tabular-nums">
+            {fmt$2(t.commissionBase)} sales − {fmt$2(t.commissionBase - t.commissionBaseNet)} Palmstreet fees = {fmt$2(t.commissionBaseNet)} net
           </div>
         </div>
         <Coins className="w-9 h-9 text-emerald-300 flex-shrink-0" />
@@ -757,7 +763,9 @@ function exportLinesCsv(result) {
   totalsRow[12] = t.sellerCommission.toFixed(2);
   rows.push([]);
   rows.push(totalsRow);
-  rows.push(sumRow(`Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of new plants)`, t.sellerCommission));
+  rows.push(sumRow(`Palmstreet selling fee (${(PALMSTREET_SELLING_FEE_RATE * 100).toFixed(1)}% of item + shipping)`, t.palmstreetSellingFee));
+  rows.push(sumRow(`Palmstreet payment fee (${(PALMSTREET_PAYMENT_FEE_RATE * 100).toFixed(1)}% + $${PALMSTREET_PAYMENT_FEE_FIXED.toFixed(2)}/order)`, t.palmstreetPaymentFee));
+  rows.push(sumRow(`Seller commission (${Math.round(SELLER_COMMISSION_RATE * 100)}% of new plants net of fees)`, t.sellerCommission));
   rows.push(sumRow(`Labor ($${LABOR_PER_BOX} x ${t.boxes} boxes)`, t.labor));
   rows.push(sumRow(`Shipping cost ($${SHIPPING_COST_PER_BOX} x ${t.boxes} boxes)`, t.shippingCost));
   rows.push(sumRow('Net profit', t.netProfit));
@@ -770,7 +778,7 @@ function exportLinesCsv(result) {
 // (new) plant with its 15% cut, plus the old-plants-set-aside summary.
 function exportCommissionCsv(result) {
   const rate = Math.round(SELLER_COMMISSION_RATE * 100);
-  const headers = ['Buyer', 'Username', 'Order', 'SKU', 'Item', 'Type', 'Sale Price', `Commission (${rate}%)`];
+  const headers = ['Buyer', 'Username', 'Order', 'SKU', 'Item', 'Type', 'Sale Price', 'Net after Palmstreet fees', `Commission (${rate}%)`];
   // All matched plants: new (with commission) and old (set aside, $0).
   const plants = result.lines
     .filter(l => l.matched)
@@ -781,13 +789,14 @@ function exportCommissionCsv(result) {
     ));
   const rows = plants.map(l => [
     l.buyer, l.username, l.orderNumber, l.itemSku || l.sku, l.title,
-    l.oldPlant ? 'old' : 'new', l.revenue.toFixed(2),
+    l.oldPlant ? 'old' : 'new', l.revenue.toFixed(2), l.netRevenue.toFixed(2),
     l.oldPlant ? '0.00' : l.commission.toFixed(2),
   ]);
   const t = result.totals;
   rows.push([]);
-  rows.push(['COMMISSION OWED', '', '', '', `${t.commissionableCount} new lots`, 'new', t.commissionBase.toFixed(2), t.sellerCommission.toFixed(2)]);
-  rows.push([`Old plants set aside (SKU < ${OLD_PLANT_SKU_MAX})`, '', '', '', `${t.oldPlantCount} lots`, 'old', t.oldPlantRevenue.toFixed(2), '0.00']);
+  rows.push(['COMMISSION OWED', '', '', '', `${t.commissionableCount} new lots`, 'new', t.commissionBase.toFixed(2), t.commissionBaseNet.toFixed(2), t.sellerCommission.toFixed(2)]);
+  const oldPlantNet = t.oldPlantRevenue * (1 - PALMSTREET_SELLING_FEE_RATE - PALMSTREET_PAYMENT_FEE_RATE);
+  rows.push([`Old plants set aside (SKU < ${OLD_PLANT_SKU_MAX})`, '', '', '', `${t.oldPlantCount} lots`, 'old', t.oldPlantRevenue.toFixed(2), oldPlantNet.toFixed(2), '0.00']);
   const csv = [headers, ...rows].map(r => r.map(csvCell).join(',')).join('\n');
   downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8;' }), `${slugName(result.saleName)}-commission.csv`);
 }
@@ -932,7 +941,23 @@ async function exportCommissionPdf(result) {
   // Commission owed (hero)
   pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11); pdf.setTextColor(0);
   ensure(54); pdf.text('Commission owed to seller', M, y); y += 18;
-  pdf.setFontSize(22); pdf.setTextColor(...EMERALD); pdf.text(money(t.sellerCommission), M, y); y += 16;
+  pdf.setFontSize(22); pdf.setTextColor(...EMERALD); pdf.text(money(t.sellerCommission), M, y); y += 15;
+  pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9); pdf.setTextColor(...GRAY);
+  pdf.text(fit(`${rate}% of ${money(t.commissionBaseNet)} net — ${money(t.commissionBase)} new-plant sales less ${money(t.commissionBase - t.commissionBaseNet)} Palmstreet fees`, right - M), M, y); y += 18;
+  // Palmstreet fees on the new-plant commission base — these reconcile with the
+  // derivation line above (new sales − these fees = net). The owner's TOTAL
+  // platform fees (incl. shipping, old plants, per-order $0.30) live in the
+  // on-screen net-profit P&L, not this seller-facing commission doc.
+  heading('Palmstreet fees on new-plant sales', 13);
+  const feeRow = (label, val) => {
+    ensure(13); pdf.setFont('helvetica', 'normal'); pdf.setFontSize(9);
+    pdf.setTextColor(0); pdf.text(label, M, y);
+    pdf.setTextColor(...GRAY); pdf.text(`- ${money(val)}`, right, y, { align: 'right' });
+    y += 13;
+  };
+  feeRow(`Selling fee (${(PALMSTREET_SELLING_FEE_RATE * 100).toFixed(1)}%)`, t.commissionBase * PALMSTREET_SELLING_FEE_RATE);
+  feeRow(`Payment fee (${(PALMSTREET_PAYMENT_FEE_RATE * 100).toFixed(1)}%)`, t.commissionBase * PALMSTREET_PAYMENT_FEE_RATE);
+  y += 9;
   // New vs old revenue split chart (drives the commission basis).
   const splitTotal = t.commissionBase + t.oldPlantRevenue;
   const xSplitBar = M + 105, xSplitEnd = right - 135, splitW = xSplitEnd - xSplitBar;
