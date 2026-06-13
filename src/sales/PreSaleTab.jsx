@@ -19,6 +19,9 @@ import { exportPalmstreetCsv } from './palmstreetExport.js';
 // respected; without it, it falls back to a direct upsert.
 
 const BROWSE_CAP = 200;
+// Quick-add mode stages each scanned item at this flat price with no detail
+// entry, so a whole live can be loaded by scanning straight through.
+const QUICK_ADD_PRICE = 300;
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -80,6 +83,8 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
   const [openId, setOpenId] = useState(null);
   const [lastAddedId, setLastAddedId] = useState(null);
   const [addedOrder, setAddedOrder] = useState([]);
+  // Quick add: scan straight through, each item staged at $300, no detail editor.
+  const [quickAdd, setQuickAdd] = useState(false);
 
   useEffect(() => { scanRef.current?.focus(); }, [saleId]);
   useEffect(() => {
@@ -94,9 +99,10 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
     return () => clearTimeout(t);
   }, [lastAddedId]);
 
-  // Open a row, flag it as freshly added, and float it to the top.
-  const markAdded = (id) => {
-    setOpenId(id);
+  // Flag a row as freshly added and float it to the top. In quick-add mode we
+  // pass open=false so the editor stays closed and the scanner keeps focus.
+  const markAdded = (id, open = true) => {
+    if (open) setOpenId(id);
     setLastAddedId(id);
     setAddedOrder(o => [id, ...o.filter(x => x !== id)]);
   };
@@ -156,10 +162,10 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
     }
   };
 
-  const assign = async (it, toSaleId) => {
+  const assign = async (it, toSaleId, extra = {}) => {
     setBusy(true);
     try {
-      const patch = { saleId: toSaleId, lotKind: 'sale' };
+      const patch = { saleId: toSaleId, lotKind: 'sale', ...extra };
       if (!toSaleId) patch.lotNumber = null;
       await patchItem(it.id, patch, toSaleId);
       return true;
@@ -176,12 +182,24 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
     if (!saleId) { flash('error', 'Pick a sale event first'); return; }
     const elig = eligibleToAdd(it);
     if (!elig.ok) {
-      // Re-scanning something already on this sale just reopens it to edit.
-      if (elig.reason === 'Already staged') { markAdded(it.id); flash('ok', `Editing ${it.sku}`); }
-      else flash('error', elig.reason);
+      if (elig.reason === 'Already staged') {
+        // In quick mode, re-scanning a staged item is a no-op cue; otherwise
+        // reopen it to edit.
+        if (quickAdd) flash('ok', `${it.sku} already staged`);
+        else { markAdded(it.id); flash('ok', `Editing ${it.sku}`); }
+      } else flash('error', elig.reason);
       return;
     }
-    if (await assign(it, saleId)) { markAdded(it.id); flash('ok', `Added ${it.sku}`); }
+    if (quickAdd) {
+      // Stage at the flat price, leave the editor closed, keep scanning.
+      if (await assign(it, saleId, { listingPrice: QUICK_ADD_PRICE })) {
+        markAdded(it.id, false);
+        flash('ok', `Added ${it.sku} · $${QUICK_ADD_PRICE}`);
+        setTimeout(() => scanRef.current?.focus(), 0);
+      }
+    } else if (await assign(it, saleId)) {
+      markAdded(it.id); flash('ok', `Added ${it.sku}`);
+    }
   };
 
   const addBySku = async (raw) => {
@@ -194,6 +212,29 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
 
   const removeFromSale = async (it) => {
     if (await assign(it, null)) flash('ok', `Removed ${it.sku}`);
+  };
+
+  // Un-stage every item currently staged for this sale (one batched save).
+  // Inventory rows are NOT deleted — just unassigned from the sale.
+  const removeAllStaged = async () => {
+    const rows = staged;
+    if (!rows.length) return;
+    if (!window.confirm(`Remove all ${rows.length} staged ${rows.length === 1 ? 'item' : 'items'} from "${sale?.name || 'this sale'}"? This unassigns them from the sale — your inventory is not deleted.`)) return;
+    setBusy(true);
+    setOverride(p => { const n = { ...p }; for (const it of rows) n[it.id] = null; return n; });
+    try {
+      const patches = rows.map(it => ({ id: it.id, saleId: null, lotKind: 'sale', lotNumber: null }));
+      if (onStageItems) await onStageItems(patches);
+      else { await api.upsertItems(patches); onItemsChanged?.(); }
+      setAddedOrder([]);
+      setOpenId(null);
+      flash('ok', `Removed ${rows.length} ${rows.length === 1 ? 'item' : 'items'}`);
+    } catch (e) {
+      setOverride(p => { const n = { ...p }; for (const it of rows) n[it.id] = it.saleId; return n; }); // rollback
+      flash('error', e.message || 'Remove failed');
+    } finally {
+      setBusy(false);
+    }
   };
 
   // Persist a row's listing-detail form. No optimistic saleId change.
@@ -304,9 +345,23 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
             </div>
           )}
         </div>
-        <p className="text-[11px] text-gray-400">
-          Scan → edit price &amp; drop a photo → <span className="font-medium text-gray-500">Save details</span> → scan the next.
-        </p>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={quickAdd}
+              onChange={(e) => setQuickAdd(e.target.checked)}
+              className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+            />
+            <span className="font-medium text-gray-700">Quick add</span>
+            <span className="text-xs text-gray-500">stage at ${QUICK_ADD_PRICE}, no details</span>
+          </label>
+          <p className="text-[11px] text-gray-400">
+            {quickAdd
+              ? <>Each scan stages instantly at <span className="font-medium text-gray-500">${QUICK_ADD_PRICE}</span> — keep scanning.</>
+              : <>Scan → edit price &amp; drop a photo → <span className="font-medium text-gray-500">Save details</span> → scan the next.</>}
+          </p>
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-3 items-start">
@@ -377,11 +432,21 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
 
         {/* Staged for this sale */}
         <div className="bg-white rounded-xl border border-gray-200 flex flex-col">
-          <div className="p-3 border-b border-gray-100">
+          <div className="p-3 border-b border-gray-100 flex items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-gray-900">
               Staged for this sale
               <span className="ml-1.5 text-xs font-normal text-gray-500">({staged.length})</span>
             </h3>
+            {staged.length > 0 && (
+              <button
+                onClick={removeAllStaged}
+                disabled={busy}
+                className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg disabled:opacity-50"
+                title="Remove all staged items from this sale"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Remove all
+              </button>
+            )}
           </div>
           {staged.length === 0 ? (
             <div className="px-3 py-10 text-center">

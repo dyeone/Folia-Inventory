@@ -912,14 +912,24 @@ function StaffOrAdminInventory() {
             items={items}
             isAdmin={isAdmin}
             showToast={showToast}
-            onStageItems={(updates) => {
-              // Same merge LineupBuilder uses — route through saveItems so
-              // the change is optimistic + diff-persisted in one place.
-              const updateMap = new Map(updates.map(u => [u.id, u]));
-              const newItems = items.map(i => updateMap.has(i.id)
-                ? { ...i, ...updateMap.get(i.id) }
-                : i);
-              saveItems(newItems);
+            onStageItems={async (updates) => {
+              // Functional updater so rapid back-to-back quick-add scans
+              // compose instead of overwriting each other (each call merging a
+              // stale `items` closure would drop the prior scan's staging).
+              // Persist the exact partial patches — the server does a partial
+              // UPDATE for rows that already have an id, so only these columns
+              // change. On failure, resync from the server and rethrow so the
+              // caller (PreSaleTab) rolls back its optimistic override.
+              setItems(prev => {
+                const m = new Map(updates.map(u => [u.id, u]));
+                return prev.map(i => (m.has(i.id) ? { ...i, ...m.get(i.id) } : i));
+              });
+              try {
+                await api.upsertItems(updates);
+              } catch (e) {
+                try { applyItemsFresh(await api.getItems()); } catch { /* keep optimistic merge */ }
+                throw e;
+              }
             }}
             onItemsChanged={async () => {
               const fresh = await api.getItems();
