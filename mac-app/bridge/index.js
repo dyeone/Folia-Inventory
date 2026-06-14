@@ -1153,8 +1153,11 @@ async function apiCall(path, init = {}) {
   return body;
 }
 
+// Default an unset role to 'all' so a single-Mac setup (phone + printers) still
+// claims print jobs. Only OLD bridges (pre-role) send no role at all, and the
+// server deliberately keeps those away from print jobs.
 const nextJob = () =>
-  apiCall(`/api/bridge?action=next${BRIDGE_ROLE ? `&role=${encodeURIComponent(BRIDGE_ROLE)}` : ''}`);
+  apiCall(`/api/bridge?action=next&role=${encodeURIComponent(BRIDGE_ROLE || 'all')}`);
 const completeJob = (id, result, error) =>
   apiCall('/api/bridge?action=complete', {
     method: 'POST',
