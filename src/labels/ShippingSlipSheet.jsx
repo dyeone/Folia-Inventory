@@ -4,7 +4,7 @@ import { Download, X, Loader2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { shortBoxCode } from './boxCode.js';
 import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
-import { useAutoBridgePrint } from './useBridgePrint.js';
+import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 
 // Per-box shipping slip — what goes inside the package so the customer
 // sees a manifest of what they ordered.
@@ -226,7 +226,9 @@ async function buildPdf(box) {
 export function ShippingSlipSheet({ box, onClose, showToast }) {
   // Print directly on open when the printer's ready — skip the preview; fall
   // back to the preview only when the bridge is offline or the print fails.
-  const auto = useAutoBridgePrint({ buildPdf: () => buildPdf(box), role: 'slip', onClose, showToast });
+  // (One box = one small slip, so no chunking really happens here.)
+  const printDirect = (printViaBridge) => printChunked({ items: [box], buildPdf: ([b]) => buildPdf(b), role: 'slip', printViaBridge });
+  const auto = useAutoBridgePrint({ printDirect, onClose, showToast });
 
   const [busy, setBusy] = useState(false);
 
@@ -312,7 +314,7 @@ export function ShippingSlipSheet({ box, onClose, showToast }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700 flex items-center gap-1">
             <X className="w-4 h-4" /> Close
           </button>
-          <PrintControls role="slip" buildPdf={() => buildPdf(box)} onBrowserPrint={printInBrowser} />
+          <PrintControls printDirect={printDirect} buildPdf={() => buildPdf(box)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownload}
             disabled={busy}

@@ -4,7 +4,7 @@ import { Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { jsPDF } from 'jspdf';
 import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
-import { useAutoBridgePrint } from './useBridgePrint.js';
+import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 
 function Label({ item }) {
   const svgRef = useRef(null);
@@ -95,7 +95,9 @@ function buildPdf(items) {
     if (sku) {
       const dataUrl = barcodeDataUrl(canvas, sku);
       if (dataUrl) {
-        pdf.addImage(dataUrl, 'PNG', 0.1, 0.55, LABEL_W - 0.2, 0.4);
+        // 'FAST' = FlateDecode the embedded PNG; a 1-bit barcode compresses
+        // hard, which keeps big batches well under the per-job size cap.
+        pdf.addImage(dataUrl, 'PNG', 0.1, 0.55, LABEL_W - 0.2, 0.4, undefined, 'FAST');
       }
     }
   });
@@ -106,8 +108,10 @@ function buildPdf(items) {
 export function LabelSheet({ items, onClose, showToast }) {
   // Print directly on open when the printer's ready — skip the preview grid.
   // Only when the bridge is offline (or the direct print fails) do we fall back
-  // to showing the preview below so the operator can browser-print.
-  const auto = useAutoBridgePrint({ buildPdf: () => buildPdf(items), role: 'label', onClose, showToast });
+  // to showing the preview below so the operator can browser-print. Large
+  // batches are split into per-job chunks so they fit under the request cap.
+  const printDirect = (printViaBridge) => printChunked({ items, buildPdf, role: 'label', printViaBridge });
+  const auto = useAutoBridgePrint({ printDirect, onClose, showToast });
 
   const handleDownloadPdf = () => {
     const pdf = buildPdf(items);
@@ -158,7 +162,7 @@ export function LabelSheet({ items, onClose, showToast }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close
           </button>
-          <PrintControls role="label" buildPdf={() => buildPdf(items)} onBrowserPrint={printInBrowser} />
+          <PrintControls printDirect={printDirect} buildPdf={() => buildPdf(items)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownloadPdf}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white"
