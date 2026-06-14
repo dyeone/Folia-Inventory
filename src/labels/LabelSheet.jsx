@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { jsPDF } from 'jspdf';
-import { PrintControls } from './PrintControls.jsx';
+import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
+import { useAutoBridgePrint } from './useBridgePrint.js';
 
 function Label({ item }) {
   const svgRef = useRef(null);
@@ -102,7 +103,12 @@ function buildPdf(items) {
   return pdf;
 }
 
-export function LabelSheet({ items, onClose }) {
+export function LabelSheet({ items, onClose, showToast }) {
+  // Print directly on open when the printer's ready — skip the preview grid.
+  // Only when the bridge is offline (or the direct print fails) do we fall back
+  // to showing the preview below so the operator can browser-print.
+  const auto = useAutoBridgePrint({ buildPdf: () => buildPdf(items), role: 'label', onClose, showToast });
+
   const handleDownloadPdf = () => {
     const pdf = buildPdf(items);
     const stamp = new Date().toISOString().slice(0, 10);
@@ -123,6 +129,20 @@ export function LabelSheet({ items, onClose }) {
     }
   };
 
+  // Auto-printing (or still checking the printer): show a minimal overlay
+  // instead of the preview grid. The grid only renders in the 'preview' phase.
+  if (auto.phase !== 'preview') {
+    return createPortal(
+      <AutoPrintOverlay
+        label={auto.phase === 'checking'
+          ? 'Connecting to printer…'
+          : `Printing ${items.length} ${items.length === 1 ? 'label' : 'labels'}…`}
+        onCancel={onClose}
+      />,
+      document.body,
+    );
+  }
+
   // Render through a portal so this becomes a direct child of <body>.
   // That lets the @media print rules reliably hide everything except the
   // sheet itself — otherwise the React root (also a body child) contains the
@@ -133,6 +153,7 @@ export function LabelSheet({ items, onClose }) {
         <h2 className="text-base font-semibold text-gray-900">
           Labels <span className="text-gray-400 font-normal">· {items.length} {items.length === 1 ? 'item' : 'items'} · 2″ × 1″</span>
         </h2>
+        {auto.error && <span className="text-xs text-red-600 truncate max-w-[20rem]" title={auto.error}>{auto.error}</span>}
         <div className="ml-auto flex gap-2">
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close

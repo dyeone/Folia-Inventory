@@ -2,6 +2,23 @@ import { useEffect, useRef, useState } from 'react';
 import { Printer, Loader2 } from 'lucide-react';
 import { useBridgePrint, pdfToBase64 } from './useBridgePrint.js';
 
+// Minimal full-screen overlay shown while a sheet auto-prints on open, instead
+// of the preview grid. Just enough to confirm something is happening, with a
+// Cancel escape hatch in case the bridge hangs.
+export function AutoPrintOverlay({ label, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-gray-100 flex items-center justify-center">
+      <div className="flex flex-col items-center gap-3 text-gray-700">
+        <Loader2 className="w-7 h-7 animate-spin text-emerald-600" />
+        <div className="text-sm font-medium">{label}</div>
+        <button onClick={onCancel} className="mt-1 text-xs text-gray-400 hover:text-gray-600">
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Shared print button cluster for the label/slip sheets.
 //
 // One click sends the PDF straight to the operator's configured printer through

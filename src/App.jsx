@@ -1561,10 +1561,10 @@ function StaffOrAdminInventory() {
       )}
 
       {boxLabelBoxes && boxLabelBoxes.length > 0 && (
-        <BoxLabelSheet boxes={boxLabelBoxes} onClose={() => setBoxLabelBoxes(null)} />
+        <BoxLabelSheet boxes={boxLabelBoxes} onClose={() => setBoxLabelBoxes(null)} showToast={showToast} />
       )}
       {labelItems && labelItems.length > 0 && (
-        <LabelSheet items={labelItems} onClose={() => setLabelItems(null)} />
+        <LabelSheet items={labelItems} onClose={() => setLabelItems(null)} showToast={showToast} />
       )}
       </Suspense>
 
