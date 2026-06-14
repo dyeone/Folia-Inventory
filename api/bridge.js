@@ -94,15 +94,35 @@ async function enqueue(req, res) {
   return res.status(200).json({ job });
 }
 
-// Try once to claim the oldest queued (or stale-running) job. Atomic via
-// CAS: select candidate, then guarded UPDATE on its prior status. If 0
-// rows return, another bridge raced us; treat as "nothing claimed".
-async function tryClaim(user) {
+// Job routing by bridge role. The queue is one global per-account stream, so
+// when an operator runs two bridges (one driving the phone for Palmstreet, one
+// attached to the label printers) they'd otherwise race for every job — the
+// phone machine grabs a print job it can't fulfil, the printer machine grabs a
+// Palmstreet tap. A bridge declares its role on /next and only claims matching
+// jobs:
+//   'printer'    → only print jobs
+//   'palmstreet' → only non-print (adb) jobs
+//   anything else / absent → claim everything (single-machine setups, and old
+//                            bridges that don't send a role — backward compat)
+function roleActionFilter(query, role) {
+  if (role === 'printer') return query.eq('action', 'print');
+  if (role === 'palmstreet') return query.neq('action', 'print');
+  return query;
+}
+
+// Try once to claim the oldest queued (or stale-running) job this bridge's role
+// is allowed to handle. Atomic via CAS: select candidate, then guarded UPDATE
+// on its prior status. If 0 rows return, another bridge raced us; treat as
+// "nothing claimed".
+async function tryClaim(user, role) {
   const staleCutoff = new Date(Date.now() - STALE_RUNNING_MS).toISOString();
-  const { data: candidate, error: selErr } = await supabase
-    .from('bridge_jobs')
-    .select('*')
-    .or(`status.eq.queued,and(status.eq.running,claimedAt.lt.${staleCutoff})`)
+  const { data: candidate, error: selErr } = await roleActionFilter(
+    supabase
+      .from('bridge_jobs')
+      .select('*')
+      .or(`status.eq.queued,and(status.eq.running,claimedAt.lt.${staleCutoff})`),
+    role,
+  )
     .order('createdAt', { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -139,6 +159,7 @@ const NEXT_POLL_INTERVAL_MS = 200;
 async function next(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
   const user = await requireBridgeUser(req);
+  const role = (req.query?.role || '').toString().toLowerCase();
 
   // Heartbeat. /health reads this to decide if the bridge is online.
   // With long-poll, the bridge issues at most one request per ~9 s when
@@ -151,7 +172,7 @@ async function next(req, res) {
 
   const deadline = Date.now() + NEXT_LONG_POLL_MS;
   while (true) {
-    const claimed = await tryClaim(user);
+    const claimed = await tryClaim(user, role);
     if (claimed) return res.status(200).json({ job: claimed });
     if (Date.now() >= deadline) return res.status(200).json({ job: null });
     await new Promise(r => setTimeout(r, NEXT_POLL_INTERVAL_MS));

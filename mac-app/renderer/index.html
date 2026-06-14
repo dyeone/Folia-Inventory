@@ -90,6 +90,30 @@
 
     <section class="card">
       <div class="card-head">
+        <h2>This machine's role</h2>
+      </div>
+      <div class="muted small">
+        What jobs this Mac's bridge handles. Set this when you run two Macs — one
+        driving the phone for Palmstreet, one attached to the label printers — so
+        they don't steal each other's jobs.
+      </div>
+      <div class="cfg-edit">
+        <label>Role
+          <select id="sel-role">
+            <option value="">Everything (single Mac)</option>
+            <option value="printer">Printing only (this Mac has the printers)</option>
+            <option value="palmstreet">Palmstreet only (this Mac drives the phone)</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button id="btn-save-role" class="btn btn-primary">Save role</button>
+        </div>
+        <div id="role-result" class="small muted"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
         <h2>Printers</h2>
         <button id="btn-refresh-printers" class="btn btn-text">Refresh</button>
       </div>

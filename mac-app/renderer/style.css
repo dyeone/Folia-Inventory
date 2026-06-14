@@ -233,6 +233,7 @@ main {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--emerald-bg);
 }
+#sel-role { width: 100%; }
 .printers-edit .row { margin-top: 2px; }
 #printers-result:empty { display: none; }
 #printers-result { margin-top: 8px; }
