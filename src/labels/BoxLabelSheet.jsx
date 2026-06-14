@@ -130,7 +130,9 @@ export function BoxLabelSheet({ boxes, onClose, showToast }) {
   // Print directly on open when the printer's ready — skip the preview grid;
   // fall back to the preview only when the bridge is offline or print fails.
   // Large batches are split into per-job chunks so they fit under the cap.
-  const printDirect = (printViaBridge) => printChunked({ items: boxes, buildPdf, role: 'label', printViaBridge });
+  // media: force 2"×1" so the printer doesn't fall back to its CUPS default (4×6).
+  const printDirect = (printViaBridge) =>
+    printChunked({ items: boxes, buildPdf, role: 'label', media: 'Custom.2x1in', printViaBridge });
   const auto = useAutoBridgePrint({ printDirect, onClose, showToast });
 
   const handleDownloadPdf = () => {

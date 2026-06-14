@@ -110,7 +110,10 @@ export function LabelSheet({ items, onClose, showToast }) {
   // Only when the bridge is offline (or the direct print fails) do we fall back
   // to showing the preview below so the operator can browser-print. Large
   // batches are split into per-job chunks so they fit under the request cap.
-  const printDirect = (printViaBridge) => printChunked({ items, buildPdf, role: 'label', printViaBridge });
+  // media: force 2"×1" so the printer uses the label size, not its CUPS default
+  // (the iDPRT defaults to 4×6, which is why prints came out 4×6).
+  const printDirect = (printViaBridge) =>
+    printChunked({ items, buildPdf, role: 'label', media: 'Custom.2x1in', printViaBridge });
   const auto = useAutoBridgePrint({ printDirect, onClose, showToast });
 
   const handleDownloadPdf = () => {
