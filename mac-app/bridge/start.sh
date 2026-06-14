@@ -15,12 +15,19 @@ if [ -f "$DIR/.env" ]; then
   set -a; . "$DIR/.env"; set +a
 fi
 
-./reconnect.sh
+# A printer-only machine has no phone, so skip the USB/ADB prep entirely:
+# reconnect.sh exits 1 when no device is found and `set -e` would abort the whole
+# start before we ever reach the poller. The printer bridge only runs `lp`.
+if [ "${BRIDGE_ROLE:-}" = "printer" ]; then
+  echo "→ Role: printer — no phone needed, skipping ADB setup"
+else
+  ./reconnect.sh
 
-DEVICE_FILE="$DIR/.bridge-device"
-if [ -f "$DEVICE_FILE" ]; then
-  export BRIDGE_DEVICE="$(cat "$DEVICE_FILE")"
-  echo "→ Bridge will use device $BRIDGE_DEVICE"
+  DEVICE_FILE="$DIR/.bridge-device"
+  if [ -f "$DEVICE_FILE" ]; then
+    export BRIDGE_DEVICE="$(cat "$DEVICE_FILE")"
+    echo "→ Bridge will use device $BRIDGE_DEVICE"
+  fi
 fi
 
 exec node "$DIR/index.js"
