@@ -138,7 +138,12 @@ export function useAutoBridgePrint({ printDirect, onClose, showToast }) {
 
   useEffect(() => {
     if (fired.current || bridgeOnline === null) return; // wait for first health result
-    fired.current = true;
+    // Latch only when we actually start printing (online). If the bridge is
+    // offline at open, show the preview but stay UNLATCHED, so we still auto-
+    // print if it comes online while the sheet is open — otherwise a transient
+    // first-health 'offline' leaves the sheet stuck on the grid even after the
+    // chip flips to "Printer ready".
+    if (bridgeOnline === true) fired.current = true;
     let cancelled = false;
     // All state updates live inside this async fn (never synchronously in the
     // effect body) so they run after an await, mirroring the health-poll effect.
