@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Printer, Loader2 } from 'lucide-react';
-import { useBridgePrint, pdfToBase64 } from './useBridgePrint.js';
+import { useBridgePrint } from './useBridgePrint.js';
 
 // Minimal full-screen overlay shown while a sheet auto-prints on open, instead
 // of the preview grid. Just enough to confirm something is happening, with a
@@ -27,14 +27,15 @@ export function AutoPrintOverlay({ label, onCancel }) {
 // never stuck. A small chip shows printer status and the last result.
 //
 // Props:
-//   role           'label' | 'slip' | 'document' — selects the bridge's printer
-//   buildPdf       () => jsPDF | Promise<jsPDF>   — builds the PDF on demand
+//   printDirect    (printViaBridge) => Promise<{printer}|{cancelled}>
+//                  — the bridge print (usually printChunked); bakes in role/media
+//   buildPdf       () => jsPDF | Promise<jsPDF>   — builds the FULL PDF for the
+//                  browser fallback (browser prints locally, no size cap)
 //   onBrowserPrint (pdf) => void                  — the sheet's browser-print path
-//   media          optional CUPS media string (e.g. 'Custom.2x1in')
-export function PrintControls({ role, buildPdf, onBrowserPrint, media }) {
+export function PrintControls({ printDirect, buildPdf, onBrowserPrint }) {
   const { bridgeOnline, printing, printViaBridge } = useBridgePrint();
   const [msg, setMsg] = useState(null); // { text, error } | null
-  // Re-entrancy guard covering the WHOLE handler, including the async buildPdf —
+  // Re-entrancy guard covering the WHOLE handler, including the async build —
   // `printing` from the hook only flips after the PDF is built, so without this
   // a rapid double-click on the async slip could build + enqueue twice.
   const [busy, setBusy] = useState(false);
@@ -47,29 +48,30 @@ export function PrintControls({ role, buildPdf, onBrowserPrint, media }) {
     msgTimer.current = setTimeout(() => setMsg(null), 5000);
   };
 
+  const browserPrint = async () => {
+    let pdf;
+    try { pdf = await buildPdf(); }
+    catch (e) { flash(`Couldn’t build the PDF: ${e.message}`, true); return; }
+    onBrowserPrint(pdf);
+  };
+
   const doPrint = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      let pdf;
-      try { pdf = await buildPdf(); }
-      catch (e) { flash(`Couldn’t build the PDF: ${e.message}`, true); return; }
-
       if (bridgeOnline) {
         try {
-          const res = await printViaBridge({ pdfBase64: pdfToBase64(pdf), role, media });
+          const res = await printDirect(printViaBridge);
           if (res?.cancelled) return; // sheet closed mid-print
-          flash(`Sent to ${res.printer || 'printer'}`);
+          flash(`Sent to ${res?.printer || 'printer'}`);
           return;
         } catch (e) {
-          // Bridge reachable but the print failed — fall back so the label still
-          // comes out, and tell the operator why the direct path didn't work.
+          // Bridge reachable but the print failed — fall through to browser
+          // print so the labels still come out, and say why direct didn't work.
           flash(`Printer error — using browser print (${e.message})`, true);
-          onBrowserPrint(pdf);
-          return;
         }
       }
-      onBrowserPrint(pdf);
+      await browserPrint();
     } finally {
       setBusy(false);
     }
@@ -79,10 +81,7 @@ export function PrintControls({ role, buildPdf, onBrowserPrint, media }) {
     if (busy) return;
     setBusy(true);
     try {
-      let pdf;
-      try { pdf = await buildPdf(); }
-      catch (e) { flash(`Couldn’t build the PDF: ${e.message}`, true); return; }
-      onBrowserPrint(pdf);
+      await browserPrint();
     } finally {
       setBusy(false);
     }

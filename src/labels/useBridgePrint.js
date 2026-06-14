@@ -94,16 +94,43 @@ export function useBridgePrint() {
   return { bridgeOnline, printing, printViaBridge };
 }
 
+// How many label pages to put in a single print job. The base64 PDF rides
+// through the Vercel enqueue request (~4.5 MB body cap) and lands in
+// bridge_jobs, so a big batch (e.g. 120 labels) can't go in one job. Split it
+// into chunks small enough to fit and print each as its own job, in order.
+// 60 stays well under the cap even if the PDF doesn't compress (worst case
+// ~1.5 MB base64) while keeping the job count low for typical batches.
+const LABELS_PER_JOB = 60;
+
+// Build + print an array of items via the bridge, one job per chunk so any
+// batch size fits under the request-size cap. buildPdf(chunk) builds a PDF for
+// just that slice; printViaBridge comes from useBridgePrint. Jobs run in order
+// (await each) so the labels come out in sequence. Returns the printer name, or
+// { cancelled: true } if the sheet closed mid-run. Throws on the first failure.
+export async function printChunked({ items, buildPdf, role, printViaBridge, chunkSize = LABELS_PER_JOB, media }) {
+  let printer;
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const pdf = await buildPdf(chunk);
+    const res = await printViaBridge({ pdfBase64: pdfToBase64(pdf), role, media });
+    if (res?.cancelled) return { cancelled: true };
+    printer = res.printer;
+  }
+  return { printer };
+}
+
 // Auto-print on open. When a print sheet mounts and the bridge is online, print
 // directly and close — skipping the preview entirely (operators asked to just
 // print, not eyeball a grid first). Falls back to the full preview UI when the
 // bridge is offline or the direct print fails, so they can review / browser-
-// print / retry. The sheet renders from the returned `phase`:
+// print / retry. `printDirect(printViaBridge)` does the actual print (usually
+// printChunked); it should resolve to { printer } or { cancelled }, or throw.
+// The sheet renders from the returned `phase`:
 //   'checking'  bridge health unknown — show a tiny connecting overlay
 //   'printing'  direct print in flight — show a tiny printing overlay
 //   'done'      printed; onClose has fired (sheet is unmounting)
 //   'preview'   show the full preview UI (offline, or a direct-print error)
-export function useAutoBridgePrint({ buildPdf, role, copies = 1, media, onClose, showToast }) {
+export function useAutoBridgePrint({ printDirect, onClose, showToast }) {
   const { bridgeOnline, printViaBridge } = useBridgePrint();
   const [phase, setPhase] = useState('checking');
   const [error, setError] = useState(null);
@@ -118,18 +145,11 @@ export function useAutoBridgePrint({ buildPdf, role, copies = 1, media, onClose,
     (async () => {
       if (!bridgeOnline) { if (!cancelled) setPhase('preview'); return; } // offline → manual preview
       if (!cancelled) setPhase('printing');
-      let pdf;
       try {
-        pdf = await buildPdf();
-      } catch (e) {
-        if (!cancelled) { setError(`Couldn’t build the PDF: ${e.message}`); setPhase('preview'); }
-        return;
-      }
-      try {
-        const res = await printViaBridge({ pdfBase64: pdfToBase64(pdf), role, copies, media });
+        const res = await printDirect(printViaBridge);
         if (cancelled || res?.cancelled) return; // sheet closed mid-print
         setPhase('done');
-        showToast?.(`Sent to ${res.printer || 'printer'}`);
+        showToast?.(`Sent to ${res?.printer || 'printer'}`);
         onClose?.();
       } catch (e) {
         if (!cancelled) { setError(`Printer error: ${e.message}`); setPhase('preview'); } // browser-print / retry from the preview
@@ -137,7 +157,7 @@ export function useAutoBridgePrint({ buildPdf, role, copies = 1, media, onClose,
     })();
     return () => { cancelled = true; };
     // Runs once when the first health result lands; the `fired` guard makes the
-    // other referenced values (buildPdf/printViaBridge/…) safe to omit.
+    // other referenced values (printDirect/printViaBridge/…) safe to omit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridgeOnline]);
 

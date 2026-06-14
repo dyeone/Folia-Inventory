@@ -5,7 +5,7 @@ import JsBarcode from 'jsbarcode';
 import { jsPDF } from 'jspdf';
 import { shortBoxCode } from './boxCode.js';
 import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
-import { useAutoBridgePrint } from './useBridgePrint.js';
+import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 
 // 2"×1" thermal label per box, encoding the box code (B-XXXXXX) in
 // CODE128. Designed to be stuck on the physical box so a barcode scanner
@@ -118,7 +118,8 @@ function buildPdf(boxes) {
     // Bottom: CODE128 barcode of the box code.
     const dataUrl = barcodeDataUrl(canvas, code);
     if (dataUrl) {
-      pdf.addImage(dataUrl, 'PNG', 0.1, 0.58, LABEL_W - 0.2, 0.36);
+      // 'FAST' = FlateDecode the embedded PNG so big batches stay small.
+      pdf.addImage(dataUrl, 'PNG', 0.1, 0.58, LABEL_W - 0.2, 0.36, undefined, 'FAST');
     }
   });
 
@@ -128,7 +129,9 @@ function buildPdf(boxes) {
 export function BoxLabelSheet({ boxes, onClose, showToast }) {
   // Print directly on open when the printer's ready — skip the preview grid;
   // fall back to the preview only when the bridge is offline or print fails.
-  const auto = useAutoBridgePrint({ buildPdf: () => buildPdf(boxes), role: 'label', onClose, showToast });
+  // Large batches are split into per-job chunks so they fit under the cap.
+  const printDirect = (printViaBridge) => printChunked({ items: boxes, buildPdf, role: 'label', printViaBridge });
+  const auto = useAutoBridgePrint({ printDirect, onClose, showToast });
 
   const handleDownloadPdf = () => {
     const pdf = buildPdf(boxes);
@@ -167,7 +170,7 @@ export function BoxLabelSheet({ boxes, onClose, showToast }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close
           </button>
-          <PrintControls role="label" buildPdf={() => buildPdf(boxes)} onBrowserPrint={printInBrowser} />
+          <PrintControls printDirect={printDirect} buildPdf={() => buildPdf(boxes)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownloadPdf}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white"
