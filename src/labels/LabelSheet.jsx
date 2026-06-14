@@ -1,8 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Printer, Download } from 'lucide-react';
+import { Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { jsPDF } from 'jspdf';
+import { PrintControls } from './PrintControls.jsx';
 
 function Label({ item }) {
   const svgRef = useRef(null);
@@ -108,17 +109,16 @@ export function LabelSheet({ items, onClose }) {
     pdf.save(`folia-labels-${stamp}.pdf`);
   };
 
-  // Use the same PDF for printing — opens it in a new tab with the print
-  // dialog already triggered. This sidesteps browser CSS print quirks and
-  // guarantees the printed output matches the downloaded PDF exactly.
-  const handlePrint = () => {
-    const pdf = buildPdf(items);
+  // Browser-print fallback (used when the bridge is offline or errors): open
+  // the PDF in a new tab with the print dialog already triggered. Sidesteps
+  // browser CSS print quirks and matches the downloaded PDF exactly.
+  const printInBrowser = (pdf) => {
     pdf.autoPrint();
     const url = pdf.output('bloburl');
     const win = window.open(url, '_blank');
     if (!win) {
-      // Pop-up blocked — fall back to triggering the browser's own print
-      // dialog on the on-screen preview.
+      // Pop-up blocked — fall back to the browser's own print dialog on the
+      // on-screen preview.
       window.print();
     }
   };
@@ -137,12 +137,7 @@ export function LabelSheet({ items, onClose }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close
           </button>
-          <button
-            onClick={handlePrint}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-gray-700"
-          >
-            <Printer className="w-4 h-4" /> Print
-          </button>
+          <PrintControls role="label" buildPdf={() => buildPdf(items)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownloadPdf}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white"

@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld('live', {
   onUpdate: (cb) => ipcRenderer.on('live:update', (_e, snap) => cb(snap)),
 });
 
+contextBridge.exposeInMainWorld('printers', {
+  list: () => ipcRenderer.invoke('printers:list'),
+  test: (printer) => ipcRenderer.invoke('printers:test', printer),
+});
+
 contextBridge.exposeInMainWorld('app', {
   openBridgeFolder: () => ipcRenderer.invoke('app:open-bridge-folder'),
   openLogFile:      () => ipcRenderer.invoke('app:open-log-file'),

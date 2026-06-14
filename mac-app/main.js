@@ -11,9 +11,66 @@
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const os = require('node:os');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { BridgeRunner } = require('./bridge-runner.js');
 const { checkForUpdate } = require('./updater.js');
 const { downloadAndInstall } = require('./installer.js');
+
+const execFileP = promisify(execFile);
+
+// CUPS lives at fixed system paths. A GUI-launched Electron app inherits a
+// stripped PATH (no /usr/bin guaranteed on PATH lookups for some setups), so
+// call the absolute binaries — same reasoning as BridgeRunner._childEnv.
+const LPSTAT = '/usr/bin/lpstat';
+const LP = '/usr/bin/lp';
+
+// Enumerate local CUPS destinations for the Printers panel. `lpstat -e` lists
+// one destination name per line; `lpstat -d` reports the system default.
+// Best-effort: any failure returns an empty list with the error so the UI can
+// say "couldn't detect printers" instead of hanging.
+async function listPrinters() {
+  try {
+    const [eRes, dRes] = await Promise.all([
+      execFileP(LPSTAT, ['-e'], { encoding: 'utf8', timeout: 5000 }),
+      execFileP(LPSTAT, ['-d'], { encoding: 'utf8', timeout: 5000 }).catch(() => ({ stdout: '' })),
+    ]);
+    const printers = eRes.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+    const m = (dRes.stdout || '').match(/system default destination:\s*(\S+)/i);
+    return { printers, default: m ? m[1] : null };
+  } catch (e) {
+    return { printers: [], default: null, error: e.message };
+  }
+}
+
+// Send a one-line test page straight to `lp` so the operator can confirm a
+// printer works during setup, without round-tripping through the web app.
+// printer === '' targets the system default.
+async function testPrinter(printer) {
+  const file = path.join(os.tmpdir(), `folia-printer-test-${Date.now()}.txt`);
+  const body = [
+    'Folia Bridge — printer test',
+    new Date().toLocaleString(),
+    printer ? `Printer: ${printer}` : 'Printer: (system default)',
+    'If you can read this, direct printing works.',
+    '',
+  ].join('\n');
+  try {
+    // Inside the try so a tmpdir/write failure returns {ok:false} like every
+    // other failure path, rather than rejecting the IPC handler.
+    fs.writeFileSync(file, body, 'utf8');
+    const args = [];
+    if (printer) args.push('-d', printer);
+    args.push('-t', 'folia-test', file);
+    const { stdout } = await execFileP(LP, args, { encoding: 'utf8', timeout: 15000 });
+    return { ok: true, detail: (stdout || '').trim() };
+  } catch (e) {
+    return { ok: false, error: (e.stderr || e.message || 'lp failed').trim() };
+  } finally {
+    try { fs.unlinkSync(file); } catch { /* ignore */ }
+  }
+}
 
 // Re-check for a newer build every 6h so an operator who leaves the window
 // open for days still learns about a release without restarting. The
@@ -135,6 +192,13 @@ ipcMain.handle('bridge:save-config', async (_e, cfg) => {
   runner.writeEnv(cfg);
   return runner.readEnv();
 });
+
+// Printers panel: list local CUPS destinations and send a test page. The
+// role→printer mapping itself (LABEL_PRINTER/SLIP_PRINTER/DOCUMENT_PRINTER) is
+// persisted through the existing bridge:save-config, so the bridge subprocess
+// picks it up via _childEnv on its next start.
+ipcMain.handle('printers:list', () => listPrinters());
+ipcMain.handle('printers:test', (_e, printer) => testPrinter(typeof printer === 'string' ? printer : ''));
 
 ipcMain.handle('app:open-bridge-folder', async () => {
   await shell.openPath(runner.bridgeDir);
