@@ -59,6 +59,13 @@ const U2_ENABLED = U2_URL.toLowerCase() !== 'off';
 const LABEL_PRINTER = process.env.LABEL_PRINTER || '';
 const SLIP_PRINTER = process.env.SLIP_PRINTER || '';
 const DOCUMENT_PRINTER = process.env.DOCUMENT_PRINTER || '';
+// This machine's job, sent to /next so the server only hands it matching jobs:
+//   'printer'    → only print jobs (this Mac has the label printers)
+//   'palmstreet' → only the phone-driving jobs (this Mac has the Android device)
+//   '' (default) → claim everything (single-machine setup)
+// Lets an operator run two bridges — phone on one Mac, printers on another —
+// without them stealing each other's jobs.
+const BRIDGE_ROLE = (process.env.BRIDGE_ROLE || '').toLowerCase().trim();
 // "Watch live" flag file. The Mac app creates/removes it (BridgeRunner
 // .setWatchLive) to toggle the live monitor; the poll loop only scrapes the
 // live screen while it exists, so monitoring is OFF (zero extra dumps) by
@@ -1146,7 +1153,8 @@ async function apiCall(path, init = {}) {
   return body;
 }
 
-const nextJob = () => apiCall('/api/bridge?action=next');
+const nextJob = () =>
+  apiCall(`/api/bridge?action=next${BRIDGE_ROLE ? `&role=${encodeURIComponent(BRIDGE_ROLE)}` : ''}`);
 const completeJob = (id, result, error) =>
   apiCall('/api/bridge?action=complete', {
     method: 'POST',
@@ -1300,6 +1308,7 @@ async function pollOnce() {
 async function main() {
   console.log(`Folia bridge starting`);
   console.log(`  api    ${API_URL}`);
+  console.log(`  role   ${BRIDGE_ROLE || 'all (print + palmstreet)'}`);
   console.log(`  device ${DEVICE || '(default adb device)'}`);
   console.log(`  poll   ${POLL_MS}ms`);
 

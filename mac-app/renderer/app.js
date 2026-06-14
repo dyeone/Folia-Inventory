@@ -49,6 +49,9 @@ const els = {
   liveListings:  $('live-listings'),
   liveFeed:      $('live-feed'),
   liveRaw:       $('live-raw'),
+  selRole:       $('sel-role'),
+  btnSaveRole:   $('btn-save-role'),
+  roleResult:    $('role-result'),
   printersStatus: $('printers-status'),
   printersResult: $('printers-result'),
   btnRefreshPrinters: $('btn-refresh-printers'),
@@ -184,6 +187,7 @@ async function refreshPrinters() {
   els.printersStatus.textContent = 'Detecting printers…';
   const [list, cfg] = await Promise.all([window.printers.list(), window.bridge.getConfig()]);
   const printers = list.printers || [];
+  els.selRole.value = (cfg.BRIDGE_ROLE || '').toLowerCase();
   fillSelect(els.selLabel,    printers, cfg.LABEL_PRINTER || '');
   fillSelect(els.selSlip,     printers, cfg.SLIP_PRINTER || '');
   fillSelect(els.selDocument, printers, cfg.DOCUMENT_PRINTER || '');
@@ -205,6 +209,19 @@ async function testPrinter(sel, btn) {
     btn.disabled = false;
   }
 }
+
+els.btnSaveRole.addEventListener('click', async () => {
+  els.btnSaveRole.disabled = true;
+  try {
+    // Merge so URL/token/printers survive. Empty role ('Everything') clears the
+    // key (writeEnv drops empties) → the bridge claims all jobs.
+    const existing = await window.bridge.getConfig();
+    await window.bridge.saveConfig({ ...existing, BRIDGE_ROLE: els.selRole.value });
+    els.roleResult.textContent = 'Saved. Restart the bridge to apply.';
+  } finally {
+    els.btnSaveRole.disabled = false;
+  }
+});
 
 els.btnRefreshPrinters.addEventListener('click', refreshPrinters);
 els.btnTestLabel.addEventListener('click',    () => testPrinter(els.selLabel, els.btnTestLabel));
