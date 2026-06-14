@@ -49,6 +49,16 @@ const els = {
   liveListings:  $('live-listings'),
   liveFeed:      $('live-feed'),
   liveRaw:       $('live-raw'),
+  printersStatus: $('printers-status'),
+  printersResult: $('printers-result'),
+  btnRefreshPrinters: $('btn-refresh-printers'),
+  selLabel:      $('sel-label'),
+  selSlip:       $('sel-slip'),
+  selDocument:   $('sel-document'),
+  btnTestLabel:  $('btn-test-label'),
+  btnTestSlip:   $('btn-test-slip'),
+  btnTestDocument: $('btn-test-document'),
+  btnSavePrinters: $('btn-save-printers'),
 };
 
 // ── State rendering ──────────────────────────────────────────────────
@@ -145,6 +155,79 @@ els.btnSaveCfg.addEventListener('click', async () => {
 
 els.btnClearLog.addEventListener('click', () => { els.log.textContent = ''; });
 els.btnOpenLog.addEventListener('click',  () => window.app.openLogFile());
+
+// ── Printers ─────────────────────────────────────────────────────────
+// Map each label role to a local CUPS printer. The bridge subprocess reads
+// LABEL_PRINTER / SLIP_PRINTER / DOCUMENT_PRINTER from its env at startup, so a
+// change here applies on the bridge's next (re)start. Build options with the
+// DOM (not string HTML) so a printer name can never inject markup, and keep a
+// saved-but-currently-undetected printer visible so a brief unplug doesn't
+// silently wipe the choice.
+function fillSelect(sel, printers, saved) {
+  sel.innerHTML = '';
+  const seen = new Set();
+  const add = (val, label) => {
+    if (seen.has(val)) return;
+    seen.add(val);
+    const o = document.createElement('option');
+    o.value = val;
+    o.textContent = label;
+    sel.appendChild(o);
+  };
+  add('', '(system default)');
+  for (const p of printers) add(p, p);
+  if (saved && !seen.has(saved)) add(saved, `${saved} (not detected)`);
+  sel.value = saved || '';
+}
+
+async function refreshPrinters() {
+  els.printersStatus.textContent = 'Detecting printers…';
+  const [list, cfg] = await Promise.all([window.printers.list(), window.bridge.getConfig()]);
+  const printers = list.printers || [];
+  fillSelect(els.selLabel,    printers, cfg.LABEL_PRINTER || '');
+  fillSelect(els.selSlip,     printers, cfg.SLIP_PRINTER || '');
+  fillSelect(els.selDocument, printers, cfg.DOCUMENT_PRINTER || '');
+  els.printersStatus.textContent = list.error
+    ? `Couldn’t detect printers: ${list.error}`
+    : `${printers.length} printer${printers.length === 1 ? '' : 's'} detected` +
+      (list.default ? ` · system default: ${list.default}` : '');
+}
+
+async function testPrinter(sel, btn) {
+  els.printersResult.textContent = 'Sending test page…';
+  btn.disabled = true;
+  try {
+    const res = await window.printers.test(sel.value);
+    els.printersResult.textContent = res.ok
+      ? `Test page sent to ${sel.value || '(system default)'}${res.detail ? ` — ${res.detail}` : ''}.`
+      : `Test failed: ${res.error}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+els.btnRefreshPrinters.addEventListener('click', refreshPrinters);
+els.btnTestLabel.addEventListener('click',    () => testPrinter(els.selLabel, els.btnTestLabel));
+els.btnTestSlip.addEventListener('click',     () => testPrinter(els.selSlip, els.btnTestSlip));
+els.btnTestDocument.addEventListener('click', () => testPrinter(els.selDocument, els.btnTestDocument));
+els.btnSavePrinters.addEventListener('click', async () => {
+  els.btnSavePrinters.disabled = true;
+  try {
+    // Merge with the existing .env so URL/token/device survive the save.
+    // An empty value ('(system default)') clears that role — writeEnv drops
+    // empty keys, so the bridge falls back to the system default.
+    const existing = await window.bridge.getConfig();
+    await window.bridge.saveConfig({
+      ...existing,
+      LABEL_PRINTER:    els.selLabel.value,
+      SLIP_PRINTER:     els.selSlip.value,
+      DOCUMENT_PRINTER: els.selDocument.value,
+    });
+    els.printersResult.textContent = 'Saved. Restart the bridge to apply the change.';
+  } finally {
+    els.btnSavePrinters.disabled = false;
+  }
+});
 
 // ── Watch live (prototype) ───────────────────────────────────────────
 // The bridge scrapes the Palmstreet live screen while watching is on and
@@ -369,6 +452,7 @@ window.app.onUpdateStatus((result) => applyUpdate(result));
   applyState(await window.bridge.getState());
   applyConfig(await window.bridge.getConfig());
   applyWatch((await window.live.getWatch())?.watching);
+  refreshPrinters();  // populate the Printers panel; non-blocking
   baseVersionLabel = `v${await window.app.getVersion()}`;
   els.versionLabel.textContent = baseVersionLabel;
   checkForUpdates();  // silent on launch — only the banner speaks up

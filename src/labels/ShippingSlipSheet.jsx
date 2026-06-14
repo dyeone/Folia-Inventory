@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Printer, Download, X, Loader2 } from 'lucide-react';
+import { Download, X, Loader2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { shortBoxCode } from './boxCode.js';
+import { PrintControls } from './PrintControls.jsx';
 
 // Per-box shipping slip — what goes inside the package so the customer
 // sees a manifest of what they ordered.
@@ -249,29 +250,30 @@ export function ShippingSlipSheet({ box, onClose }) {
     };
   }, [box]);
 
-  const handlePrint = async () => {
-    setBusy(true);
-    try {
-      // Open the PDF in a new browser tab via a synthetic anchor click.
-      // window.open(url, '_blank') sometimes gets caught by popup
-      // blockers when the call sits behind an async await; anchor
-      // clicks fired inside the original user-gesture stack are
-      // treated as direct navigations and reliably open as a tab.
-      // pdf.autoPrint() sets a /JS action that fires the print dialog
-      // automatically once the browser's PDF viewer loads the file.
-      const pdf = await buildPdf(box);
-      pdf.autoPrint();
-      const url = pdf.output('bloburl');
-      const a = document.createElement('a');
-      a.href = url;
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    } finally {
-      setBusy(false);
+  // Browser-print fallback (used when the bridge is offline or errors). Prefer
+  // the already-loaded preview iframe: contentWindow.print() needs no popup and
+  // no fresh user gesture, so it still works on the bridge-failure path (which
+  // runs after an async round-trip, where a synthetic tab-open would be
+  // popup-blocked). The anchor-click tab is the fallback for when the preview
+  // isn't mounted yet (direct offline click before the preview finishes).
+  const printInBrowser = (pdf) => {
+    const ifr = iframeRef.current;
+    if (ifr?.contentWindow) {
+      try {
+        ifr.contentWindow.focus();
+        ifr.contentWindow.print();
+        return;
+      } catch { /* not ready / blocked — fall through to opening a tab */ }
     }
+    pdf.autoPrint();
+    const url = pdf.output('bloburl');
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   };
 
   const handleDownload = async () => {
@@ -294,14 +296,7 @@ export function ShippingSlipSheet({ box, onClose }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700 flex items-center gap-1">
             <X className="w-4 h-4" /> Close
           </button>
-          <button
-            onClick={handlePrint}
-            disabled={busy}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-gray-700 disabled:opacity-60"
-          >
-            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
-            Print
-          </button>
+          <PrintControls role="slip" buildPdf={() => buildPdf(box)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownload}
             disabled={busy}

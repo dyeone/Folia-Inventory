@@ -90,6 +90,38 @@
 
     <section class="card">
       <div class="card-head">
+        <h2>Printers</h2>
+        <button id="btn-refresh-printers" class="btn btn-text">Refresh</button>
+      </div>
+      <div id="printers-status" class="muted small">Detecting printers…</div>
+      <div class="cfg-edit printers-edit">
+        <label>Label printer <span class="muted">— 2″×1″ SKU &amp; box labels</span>
+          <div class="row gap-sm">
+            <select id="sel-label"></select>
+            <button id="btn-test-label" class="btn btn-sm">Test</button>
+          </div>
+        </label>
+        <label>Slip printer <span class="muted">— 80mm shipping slips</span>
+          <div class="row gap-sm">
+            <select id="sel-slip"></select>
+            <button id="btn-test-slip" class="btn btn-sm">Test</button>
+          </div>
+        </label>
+        <label>Document printer <span class="muted">— 4″×6″ / letter</span>
+          <div class="row gap-sm">
+            <select id="sel-document"></select>
+            <button id="btn-test-document" class="btn btn-sm">Test</button>
+          </div>
+        </label>
+        <div class="actions">
+          <button id="btn-save-printers" class="btn btn-primary">Save printers</button>
+        </div>
+        <div id="printers-result" class="small muted"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
         <h2>Watch live</h2>
         <div class="row gap-sm">
           <span id="live-status" class="pill pill-gray">off</span>

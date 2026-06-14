@@ -27,6 +27,8 @@ import {
 } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 // ─── Minimal .env loader (no dep) ───────────────────────────────────────────
 const here = dirname(fileURLToPath(import.meta.url));
@@ -48,6 +50,15 @@ const DEVICE = process.env.BRIDGE_DEVICE || '';
 const POLL_MS = parseInt(process.env.POLL_MS || '50', 10);
 const U2_URL = (process.env.U2_URL ?? 'http://localhost:9008').replace(/\/$/, '');
 const U2_ENABLED = U2_URL.toLowerCase() !== 'off';
+// Printers for the direct-print path (web → bridge → local CUPS). Each is an
+// optional CUPS destination name (as shown by `lpstat -e`); the Mac app's
+// Printers panel writes these into bridge/.env. A 'print' job carries a role
+// ('label' | 'slip' | 'document') that maps to one of these, with sensible
+// fallbacks (slip→label, anything→system default when unset). Leaving them all
+// blank means every print goes to the Mac's default printer.
+const LABEL_PRINTER = process.env.LABEL_PRINTER || '';
+const SLIP_PRINTER = process.env.SLIP_PRINTER || '';
+const DOCUMENT_PRINTER = process.env.DOCUMENT_PRINTER || '';
 // "Watch live" flag file. The Mac app creates/removes it (BridgeRunner
 // .setWatchLive) to toggle the live monitor; the poll loop only scrapes the
 // live screen while it exists, so monitoring is OFF (zero extra dumps) by
@@ -974,6 +985,96 @@ async function openNewListingForm() {
   throw new Error('New-listing form did not open — make sure Palmstreet is foregrounded and the sidebar "Shop" → Create flow is reachable');
 }
 
+// ─── Direct printing (web → bridge → local CUPS) ──────────────────────────────
+
+// Hard cap on an `lp` invocation. Spooling a small label PDF is near-instant;
+// the only way it hangs is a wedged CUPS backend, so bound it and surface a
+// clean error instead of stalling the poll loop.
+const LP_TIMEOUT_MS = 30_000;
+
+// Pick the CUPS destination for a job's role. Explicit payload.printer wins
+// (the web can override); otherwise map the role to its configured printer.
+// Roles never fall back to each other — a slip (80mm) and a label (2×1) are
+// different media — so an unconfigured role drops to the system default (empty
+// string → `lp` with no -d) rather than misprinting on the wrong printer.
+function resolvePrinter({ role, printer }) {
+  if (printer && typeof printer === 'string') return printer.trim();
+  switch (role) {
+    case 'label':    return LABEL_PRINTER;
+    case 'slip':     return SLIP_PRINTER;
+    case 'document': return DOCUMENT_PRINTER;
+    default:         return '';
+  }
+}
+
+// Decode the PDF bytes for a print job. The only accepted transport is inline
+// base64 — the web builds the label PDF with jsPDF and ships it in the payload.
+// We deliberately do NOT fetch an arbitrary URL here: the bridge runs on the
+// operator's Mac with LAN/localhost reach, so a fetchable pdfUrl would be a
+// blind-SSRF lever for any authenticated web user. Validate the magic bytes so
+// a malformed payload fails here with a clear message, not a cryptic CUPS one.
+function resolvePdfBytes(payload) {
+  if (typeof payload.pdfBase64 !== 'string' || !payload.pdfBase64) {
+    throw new Error('print job missing pdfBase64');
+  }
+  const buf = Buffer.from(payload.pdfBase64, 'base64');
+  if (buf.length === 0) throw new Error('print job pdfBase64 decoded to empty');
+  if (buf.subarray(0, 5).toString('latin1') !== '%PDF-') {
+    throw new Error('print payload is not a PDF');
+  }
+  return buf;
+}
+
+// Execute a 'print' job: write the PDF to a temp file and hand it to `lp`.
+// Returns a small status object (never the bytes) for the job result.
+async function printLabel(payload) {
+  const printer = resolvePrinter(payload);
+  const copies = Math.max(1, Math.min(50, parseInt(payload.copies, 10) || 1));
+  const bytes = resolvePdfBytes(payload);
+
+  const file = resolve(tmpdir(), `folia-print-${randomUUID()}.pdf`);
+  writeFileSync(file, bytes);
+  try {
+    const args = [];
+    if (printer) args.push('-d', printer);
+    args.push('-n', String(copies));
+    // Print at the PDF's native page size — jsPDF already encodes the exact
+    // label/slip dimensions, and the destination's loaded media is expected to
+    // match. Forcing a fit/scale would distort a die-cut label. The web can
+    // still pass an explicit payload.media (e.g. 'Custom.2x1in') when needed.
+    if (payload.media && typeof payload.media === 'string') {
+      args.push('-o', `media=${payload.media}`);
+    }
+    args.push('-t', `folia-${payload.role || 'label'}`);
+    args.push(file);
+
+    let stdout = '';
+    try {
+      ({ stdout } = await exec('lp', args, {
+        encoding: 'utf8', timeout: LP_TIMEOUT_MS, killSignal: 'SIGKILL',
+      }));
+    } catch (e) {
+      // `lp` writes the real reason to stderr ("No such file or directory" for
+      // a bad -d, "The printer is not responding", etc.). Surface it, and nudge
+      // toward the Printers panel when the destination itself is the problem.
+      const reason = (e.stderr || e.message || 'lp failed').trim();
+      const hint = !printer
+        ? ' — no printer configured (set one in the Mac app → Printers)'
+        : /unknown|no such|not found|do not exist|bad/i.test(reason)
+          ? ` — printer "${printer}" not found (check the Mac app → Printers)`
+          : '';
+      throw new Error(`print failed: ${reason}${hint}`);
+    }
+
+    // e.g. "request id is Office-42 (1 file(s))" — keep just the id.
+    const reqId = (stdout.match(/request id is (\S+)/) || [])[1] || null;
+    console.log(`[${new Date().toISOString()}] printed ${copies}× ${bytes.length}b → ${printer || '(default printer)'}${reqId ? ` [${reqId}]` : ''}`);
+    return { printer: printer || '(default)', copies, bytes: bytes.length, requestId: reqId };
+  } finally {
+    try { unlinkSync(file); } catch { /* already gone */ }
+  }
+}
+
 // ─── Job dispatch ───────────────────────────────────────────────────────────
 
 function runJob(job) {
@@ -986,6 +1087,8 @@ function runJob(job) {
       return dumpUI().then(xml => ({ xml }));
     case 'listing':
       return listing(job.payload || {});
+    case 'print':
+      return printLabel(job.payload || {});
     default:
       return Promise.reject(new Error(`unknown action: ${job.action}`));
   }
@@ -1009,7 +1112,11 @@ export async function handleJob(job) {
   try {
     return await runJob(job);
   } catch (e) {
-    if (!isDeviceGoneError(e)) throw e;
+    // Only adb-driven jobs can suffer a USB device drop. A 'print' job never
+    // touches adb, and its error text interpolates web-controlled strings (the
+    // printer name) that could otherwise spoof a device-drop and trigger a
+    // pointless ~20s adb recovery — so never route non-adb actions here.
+    if (job.action === 'print' || !isDeviceGoneError(e)) throw e;
     console.warn(`[${new Date().toISOString()}] device dropped mid-job (${e.message}); recovering the adb link…`);
     if (!(await recoverDevice())) {
       throw new Error(`${e.message} — phone did not come back; check the USB cable and that it's awake`);

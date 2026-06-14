@@ -223,6 +223,10 @@ export const api = {
   bridgeStatus: (ids) =>
     request(`/bridge?action=status&ids=${encodeURIComponent(ids.join(','))}`).then(r => r.jobs),
   bridgeHealth: () => request('/bridge?action=health'),
+  // Direct print: hand a label PDF to the local printer via the bridge. payload
+  // = { pdfBase64, role: 'label'|'slip'|'document', copies?, media? }.
+  bridgePrint: (payload) =>
+    request('/bridge', { method: 'POST', body: { action: 'enqueue', jobAction: 'print', payload } }).then(r => r.job),
   bridgeGenerateToken: () =>
     request('/bridge', { method: 'POST', body: { action: 'generate-token' } }).then(r => r.token),
 

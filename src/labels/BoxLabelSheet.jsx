@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { Printer, Download } from 'lucide-react';
+import { Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { jsPDF } from 'jspdf';
 import { shortBoxCode } from './boxCode.js';
+import { PrintControls } from './PrintControls.jsx';
 
 // 2"×1" thermal label per box, encoding the box code (B-XXXXXX) in
 // CODE128. Designed to be stuck on the physical box so a barcode scanner
@@ -130,8 +131,8 @@ export function BoxLabelSheet({ boxes, onClose }) {
     pdf.save(`folia-box-labels-${stamp}.pdf`);
   };
 
-  const handlePrint = () => {
-    const pdf = buildPdf(boxes);
+  // Browser-print fallback when the bridge is offline or errors.
+  const printInBrowser = (pdf) => {
     pdf.autoPrint();
     const url = pdf.output('bloburl');
     const win = window.open(url, '_blank');
@@ -148,12 +149,7 @@ export function BoxLabelSheet({ boxes, onClose }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close
           </button>
-          <button
-            onClick={handlePrint}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-gray-300 bg-white hover:bg-gray-100 text-gray-700"
-          >
-            <Printer className="w-4 h-4" /> Print
-          </button>
+          <PrintControls role="label" buildPdf={() => buildPdf(boxes)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownloadPdf}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white"

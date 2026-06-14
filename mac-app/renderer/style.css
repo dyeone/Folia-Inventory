@@ -218,6 +218,24 @@ main {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--emerald-bg);
 }
+.cfg-edit select {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 12px;
+}
+.cfg-edit select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--emerald-bg);
+}
+.printers-edit .row { margin-top: 2px; }
+#printers-result:empty { display: none; }
+#printers-result { margin-top: 8px; }
 
 .log {
   background: #0f172a;
