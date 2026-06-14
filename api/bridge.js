@@ -97,17 +97,23 @@ async function enqueue(req, res) {
 // Job routing by bridge role. The queue is one global per-account stream, so
 // when an operator runs two bridges (one driving the phone for Palmstreet, one
 // attached to the label printers) they'd otherwise race for every job — the
-// phone machine grabs a print job it can't fulfil, the printer machine grabs a
-// Palmstreet tap. A bridge declares its role on /next and only claims matching
-// jobs:
-//   'printer'    → only print jobs
+// phone machine grabs a print job it can't fulfil ("unknown action: print"),
+// the printer machine grabs a Palmstreet tap. A bridge declares its role on
+// /next and only claims matching jobs:
+//   'printer'    → ONLY print jobs
+//   'all'        → everything (explicit; a single Mac that has phone + printers)
 //   'palmstreet' → only non-print (adb) jobs
-//   anything else / absent → claim everything (single-machine setups, and old
-//                            bridges that don't send a role — backward compat)
+//   anything else / ABSENT → only non-print jobs
+//
+// The key rule: a print job is only ever handed to a bridge that explicitly
+// asked for it ('printer' or 'all'). Legacy bridges (old code that predates
+// printing) send no role at all, so they fall into the default and are kept
+// away from print jobs — which is exactly what stops an un-updated Palmstreet
+// machine from stealing prints and rejecting them. No update needed on it.
 function roleActionFilter(query, role) {
   if (role === 'printer') return query.eq('action', 'print');
-  if (role === 'palmstreet') return query.neq('action', 'print');
-  return query;
+  if (role === 'all') return query;
+  return query.neq('action', 'print');
 }
 
 // Try once to claim the oldest queued (or stale-running) job this bridge's role
