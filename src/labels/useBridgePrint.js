@@ -93,3 +93,53 @@ export function useBridgePrint() {
 
   return { bridgeOnline, printing, printViaBridge };
 }
+
+// Auto-print on open. When a print sheet mounts and the bridge is online, print
+// directly and close — skipping the preview entirely (operators asked to just
+// print, not eyeball a grid first). Falls back to the full preview UI when the
+// bridge is offline or the direct print fails, so they can review / browser-
+// print / retry. The sheet renders from the returned `phase`:
+//   'checking'  bridge health unknown — show a tiny connecting overlay
+//   'printing'  direct print in flight — show a tiny printing overlay
+//   'done'      printed; onClose has fired (sheet is unmounting)
+//   'preview'   show the full preview UI (offline, or a direct-print error)
+export function useAutoBridgePrint({ buildPdf, role, copies = 1, media, onClose, showToast }) {
+  const { bridgeOnline, printViaBridge } = useBridgePrint();
+  const [phase, setPhase] = useState('checking');
+  const [error, setError] = useState(null);
+  const fired = useRef(false);
+
+  useEffect(() => {
+    if (fired.current || bridgeOnline === null) return; // wait for first health result
+    fired.current = true;
+    let cancelled = false;
+    // All state updates live inside this async fn (never synchronously in the
+    // effect body) so they run after an await, mirroring the health-poll effect.
+    (async () => {
+      if (!bridgeOnline) { if (!cancelled) setPhase('preview'); return; } // offline → manual preview
+      if (!cancelled) setPhase('printing');
+      let pdf;
+      try {
+        pdf = await buildPdf();
+      } catch (e) {
+        if (!cancelled) { setError(`Couldn’t build the PDF: ${e.message}`); setPhase('preview'); }
+        return;
+      }
+      try {
+        const res = await printViaBridge({ pdfBase64: pdfToBase64(pdf), role, copies, media });
+        if (cancelled || res?.cancelled) return; // sheet closed mid-print
+        setPhase('done');
+        showToast?.(`Sent to ${res.printer || 'printer'}`);
+        onClose?.();
+      } catch (e) {
+        if (!cancelled) { setError(`Printer error: ${e.message}`); setPhase('preview'); } // browser-print / retry from the preview
+      }
+    })();
+    return () => { cancelled = true; };
+    // Runs once when the first health result lands; the `fired` guard makes the
+    // other referenced values (buildPdf/printViaBridge/…) safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridgeOnline]);
+
+  return { phase, error };
+}

@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { Download, X, Loader2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { shortBoxCode } from './boxCode.js';
-import { PrintControls } from './PrintControls.jsx';
+import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
+import { useAutoBridgePrint } from './useBridgePrint.js';
 
 // Per-box shipping slip — what goes inside the package so the customer
 // sees a manifest of what they ordered.
@@ -222,7 +223,11 @@ async function buildPdf(box) {
   return pdf;
 }
 
-export function ShippingSlipSheet({ box, onClose }) {
+export function ShippingSlipSheet({ box, onClose, showToast }) {
+  // Print directly on open when the printer's ready — skip the preview; fall
+  // back to the preview only when the bridge is offline or the print fails.
+  const auto = useAutoBridgePrint({ buildPdf: () => buildPdf(box), role: 'slip', onClose, showToast });
+
   const [busy, setBusy] = useState(false);
 
   // Preview iframe — we re-render the PDF blob on mount so the operator
@@ -286,12 +291,23 @@ export function ShippingSlipSheet({ box, onClose }) {
     }
   };
 
+  if (auto.phase !== 'preview') {
+    return createPortal(
+      <AutoPrintOverlay
+        label={auto.phase === 'checking' ? 'Connecting to printer…' : 'Printing shipping slip…'}
+        onCancel={onClose}
+      />,
+      document.body,
+    );
+  }
+
   return createPortal(
     <div className="fixed inset-0 z-50 bg-gray-100 overflow-auto">
       <div className="sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-2">
         <h2 className="text-base font-semibold text-gray-900">
           Shipping slip <span className="text-gray-400 font-normal">· {shortBoxCode(box.id)} · 80mm</span>
         </h2>
+        {auto.error && <span className="text-xs text-red-600 truncate max-w-[16rem]" title={auto.error}>{auto.error}</span>}
         <div className="ml-auto flex gap-2">
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700 flex items-center gap-1">
             <X className="w-4 h-4" /> Close

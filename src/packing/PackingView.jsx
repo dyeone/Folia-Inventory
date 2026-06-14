@@ -1247,6 +1247,7 @@ export function PackingView({
         <ShippingSlipSheet
           box={slipBox}
           onClose={() => setSlipBox(null)}
+          showToast={showToast}
         />
       )}
 

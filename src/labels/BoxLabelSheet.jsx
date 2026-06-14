@@ -4,7 +4,8 @@ import { Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
 import { jsPDF } from 'jspdf';
 import { shortBoxCode } from './boxCode.js';
-import { PrintControls } from './PrintControls.jsx';
+import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
+import { useAutoBridgePrint } from './useBridgePrint.js';
 
 // 2"×1" thermal label per box, encoding the box code (B-XXXXXX) in
 // CODE128. Designed to be stuck on the physical box so a barcode scanner
@@ -124,7 +125,11 @@ function buildPdf(boxes) {
   return pdf;
 }
 
-export function BoxLabelSheet({ boxes, onClose }) {
+export function BoxLabelSheet({ boxes, onClose, showToast }) {
+  // Print directly on open when the printer's ready — skip the preview grid;
+  // fall back to the preview only when the bridge is offline or print fails.
+  const auto = useAutoBridgePrint({ buildPdf: () => buildPdf(boxes), role: 'label', onClose, showToast });
+
   const handleDownloadPdf = () => {
     const pdf = buildPdf(boxes);
     const stamp = new Date().toISOString().slice(0, 10);
@@ -139,12 +144,25 @@ export function BoxLabelSheet({ boxes, onClose }) {
     if (!win) window.print();
   };
 
+  if (auto.phase !== 'preview') {
+    return createPortal(
+      <AutoPrintOverlay
+        label={auto.phase === 'checking'
+          ? 'Connecting to printer…'
+          : `Printing ${boxes.length} box ${boxes.length === 1 ? 'label' : 'labels'}…`}
+        onCancel={onClose}
+      />,
+      document.body,
+    );
+  }
+
   return createPortal(
     <div className="fixed inset-0 z-50 bg-gray-100 overflow-auto folia-label-sheet">
       <div className="folia-no-print sticky top-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-2">
         <h2 className="text-base font-semibold text-gray-900">
           Box labels <span className="text-gray-400 font-normal">· {boxes.length} {boxes.length === 1 ? 'box' : 'boxes'} · 2″ × 1″</span>
         </h2>
+        {auto.error && <span className="text-xs text-red-600 truncate max-w-[20rem]" title={auto.error}>{auto.error}</span>}
         <div className="ml-auto flex gap-2">
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close
