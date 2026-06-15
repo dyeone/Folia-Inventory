@@ -17,11 +17,12 @@ import { BoxesList, SummaryStat } from '../packing/PackingView.jsx';
 // info.
 //
 // Matching is exact-SKU-only — no fuzzy, no lot-number guessing, no
-// manual override. Unmatched rows (a SKU not in the inventory) are NOT
-// persisted: apply never creates inventory rows for them. They surface
-// in the preview and the Unmatched count so the operator can see what
-// was skipped, then fix the SKU at source and re-upload to link a real
-// item.
+// manual override. Unmatched rows still flow through: on apply we
+// insert placeholder inventory_items rows for them (lotKind=
+// 'unmatched', synthetic SKU) so the box stays whole in the Shipping
+// tab. They render purple there to flag that they're not linked to
+// real inventory; fix the SKU at source and re-upload if you need a
+// proper link.
 //
 // Sale-event association is preserved automatically because items keep
 // their `saleId` from when they were assigned to a lineup; this modal
@@ -66,7 +67,7 @@ function isSameShipment(box, it, inv) {
 //                     (re-upload) → leave it completely alone
 //   'double_sale'   — SKU already SHIPPED but a different box/date → flag the
 //                     shipped item and create a flagged second-sale line
-//   'unmatched'     — no inventory SKU → skipped (no row created)
+//   'unmatched'     — no inventory SKU → placeholder
 function classifyLine(box, it, match) {
   if (!match?.item) return 'unmatched';
   if (!match.alreadyInBox) return 'fresh';
@@ -322,11 +323,37 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             orderShippingFee: it.orderShippingFee ?? null,
             notes: it.notes || null,
           });
+        } else {
+          // No matching inventory row — emit a placeholder insert so the
+          // box still includes this line in the Shipping tab (colored
+          // purple to flag it). No `id` field so api.upsertItems takes
+          // the INSERT path and the server assigns one. SKU is a
+          // deterministic UNMATCHED-... that won't collide with real
+          // inventory SKUs (the matcher filters to status='available'
+          // /'listed' anyway, so a 'sold' UNMATCHED row won't ever be
+          // matched against again on a future upload).
+          const placeholderSku = `UNMATCHED-${effectiveBoxId.slice(0, 12)}-${it.rowKey}`;
+          updates.push({
+            sku: placeholderSku,
+            type: 'plant',
+            name: (it.title || 'Unmatched item').slice(0, 200),
+            quantity: it.quantity || 1,
+            status: 'sold',
+            lotKind: 'unmatched',
+            saleId: fallbackSaleId,
+            salePrice: it.price > 0 ? it.price : 0,
+            soldAt: it.orderDate || now,
+            buyer: box.recipientName,
+            buyerUsername: box.username,
+            buyerAddress,
+            shipmentBoxId: effectiveBoxId,
+            shipmentCarrier: box.carrier || 'usps',
+            orderId: it.orderNumber || null,
+            orderDate: it.orderDate || null,
+            orderShippingFee: it.orderShippingFee ?? null,
+            notes: it.notes || null,
+          });
         }
-        // Unmatched lines (no inventory SKU) are intentionally skipped —
-        // we never create placeholder inventory rows for them. They show
-        // up in the preview and the Unmatched count so the operator can
-        // fix the source SKU and re-upload to link a real item.
       }
     }
     if (updates.length === 0) {
@@ -383,7 +410,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                   <li>Matches each order row against the full inventory by <em>exact SKU</em> (case-insensitive)</li>
                   <li>Marks matched items <em>sold</em> with the buyer's price, order date, shipping fee, order ID, and address</li>
                   <li>Re-uploading is safe: items already in a box keep their place but get <em>topped up</em> with order date, shipping fee, and anything that was missing</li>
-                  <li>Unmatched rows (a SKU not in inventory) are <em>skipped</em> — no placeholder item is created. They show in the preview so you can fix the SKU at source and re-upload to link a real item</li>
+                  <li>Unmatched rows still flow to the Shipping tab as <em>placeholder</em> items (purple) so nothing gets dropped — fix the SKU at source and re-upload if you need them re-linked to real inventory</li>
                   <li>Groups items by buyer so the Shipping tab can ship them</li>
                 </ul>
               </div>
@@ -425,7 +452,6 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                 <SummaryStat
                   label="Unmatched"
                   value={summary.unmatched}
-                  sub={summary.unmatched > 0 ? 'skipped' : null}
                   tone={summary.unmatched > 0 ? 'amber' : 'gray'}
                 />
                 <SummaryStat
@@ -467,7 +493,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
               className="px-5 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-gray-300 text-white rounded-lg flex items-center gap-1.5"
             >
               <Check className="w-4 h-4" /> Update Inventory · {summary?.matched || 0} matched
-              {summary?.unmatched > 0 && <> · {summary.unmatched} skipped</>}
+              {summary?.unmatched > 0 && <> + {summary.unmatched} unmatched</>}
               {summary?.alreadyInBox > 0 && <> · {summary.alreadyInBox} updated</>}
               {summary?.doubleSale > 0 && <> · {summary.doubleSale} flagged</>}
             </button>
