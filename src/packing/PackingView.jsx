@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
-  Receipt, Search, Copy, RotateCcw,
+  Receipt, Search, Copy, RotateCcw, CheckCircle2,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -1781,6 +1781,11 @@ function BoxRow({
   const total = box.items.length;
   const partial = shipped > 0 && shipped < total;
   const allShipped = total > 0 && shipped === total;
+  // Fully packed = there are sold items to pack and none are still unpacked.
+  // Drives the big "Packed" badge + green card so the operator can see at a
+  // glance which boxes are packed and ready to ship.
+  const soldCount = box.items.filter(i => i.status === 'sold').length;
+  const allPacked = soldCount > 0 && unpackedSoldCount === 0;
 
   // Collapsed by default to keep each buyer card calm; the parent expands
   // the operator's focused box (a scan/lookup target or the sole survivor
@@ -1868,11 +1873,6 @@ function BoxRow({
 
   const stop = (e) => e.stopPropagation();
 
-  const statusLabel = allShipped
-    ? `${total} shipped`
-    : partial
-    ? `${shipped}/${total} shipped`
-    : `${total} ${total === 1 ? 'item' : 'items'}`;
   const statusClass = partial
     ? 'text-amber-700 font-medium'
     : allShipped
@@ -1913,6 +1913,8 @@ function BoxRow({
     <div className={`rounded-lg border transition ${
       isSelected
         ? 'border-emerald-500 ring-1 ring-emerald-200'
+        : allPacked
+        ? 'border-emerald-400 bg-emerald-50/40'
         : 'border-gray-100 hover:border-emerald-400'
     }`}>
       <div
@@ -1960,7 +1962,24 @@ function BoxRow({
             </span>
           )}
           <div className="flex-1" />
-          <span className={`text-xs shrink-0 ${statusClass}`}>{statusLabel}</span>
+          {allPacked && (
+            <span className="inline-flex items-center gap-1 text-sm font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-lg shrink-0">
+              <CheckCircle2 className="w-5 h-5" /> Packed
+            </span>
+          )}
+          {/* Item count — big number so it's readable at a glance. */}
+          <span className={`shrink-0 leading-none ${statusClass}`}>
+            {allShipped ? (
+              <span className="text-sm font-medium">{total} shipped</span>
+            ) : partial ? (
+              <span className="text-sm font-medium">{shipped}/{total} shipped</span>
+            ) : (
+              <span className="inline-flex items-baseline gap-1">
+                <span className="text-xl font-bold tabular-nums">{total}</span>
+                <span className="text-[11px]">{total === 1 ? 'item' : 'items'}</span>
+              </span>
+            )}
+          </span>
           {!isExpanded && primaryAction}
           <ChevronRight className={`w-4 h-4 text-gray-300 shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} />
         </div>
