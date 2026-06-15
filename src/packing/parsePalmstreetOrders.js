@@ -23,17 +23,20 @@ function isUpsUpgradeLine(title) {
 // Recognized SKU shapes:
 //   ALO-142          bare prefix-number anywhere in the title
 //   Alo-142          lowercase prefix (operators are sloppy)
+//   GIVVY-5026       longer prefixes too — giveaway TCs use a 5-letter GIVVY
+//                    prefix (62 in inventory); the old 2-4 letter cap silently
+//                    dropped them, so every giveaway line came in as "No SKU"
 //   (ALO-142)        parenthesized — the bundled-title convention
 //   (1589)           bare number in parens; matcher resolves by suffix
 //                    against the (globally unique) inventory SKU number
 //
-// Bare numbers are only honored when parenthesized — bare digits in
-// running text are too ambiguous (could be qty, year, count, etc.).
-const SKU_PATTERN = /\(\s*([A-Za-z]{2,4}-\d+|\d+)\s*\)|\b([A-Za-z]{2,4}-\d+)\b/g;
+// Prefix is 2-8 letters. Bare numbers are only honored when parenthesized —
+// bare digits in running text are too ambiguous (could be qty, year, count).
+const SKU_PATTERN = /\(\s*([A-Za-z]{2,8}-\d+|\d+)\s*\)|\b([A-Za-z]{2,8}-\d+)\b/g;
 
 function normalizeSku(raw) {
   const s = String(raw || '').trim();
-  return /^[A-Za-z]{2,4}-\d+$/.test(s) ? s.toUpperCase() : s;
+  return /^[A-Za-z]{2,8}-\d+$/.test(s) ? s.toUpperCase() : s;
 }
 
 function extractAllSkus(title) {
