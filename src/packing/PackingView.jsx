@@ -9,6 +9,7 @@ import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
+import { PrintListButton } from './PrintListButton.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 import { ShippingMarginNote } from './ShippingMarginNote.jsx';
@@ -645,9 +646,19 @@ export function PackingView({
         <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
           <Package className="w-5 h-5 text-emerald-600" /> Shipping
         </h2>
+        <div className="shrink-0 flex items-center gap-2">
+          {/* Print the boxes currently on screen (current sub-tab + filter) as
+              a packing-list table, straight to the document printer. */}
+          <PrintListButton
+            getBoxes={() => (subTab === 'ready'
+              ? filteredReady.flatMap(g => g.boxes)
+              : filteredShipped.groups.flatMap(g => g.boxes))}
+            kind={subTab}
+            showToast={showToast}
+          />
         {/* Camera-based scan buttons — mobile only. Desktop uses the
             always-on scan strip below. */}
-        <div className="shrink-0 flex items-center gap-2 sm:hidden">
+        <div className="flex items-center gap-2 sm:hidden">
           <button
             type="button"
             onClick={() => setScannerMode('box')}
@@ -662,6 +673,7 @@ export function PackingView({
           >
             <ScanLine className="w-4 h-4" /> Scan item
           </button>
+        </div>
         </div>
       </div>
 
