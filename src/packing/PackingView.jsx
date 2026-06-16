@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
-  Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag,
+  Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -19,6 +19,7 @@ import { shippingRollup, fmt$2 } from '../financial/financialHelpers.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
 import { EditBoxItemsModal } from './EditBoxItemsModal.jsx';
+import { EditBoxAddressModal } from './EditBoxAddressModal.jsx';
 import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
@@ -86,6 +87,10 @@ export function PackingView({
   // to add, trash icon per row to remove. State holds the box being
   // edited; mirrors how Validate Sales / BuyLabel modals work.
   const [editingBox, setEditingBox] = useState(null);
+
+  // Edit-address modal for an open box. Holds the box whose recipient name +
+  // shipping address are being corrected; saving writes to every item in it.
+  const [editingAddressBox, setEditingAddressBox] = useState(null);
 
   // Per-box shipping-slip preview. Not admin-gated — anyone packing
   // can print the customer-facing manifest.
@@ -223,7 +228,7 @@ export function PackingView({
   // mirrors the overlay state so a click that opens a modal doesn't yank
   // focus back to the (now-hidden) scan box. preventScroll keeps the page
   // from jumping to the top when refocusing after a click further down.
-  const overlayOpen = !!(buyingFor || editingBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
+  const overlayOpen = !!(buyingFor || editingBox || editingAddressBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
   const overlayOpenRef = useRef(overlayOpen);
   useEffect(() => { overlayOpenRef.current = overlayOpen; }, [overlayOpen]);
   useEffect(() => {
@@ -442,6 +447,16 @@ export function PackingView({
     if (itemIds.length === 0 || !onUnshipBox) return;
     await onUnshipBox(box.saleId, itemIds);
     setTimeout(() => scanInputRef.current?.focus(), 0);
+  };
+
+  // Save an edited recipient name + address onto every item in the box. The
+  // box's shipmentBoxId is left unchanged so its label/tracking/notes stay
+  // linked; only buyer + buyerAddress change.
+  const handleSaveAddress = async (box, { buyer, buyerAddress }) => {
+    const updates = box.items.map(i => ({ id: i.id, buyer, buyerAddress }));
+    await api.upsertItems(updates);
+    await onRefreshItems?.();
+    showToast('Address updated');
   };
 
   // Confirm before unshipping — it's reversible, but it changes box state and
@@ -1113,6 +1128,7 @@ export function PackingView({
                     selectedBoxIds={selectedBoxIds}
                     onToggleBoxSelected={toggleBoxSelected}
                     onPrintSlip={(box) => setSlipBox(box)}
+                    onEditAddress={(box) => setEditingAddressBox(box)}
                     onEditItems={(box) => setEditingBox(box)}
                     onDeleteBox={(box) => {
                       // Confirm before nuking. Mirrors the existing
@@ -1377,6 +1393,23 @@ export function PackingView({
         />
       )}
 
+      {editingAddressBox && (
+        <EditBoxAddressModal
+          box={(() => {
+            // Read the freshest copy of the box so the form prefills with
+            // current values; fall back to the captured one if it just left
+            // the list.
+            const fresh = [...groups, ...shipped.groups]
+              .flatMap(g => g.boxes)
+              .find(b => b.id === editingAddressBox.id);
+            return fresh || editingAddressBox;
+          })()}
+          onSave={(data) => handleSaveAddress(editingAddressBox, data)}
+          onClose={() => setEditingAddressBox(null)}
+          showToast={showToast}
+        />
+      )}
+
       {slipBox && (
         <ShippingSlipSheet
           box={slipBox}
@@ -1544,7 +1577,7 @@ function addressOneLine(addr) {
 function BuyerGroupCard({
   group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onBought, onCancelLabel,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
-  isAdmin, onEditItems, onDeleteBox, onPrintSlip,
+  isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
 }) {
   const totalItems = group.boxes.reduce((sum, b) => sum + b.items.length, 0);
@@ -1597,6 +1630,7 @@ function BuyerGroupCard({
             showToast={showToast}
             isAdmin={isAdmin}
             onEditItems={onEditItems ? () => onEditItems(box) : null}
+            onEditAddress={onEditAddress ? () => onEditAddress(box) : null}
             onDeleteBox={onDeleteBox ? () => onDeleteBox(box) : null}
             onPrintSlip={onPrintSlip ? () => onPrintSlip(box) : null}
             isSelected={selectedBoxIds ? selectedBoxIds.has(box.id) : false}
@@ -1889,7 +1923,7 @@ function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
   onSaveNote, boxSizes, onSavePackaging, onBought, onCancelLabel,
-  isAdmin, onEditItems, onDeleteBox, onPrintSlip,
+  isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected, defaultExpanded,
 }) {
   // Box-level pack rollup. unpackedSoldCount = items still 'sold' and
@@ -2165,6 +2199,16 @@ function BoxRow({
                 className="text-xs font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
               >
                 <Pencil className="w-3 h-3" /> Edit
+              </button>
+            )}
+            {action && onEditAddress && (
+              <button
+                onClick={(e) => { stop(e); onEditAddress(); }}
+                title="Edit the recipient name + shipping address for this box"
+                aria-label="Edit address"
+                className="text-xs font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-gray-50 active:bg-gray-100 flex items-center gap-1"
+              >
+                <MapPin className="w-3 h-3" /> Address
               </button>
             )}
             {action && isAdmin && onDeleteBox && (
