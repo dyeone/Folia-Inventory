@@ -24,7 +24,7 @@ import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { holdInfo, boxHasHoldItem } from './holdInfo.js';
+import { holdInfo, boxHasHoldItem, boxIsLocalPickup } from './holdInfo.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
@@ -2019,6 +2019,9 @@ function BoxRow({
   const onHold = !allShipped && (hasHoldItem || hold.state === 'holding');
   const holdReady = !allShipped && !hasHoldItem && hold.state === 'ready';
   const holdDays = hold.state === 'holding' ? hold.daysLeft : null;
+  // Local pickup (seller note / item says "pickup") — a separate "do not ship"
+  // flag with its own violet colour.
+  const isPickup = !allShipped && boxIsLocalPickup(box.note, box.items);
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
@@ -2108,6 +2111,8 @@ function BoxRow({
         ? 'border-emerald-500 ring-1 ring-emerald-200'
         : onHold
         ? 'border-amber-300 bg-amber-50/60'
+        : isPickup
+        ? 'border-violet-300 bg-violet-50/60'
         : holdReady
         ? 'border-emerald-400 bg-emerald-50/40'
         : allPacked
@@ -2174,6 +2179,11 @@ function BoxRow({
           {onHold && (
             <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 ring-1 ring-amber-300 px-2 py-0.5 rounded-lg shrink-0" title="On hold — do not ship yet">
               <Clock className="w-3.5 h-3.5" /> Hold{holdDays ? ` · ${holdDays}d` : ''}
+            </span>
+          )}
+          {isPickup && (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-violet-800 bg-violet-100 ring-1 ring-violet-300 px-2 py-0.5 rounded-lg shrink-0" title="Local pickup — do not ship">
+              <Package className="w-3.5 h-3.5" /> Pickup
             </span>
           )}
           {holdReady && (

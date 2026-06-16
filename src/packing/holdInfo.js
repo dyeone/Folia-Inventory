@@ -24,3 +24,15 @@ export function isHoldItem(name) {
 export function boxHasHoldItem(items) {
   return (items || []).some(i => isHoldItem(i?.name));
 }
+
+// Local pickup: the buyer collects the box in person, so it must NOT ship.
+// Flagged the same loose way as a hold — in the box's seller note OR an item
+// name/note that says "pickup" / "local pickup" / "pick up" / "pick-up".
+const LOCAL_PICKUP_RE = /\b(?:local[\s-]*)?pick[\s-]*up\b/i;
+export function isLocalPickupText(text) {
+  return LOCAL_PICKUP_RE.test(String(text || ''));
+}
+export function boxIsLocalPickup(note, items) {
+  if (isLocalPickupText(note)) return true;
+  return (items || []).some(i => isLocalPickupText(i?.name) || isLocalPickupText(i?.notes));
+}
