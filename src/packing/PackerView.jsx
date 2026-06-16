@@ -1,13 +1,14 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
-  Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search,
+  Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
+import { holdInfo } from './holdInfo.js';
 import { derivedBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -51,6 +52,9 @@ export function PackerView({ onLogout }) {
   // attached the right label: scanning the label barcode must match the
   // tracking assigned to the open box.
   const [trackingByBox, setTrackingByBox] = useState({});
+  // One-week hold deadline per box (shipmentBoxId → holdUntil ISO), from the
+  // shipment_boxes metadata. Drives the held-box background + "on hold" mark.
+  const [holdByBox, setHoldByBox] = useState({});
 
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
@@ -95,6 +99,11 @@ export function PackerView({ onLogout }) {
       setBoxSizeByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.boxSizeId || null]),
+        ),
+      );
+      setHoldByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, v?.holdUntil || null]),
         ),
       );
       setTrackingByBox(
@@ -162,17 +171,25 @@ export function PackerView({ onLogout }) {
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
 
-  // Re-pull tracking numbers. Labels are usually imported at the shipping
-  // desk while the packer's app is already open, so refresh on each box open
-  // to pick up a label assigned since mount.
-  const refreshTracking = async () => {
+  // Re-pull tracking numbers + holds. Both are set at the shipping desk while
+  // the packer's app is already open, so refresh on each box open to pick up a
+  // label or a hold applied since mount.
+  const refreshBoxMeta = async () => {
     try {
-      const shipments = await api.getShipments();
+      const [shipments, notes] = await Promise.all([
+        api.getShipments(),
+        api.getBoxNotes().catch(() => ({})),
+      ]);
       setTrackingByBox(
         Object.fromEntries(
           (shipments || [])
             .filter(s => s.trackingNumber && !s.voidedAt)
             .map(s => [s.id, s.trackingNumber]),
+        ),
+      );
+      setHoldByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, v?.holdUntil || null]),
         ),
       );
     } catch { /* keep whatever we have */ }
@@ -181,7 +198,7 @@ export function PackerView({ onLogout }) {
   const goToBox = (boxId) => {
     setActiveBoxId(boxId);
     setCameraMode(null);
-    if (boxId) refreshTracking();
+    if (boxId) refreshBoxMeta();
   };
 
   // ── Scan field focus management ──────────────────────────────────────────
@@ -437,16 +454,40 @@ export function PackerView({ onLogout }) {
   const totalOpen = openBoxes.length;
   const fullyPacked = openBoxes.filter(b => b.items.filter(i => i.status === 'sold').every(i => i.packedAt)).length;
 
+  // Hold state of the box currently open — drives a distinct (amber) page
+  // background + an easy-to-read banner so the packer can't miss a held box.
+  const activeHold = activeBox ? holdInfo(holdByBox[activeBox.id]) : { state: 'none' };
+  const activeOnHold = activeHold.state === 'holding';
+  const activeHoldReady = activeHold.state === 'ready';
+
   return (
-    <div className="fixed inset-0 bg-gray-50 flex flex-col">
+    <div className={`fixed inset-0 flex flex-col ${activeOnHold ? 'bg-amber-100' : 'bg-gray-50'}`}>
       <TopBar
         onLogout={onLogout}
+        onHold={activeOnHold}
         title={activeBox ? activeBox.code : 'Packing'}
         subtitle={activeBox
           ? (activeBox.buyer || (activeBox.buyerUsername ? `@${activeBox.buyerUsername}` : 'Box'))
           : `${totalOpen} open · ${fullyPacked} packed`}
         onBack={activeBox ? () => goToBox(null) : null}
       />
+
+      {/* Easy-to-read hold banner under the bar. Amber "ON HOLD" while the
+          week counts down; green "ready" once it elapses. */}
+      {activeBox && activeOnHold && (
+        <div className="flex-shrink-0 bg-amber-400 text-amber-950 px-4 py-3 flex items-center justify-center gap-2 text-center">
+          <Clock className="w-6 h-6 flex-shrink-0" />
+          <span className="text-lg font-extrabold tracking-wide">
+            ON HOLD · {activeHold.daysLeft} day{activeHold.daysLeft === 1 ? '' : 's'} left — do not ship yet
+          </span>
+        </div>
+      )}
+      {activeBox && activeHoldReady && (
+        <div className="flex-shrink-0 bg-emerald-500 text-white px-4 py-2.5 flex items-center justify-center gap-2 text-center">
+          <Check className="w-5 h-5 flex-shrink-0" />
+          <span className="text-base font-bold">Hold complete — OK to ship</span>
+        </div>
+      )}
 
       {/* Always-on scan strip — the USB scanner types here. */}
       <ScanField
@@ -475,6 +516,7 @@ export function PackerView({ onLogout }) {
             boxSizes={boxSizes}
             boxSizeByBox={boxSizeByBox}
             trackingByBox={trackingByBox}
+            holdByBox={holdByBox}
             onOpen={goToBox}
           />
       }
@@ -496,16 +538,20 @@ export function PackerView({ onLogout }) {
   );
 }
 
-function TopBar({ onLogout, title, subtitle, onBack }) {
+function TopBar({ onLogout, title, subtitle, onBack, onHold }) {
   const isCodeTitle = /^B-/.test(title || '');
+  // Held box → amber bar so the whole top of the screen reads "on hold".
+  const barBg = onHold ? 'bg-amber-600' : 'bg-emerald-700';
+  const btnHover = onHold ? 'hover:bg-amber-700 active:bg-amber-800' : 'hover:bg-emerald-800 active:bg-emerald-900';
+  const subTone = onHold ? 'text-amber-100' : 'text-emerald-100';
   return (
-    <div className="bg-emerald-700 text-white pt-safe flex-shrink-0">
+    <div className={`${barBg} text-white pt-safe flex-shrink-0`}>
       <div className="h-16 px-3 sm:px-5 flex items-center gap-3">
         {onBack ? (
           <button
             onClick={onBack}
             aria-label="Back"
-            className="w-12 h-12 -ml-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"
+            className={`w-12 h-12 -ml-2 rounded-full flex items-center justify-center ${btnHover}`}
           >
             <ArrowLeft className="w-6 h-6" />
           </button>
@@ -518,12 +564,12 @@ function TopBar({ onLogout, title, subtitle, onBack }) {
           <div className={`font-semibold text-lg leading-tight truncate ${isCodeTitle ? 'font-mono tracking-wide' : ''}`}>
             {title}
           </div>
-          {subtitle && <div className="text-sm text-emerald-100 leading-tight truncate mt-0.5">{subtitle}</div>}
+          {subtitle && <div className={`text-sm ${subTone} leading-tight truncate mt-0.5`}>{subtitle}</div>}
         </div>
         <button
           onClick={onLogout}
           aria-label="Log out"
-          className="w-12 h-12 -mr-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"
+          className={`w-12 h-12 -mr-2 rounded-full flex items-center justify-center ${btnHover}`}
         >
           <LogOut className="w-6 h-6" />
         </button>
@@ -579,7 +625,7 @@ function ScanField({ inputRef, value, onChange, onSubmit, placeholder, onCamera 
 // Landing — a responsive grid of every open box. Tap a card to open it (or
 // just scan). Cards show packing progress + the chosen box size so the
 // packer can see what's left at a glance across the iPad.
-function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, onOpen }) {
+function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, onOpen }) {
   if (boxes.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6 text-center pb-safe">
@@ -598,6 +644,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, onOpen }) {
             box={box}
             sizeName={boxSizes.find(s => s.id === boxSizeByBox[box.id])?.name || null}
             hasLabel={!!trackingByBox?.[box.id]}
+            hold={holdInfo(holdByBox?.[box.id])}
             onOpen={() => onOpen(box.id)}
           />
         ))}
@@ -607,18 +654,22 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, onOpen }) {
   );
 }
 
-function BoxCard({ box, sizeName, hasLabel, onOpen }) {
+function BoxCard({ box, sizeName, hasLabel, hold, onOpen }) {
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
   const allPacked = total > 0 && packed === total;
   const pct = total > 0 ? (packed / total) * 100 : 0;
+  const onHold = hold?.state === 'holding';
+  const holdReady = hold?.state === 'ready';
   return (
     <button
       type="button"
       onClick={onOpen}
       className={`text-left rounded-2xl border-2 p-4 transition active:scale-[0.99] ${
-        allPacked
+        onHold
+          ? 'border-amber-400 bg-amber-100 hover:border-amber-500'
+          : allPacked
           ? 'border-emerald-300 bg-emerald-50/60 hover:border-emerald-400'
           : 'border-gray-200 bg-white hover:border-emerald-400 hover:shadow-sm'
       }`}
@@ -640,6 +691,16 @@ function BoxCard({ box, sizeName, hasLabel, onOpen }) {
       </div>
       <div className="mt-2 flex items-center gap-2 flex-wrap">
         <BoxContentBadges box={box} />
+        {onHold && (
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-900 bg-amber-200 ring-1 ring-amber-400 px-1.5 py-0.5 rounded" title={`On hold until ${hold.until.toLocaleDateString()}`}>
+            <Clock className="w-3 h-3" /> On hold · {hold.daysLeft}d
+          </span>
+        )}
+        {holdReady && (
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-600 px-1.5 py-0.5 rounded" title="Hold complete — ready to ship">
+            <Check className="w-3 h-3" /> Hold done
+          </span>
+        )}
         {sizeName && (
           <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
             <Ruler className="w-3 h-3" /> {sizeName}
