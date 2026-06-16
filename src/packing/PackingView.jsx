@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
-  Receipt, Search, Copy, RotateCcw, CheckCircle2,
+  Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -13,7 +13,7 @@ import { PrintListButton } from './PrintListButton.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 import { ShippingMarginNote } from './ShippingMarginNote.jsx';
-import { openLabelPdf, copyText } from './labelPdf.js';
+import { openLabelPdf, copyText, printShippingLabels } from './labelPdf.js';
 import { SummaryStat } from './SummaryStat.jsx';
 import { shippingRollup, fmt$2 } from '../financial/financialHelpers.js';
 import { CameraScanner } from './CameraScanner.jsx';
@@ -105,25 +105,11 @@ export function PackingView({
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef(null);
 
-  // When the operator alt-tabs away and comes back, browsers don't
-  // restore focus to the input that was active before — they hand it
-  // off to <body>. Refocus the scan strip on every wake-up so a USB
-  // barcode scanner aimed at the page immediately works again without
-  // a click. Scoped to desktop; the scan strip doesn't exist on
-  // mobile (camera-based scanning instead).
-  useEffect(() => {
-    if (isMobile) return;
-    const focusScan = () => {
-      if (document.visibilityState === 'hidden') return;
-      scanInputRef.current?.focus();
-    };
-    window.addEventListener('focus', focusScan);
-    document.addEventListener('visibilitychange', focusScan);
-    return () => {
-      window.removeEventListener('focus', focusScan);
-      document.removeEventListener('visibilitychange', focusScan);
-    };
-  }, [isMobile]);
+  // Note: we intentionally do NOT refocus the scan strip when the window or
+  // tab regains focus. Auto-grabbing focus on every wake-up stole focus (and
+  // scrolled the page to the strip) when the operator alt-tabbed back, which
+  // was disruptive. A USB scanner still works after one click on the strip,
+  // and it's still autofocused once when the tab first opens (below).
 
   // Header controls for the Ready section. readySort drives the order
   // boxes are listed; readyCarrierFilter narrows by carrier so the
@@ -146,6 +132,17 @@ export function PackingView({
     return next;
   });
   const clearSelection = () => setSelectedBoxIds(new Set());
+  // Batch "Print shipping labels" in-flight flag (fetch + merge + print).
+  const [printingLabels, setPrintingLabels] = useState(false);
+
+  // A box's carrier label is printable once it has a stored PDF: a bought
+  // ShipStation/Shippo label (carrierCode != 'palmstreet'), or an imported
+  // Palmstreet label (labelStoragePath set). Voided rows don't count. Mirrors
+  // BoxRow's canPrintLabel so the batch button agrees with the per-row one.
+  const boxHasPrintableLabel = (boxId) => {
+    const s = shipmentsByBox[boxId];
+    return !!s && !s.voidedAt && (!!s.labelStoragePath || s.carrierCode !== 'palmstreet');
+  };
 
   // Always-on scan strip (desktop only). A persistent autofocused text
   // input at the top of the tab so a USB barcode scanner can fire
@@ -986,6 +983,41 @@ export function PackingView({
                     </span>
                   </button>
                 )}
+                {/* Print the carrier shipping-label PDFs for the selected
+                    boxes (or all visible boxes if none selected) as one merged
+                    document — a single print dialog for the whole batch.
+                    Disabled until at least one box in scope has a label. */}
+                {totalBoxes > 0 && (() => {
+                  const allBoxes = groups.flatMap(g => g.boxes);
+                  const pool = selectedBoxIds.size > 0
+                    ? allBoxes.filter(b => selectedBoxIds.has(b.id))
+                    : allBoxes;
+                  const printable = pool.filter(b => boxHasPrintableLabel(b.id));
+                  return (
+                    <button
+                      type="button"
+                      disabled={printable.length === 0 || printingLabels}
+                      title={printable.length === 0
+                        ? 'No shipping labels on these boxes yet — import or buy labels first'
+                        : `Print ${printable.length} shipping label${printable.length === 1 ? '' : 's'} as one document`}
+                      onClick={async () => {
+                        setPrintingLabels(true);
+                        try {
+                          await printShippingLabels(printable.map(b => b.id), showToast);
+                        } finally {
+                          setPrintingLabels(false);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 bg-white hover:bg-emerald-50 active:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {printingLabels
+                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                        : <Printer className="w-4 h-4" />}
+                      Print shipping labels
+                      <span className="text-xs text-emerald-600/70 ml-1">· {printable.length}</span>
+                    </button>
+                  );
+                })()}
                 {onPrintItemLabels && (() => {
                   // Count Anthurium items across the currently-visible
                   // open boxes (after any sort/filter already applied
@@ -1917,6 +1949,12 @@ function BoxRow({
   // A live bought label (ShipStation/Shippo, not the manual Palmstreet
   // tracking flow) can be cancelled — voids the label / refunds the buy.
   const canCancelLabel = !!liveShipment && liveShipment.carrierCode !== 'palmstreet' && !!onCancelLabel;
+  // A shipping label has been added (imported / typed tracking) or bought for
+  // this box — drives the at-a-glance "Label" color mark on the row so the
+  // operator can see which open boxes are label-ready.
+  const hasLabel = !!liveShipment && (
+    !!liveShipment.trackingNumber || !!liveShipment.labelStoragePath || liveShipment.carrierCode !== 'palmstreet'
+  );
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
@@ -2044,6 +2082,16 @@ function BoxRow({
           <span className="font-mono text-[11px] text-gray-600 shrink-0">
             {shortBoxCode(box.id)}
           </span>
+          {/* Label-ready mark — a shipping label has been added/bought for
+              this open box. Hidden once shipped (the shipped status says it). */}
+          {hasLabel && !allShipped && (
+            <span
+              title="Shipping label added or bought"
+              className="inline-flex items-center gap-1 text-[10px] font-medium text-indigo-700 bg-indigo-100 ring-1 ring-indigo-200 px-1.5 py-0.5 rounded shrink-0"
+            >
+              <Tag className="w-3 h-3" /> Label
+            </span>
+          )}
           {box.openedAt && (
             <span
               className="text-[11px] text-gray-400 shrink-0"

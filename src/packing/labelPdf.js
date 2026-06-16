@@ -92,6 +92,84 @@ export async function openLabelPdf(shipment, kind, showToast) {
   }
 }
 
+// Print many saved shipping-label PDFs as a single document — one print
+// dialog for the whole batch instead of one per label. Fetches each label's
+// PDF, merges them with pdf-lib (lossless page copy, so barcodes stay crisp
+// and scannable), then prints the combined PDF the same way openLabelPdf does
+// (Chromium/Firefox: silent hidden iframe; Safari: open in a tab).
+export async function printShippingLabels(boxIds, showToast) {
+  const ids = Array.from(boxIds || []);
+  if (ids.length === 0) { showToast?.('No shipping labels to print'); return; }
+
+  const safari = isSafari();
+  // Open the Safari tab synchronously so the click's user-gesture carries
+  // through the async fetch/merge below (avoids the pop-up blocker).
+  const win = safari ? window.open('', '_blank') : null;
+  try {
+    // Fetch each label's PDF bytes (signed Storage URL, or legacy data: URL).
+    const buffers = [];
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        const url = await api.getLabelUrl(id, 'label');
+        if (url.startsWith('data:')) {
+          buffers.push(await dataUrlToBlob(url).arrayBuffer());
+        } else {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`fetch ${res.status}`);
+          buffers.push(await res.arrayBuffer());
+        }
+      } catch (e) {
+        failed++;
+        console.error('[printShippingLabels] could not load label for', id, e);
+      }
+    }
+    if (buffers.length === 0) {
+      win?.close();
+      showToast?.('Could not load any labels');
+      return;
+    }
+
+    // Merge into one PDF — lossless, so vector (ShipStation/Shippo) labels and
+    // image (Palmstreet) labels both keep full fidelity.
+    const { PDFDocument } = await import('pdf-lib');
+    const merged = await PDFDocument.create();
+    let mergedCount = 0;
+    for (const buf of buffers) {
+      try {
+        const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+        const pages = await merged.copyPages(src, src.getPageIndices());
+        pages.forEach((p) => merged.addPage(p));
+        mergedCount++;
+      } catch (e) {
+        failed++;
+        console.error('[printShippingLabels] could not merge a label', e);
+      }
+    }
+    if (merged.getPageCount() === 0) {
+      win?.close();
+      showToast?.('Could not read any labels');
+      return;
+    }
+
+    const blobUrl = URL.createObjectURL(
+      new Blob([await merged.save()], { type: 'application/pdf' }),
+    );
+    if (safari) {
+      if (!win) { showToast?.('Allow pop-ups to print labels'); return; }
+      win.location.href = blobUrl;
+    } else {
+      printPdfBlob(blobUrl);
+    }
+    showToast?.(failed > 0
+      ? `Printing ${mergedCount} label${mergedCount === 1 ? '' : 's'} — ${failed} couldn't be loaded`
+      : `Printing ${mergedCount} label${mergedCount === 1 ? '' : 's'}`);
+  } catch (e) {
+    win?.close();
+    showToast?.(e.message || 'Could not print labels');
+  }
+}
+
 // Copy a tracking number (or any text) to the clipboard with a toast.
 export async function copyText(text, showToast, label = 'tracking') {
   try {
