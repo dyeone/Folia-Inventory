@@ -25,6 +25,24 @@ export function boxHasHoldItem(items) {
   return (items || []).some(i => isHoldItem(i?.name));
 }
 
+// Effective hold state of a box, with a real countdown:
+//   • Item-based hold ("1-week hold" line) → counts one week from that item's
+//     purchase (order) date, then becomes shippable ('ready').
+//   • Otherwise the manual button hold (holdUntil timestamp).
+// Returns the holdInfo shape: { state:'none'|'holding'|'ready', daysLeft?, until? }.
+export function boxHoldState(items, holdUntil) {
+  const holdItem = (items || []).find(i => isHoldItem(i?.name));
+  if (holdItem) {
+    const purchased = holdItem.orderDate || holdItem.soldAt || holdItem.createdAt || null;
+    if (purchased) {
+      const until = new Date(new Date(purchased).getTime() + 7 * 86400000);
+      if (!isNaN(until.getTime())) return holdInfo(until.toISOString());
+    }
+    return { state: 'holding' }; // hold item present but no date to count from
+  }
+  return holdInfo(holdUntil);
+}
+
 // Local pickup: the buyer collects the box in person, so it must NOT ship.
 // Flagged the same loose way as a hold — in the box's seller note OR an item
 // name/note that says "pickup" / "local pickup" / "pick up" / "pick-up".
