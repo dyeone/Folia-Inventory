@@ -43,7 +43,9 @@ export function PackerView({ onLogout }) {
   // shipment_boxes. Loaded once on mount.
   const [boxSizes, setBoxSizes] = useState([]);
   const [boxSizeByBox, setBoxSizeByBox] = useState({});
-  const [savingSizeFor, setSavingSizeFor] = useState(null);
+  // "Good job" success screen shown after a correct final label scan; holds
+  // the finished box for a beat, then auto-returns to the grid.
+  const [success, setSuccess] = useState(null);
   // Tracking number per box (shipmentBoxId → trackingNumber), from the
   // shipments recorded when labels were imported. Used to verify the packer
   // attached the right label: scanning the label barcode must match the
@@ -252,9 +254,14 @@ export function PackerView({ onLogout }) {
       return;
     }
     if (tracksMatch(rawText, assigned)) {
-      if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
+      if (navigator.vibrate) navigator.vibrate([40, 50, 90]);
       await packAllInBox(activeBox);
-      showToast('✓ Correct label — box packed', 2500);
+      // Final step done — celebrate, then jump back to the grid.
+      setSuccess({
+        code: activeBox.code,
+        who: activeBox.buyer || (activeBox.buyerUsername ? `@${activeBox.buyerUsername}` : ''),
+      });
+      setTimeout(() => { setSuccess(null); goToBox(null); }, 2600);
       return;
     }
     // Wrong label — find which open box it really belongs to.
@@ -325,24 +332,6 @@ export function PackerView({ onLogout }) {
       }
     }
     setTimeout(() => scanRef.current?.focus({ preventScroll: true }), 0);
-  };
-
-  // Save the box size the packer used → shipment_boxes.boxSizeId. The
-  // Shipping tab reads this back, so the size syncs automatically.
-  const saveBoxSize = async (boxId, boxSizeId) => {
-    const prev = boxSizeByBox[boxId] || null;
-    setSavingSizeFor(boxId);
-    setBoxSizeByBox(m => ({ ...m, [boxId]: boxSizeId }));
-    try {
-      await api.setBoxPackaging({ shipmentBoxId: boxId, boxSizeId });
-      const size = boxSizes.find(s => s.id === boxSizeId);
-      showToast(`Box size saved: ${size?.name || '—'} · synced to shipping`, 1800);
-    } catch (e) {
-      setBoxSizeByBox(m => ({ ...m, [boxId]: prev }));
-      showToast(`Couldn't save box size: ${e.message || 'unknown'}`, 4000);
-    } finally {
-      setSavingSizeFor(null);
-    }
   };
 
   // Realtime transport (preferred). Subscribe to a per-packer broadcast
@@ -474,11 +463,7 @@ export function PackerView({ onLogout }) {
       {activeBox
         ? <BoxPane
             box={activeBox}
-            boxSizes={boxSizes}
-            currentSizeId={boxSizeByBox[activeBox.id] || null}
-            savingSize={savingSizeFor === activeBox.id}
             assignedTracking={trackingByBox[activeBox.id] || null}
-            onPickSize={(sizeId) => saveBoxSize(activeBox.id, sizeId)}
             onMarkPacked={handleMarkPacked}
             onCamera={() => setCameraMode('item')}
             onScanLabel={() => setCameraMode('label')}
@@ -505,6 +490,7 @@ export function PackerView({ onLogout }) {
         />
       )}
       {handoff && <PhoneHandoffOverlay box={handoff} onClose={() => setHandoff(null)} />}
+      {success && <GoodJobOverlay info={success} />}
       {toast && <Toast text={toast} />}
     </div>
   );
@@ -670,8 +656,8 @@ function BoxCard({ box, sizeName, hasLabel, onOpen }) {
 }
 
 // Active-box pane: progress header, item grid, and — once everything is
-// packed — the box-size question.
-function BoxPane({ box, boxSizes, currentSizeId, savingSize, assignedTracking, onPickSize, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onDone }) {
+// packed — the final "scan the shipping label" step.
+function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -701,13 +687,7 @@ function BoxPane({ box, boxSizes, currentSizeId, savingSize, assignedTracking, o
       <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
         <div className="max-w-5xl mx-auto">
           {allPacked ? (
-            <BoxSizePicker
-              boxSizes={boxSizes}
-              currentSizeId={currentSizeId}
-              saving={savingSize}
-              onPick={onPickSize}
-              onDone={onDone}
-            />
+            <FinalStep assignedTracking={assignedTracking} onScanLabel={onScanLabel} onDone={onDone} />
           ) : (
             <>
               {total === 0 ? (
@@ -726,48 +706,29 @@ function BoxPane({ box, boxSizes, currentSizeId, savingSize, assignedTracking, o
         </div>
       </div>
 
-      {/* Footer — secondary camera while packing; the box-size step owns its
-          own Done button once everything is packed. */}
+      {/* Footer — only while packing: push-to-phone + camera. Once every item
+          is packed, the body shows the final label-scan step. */}
       {!allPacked && (
         <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3 pb-safe">
-          <div className="max-w-5xl mx-auto space-y-3">
-            {/* The last step: scan the shipping label to confirm it's the
-                right one. A matching scan packs the whole box. Only shown
-                once a label has been imported/assigned for this box. */}
-            {assignedTracking ? (
+          <div className="max-w-5xl mx-auto flex gap-3">
+            {/* iPad-only: push this box's item list to the packer's phone so
+                they can walk the racks and find items hands-free. */}
+            {onSendToPhone && (
               <button
                 type="button"
-                onClick={onScanLabel}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
+                onClick={onSendToPhone}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-blue-600 text-white rounded-xl active:bg-blue-800"
               >
-                <ScanLine className="w-5 h-5" /> Scan shipping label — confirm &amp; finish
+                <Smartphone className="w-5 h-5" /> Send to phone
               </button>
-            ) : (
-              <div className="flex items-start gap-2 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
-                <AlertCircle className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
-                <span>No shipping label imported for this box yet — pack the items, the label scan unlocks once it's assigned at the shipping desk.</span>
-              </div>
             )}
-            <div className="flex gap-3">
-              {/* iPad-only: push this box's item list to the packer's phone so
-                  they can walk the racks and find items hands-free. */}
-              {onSendToPhone && (
-                <button
-                  type="button"
-                  onClick={onSendToPhone}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-blue-600 text-white rounded-xl active:bg-blue-800"
-                >
-                  <Smartphone className="w-5 h-5" /> Send to phone
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onCamera}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50"
-              >
-                <Camera className="w-5 h-5" /> Scan a plant
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={onCamera}
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50"
+            >
+              <Camera className="w-5 h-5" /> Scan a plant
+            </button>
           </div>
         </div>
       )}
@@ -775,57 +736,68 @@ function BoxPane({ box, boxSizes, currentSizeId, savingSize, assignedTracking, o
   );
 }
 
-// Shown when every item in the box is packed: ask which box size was used and
-// sync it to the system (shipment_boxes → Shipping tab).
-function BoxSizePicker({ boxSizes, currentSizeId, saving, onPick, onDone }) {
+// Shown once every item is packed: the final step is scanning the shipping
+// label. A correct scan triggers the "Good job" screen (see handleScanLabel).
+function FinalStep({ assignedTracking, onScanLabel, onDone }) {
   return (
-    <div>
-      <div className="flex items-center gap-2.5 mb-1.5">
-        <PackageCheck className="w-8 h-8 text-emerald-600" />
-        <h2 className="text-2xl font-bold text-gray-900">Box packed!</h2>
+    <div className="text-center max-w-md mx-auto pt-2">
+      <div className="flex items-center justify-center gap-2.5 mb-1.5">
+        <PackageCheck className="w-9 h-9 text-emerald-600" />
+        <h2 className="text-2xl font-bold text-gray-900">All items packed!</h2>
       </div>
-      <p className="text-lg text-gray-600 mb-5">Which box size did you use? It syncs to the shipping desk automatically.</p>
-
-      {boxSizes.length === 0 ? (
-        <div className="flex items-start gap-2 text-base text-gray-600 bg-amber-50 border border-amber-200 rounded-xl p-4 mb-5">
-          <AlertCircle className="w-6 h-6 text-amber-600 flex-shrink-0 mt-0.5" />
-          <span>No box sizes have been set up yet. An admin can add them in <strong>Shipping Settings → Box sizes</strong>. You can still finish this box.</span>
-        </div>
+      {assignedTracking ? (
+        <>
+          <p className="text-lg text-gray-600 mb-6">Last step — scan the shipping label to confirm it's the right one.</p>
+          <button
+            type="button"
+            onClick={onScanLabel}
+            className="w-full flex items-center justify-center gap-2 px-4 py-5 text-lg font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
+          >
+            <ScanLine className="w-6 h-6" /> Scan shipping label
+          </button>
+          <p className="text-sm text-gray-400 mt-3">Or scan it with the handheld scanner.</p>
+        </>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-6">
-          {boxSizes.map(s => {
-            const selected = currentSizeId === s.id;
-            return (
-              <button
-                key={s.id}
-                type="button"
-                disabled={saving}
-                onClick={() => onPick(s.id)}
-                className={`text-left rounded-2xl border-2 p-5 min-h-[7rem] flex flex-col justify-center transition active:scale-[0.98] disabled:opacity-60 ${
-                  selected
-                    ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-200'
-                    : 'border-gray-200 bg-white hover:border-emerald-400'
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <Ruler className={`w-6 h-6 flex-shrink-0 ${selected ? 'text-emerald-600' : 'text-gray-400'}`} />
-                  <span className="text-2xl font-bold text-gray-900 truncate">{s.name}</span>
-                  {selected && <Check className="w-7 h-7 text-emerald-600 ml-auto flex-shrink-0" />}
-                </div>
-                <div className="mt-2 text-lg text-gray-500 font-mono tracking-tight">{s.length} × {s.width} × {s.height} in</div>
-              </button>
-            );
-          })}
-        </div>
+        <>
+          <div className="flex items-start gap-2 text-base text-gray-600 bg-amber-50 border border-amber-200 rounded-xl p-4 mb-5 text-left">
+            <AlertCircle className="w-6 h-6 text-amber-600 flex-shrink-0 mt-0.5" />
+            <span>No shipping label has been imported for this box yet. Ask the shipping desk to import it, then scan it here.</span>
+          </div>
+          <button
+            type="button"
+            onClick={onDone}
+            className="w-full flex items-center justify-center gap-2 px-4 py-4 text-lg font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50"
+          >
+            Done — next box <ChevronRight className="w-6 h-6" />
+          </button>
+        </>
       )}
+    </div>
+  );
+}
 
-      <button
-        type="button"
-        onClick={onDone}
-        className="w-full flex items-center justify-center gap-2 px-4 py-5 text-lg font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
-      >
-        {currentSizeId ? 'Done — next box' : 'Finish without a size'} <ChevronRight className="w-6 h-6" />
-      </button>
+// Full-screen "Good job" celebration after a correct final label scan. The
+// caller auto-returns to the grid a beat later, so this is display-only.
+function GoodJobOverlay({ info }) {
+  return (
+    <div className="fixed inset-0 z-[70] bg-emerald-600 text-white flex flex-col items-center justify-center px-6 text-center pt-safe pb-safe">
+      <div className="folia-goodjob">
+        <PackageCheck className="w-24 h-24 mx-auto mb-4" strokeWidth={1.5} />
+      </div>
+      <h1 className="text-4xl font-extrabold">Good job! 🎉</h1>
+      <p className="text-lg text-emerald-100 mt-2">
+        <span className="font-mono tracking-wide">{info.code}</span>
+        {info.who ? ` · ${info.who}` : ''} is ready to ship.
+      </p>
+      <p className="text-sm text-emerald-200/80 mt-6">Returning to boxes…</p>
+      <style>{`
+        @keyframes folia-goodjob-pop {
+          0%   { opacity: 0; transform: scale(0.6); }
+          50%  { transform: scale(1.08); }
+          100% { opacity: 1; transform: scale(1); }
+        }
+        .folia-goodjob { animation: folia-goodjob-pop 0.4s ease-out; }
+      `}</style>
     </div>
   );
 }
