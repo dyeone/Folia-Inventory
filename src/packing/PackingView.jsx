@@ -66,7 +66,7 @@ function fmtShortDate(iso) {
 
 export function PackingView({
   inventoryItems, sales,
-  onShipBox, onDeleteAllOpenBoxes, onDeleteBox, onDeleteBoxes, onPrintBoxLabels, onPrintItemLabels, onTogglePacked,
+  onShipBox, onUnshipBox, onDeleteAllOpenBoxes, onDeleteBox, onDeleteBoxes, onPrintBoxLabels, onPrintItemLabels, onTogglePacked,
   setConfirmDialog,
   isAdmin, onRefreshItems, settingsVersion = 0,
 }) {
@@ -433,6 +433,32 @@ export function PackingView({
     await api.recordPalmstreetTracking(box.id, trackingNumber);
     await refreshShipments();
     showToast('Tracking saved');
+  };
+
+  // Move a fully-shipped box back to Ready. Reverts its shipped/delivered
+  // items to 'sold' and clears the ship date (keeps tracking + label). Sale
+  // reopen is handled at the App level (onUnshipBox).
+  const handleUnship = async (box) => {
+    const itemIds = box.items
+      .filter(i => ['shipped', 'delivered'].includes(i.status))
+      .map(i => i.id);
+    if (itemIds.length === 0 || !onUnshipBox) return;
+    await onUnshipBox(box.saleId, itemIds);
+    setTimeout(() => scanInputRef.current?.focus(), 0);
+  };
+
+  // Confirm before unshipping — it's reversible, but it changes box state and
+  // may reopen a closed sale, so make the operator acknowledge.
+  const confirmUnship = (box) => {
+    const count = box.items.filter(i => ['shipped', 'delivered'].includes(i.status)).length;
+    const sale = sales.find(s => s.id === box.saleId);
+    const willReopen = sale && sale.status === 'closed';
+    setConfirmDialog?.({
+      title: 'Mark box as not shipped?',
+      message: `Moves ${count} item${count === 1 ? '' : 's'} back to Ready and clears the ship date.${willReopen ? ' This sale was closed when it shipped — it will be reopened.' : ''} The tracking number and label stay attached.`,
+      confirmLabel: 'Mark unshipped',
+      onConfirm: () => handleUnship(box),
+    });
   };
 
   // Handler for "Scan box" — decodes a B-XXXXXX code and filters the
@@ -1048,6 +1074,7 @@ export function PackingView({
                     onBuyLabel={(box) => setBuyingFor(box)}
                     onSaveTracking={handleSaveTracking}
                     onMarkShipped={handleMarkShipped}
+                    onUnship={confirmUnship}
                     onTogglePacked={onTogglePacked}
                     showToast={showToast}
                     isAdmin={isAdmin}
@@ -1233,6 +1260,7 @@ export function PackingView({
                   onBuyLabel={(box) => setBuyingFor(box)}
                   onSaveTracking={handleSaveTracking}
                   onMarkShipped={handleMarkShipped}
+                  onUnship={confirmUnship}
                   onTogglePacked={onTogglePacked}
                   showToast={showToast}
                 />
@@ -1483,7 +1511,7 @@ function addressOneLine(addr) {
 
 function BuyerGroupCard({
   group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onBought, onCancelLabel,
-  onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
+  onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
 }) {
@@ -1527,6 +1555,7 @@ function BuyerGroupCard({
             onBuyLabel={() => onBuyLabel(box)}
             onSaveTracking={(num) => onSaveTracking(box, num)}
             onMarkShipped={() => onMarkShipped(box)}
+            onUnship={onUnship ? () => onUnship(box) : null}
             onTogglePacked={onTogglePacked}
             onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
             boxSizes={boxSizes}
@@ -1826,7 +1855,7 @@ function CarrierToggle({ box, onSave, showToast }) {
 
 function BoxRow({
   box, sale, shipment, salesById,
-  onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onTogglePacked, showToast,
+  onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
   onSaveNote, boxSizes, onSavePackaging, onBought, onCancelLabel,
   isAdmin, onEditItems, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected, defaultExpanded,
@@ -2174,6 +2203,17 @@ function BoxRow({
               >
                 {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
                 Mark shipped
+              </button>
+            )}
+            {/* Shipped boxes: undo the ship — moves the box back to Ready
+                (reverts items to 'sold', keeps tracking + label). */}
+            {allShipped && onUnship && (
+              <button
+                onClick={(e) => { stop(e); onUnship(); }}
+                title="Move this box back to Ready (reverts items to sold; tracking and label stay)"
+                className="ml-auto text-xs font-medium px-2.5 py-1 rounded-md border border-amber-300 text-amber-700 bg-white hover:bg-amber-50 active:bg-amber-100 flex items-center gap-1"
+              >
+                <RotateCcw className="w-3 h-3" /> Mark unshipped
               </button>
             )}
           </div>
