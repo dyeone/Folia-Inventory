@@ -255,27 +255,43 @@ export function PackerView({ onLogout }) {
     }
   };
 
-  // Pack every still-unpacked sold item in a box at once (optimistic, with
-  // rollback). Used when a verified label scan completes the box.
-  const packAllInBox = async (box) => {
-    const ids = box.items.filter(i => i.status === 'sold' && !i.packedAt).map(i => i.id);
-    if (ids.length === 0) return;
+  // Mark the whole box shipped (optimistic, with rollback) — the verified
+  // label scan is the box leaving the building. Mirrors the Shipping desk:
+  // every non-terminal item → status 'shipped' (+ packedAt for tidiness), and
+  // the sale closes once all its non-giveaway lots are shipped. Returns true
+  // on success so the caller can run the celebration only when it stuck.
+  const shipBox = async (box) => {
     const now = new Date().toISOString();
-    const idSet = new Set(ids);
-    setItems(prev => prev.map(i => (idSet.has(i.id) ? { ...i, packedAt: now } : i)));
+    const targets = box.items.filter(i => !['shipped', 'delivered'].includes(i.status));
+    if (targets.length === 0) return true;
+    const prevById = new Map(targets.map(i => [i.id, { status: i.status, shippedAt: i.shippedAt, packedAt: i.packedAt }]));
+    const idSet = new Set(targets.map(i => i.id));
+    setItems(prev => prev.map(i => (idSet.has(i.id)
+      ? { ...i, status: 'shipped', shippedAt: now, packedAt: i.packedAt || now }
+      : i)));
     try {
-      await api.upsertItems(ids.map(id => ({ id, packedAt: now })));
+      await api.upsertItems(targets.map(i => ({ id: i.id, status: 'shipped', shippedAt: now, packedAt: i.packedAt || now })));
+      // Close the sale if every non-giveaway lot for it is now shipped.
+      const saleId = box.items[0]?.saleId || null;
+      if (saleId) {
+        const lots = items
+          .map(i => (idSet.has(i.id) ? { ...i, status: 'shipped' } : i))
+          .filter(i => i.saleId === saleId && !i.deletedAt && i.lotKind !== 'giveaway');
+        const allShipped = lots.length > 0 && lots.every(i => ['shipped', 'delivered'].includes(i.status));
+        if (allShipped) await api.upsertSales([{ id: saleId, status: 'closed', closedAt: now }]).catch(() => {});
+      }
+      return true;
     } catch (e) {
-      setItems(prev => prev.map(i => (idSet.has(i.id) ? { ...i, packedAt: null } : i)));
-      showToast(`Pack failed: ${e.message || 'unknown'}`, 4000);
+      setItems(prev => prev.map(i => (prevById.has(i.id) ? { ...i, ...prevById.get(i.id) } : i)));
+      showToast(`Ship failed: ${e.message || 'unknown'}`, 4000);
+      return false;
     }
   };
 
   // Final step: the packer scans the shipping label's barcode to confirm the
-  // right label went on the right box. The scanned tracking must match the
-  // tracking imported for this box. On a match we mark the whole box packed;
-  // on a mismatch we name the box the label actually belongs to so it can be
-  // moved before it ships.
+  // right label went on the right box. A matching scan marks the box SHIPPED
+  // (the box is going out) and celebrates; a mismatch names the box the label
+  // really belongs to. A box still on its one-week hold can't be shipped yet.
   const handleScanLabel = async (rawText) => {
     if (!activeBox) return;
     const assigned = trackingByBox[activeBox.id];
@@ -284,9 +300,17 @@ export function PackerView({ onLogout }) {
       return;
     }
     if (tracksMatch(rawText, assigned)) {
+      // Respect a one-week hold — don't ship a box that's still holding.
+      const hs = boxHoldState(activeBox.items, holdByBox[activeBox.id]);
+      if (hs.state === 'holding') {
+        if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+        showToast(`⚠ On hold — do not ship yet${hs.daysLeft ? ` · ${hs.daysLeft} day${hs.daysLeft === 1 ? '' : 's'} left` : ''}`, 5000);
+        return;
+      }
       if (navigator.vibrate) navigator.vibrate([40, 50, 90]);
-      await packAllInBox(activeBox);
-      // Final step done — celebrate, then jump back to the grid.
+      const ok = await shipBox(activeBox);
+      if (!ok) return; // ship failed — toast shown, stay on the box
+      // Shipped — celebrate, then jump back to the grid.
       setSuccess({
         code: activeBox.code,
         who: activeBox.buyer || (activeBox.buyerUsername ? `@${activeBox.buyerUsername}` : ''),
@@ -770,6 +794,30 @@ function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, onOpen }) {
 
 // Active-box pane: progress header, item grid, and — once everything is
 // packed — the final "scan the shipping label" step.
+// Big, scannable "Ship to" block — recipient name + address so the packer
+// can match it against the physical shipping label before attaching it.
+function ShipTo({ box }) {
+  const a = box.buyerAddress || {};
+  const name = box.buyer || (box.buyerUsername ? `@${box.buyerUsername}` : 'Unknown recipient');
+  const line1 = [a.street1, a.street2].filter(Boolean).join(', ');
+  const cityLine = [[a.city, a.state].filter(Boolean).join(', '), a.zip].filter(Boolean).join(' ').trim();
+  return (
+    <div className="mb-3">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">Ship to</div>
+      <div className="text-xl sm:text-2xl font-bold text-gray-900 leading-tight break-words">{name}</div>
+      {box.buyer && box.buyerUsername && (
+        <div className="text-sm text-gray-500 leading-tight">@{box.buyerUsername}</div>
+      )}
+      {(line1 || cityLine) && (
+        <div className="text-base text-gray-700 leading-snug mt-1">
+          {line1 && <div>{line1}</div>}
+          {cityLine && <div>{cityLine}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
@@ -782,6 +830,9 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
       {/* Progress header */}
       <div className="flex-shrink-0 px-4 sm:px-5 py-3 border-b border-gray-200 bg-white">
         <div className="max-w-5xl mx-auto">
+          {/* Ship-to — big name + address so the packer can match the
+              physical shipping label before attaching it. */}
+          <ShipTo box={box} />
           <div className="flex items-center gap-2 flex-wrap">
             <CarrierBadge carrier={box.carrier} />
             <BoxContentBadges box={box} size="lg" />
@@ -900,7 +951,7 @@ function GoodJobOverlay({ info }) {
       <h1 className="text-4xl font-extrabold">Good job! 🎉</h1>
       <p className="text-lg text-emerald-100 mt-2">
         <span className="font-mono tracking-wide">{info.code}</span>
-        {info.who ? ` · ${info.who}` : ''} is ready to ship.
+        {info.who ? ` · ${info.who}` : ''} — shipped!
       </p>
       <p className="text-sm text-emerald-200/80 mt-6">Returning to boxes…</p>
       <style>{`
