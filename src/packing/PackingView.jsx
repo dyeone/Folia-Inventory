@@ -19,8 +19,10 @@ import { shippingRollup, fmt$2 } from '../financial/financialHelpers.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { NewBoxModal } from './NewBoxModal.jsx';
 import { EditBoxItemsModal } from './EditBoxItemsModal.jsx';
+import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
+import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
@@ -73,6 +75,12 @@ export function PackingView({
   // modal manages its own two-phase flow (form → scan) and stamps each
   // scanned inventory item with the new shipmentBoxId.
   const [newBoxOpen, setNewBoxOpen] = useState(false);
+
+  // Import Shipping Labels modal. The operator uploads the label PDFs they
+  // downloaded from Palmstreet/Shippo; we decode each tracking barcode, OCR
+  // the recipient, auto-match it to an open box, and (on confirm) store the
+  // tracking number + label PDF on each box.
+  const [importOpen, setImportOpen] = useState(false);
 
   // Admin-only modal for editing items in an existing open box: scan
   // to add, trash icon per row to remove. State holds the box being
@@ -160,6 +168,10 @@ export function PackingView({
     if (/^B-/.test(upper)) {
       handleScannedBoxCode(trimmed);
       setScanFeedback({ kind: 'box', text: upper });
+    } else if (looksLikeTracking(trimmed)) {
+      // A shipping-label barcode (long numeric / 1Z…) — verify it against the
+      // box it's assigned to rather than treating it as an item SKU.
+      handleScannedTracking(trimmed);
     } else {
       handleScannedItemSku(trimmed);
       setScanFeedback({ kind: 'item', text: upper });
@@ -490,6 +502,34 @@ export function PackingView({
     showToast(`SKU ${sku} isn't in any active box`);
   };
 
+  // Handler for a scanned shipping-label barcode. Finds the box this tracking
+  // number was assigned to (during Import Labels) and confirms it's the right
+  // one. The shipping desk uses this to spot a mis-stuck label before it
+  // ships; the packer's mobile view does the same scan but also marks the box
+  // packed (see PackerView).
+  const handleScannedTracking = (rawText) => {
+    const findBox = (groupArr) => {
+      for (const g of groupArr) {
+        for (const b of g.boxes) {
+          const tn = shipmentsByBox[b.id]?.trackingNumber;
+          if (tn && tracksMatch(rawText, tn)) return b;
+        }
+      }
+      return null;
+    };
+    const inReady = findBox(groups);
+    const box = inReady || findBox(shipped.groups);
+    if (!box) {
+      setScanFeedback(null);
+      showToast('⚠ Unknown label — not assigned to any box');
+      return;
+    }
+    setSubTab(inReady ? 'ready' : 'shipped');
+    setScannedBoxId(box.id);
+    setScanFeedback({ kind: 'box', text: shortBoxCode(box.id) });
+    showToast(`✓ Label matches ${shortBoxCode(box.id)} — ${box.buyer || 'box'}`);
+  };
+
   // Combined filter: scannedBoxId (from Scan box / Scan item lookup)
   // and the desktop search query. A box must pass both to survive. Each
   // group's box list is narrowed accordingly; groups with no surviving
@@ -647,6 +687,15 @@ export function PackingView({
           <Package className="w-5 h-5 text-emerald-600" /> Shipping
         </h2>
         <div className="shrink-0 flex items-center gap-2">
+          {/* Upload Palmstreet/Shippo label PDFs → auto-match to boxes and
+              store each tracking number. */}
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-emerald-600 text-emerald-700 bg-white hover:bg-emerald-50 active:bg-emerald-100"
+          >
+            <Upload className="w-4 h-4" /> Import labels
+          </button>
           {/* Print the boxes currently on screen (current sub-tab + filter) as
               a packing-list table, straight to the document printer. */}
           <PrintListButton
@@ -1200,6 +1249,19 @@ export function PackingView({
           onPurchased={() => {
             refreshShipments();
             showToast('Label purchased');
+          }}
+          showToast={showToast}
+        />
+      )}
+
+      {importOpen && (
+        <ImportLabelsModal
+          openBoxes={groups.flatMap(g => g.boxes)}
+          shipmentsByBox={shipmentsByBox}
+          onClose={() => setImportOpen(false)}
+          onDone={async () => {
+            await refreshShipments();
+            await onRefreshItems?.();
           }}
           showToast={showToast}
         />

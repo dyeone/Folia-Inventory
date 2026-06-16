@@ -179,10 +179,23 @@ export const api = {
   // kind = 'label' (default) or 'slip'.
   getLabelUrl: (shipmentBoxId, kind = 'label') =>
     request(`/shipments?action=label-url&id=${encodeURIComponent(shipmentBoxId)}&kind=${kind}`).then(r => r.url),
-  // USPS-via-Palmstreet: operator enters the tracking number after
-  // generating the label in Palmstreet. Inserts a manual shipments row.
-  recordPalmstreetTracking: (shipmentBoxId, trackingNumber) =>
-    request('/shipments', { method: 'POST', body: { action: 'record-tracking', shipmentBoxId, trackingNumber } }).then(r => r.shipment),
+  // USPS-via-Palmstreet: record the tracking number for a box. Either typed
+  // in by the operator, or extracted from an uploaded label by the Import
+  // Labels flow — which also passes the label PDF (labelPdfBase64) and parcel
+  // weight so the server stashes the PDF in Storage alongside the tracking
+  // number. Inserts/updates the manual shipments row.
+  recordPalmstreetTracking: (shipmentBoxId, trackingNumber, opts = {}) =>
+    request('/shipments', {
+      method: 'POST',
+      body: {
+        action: 'record-tracking',
+        shipmentBoxId,
+        trackingNumber,
+        ...(opts.labelPdfBase64 ? { labelPdfBase64: opts.labelPdfBase64 } : {}),
+        ...(opts.slipPdfBase64 ? { slipPdfBase64: opts.slipPdfBase64 } : {}),
+        ...(opts.weightOz != null ? { weightOz: opts.weightOz } : {}),
+      },
+    }).then(r => r.shipment),
   clearPalmstreetTracking: (shipmentBoxId) =>
     request('/shipments', { method: 'POST', body: { action: 'clear-tracking', shipmentBoxId } }),
   // Per-box notes (lazy `shipment_boxes` rows). Internal operator
