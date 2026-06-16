@@ -23,6 +23,23 @@ they show up on the box in the Packing tab. A separate **Sync tracking
 only** mode skips the click sequence and just reads tracking numbers
 already visible on the page — useful for orders you've labeled manually.
 
+### Push tracking → Palmstreet (reverse direction)
+
+When you buy labels outside Palmstreet (e.g. Shippo/Pirate Ship) and
+import them into Folia, use the **Has tracking** tab → **Add tracking →
+Palmstreet**. For each selected box it:
+
+1. Searches the orders list by **recipient name**
+2. Selects the matching order
+3. Opens the add-tracking form (optional step), picks USPS (optional)
+4. Types the tracking number Folia already has for that box
+5. Saves
+
+The queue comes from `GET /api/shipments?action=with-tracking` (boxes
+that have a recorded tracking number). Configure the four
+**Push tracking to Palmstreet** selectors in Settings; blank optional
+ones are skipped so the flow fits Palmstreet's actual UI.
+
 ## Install
 
 1. Clone this repo so the `extension/` folder is on disk.
@@ -100,6 +117,11 @@ prompts you to type the weight (or uses the configured default).
    current page.
 5. The progress section shows each order as it's processed; click
    **Stop** to halt the queue.
+
+To push externally-bought tracking numbers into Palmstreet instead,
+switch to the **Has tracking** tab and click **Add tracking →
+Palmstreet** (searches each order by recipient name and fills in the
+tracking number Folia already stored).
 
 After purchase, the box on Folia's Packing tab shows tracking + a
 **Label** download button (signed URL to Storage) + a **Slip** button.

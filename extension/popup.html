@@ -21,10 +21,20 @@
     </div>
 
     <div id="ready" hidden>
+      <div class="modes" id="queueTabs">
+        <button id="tabNeedsLabel" class="mode primary">
+          <strong>Needs label</strong>
+          <small>Buy / sync</small>
+        </button>
+        <button id="tabHasTracking" class="mode">
+          <strong>Has tracking</strong>
+          <small>Push to Palmstreet</small>
+        </button>
+      </div>
       <div class="card">
         <div class="row">
           <strong id="queueCount">—</strong>
-          <span class="muted">USPS boxes waiting for labels</span>
+          <span id="queueLabel" class="muted">USPS boxes waiting for labels</span>
           <button id="refresh" class="link">Refresh</button>
         </div>
         <ul id="queue" class="queue"></ul>
@@ -35,7 +45,7 @@
         <button id="readScale" class="link">Read</button>
       </div>
 
-      <div class="modes">
+      <div class="modes" id="modesNeedsLabel">
         <button id="modeSync" class="mode">
           <strong>Sync tracking only</strong>
           <small>Read tracking, no clicks</small>
@@ -43,6 +53,12 @@
         <button id="modeBuy" class="mode primary">
           <strong>Buy + sync selected</strong>
           <small>Walks all 8 steps</small>
+        </button>
+      </div>
+      <div class="modes" id="modesHasTracking" hidden>
+        <button id="modePush" class="mode primary">
+          <strong>Add tracking → Palmstreet</strong>
+          <small>Search by name, fill tracking</small>
         </button>
       </div>
 

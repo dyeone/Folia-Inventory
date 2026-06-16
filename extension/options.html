@@ -97,6 +97,35 @@
     </section>
 
     <section>
+      <h2>Push tracking to Palmstreet</h2>
+      <p class="hint">For the "Add tracking → Palmstreet" flow: it searches the order by recipient name (reusing the search input + order row selectors above), then fills Palmstreet's add-tracking form using the selectors below. Leave the optional ones blank if Palmstreet doesn't have that step.</p>
+
+      <label>
+        <span>Open add-tracking form (optional)</span>
+        <input id="selAddTrackingOpen" type="text" placeholder='button:contains("Add tracking")' />
+        <small>The button on an order that opens its "add tracking" / "mark as shipped" form. Leave blank if the tracking field is already visible on the order.</small>
+      </label>
+
+      <label>
+        <span>USPS carrier option (optional)</span>
+        <input id="selCarrierUsps" type="text" placeholder='[data-carrier="usps"]' />
+        <small>Clicked to pick USPS as the carrier, if the form asks. Leave blank if not needed.</small>
+      </label>
+
+      <label>
+        <span>Tracking number input (required)</span>
+        <input id="selTrackingInput" type="text" placeholder='input[name="tracking"]' />
+        <small>The field where the tracking number is typed.</small>
+      </label>
+
+      <label>
+        <span>Save / confirm tracking button (required)</span>
+        <input id="selSaveTracking" type="text" placeholder='button[data-action="save-tracking"]' />
+        <small>Submits the tracking number to Palmstreet.</small>
+      </label>
+    </section>
+
+    <section>
       <h2>Scale</h2>
       <p class="hint">Reads the box weight from a USB postal scale via WebHID. Click <em>Pair scale</em> the first time and pick your scale from Chrome's device picker.</p>
 
