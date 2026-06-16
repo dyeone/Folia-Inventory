@@ -7,6 +7,7 @@ import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
+import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { derivedBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -43,6 +44,11 @@ export function PackerView({ onLogout }) {
   const [boxSizes, setBoxSizes] = useState([]);
   const [boxSizeByBox, setBoxSizeByBox] = useState({});
   const [savingSizeFor, setSavingSizeFor] = useState(null);
+  // Tracking number per box (shipmentBoxId → trackingNumber), from the
+  // shipments recorded when labels were imported. Used to verify the packer
+  // attached the right label: scanning the label barcode must match the
+  // tracking assigned to the open box.
+  const [trackingByBox, setTrackingByBox] = useState({});
 
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
@@ -77,15 +83,23 @@ export function PackerView({ onLogout }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const [, settings, notes] = await Promise.all([
+      const [, settings, notes, shipments] = await Promise.all([
         refresh(),
         api.getSettings('shipping').catch(() => null),
         api.getBoxNotes().catch(() => ({})),
+        api.getShipments().catch(() => []),
       ]);
       setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
       setBoxSizeByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.boxSizeId || null]),
+        ),
+      );
+      setTrackingByBox(
+        Object.fromEntries(
+          (shipments || [])
+            .filter(s => s.trackingNumber && !s.voidedAt)
+            .map(s => [s.id, s.trackingNumber]),
         ),
       );
       setLoading(false);
@@ -146,9 +160,26 @@ export function PackerView({ onLogout }) {
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
 
+  // Re-pull tracking numbers. Labels are usually imported at the shipping
+  // desk while the packer's app is already open, so refresh on each box open
+  // to pick up a label assigned since mount.
+  const refreshTracking = async () => {
+    try {
+      const shipments = await api.getShipments();
+      setTrackingByBox(
+        Object.fromEntries(
+          (shipments || [])
+            .filter(s => s.trackingNumber && !s.voidedAt)
+            .map(s => [s.id, s.trackingNumber]),
+        ),
+      );
+    } catch { /* keep whatever we have */ }
+  };
+
   const goToBox = (boxId) => {
     setActiveBoxId(boxId);
     setCameraMode(null);
+    if (boxId) refreshTracking();
   };
 
   // ── Scan field focus management ──────────────────────────────────────────
@@ -189,6 +220,52 @@ export function PackerView({ onLogout }) {
     } catch (e) {
       setItems(prev => prev.map(i => (i.id === itemId ? { ...i, packedAt: null } : i)));
       showToast(`Pack failed for ${displayLabel}: ${e.message || 'unknown'}`, 4000);
+    }
+  };
+
+  // Pack every still-unpacked sold item in a box at once (optimistic, with
+  // rollback). Used when a verified label scan completes the box.
+  const packAllInBox = async (box) => {
+    const ids = box.items.filter(i => i.status === 'sold' && !i.packedAt).map(i => i.id);
+    if (ids.length === 0) return;
+    const now = new Date().toISOString();
+    const idSet = new Set(ids);
+    setItems(prev => prev.map(i => (idSet.has(i.id) ? { ...i, packedAt: now } : i)));
+    try {
+      await api.upsertItems(ids.map(id => ({ id, packedAt: now })));
+    } catch (e) {
+      setItems(prev => prev.map(i => (idSet.has(i.id) ? { ...i, packedAt: null } : i)));
+      showToast(`Pack failed: ${e.message || 'unknown'}`, 4000);
+    }
+  };
+
+  // Final step: the packer scans the shipping label's barcode to confirm the
+  // right label went on the right box. The scanned tracking must match the
+  // tracking imported for this box. On a match we mark the whole box packed;
+  // on a mismatch we name the box the label actually belongs to so it can be
+  // moved before it ships.
+  const handleScanLabel = async (rawText) => {
+    if (!activeBox) return;
+    const assigned = trackingByBox[activeBox.id];
+    if (!assigned) {
+      showToast('No label assigned to this box yet — import it on the shipping desk first', 4500);
+      return;
+    }
+    if (tracksMatch(rawText, assigned)) {
+      if (navigator.vibrate) navigator.vibrate([30, 40, 30]);
+      await packAllInBox(activeBox);
+      showToast('✓ Correct label — box packed', 2500);
+      return;
+    }
+    // Wrong label — find which open box it really belongs to.
+    const other = Object.values(boxesByCode).find(
+      b => b.id !== activeBox.id && trackingByBox[b.id] && tracksMatch(rawText, trackingByBox[b.id]),
+    );
+    if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+    if (other) {
+      showToast(`⚠ Wrong label! This is for box ${other.code}${other.buyer ? ` · ${other.buyer}` : ''}`, 6000);
+    } else {
+      showToast('⚠ This label isn’t assigned to any open box', 5000);
     }
   };
 
@@ -238,8 +315,14 @@ export function PackerView({ onLogout }) {
     const v = scanValue.trim();
     setScanValue('');
     if (v) {
-      if (activeBox) handleScanItem(v);
-      else handleScanBox(v);
+      if (activeBox) {
+        // A shipping-label barcode (long numeric / 1Z…) verifies the label;
+        // anything else is treated as a plant SKU to pack.
+        if (looksLikeTracking(v)) handleScanLabel(v);
+        else handleScanItem(v);
+      } else {
+        handleScanBox(v);
+      }
     }
     setTimeout(() => scanRef.current?.focus({ preventScroll: true }), 0);
   };
@@ -382,7 +465,9 @@ export function PackerView({ onLogout }) {
         value={scanValue}
         onChange={setScanValue}
         onSubmit={submitScan}
-        placeholder={activeBox ? 'Scan a plant barcode…' : 'Scan a box or plant…'}
+        placeholder={activeBox
+          ? (trackingByBox[activeBox.id] ? 'Scan a plant or the shipping label…' : 'Scan a plant barcode…')
+          : 'Scan a box or plant…'}
         onCamera={() => setCameraMode(activeBox ? 'item' : 'box')}
       />
 
@@ -392,9 +477,11 @@ export function PackerView({ onLogout }) {
             boxSizes={boxSizes}
             currentSizeId={boxSizeByBox[activeBox.id] || null}
             savingSize={savingSizeFor === activeBox.id}
+            assignedTracking={trackingByBox[activeBox.id] || null}
             onPickSize={(sizeId) => saveBoxSize(activeBox.id, sizeId)}
             onMarkPacked={handleMarkPacked}
             onCamera={() => setCameraMode('item')}
+            onScanLabel={() => setCameraMode('label')}
             onSendToPhone={isMobile ? null : () => sendToPhone(activeBox)}
             onDone={() => goToBox(null)}
           />
@@ -402,13 +489,18 @@ export function PackerView({ onLogout }) {
             boxes={openBoxes}
             boxSizes={boxSizes}
             boxSizeByBox={boxSizeByBox}
+            trackingByBox={trackingByBox}
             onOpen={goToBox}
           />
       }
 
       {cameraMode && (cameraMode === 'box' || activeBox) && (
         <CameraScanner
-          onScan={cameraMode === 'box' ? handleScanBox : handleScanItem}
+          onScan={
+            cameraMode === 'box' ? handleScanBox
+              : cameraMode === 'label' ? handleScanLabel
+                : handleScanItem
+          }
           onClose={() => setCameraMode(null)}
         />
       )}
@@ -501,7 +593,7 @@ function ScanField({ inputRef, value, onChange, onSubmit, placeholder, onCamera 
 // Landing — a responsive grid of every open box. Tap a card to open it (or
 // just scan). Cards show packing progress + the chosen box size so the
 // packer can see what's left at a glance across the iPad.
-function LandingGrid({ boxes, boxSizes, boxSizeByBox, onOpen }) {
+function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, onOpen }) {
   if (boxes.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6 text-center pb-safe">
@@ -519,6 +611,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, onOpen }) {
             key={box.id}
             box={box}
             sizeName={boxSizes.find(s => s.id === boxSizeByBox[box.id])?.name || null}
+            hasLabel={!!trackingByBox?.[box.id]}
             onOpen={() => onOpen(box.id)}
           />
         ))}
@@ -528,7 +621,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, onOpen }) {
   );
 }
 
-function BoxCard({ box, sizeName, onOpen }) {
+function BoxCard({ box, sizeName, hasLabel, onOpen }) {
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
@@ -566,6 +659,11 @@ function BoxCard({ box, sizeName, onOpen }) {
             <Ruler className="w-3 h-3" /> {sizeName}
           </span>
         )}
+        {hasLabel && (
+          <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded" title="Shipping label imported — scan it to confirm">
+            <ScanLine className="w-3 h-3" /> Label
+          </span>
+        )}
       </div>
     </button>
   );
@@ -573,7 +671,7 @@ function BoxCard({ box, sizeName, onOpen }) {
 
 // Active-box pane: progress header, item grid, and — once everything is
 // packed — the box-size question.
-function BoxPane({ box, boxSizes, currentSizeId, savingSize, onPickSize, onMarkPacked, onCamera, onSendToPhone, onDone }) {
+function BoxPane({ box, boxSizes, currentSizeId, savingSize, assignedTracking, onPickSize, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -632,25 +730,44 @@ function BoxPane({ box, boxSizes, currentSizeId, savingSize, onPickSize, onMarkP
           own Done button once everything is packed. */}
       {!allPacked && (
         <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3 pb-safe">
-          <div className="max-w-5xl mx-auto flex gap-3">
-            {/* iPad-only: push this box's item list to the packer's phone so
-                they can walk the racks and find items hands-free. */}
-            {onSendToPhone && (
+          <div className="max-w-5xl mx-auto space-y-3">
+            {/* The last step: scan the shipping label to confirm it's the
+                right one. A matching scan packs the whole box. Only shown
+                once a label has been imported/assigned for this box. */}
+            {assignedTracking ? (
               <button
                 type="button"
-                onClick={onSendToPhone}
-                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-blue-600 text-white rounded-xl active:bg-blue-800"
+                onClick={onScanLabel}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800"
               >
-                <Smartphone className="w-5 h-5" /> Send to phone
+                <ScanLine className="w-5 h-5" /> Scan shipping label — confirm &amp; finish
               </button>
+            ) : (
+              <div className="flex items-start gap-2 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
+                <AlertCircle className="w-4 h-4 text-gray-400 flex-shrink-0 mt-0.5" />
+                <span>No shipping label imported for this box yet — pack the items, the label scan unlocks once it's assigned at the shipping desk.</span>
+              </div>
             )}
-            <button
-              type="button"
-              onClick={onCamera}
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50"
-            >
-              <Camera className="w-5 h-5" /> Or scan with camera
-            </button>
+            <div className="flex gap-3">
+              {/* iPad-only: push this box's item list to the packer's phone so
+                  they can walk the racks and find items hands-free. */}
+              {onSendToPhone && (
+                <button
+                  type="button"
+                  onClick={onSendToPhone}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-blue-600 text-white rounded-xl active:bg-blue-800"
+                >
+                  <Smartphone className="w-5 h-5" /> Send to phone
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onCamera}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50"
+              >
+                <Camera className="w-5 h-5" /> Scan a plant
+              </button>
+            </div>
           </div>
         </div>
       )}
