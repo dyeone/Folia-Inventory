@@ -24,7 +24,7 @@ import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { holdInfo, boxHasHoldItem, boxIsLocalPickup } from './holdInfo.js';
+import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
@@ -2010,14 +2010,12 @@ function BoxRow({
   const hasLabel = !!liveShipment && (
     !!liveShipment.trackingNumber || !!liveShipment.labelStoragePath || liveShipment.carrierCode !== 'palmstreet'
   );
-  // One-week hold: a box is held if it contains a "1-week hold" item (the
-  // operator's manual flag) OR has an active holdUntil timestamp; only the
-  // timestamp has a countdown / a "Time to ship" cutover. Not shown once
-  // the box has shipped.
-  const hold = holdInfo(box.holdUntil);
-  const hasHoldItem = boxHasHoldItem(box.items);
-  const onHold = !allShipped && (hasHoldItem || hold.state === 'holding');
-  const holdReady = !allShipped && !hasHoldItem && hold.state === 'ready';
+  // One-week hold: an item-based hold ("1-week hold" line) counts a week from
+  // that item's purchase date then becomes 'ready'; a manual button hold uses
+  // its holdUntil timestamp. Not shown once the box has shipped.
+  const hold = boxHoldState(box.items, box.holdUntil);
+  const onHold = !allShipped && hold.state === 'holding';
+  const holdReady = !allShipped && hold.state === 'ready';
   const holdDays = hold.state === 'holding' ? hold.daysLeft : null;
   // Local pickup (seller note / item says "pickup") — a separate "do not ship"
   // flag with its own violet colour.

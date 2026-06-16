@@ -8,7 +8,7 @@ import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { holdInfo, boxHasHoldItem, boxIsLocalPickup } from './holdInfo.js';
+import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
 import { derivedBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -480,11 +480,12 @@ export function PackerView({ onLogout }) {
   // background + an easy-to-read banner so the packer can't miss a held box.
   // A box is on hold if it has a "1-week hold" item (the operator's manual
   // flag) OR an active holdUntil timestamp; only the timestamp has a countdown.
-  const activeHoldUntil = activeBox ? holdInfo(holdByBox[activeBox.id]) : { state: 'none' };
-  const activeHasHoldItem = activeBox ? boxHasHoldItem(activeBox.items) : false;
-  const activeOnHold = activeHasHoldItem || activeHoldUntil.state === 'holding';
-  const activeHoldReady = !activeHasHoldItem && activeHoldUntil.state === 'ready';
-  const activeHoldDays = activeHoldUntil.state === 'holding' ? activeHoldUntil.daysLeft : null;
+  // Item-based holds count a week from the hold item's purchase date; the
+  // manual button hold uses its timestamp. boxHoldState unifies both.
+  const activeHoldState = activeBox ? boxHoldState(activeBox.items, holdByBox[activeBox.id]) : { state: 'none' };
+  const activeOnHold = activeHoldState.state === 'holding';
+  const activeHoldReady = activeHoldState.state === 'ready';
+  const activeHoldDays = activeHoldState.state === 'holding' ? activeHoldState.daysLeft : null;
   // Local pickup (seller note / item says "pickup") — a separate "do not ship"
   // flag with its own (violet) colour. Hold takes precedence for the page tint.
   const activeIsPickup = activeBox ? boxIsLocalPickup(noteByBox[activeBox.id], activeBox.items) : false;
@@ -686,9 +687,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
             box={box}
             sizeName={boxSizes.find(s => s.id === boxSizeByBox[box.id])?.name || null}
             hasLabel={!!trackingByBox?.[box.id]}
-            onHold={boxHasHoldItem(box.items) || holdInfo(holdByBox?.[box.id]).state === 'holding'}
-            holdReady={!boxHasHoldItem(box.items) && holdInfo(holdByBox?.[box.id]).state === 'ready'}
-            holdDays={holdInfo(holdByBox?.[box.id]).state === 'holding' ? holdInfo(holdByBox?.[box.id]).daysLeft : null}
+            holdState={boxHoldState(box.items, holdByBox?.[box.id])}
             isPickup={boxIsLocalPickup(noteByBox?.[box.id], box.items)}
             onOpen={() => onOpen(box.id)}
           />
@@ -699,12 +698,15 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
   );
 }
 
-function BoxCard({ box, sizeName, hasLabel, onHold, holdReady, holdDays, isPickup, onOpen }) {
+function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, onOpen }) {
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
   const allPacked = total > 0 && packed === total;
   const pct = total > 0 ? (packed / total) * 100 : 0;
+  const onHold = holdState?.state === 'holding';
+  const holdReady = holdState?.state === 'ready';
+  const holdDays = holdState?.state === 'holding' ? holdState.daysLeft : null;
   return (
     <button
       type="button"
