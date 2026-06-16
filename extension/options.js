@@ -15,6 +15,12 @@ const DEFAULTS = {
   selSlipLink: '',
   selTracking: '',
   selBackToList: '',
+  // "Push tracking to Palmstreet" flow selectors (optional ones are skipped
+  // when blank). selTrackingInput + selSaveTracking are required for it.
+  selAddTrackingOpen: '',
+  selCarrierUsps: '',
+  selTrackingInput: '',
+  selSaveTracking: '',
   defaultWeightOz: 32,
   confirmEachOrder: true,
   delayMin: 800,

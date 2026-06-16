@@ -156,6 +156,78 @@ async function processOrder({ box, weightOz }, settings) {
   };
 }
 
+// Push a tracking number INTO Palmstreet for an order we labeled ourselves
+// (the reverse of processOrder/syncOnly). Searches the order by recipient
+// name, opens it, and types our stored tracking number into Palmstreet's
+// add-tracking form. Steps whose selector is blank are skipped, so the flow
+// adapts to however Palmstreet's "mark shipped / add tracking" UI is shaped:
+//   1. click selOpenShipping        (open the orders list)        — optional
+//   2. type selSearchInput = recipient name
+//   3. click selOrderRow            (first row matching the name)
+//   4. click selAddTrackingOpen     (open the add-tracking form)  — optional
+//   5. click selCarrierUsps         (pick the USPS carrier)       — optional
+//   6. type selTrackingInput = tracking number
+//   7. click selSaveTracking        (save / confirm)
+//   8. click selBackToList          (return to the list)          — optional
+async function pushTracking({ box }, settings) {
+  const t = settings.stepTimeoutMs || 20000;
+  const sleepBetween = () => sleep(randDelay(settings.delayMin, settings.delayMax));
+
+  const trackingNumber = String(box.trackingNumber || '').trim();
+  if (!trackingNumber) throw new Error('No tracking number for this box');
+  // Search by recipient name (the operator's request), falling back to the
+  // username if a name is missing.
+  const needle = box.recipientName || box.buyerUsername;
+  if (!needle) throw new Error('No recipient name to search by');
+
+  // 1. Open the orders list (optional).
+  if (settings.selOpenShipping) {
+    const open = $(settings.selOpenShipping);
+    if (open) { open.click(); await sleepBetween(); }
+  }
+
+  // 2. Search by recipient name.
+  const searchInput = await waitForSelector(settings.selSearchInput, t);
+  await typeInto(searchInput, needle);
+  await sleepBetween();
+
+  // 3. Click the matching order row.
+  const row = await waitForRowMatching(settings.selOrderRow, needle, t);
+  row.click();
+  await sleepBetween();
+
+  // 4. Open the add-tracking form (optional).
+  if (settings.selAddTrackingOpen) {
+    const openForm = await waitForSelector(settings.selAddTrackingOpen, t);
+    openForm.click();
+    await sleepBetween();
+  }
+
+  // 5. Pick the USPS carrier (optional).
+  if (settings.selCarrierUsps) {
+    const carrier = $(settings.selCarrierUsps);
+    if (carrier) { carrier.click(); await sleepBetween(); }
+  }
+
+  // 6. Type the tracking number.
+  const trackingInput = await waitForSelector(settings.selTrackingInput, t);
+  await typeInto(trackingInput, trackingNumber);
+  await sleepBetween();
+
+  // 7. Save / confirm.
+  const save = await waitForSelector(settings.selSaveTracking, t);
+  save.click();
+  await sleepBetween();
+
+  // 8. Back to the list (optional).
+  if (settings.selBackToList) {
+    const back = $(settings.selBackToList);
+    if (back) back.click();
+  }
+
+  return { trackingNumber };
+}
+
 // Light-touch sync mode: read tracking from the page without clicking
 // anything. Useful after manual labels.
 async function syncOnly({ box }, settings) {
@@ -185,6 +257,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       if (msg?.type === 'syncOnly') {
         const r = await syncOnly(msg.payload, settings);
+        return sendResponse({ ok: true, ...r });
+      }
+      if (msg?.type === 'pushTracking') {
+        const r = await pushTracking(msg.payload, settings);
         return sendResponse({ ok: true, ...r });
       }
       sendResponse({ ok: false, error: `Unknown message: ${msg?.type}` });

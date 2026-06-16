@@ -5,6 +5,9 @@
 const $ = (id) => document.getElementById(id);
 let stopRequested = false;
 let lastWeightOz = null;
+// Which queue is shown: 'needsLabel' (boxes without a label → buy/sync) or
+// 'hasTracking' (boxes with a recorded tracking number → push to Palmstreet).
+let queueMode = 'needsLabel';
 
 document.getElementById('openOptions').addEventListener('click', (e) => {
   e.preventDefault(); chrome.runtime.openOptionsPage();
@@ -14,7 +17,22 @@ $('refresh').addEventListener('click', loadQueue);
 $('stop').addEventListener('click', () => { stopRequested = true; });
 $('modeSync').addEventListener('click', () => runQueue('sync'));
 $('modeBuy').addEventListener('click', () => runQueue('buy'));
+$('modePush').addEventListener('click', () => runQueue('push'));
+$('tabNeedsLabel').addEventListener('click', () => setQueueMode('needsLabel'));
+$('tabHasTracking').addEventListener('click', () => setQueueMode('hasTracking'));
 $('readScale').addEventListener('click', readScaleNow);
+
+function setQueueMode(mode) {
+  queueMode = mode;
+  $('tabNeedsLabel').className = `mode ${mode === 'needsLabel' ? 'primary' : ''}`.trim();
+  $('tabHasTracking').className = `mode ${mode === 'hasTracking' ? 'primary' : ''}`.trim();
+  $('modesNeedsLabel').hidden = mode !== 'needsLabel';
+  $('modesHasTracking').hidden = mode !== 'hasTracking';
+  loadQueue();
+}
+
+// Which API action backs the current queue.
+const queueEndpoint = () => (queueMode === 'hasTracking' ? 'api:withTracking' : 'api:pendingUsps');
 
 async function init() {
   const settings = await chrome.storage.sync.get(null);
@@ -44,8 +62,12 @@ async function loadQueue() {
   const list = $('queue');
   list.innerHTML = '';
   $('queueCount').textContent = '…';
+  const hasTracking = queueMode === 'hasTracking';
+  $('queueLabel').textContent = hasTracking
+    ? 'boxes with a tracking number'
+    : 'USPS boxes waiting for labels';
 
-  const resp = await sendBg({ type: 'api:pendingUsps', settings });
+  const resp = await sendBg({ type: queueEndpoint(), settings });
   if (!resp.ok) {
     $('queueCount').textContent = '!';
     list.innerHTML = `<li class="err">${resp.error}</li>`;
@@ -54,18 +76,21 @@ async function loadQueue() {
   const boxes = resp.boxes || [];
   $('queueCount').textContent = String(boxes.length);
   if (boxes.length === 0) {
-    list.innerHTML = `<li class="muted">All caught up.</li>`;
+    list.innerHTML = `<li class="muted">${hasTracking ? 'No boxes with tracking yet.' : 'All caught up.'}</li>`;
     return;
   }
   for (const b of boxes) {
     const li = document.createElement('li');
     li.className = 'queue-row';
+    const meta = hasTracking
+      ? `${escapeHtml(b.trackingNumber || '(no #)')}${b.allShipped ? ' · shipped' : ''}`
+      : `@${escapeHtml(b.buyerUsername || '?')} · ${b.items.length} item${b.items.length === 1 ? '' : 's'}${b.saleName ? ` · ${escapeHtml(b.saleName)}` : ''}`;
     li.innerHTML = `
       <label class="row">
         <input type="checkbox" data-box-id="${b.shipmentBoxId}" checked />
         <div class="col">
           <strong>${escapeHtml(b.recipientName)}</strong>
-          <small>@${escapeHtml(b.buyerUsername || '?')} · ${b.items.length} item${b.items.length === 1 ? '' : 's'}${b.saleName ? ` · ${escapeHtml(b.saleName)}` : ''}</small>
+          <small>${meta}</small>
         </div>
       </label>`;
     list.appendChild(li);
@@ -162,13 +187,15 @@ function sendTab(tabId, msg) {
   });
 }
 
-async function runQueue(mode) {
+async function runQueue(op) {
   stopRequested = false;
   const settings = await chrome.storage.sync.get(null);
   const tab = await activePalmstreetTab();
   if (!tab) { show('notOnPalmstreet'); return; }
 
-  const all = await sendBg({ type: 'api:pendingUsps', settings });
+  // 'push' works the with-tracking queue; 'sync'/'buy' work the pending queue.
+  const endpoint = op === 'push' ? 'api:withTracking' : 'api:pendingUsps';
+  const all = await sendBg({ type: endpoint, settings });
   if (!all.ok) { alert(all.error); return; }
   const selected = getSelectedBoxes(all.boxes || []);
   if (selected.length === 0) { alert('No boxes selected.'); return; }
@@ -178,26 +205,33 @@ async function runQueue(mode) {
   setProgress(0, selected.length);
 
   let done = 0;
-  let synced = 0;
+  let okCount = 0;
 
   for (const box of selected) {
     if (stopRequested) { logRow('Stopped.', 'warn'); break; }
     const label = `${box.recipientName} (@${box.buyerUsername || '?'})`;
+    const verb = op === 'push' ? 'Add tracking for' : 'Process';
 
-    if (settings.confirmEachOrder && !confirm(`Process ${label}?`)) {
+    if (settings.confirmEachOrder && !confirm(`${verb} ${label}?`)) {
       logRow(`Skipped ${label}`, 'warn');
       done++; setProgress(done, selected.length);
       continue;
     }
 
     try {
-      if (mode === 'sync') {
+      if (op === 'push') {
+        // Tracking is already recorded in Folia — type it into Palmstreet.
+        const r = await sendTab(tab.id, { type: 'pushTracking', payload: { box } });
+        if (!r.ok) throw new Error(r.error);
+        okCount++;
+        logRow(`Added ${label} → ${box.trackingNumber || r.trackingNumber || ''}`, 'ok');
+      } else if (op === 'sync') {
         const r = await sendTab(tab.id, { type: 'syncOnly', payload: { box } });
         if (!r.ok) throw new Error(r.error);
         if (!r.trackingNumber) { logRow(`No tracking visible for ${label}`, 'warn'); }
         else {
           await postTracking(settings, box, { trackingNumber: r.trackingNumber });
-          synced++;
+          okCount++;
           logRow(`Synced ${label} → ${r.trackingNumber}`, 'ok');
         }
       } else {
@@ -213,7 +247,7 @@ async function runQueue(mode) {
           labelPdfBase64: r.labelPdfBase64,
           slipPdfBase64: r.slipPdfBase64,
         });
-        synced++;
+        okCount++;
         logRow(`Bought + synced ${label} → ${r.trackingNumber || 'no tracking'}`, 'ok');
       }
     } catch (e) {
@@ -225,7 +259,7 @@ async function runQueue(mode) {
     await sleep(randDelay(settings.delayMin, settings.delayMax));
   }
 
-  logRow(`Done · ${synced}/${done} synced`, 'ok');
+  logRow(`Done · ${okCount}/${done} ${op === 'push' ? 'pushed' : 'synced'}`, 'ok');
   await loadQueue();
 }
 

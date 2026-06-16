@@ -17,6 +17,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           resp = await get(settings, '/api/shipments?action=pending&carrier=usps');
           sendResponse({ ok: true, boxes: resp.boxes || [] });
           break;
+        case 'api:withTracking':
+          // Boxes that already have a tracking number recorded — the queue
+          // for pushing tracking back into Palmstreet.
+          resp = await get(settings, '/api/shipments?action=with-tracking');
+          sendResponse({ ok: true, boxes: resp.boxes || [] });
+          break;
         case 'api:recordTracking':
           resp = await post(settings, '/api/shipments', {
             action: 'record-tracking',
