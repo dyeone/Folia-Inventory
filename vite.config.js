@@ -15,6 +15,9 @@ export default defineConfig({
           // (dynamic import), so they get their own lazily-loaded chunks.
           if (id.includes('pdfjs-dist')) return 'vendor-pdfjs';
           if (id.includes('tesseract.js')) return 'vendor-tesseract';
+          // pdf-lib merges label PDFs for batch "Print shipping labels"
+          // (lazy-imported, only when the operator prints a batch).
+          if (id.includes('pdf-lib')) return 'vendor-pdflib';
           if (id.includes('jspdf') || id.includes('html2canvas')) return 'vendor-pdf';
           if (id.includes('jsbarcode')) return 'vendor-barcode';
           if (id.includes('@supabase')) return 'vendor-supabase';
