@@ -8,7 +8,7 @@ import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { holdInfo, boxHasHoldItem } from './holdInfo.js';
+import { holdInfo, boxHasHoldItem, boxIsLocalPickup } from './holdInfo.js';
 import { derivedBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -55,6 +55,9 @@ export function PackerView({ onLogout }) {
   // One-week hold deadline per box (shipmentBoxId → holdUntil ISO), from the
   // shipment_boxes metadata. Drives the held-box background + "on hold" mark.
   const [holdByBox, setHoldByBox] = useState({});
+  // Seller note per box (shipmentBoxId → note), so the packer can detect a
+  // "local pickup" note and flag the box not-to-ship.
+  const [noteByBox, setNoteByBox] = useState({});
 
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
@@ -104,6 +107,11 @@ export function PackerView({ onLogout }) {
       setHoldByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.holdUntil || null]),
+        ),
+      );
+      setNoteByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, v?.note || '']),
         ),
       );
       setTrackingByBox(
@@ -190,6 +198,11 @@ export function PackerView({ onLogout }) {
       setHoldByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.holdUntil || null]),
+        ),
+      );
+      setNoteByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, v?.note || '']),
         ),
       );
     } catch { /* keep whatever we have */ }
@@ -316,13 +329,22 @@ export function PackerView({ onLogout }) {
     showToast(`Nothing matches ${raw}`, 3500);
   };
 
-  // In-box scan: flip the matching item to packed.
+  // In-box scan: flip the matching item to packed. If the scanned plant
+  // belongs to a DIFFERENT open box, jump to that box instead of erroring —
+  // so scanning any plant always takes the packer to its box.
   const handleScanItem = async (rawText) => {
     if (!activeBox) return;
     const sku = normalizeSku(rawText);
     if (!sku) return;
     const candidate = activeBox.items.find(i => normalizeSku(i.sku) === sku);
-    if (!candidate) { showToast(`SKU ${sku} isn't in this box`, 3500); return; }
+    if (!candidate) {
+      const other = Object.values(boxesByCode).find(
+        b => b.id !== activeBox.id && b.items.some(i => normalizeSku(i.sku) === sku),
+      );
+      if (other) { showToast(`${sku} → box ${other.code}`, 2500); goToBox(other.id); return; }
+      showToast(`SKU ${sku} isn't in any open box`, 3500);
+      return;
+    }
     if (candidate.status !== 'sold') { showToast(`SKU ${sku} is already ${candidate.status}`, 3500); return; }
     if (candidate.packedAt) { showToast(`SKU ${sku} already packed`, 2500); return; }
     await packById(candidate.id, sku);
@@ -463,12 +485,16 @@ export function PackerView({ onLogout }) {
   const activeOnHold = activeHasHoldItem || activeHoldUntil.state === 'holding';
   const activeHoldReady = !activeHasHoldItem && activeHoldUntil.state === 'ready';
   const activeHoldDays = activeHoldUntil.state === 'holding' ? activeHoldUntil.daysLeft : null;
+  // Local pickup (seller note / item says "pickup") — a separate "do not ship"
+  // flag with its own (violet) colour. Hold takes precedence for the page tint.
+  const activeIsPickup = activeBox ? boxIsLocalPickup(noteByBox[activeBox.id], activeBox.items) : false;
+  const pageTone = activeOnHold ? 'hold' : activeIsPickup ? 'pickup' : null;
 
   return (
-    <div className={`fixed inset-0 flex flex-col ${activeOnHold ? 'bg-amber-100' : 'bg-gray-50'}`}>
+    <div className={`fixed inset-0 flex flex-col ${pageTone === 'hold' ? 'bg-amber-100' : pageTone === 'pickup' ? 'bg-violet-100' : 'bg-gray-50'}`}>
       <TopBar
         onLogout={onLogout}
-        onHold={activeOnHold}
+        tone={pageTone}
         title={activeBox ? activeBox.code : 'Packing'}
         subtitle={activeBox
           ? (activeBox.buyer || (activeBox.buyerUsername ? `@${activeBox.buyerUsername}` : 'Box'))
@@ -476,8 +502,14 @@ export function PackerView({ onLogout }) {
         onBack={activeBox ? () => goToBox(null) : null}
       />
 
-      {/* Easy-to-read hold banner under the bar. Amber "ON HOLD" while the
-          week counts down; green "ready" once it elapses. */}
+      {/* Easy-to-read flag banners under the bar — both can show (a box can be
+          held AND local-pickup). Amber "ON HOLD"; violet "LOCAL PICKUP". */}
+      {activeBox && activeIsPickup && (
+        <div className="flex-shrink-0 bg-violet-500 text-white px-4 py-3 flex items-center justify-center gap-2 text-center">
+          <Package className="w-6 h-6 flex-shrink-0" />
+          <span className="text-lg font-extrabold tracking-wide">LOCAL PICKUP — do not ship, customer collects</span>
+        </div>
+      )}
       {activeBox && activeOnHold && (
         <div className="flex-shrink-0 bg-amber-400 text-amber-950 px-4 py-3 flex items-center justify-center gap-2 text-center">
           <Clock className="w-6 h-6 flex-shrink-0" />
@@ -521,6 +553,7 @@ export function PackerView({ onLogout }) {
             boxSizeByBox={boxSizeByBox}
             trackingByBox={trackingByBox}
             holdByBox={holdByBox}
+            noteByBox={noteByBox}
             onOpen={goToBox}
           />
       }
@@ -542,12 +575,17 @@ export function PackerView({ onLogout }) {
   );
 }
 
-function TopBar({ onLogout, title, subtitle, onBack, onHold }) {
+function TopBar({ onLogout, title, subtitle, onBack, tone }) {
   const isCodeTitle = /^B-/.test(title || '');
-  // Held box → amber bar so the whole top of the screen reads "on hold".
-  const barBg = onHold ? 'bg-amber-600' : 'bg-emerald-700';
-  const btnHover = onHold ? 'hover:bg-amber-700 active:bg-amber-800' : 'hover:bg-emerald-800 active:bg-emerald-900';
-  const subTone = onHold ? 'text-amber-100' : 'text-emerald-100';
+  // Flagged box → coloured bar so the whole top of the screen reads the state:
+  // amber = on hold, violet = local pickup, else the normal emerald.
+  const barBg = tone === 'hold' ? 'bg-amber-600' : tone === 'pickup' ? 'bg-violet-600' : 'bg-emerald-700';
+  const btnHover = tone === 'hold'
+    ? 'hover:bg-amber-700 active:bg-amber-800'
+    : tone === 'pickup'
+    ? 'hover:bg-violet-700 active:bg-violet-800'
+    : 'hover:bg-emerald-800 active:bg-emerald-900';
+  const subTone = tone === 'hold' ? 'text-amber-100' : tone === 'pickup' ? 'text-violet-100' : 'text-emerald-100';
   return (
     <div className={`${barBg} text-white pt-safe flex-shrink-0`}>
       <div className="h-16 px-3 sm:px-5 flex items-center gap-3">
@@ -629,7 +667,7 @@ function ScanField({ inputRef, value, onChange, onSubmit, placeholder, onCamera 
 // Landing — a responsive grid of every open box. Tap a card to open it (or
 // just scan). Cards show packing progress + the chosen box size so the
 // packer can see what's left at a glance across the iPad.
-function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, onOpen }) {
+function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, noteByBox, onOpen }) {
   if (boxes.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6 text-center pb-safe">
@@ -651,6 +689,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
             onHold={boxHasHoldItem(box.items) || holdInfo(holdByBox?.[box.id]).state === 'holding'}
             holdReady={!boxHasHoldItem(box.items) && holdInfo(holdByBox?.[box.id]).state === 'ready'}
             holdDays={holdInfo(holdByBox?.[box.id]).state === 'holding' ? holdInfo(holdByBox?.[box.id]).daysLeft : null}
+            isPickup={boxIsLocalPickup(noteByBox?.[box.id], box.items)}
             onOpen={() => onOpen(box.id)}
           />
         ))}
@@ -660,7 +699,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
   );
 }
 
-function BoxCard({ box, sizeName, hasLabel, onHold, holdReady, holdDays, onOpen }) {
+function BoxCard({ box, sizeName, hasLabel, onHold, holdReady, holdDays, isPickup, onOpen }) {
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
@@ -673,6 +712,8 @@ function BoxCard({ box, sizeName, hasLabel, onHold, holdReady, holdDays, onOpen 
       className={`text-left rounded-2xl border-2 p-4 transition active:scale-[0.99] ${
         onHold
           ? 'border-amber-400 bg-amber-100 hover:border-amber-500'
+          : isPickup
+          ? 'border-violet-400 bg-violet-100 hover:border-violet-500'
           : allPacked
           ? 'border-emerald-300 bg-emerald-50/60 hover:border-emerald-400'
           : 'border-gray-200 bg-white hover:border-emerald-400 hover:shadow-sm'
@@ -703,6 +744,11 @@ function BoxCard({ box, sizeName, hasLabel, onHold, holdReady, holdDays, onOpen 
         {holdReady && (
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-600 px-1.5 py-0.5 rounded" title="Hold complete — ready to ship">
             <Check className="w-3 h-3" /> Hold done
+          </span>
+        )}
+        {isPickup && (
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-violet-900 bg-violet-200 ring-1 ring-violet-400 px-1.5 py-0.5 rounded" title="Local pickup — do not ship">
+            <Package className="w-3 h-3" /> Pickup
           </span>
         )}
         {sizeName && (
