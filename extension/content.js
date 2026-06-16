@@ -22,9 +22,35 @@ async function getSettings() {
   return await chrome.storage.sync.get(null);
 }
 
-const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const $ = (s, r = document) => r.querySelector(s);
+// Selector resolver. Plain CSS by default, plus a `text=` / `text*=` form so
+// operators can target Palmstreet's text-only buttons (Continue, Pay, Add
+// tracking, Save…) that have no stable CSS hook:
+//   text=Continue   → first clickable whose trimmed text EQUALS "Continue"
+//   text*=Add track  → first clickable whose text CONTAINS "Add track"
+// (CSS `:contains()` is jQuery-only and throws in querySelector, so this
+// replaces it.) Invalid CSS yields no match instead of throwing.
+const CLICKABLE = 'button, a, [role="button"], [role="menuitem"], [role="tab"], input[type="submit"], input[type="button"], summary, label';
 const text = (el) => (el?.textContent || '').trim();
+
+function queryAll(selector, root = document) {
+  if (!selector) return [];
+  const m = /^\s*text(\*)?=\s*(.+?)\s*$/is.exec(selector);
+  if (m) {
+    const contains = m[1] === '*';
+    const needle = m[2].toLowerCase();
+    return [...root.querySelectorAll(CLICKABLE)].filter((el) => {
+      const t = (el.textContent || '').trim().toLowerCase();
+      return contains ? t.includes(needle) : t === needle;
+    });
+  }
+  try {
+    return [...root.querySelectorAll(selector)];
+  } catch {
+    return []; // invalid CSS (e.g. a stray :contains()) → no match, no throw
+  }
+}
+const $$ = (s, r = document) => queryAll(s, r);
+const $ = (s, r = document) => queryAll(s, r)[0] || null;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const randDelay = (min, max) => Math.floor((min || 0) + Math.random() * Math.max(1, (max || 0) - (min || 0)));
 

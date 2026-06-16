@@ -70,6 +70,12 @@ teach it once by inspecting Palmstreet's UI:
 > highlighted node → Copy → **Copy selector**. Paste into the matching
 > Settings field.
 
+**Targeting a button by its words.** Palmstreet's buttons (Continue, Pay,
+Add tracking, Save…) often have no stable CSS hook. Instead of a CSS
+selector, use `text=Continue` (matches the button whose text is exactly
+"Continue") or `text*=Add track` (text *contains*). This replaces CSS
+`:contains()`, which is jQuery-only and doesn't work in the browser.
+
 You need 11 selectors (8 mandatory, 3 optional):
 
 | Step | Setting | What to point at |

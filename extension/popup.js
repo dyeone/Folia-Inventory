@@ -57,6 +57,19 @@ async function activePalmstreetTab() {
   return tab;
 }
 
+// Boxes already pushed to Palmstreet — tracked locally so they drop off the
+// "Has tracking" queue and don't get re-pushed. Reset via the queue link.
+const PUSHED_KEY = 'pushedBoxIds';
+async function getPushedSet() {
+  const r = await chrome.storage.local.get(PUSHED_KEY);
+  return new Set(Array.isArray(r[PUSHED_KEY]) ? r[PUSHED_KEY] : []);
+}
+async function addPushed(id) {
+  const s = await getPushedSet();
+  s.add(id);
+  await chrome.storage.local.set({ [PUSHED_KEY]: [...s].slice(-1000) });
+}
+
 async function loadQueue() {
   const settings = await chrome.storage.sync.get(null);
   const list = $('queue');
@@ -64,7 +77,7 @@ async function loadQueue() {
   $('queueCount').textContent = '…';
   const hasTracking = queueMode === 'hasTracking';
   $('queueLabel').textContent = hasTracking
-    ? 'boxes with a tracking number'
+    ? 'boxes to push to Palmstreet'
     : 'USPS boxes waiting for labels';
 
   const resp = await sendBg({ type: queueEndpoint(), settings });
@@ -73,10 +86,24 @@ async function loadQueue() {
     list.innerHTML = `<li class="err">${resp.error}</li>`;
     return;
   }
-  const boxes = resp.boxes || [];
+  let boxes = resp.boxes || [];
+  // In push mode, hide boxes already pushed to Palmstreet from this browser.
+  let pushedCount = 0;
+  if (hasTracking) {
+    const pushed = await getPushedSet();
+    const before = boxes.length;
+    boxes = boxes.filter(b => !pushed.has(b.shipmentBoxId));
+    pushedCount = before - boxes.length;
+  }
   $('queueCount').textContent = String(boxes.length);
+  const resetRow = pushedCount
+    ? `<li class="muted">${pushedCount} already pushed · <a href="#" id="resetPushed">reset</a></li>`
+    : '';
   if (boxes.length === 0) {
-    list.innerHTML = `<li class="muted">${hasTracking ? 'No boxes with tracking yet.' : 'All caught up.'}</li>`;
+    list.innerHTML = (hasTracking
+      ? `<li class="muted">${pushedCount ? 'All pushed to Palmstreet.' : 'No boxes with tracking yet.'}</li>`
+      : `<li class="muted">All caught up.</li>`) + resetRow;
+    wireResetPushed(list);
     return;
   }
   for (const b of boxes) {
@@ -94,6 +121,19 @@ async function loadQueue() {
         </div>
       </label>`;
     list.appendChild(li);
+  }
+  if (resetRow) list.insertAdjacentHTML('beforeend', resetRow);
+  wireResetPushed(list);
+}
+
+function wireResetPushed(list) {
+  const link = list.querySelector('#resetPushed');
+  if (link) {
+    link.addEventListener('click', async (e) => {
+      e.preventDefault();
+      await chrome.storage.local.remove(PUSHED_KEY);
+      loadQueue();
+    });
   }
 }
 
@@ -223,6 +263,7 @@ async function runQueue(op) {
         // Tracking is already recorded in Folia — type it into Palmstreet.
         const r = await sendTab(tab.id, { type: 'pushTracking', payload: { box } });
         if (!r.ok) throw new Error(r.error);
+        await addPushed(box.shipmentBoxId); // drop it from the queue next reload
         okCount++;
         logRow(`Added ${label} → ${box.trackingNumber || r.trackingNumber || ''}`, 'ok');
       } else if (op === 'sync') {

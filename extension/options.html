@@ -27,7 +27,8 @@
 
     <section>
       <h2>Palmstreet selectors</h2>
-      <p class="hint">CSS selectors that point the extension at each element of the 8-step flow. Inspect Palmstreet, copy each selector, paste here. Change them if Palmstreet redesigns the UI.</p>
+      <p class="hint">CSS selectors that point the extension at each element of the flow. Inspect Palmstreet, copy each selector, paste here. Change them if Palmstreet redesigns the UI.</p>
+      <p class="hint"><strong>Targeting a button by its words:</strong> for buttons with no stable CSS hook, use <code>text=Continue</code> (matches a button whose text is exactly "Continue") or <code>text*=Add track</code> (contains). Plain CSS works as before.</p>
 
       <label>
         <span>1 · "View ready-to-ship orders" link/button on Palmstreet's main page</span>
@@ -49,7 +50,7 @@
 
       <label>
         <span>3b · Continue button (after selecting the order)</span>
-        <input id="selContinue" type="text" placeholder='button:contains("Continue")' />
+        <input id="selContinue" type="text" placeholder='text=Continue' />
         <small>Advances to the weight + payment screen.</small>
       </label>
 
@@ -102,7 +103,7 @@
 
       <label>
         <span>Open add-tracking form (optional)</span>
-        <input id="selAddTrackingOpen" type="text" placeholder='button:contains("Add tracking")' />
+        <input id="selAddTrackingOpen" type="text" placeholder='text=Add tracking' />
         <small>The button on an order that opens its "add tracking" / "mark as shipped" form. Leave blank if the tracking field is already visible on the order.</small>
       </label>
 
