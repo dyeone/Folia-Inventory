@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
-  Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin,
+  Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin, Clock,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -310,10 +310,28 @@ export function PackingView({
         weightOz: saved.weightOz ?? null,
         serviceKey: saved.serviceKey ?? null,
         carrierOverride: saved.carrierOverride ?? null,
+        holdUntil: saved.holdUntil ?? null,
         updatedAt: saved.updatedAt,
         updatedBy: saved.updatedBy,
       },
     }));
+  };
+
+  // Put a box on a one-week hold or clear it. The server returns the full
+  // shipment_boxes row, so mirror it into the cache (which re-tints the card
+  // and shows the countdown / "Time to ship" badge).
+  const onSetHold = async (shipmentBoxId, hold) => {
+    const saved = await api.setBoxHold({ shipmentBoxId, hold });
+    setBoxNotesByBox(prev => ({
+      ...prev,
+      [shipmentBoxId]: {
+        ...(prev[shipmentBoxId] || {}),
+        holdUntil: saved.holdUntil ?? null,
+        updatedAt: saved.updatedAt,
+        updatedBy: saved.updatedBy,
+      },
+    }));
+    showToast(hold ? 'Box held for 1 week' : 'Hold cleared');
   };
 
   useEffect(() => {
@@ -1115,6 +1133,7 @@ export function PackingView({
                     boxSizes={boxSizes}
                     onSaveBoxNote={onSaveBoxNote}
                     onSaveBoxPackaging={onSaveBoxPackaging}
+                    onSetHold={onSetHold}
                     onBought={refreshShipments}
                     onCancelLabel={onCancelLabel}
                     onOpenBox={(saleId) => setActiveSaleId(saleId)}
@@ -1568,6 +1587,19 @@ function groupBoxesByBuyer(items, sales, predicate, boxNotesByBox = {}) {
   return { groups, totalBoxes: openBoxes.length, totalItems };
 }
 
+// Derive a box's one-week-hold state from its holdUntil timestamp vs. now.
+//   none    → not on hold
+//   holding → still counting down (daysLeft = whole days remaining, min 1)
+//   ready   → the week has elapsed, time to ship
+function holdInfo(holdUntil) {
+  if (!holdUntil) return { state: 'none' };
+  const until = new Date(holdUntil);
+  if (isNaN(until.getTime())) return { state: 'none' };
+  const ms = until.getTime() - Date.now();
+  if (ms <= 0) return { state: 'ready', until };
+  return { state: 'holding', until, daysLeft: Math.max(1, Math.ceil(ms / 86400000)) };
+}
+
 function addressOneLine(addr) {
   if (!addr || typeof addr !== 'object') return '';
   const parts = [addr.city, addr.state, addr.zip || addr.zipCode].filter(Boolean);
@@ -1575,7 +1607,7 @@ function addressOneLine(addr) {
 }
 
 function BuyerGroupCard({
-  group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onBought, onCancelLabel,
+  group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onSetHold, onBought, onCancelLabel,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
   isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
@@ -1622,6 +1654,7 @@ function BuyerGroupCard({
             onMarkShipped={() => onMarkShipped(box)}
             onUnship={onUnship ? () => onUnship(box) : null}
             onTogglePacked={onTogglePacked}
+            onSetHold={onSetHold ? (hold) => onSetHold(box.id, hold) : null}
             onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
             boxSizes={boxSizes}
             onSavePackaging={onSaveBoxPackaging ? (patch) => onSaveBoxPackaging(box.id, patch) : null}
@@ -1922,7 +1955,7 @@ function CarrierToggle({ box, onSave, showToast }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
-  onSaveNote, boxSizes, onSavePackaging, onBought, onCancelLabel,
+  onSaveNote, onSetHold, boxSizes, onSavePackaging, onBought, onCancelLabel,
   isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected, defaultExpanded,
 }) {
@@ -1989,6 +2022,12 @@ function BoxRow({
   const hasLabel = !!liveShipment && (
     !!liveShipment.trackingNumber || !!liveShipment.labelStoragePath || liveShipment.carrierCode !== 'palmstreet'
   );
+  // One-week hold state, derived live from holdUntil vs now: 'holding' (still
+  // counting down → special amber colour + countdown) or 'ready' (week elapsed
+  // → "Time to ship"). Not shown once the box has shipped.
+  const hold = holdInfo(box.holdUntil);
+  const onHold = !allShipped && hold.state === 'holding';
+  const holdReady = !allShipped && hold.state === 'ready';
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
@@ -2076,6 +2115,10 @@ function BoxRow({
     <div className={`rounded-lg border transition ${
       isSelected
         ? 'border-emerald-500 ring-1 ring-emerald-200'
+        : onHold
+        ? 'border-amber-300 bg-amber-50/60'
+        : holdReady
+        ? 'border-emerald-400 bg-emerald-50/40'
         : allPacked
         ? 'border-emerald-400 bg-emerald-50/40'
         : 'border-gray-100 hover:border-emerald-400'
@@ -2135,6 +2178,18 @@ function BoxRow({
             </span>
           )}
           <div className="flex-1" />
+          {/* One-week hold: amber countdown while holding, then a filled
+              "Time to ship" call-to-action once the week is up. */}
+          {onHold && (
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 ring-1 ring-amber-300 px-2 py-0.5 rounded-lg shrink-0" title={`On hold until ${new Date(box.holdUntil).toLocaleDateString()}`}>
+              <Clock className="w-3.5 h-3.5" /> Hold · {hold.daysLeft}d
+            </span>
+          )}
+          {holdReady && (
+            <span className="inline-flex items-center gap-1 text-xs font-bold text-white bg-emerald-600 px-2 py-0.5 rounded-lg shrink-0" title="Hold elapsed — ready to ship">
+              <Truck className="w-3.5 h-3.5" /> Time to ship
+            </span>
+          )}
           {allPacked && (
             <span className="inline-flex items-center gap-1 text-sm font-bold text-emerald-700 bg-emerald-100 px-2.5 py-1 rounded-lg shrink-0">
               <CheckCircle2 className="w-5 h-5" /> Packed
@@ -2210,6 +2265,27 @@ function BoxRow({
               >
                 <MapPin className="w-3 h-3" /> Address
               </button>
+            )}
+            {/* One-week hold toggle. Held boxes turn amber with a countdown;
+                after a week they flip to "Time to ship". */}
+            {action && onSetHold && (
+              box.holdUntil ? (
+                <button
+                  onClick={(e) => { stop(e); onSetHold(false); }}
+                  title="Clear the one-week hold"
+                  className="text-xs font-medium px-2 py-1 rounded-md border border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100 active:bg-amber-200 flex items-center gap-1"
+                >
+                  <Clock className="w-3 h-3" /> Clear hold
+                </button>
+              ) : (
+                <button
+                  onClick={(e) => { stop(e); onSetHold(true); }}
+                  title="Hold this box for one week before shipping"
+                  className="text-xs font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-amber-50 hover:text-amber-700 hover:border-amber-300 active:bg-amber-100 flex items-center gap-1"
+                >
+                  <Clock className="w-3 h-3" /> Hold 1 week
+                </button>
+              )
             )}
             {action && isAdmin && onDeleteBox && (
               <button

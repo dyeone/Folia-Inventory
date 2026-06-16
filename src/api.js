@@ -208,6 +208,10 @@ export const api = {
   // keys passed are touched server-side; returns the full updated box row.
   setBoxPackaging: ({ shipmentBoxId, boxSizeId, weightOz, serviceKey, carrierOverride }) =>
     request('/shipments', { method: 'POST', body: { action: 'set-box-packaging', shipmentBoxId, boxSizeId, weightOz, serviceKey, carrierOverride } }).then(r => r.box),
+  // Put a box on a one-week hold (hold:true → holdUntil = now + days, default
+  // 7) or clear it (hold:false). The deadline is computed server-side.
+  setBoxHold: ({ shipmentBoxId, hold, days }) =>
+    request('/shipments', { method: 'POST', body: { action: 'set-box-hold', shipmentBoxId, hold, days } }).then(r => r.box),
   // Packer cross-device handoff: the iPad sends an open box's items to the
   // packer's phone (same login), which polls getPhoneHandoff and shows them
   // as a find-list. Returns { ok, sentAt } so the sender can mark its own

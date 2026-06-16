@@ -447,6 +447,7 @@ create table if not exists shipment_boxes (
   "weightOz"        numeric,
   "serviceKey"      text,
   "carrierOverride" text,
+  "holdUntil"       timestamptz,                            -- one-week hold (0028); null = not held
   "updatedAt"       timestamptz not null default now(),
   "updatedBy"       text
 );
@@ -454,6 +455,7 @@ alter table shipment_boxes add column if not exists "boxSizeId" text;
 alter table shipment_boxes add column if not exists "weightOz"  numeric;
 alter table shipment_boxes add column if not exists "serviceKey" text;
 alter table shipment_boxes add column if not exists "carrierOverride" text;
+alter table shipment_boxes add column if not exists "holdUntil" timestamptz;
 do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'shipment_boxes_servicekey_check') then
