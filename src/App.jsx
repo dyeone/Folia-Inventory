@@ -1164,6 +1164,30 @@ function StaffOrAdminInventory() {
                 showToast(e.message || 'Ship failed', 'error');
               }
             }}
+            onUnshipBox={async (saleId, itemIds) => {
+              // Reverse of onShipBox: move a fully-shipped box back to Ready.
+              // Items return to 'sold' with the ship date cleared; the tracking
+              // number and label PDF stay attached. If shipping had closed the
+              // sale, reopen it so the box isn't stranded under a closed sale.
+              try {
+                const updates = itemIds.map(id => ({ id, status: 'sold', shippedAt: null }));
+                await api.upsertItems(updates);
+                const freshItems = await api.getItems();
+                applyItemsFresh(freshItems);
+
+                const sale = sales.find(s => s.id === saleId);
+                if (sale && sale.status === 'closed') {
+                  await api.upsertSales([{ id: saleId, status: 'packing', closedAt: null }]);
+                  const freshSales = await api.getSales();
+                  setSales([...freshSales].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+                  showToast(`Moved ${itemIds.length} ${itemIds.length === 1 ? 'item' : 'items'} back to Ready — sale reopened`);
+                } else {
+                  showToast(`Moved ${itemIds.length} ${itemIds.length === 1 ? 'item' : 'items'} back to Ready`);
+                }
+              } catch (e) {
+                showToast(e.message || 'Unship failed', 'error');
+              }
+            }}
           />
         )}
         {activeTab === 'purchasing' && (
