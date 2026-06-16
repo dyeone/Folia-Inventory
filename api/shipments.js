@@ -11,6 +11,10 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 //     → boxes that don't have a non-voided shipments row yet, joined with
 //       buyer + items + sale name. Used by the Chrome extension to build
 //       its work queue.
+//   GET  /api/shipments?action=with-tracking&saleId=X
+//     → the inverse: boxes that DO have a recorded (non-voided) tracking
+//       number, joined with recipient + items. Used by the Chrome extension
+//       to push tracking numbers back into Palmstreet (search by name).
 //   POST /api/shipments  body: { action: 'record-tracking', ...,
 //                                 labelPdfBase64?, slipPdfBase64? }
 //     → upserts a manual USPS row. If PDFs are included, uploads each
@@ -32,6 +36,7 @@ export default wrap(async (req, res) => {
       const action = req.query?.action;
       if (action === 'label-url') return labelUrl(req, res);
       if (action === 'pending') return pending(req, res);
+      if (action === 'with-tracking') return withTracking(req, res);
       if (action === 'box-notes') return boxNotes(req, res);
       if (action === 'phone-handoff') return phoneHandoff(req, res, userId);
       return list(req, res);
@@ -153,6 +158,72 @@ async function pending(req, res) {
     ...b,
     orderIds: [...b.orderIds],
   })).sort((a, b) => a.recipientName.localeCompare(b.recipientName));
+
+  return res.status(200).json({ boxes });
+}
+
+// Inverse of `pending`: boxes that DO have a recorded (non-voided) tracking
+// number, joined with the recipient context needed to find the order on
+// Palmstreet. Used by the Chrome extension's "push tracking to Palmstreet"
+// flow — search the order by recipient name, then type the tracking number in.
+async function withTracking(req, res) {
+  const saleId = req.query?.saleId || null;
+
+  let q = supabase
+    .from('inventory_items')
+    .select('id, sku, name, variety, quantity, status, "saleId", "shipmentBoxId", "shipmentCarrier", buyer, "buyerUsername", "buyerAddress", "orderId"')
+    .not('shipmentBoxId', 'is', null);
+  if (saleId) q = q.eq('saleId', saleId);
+  const { data: items, error: iErr } = await q;
+  if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
+
+  // Active shipments that carry a tracking number, keyed by box id.
+  const { data: shipments, error: sErr } = await supabase
+    .from('shipments')
+    .select('id, "trackingNumber", carrier, "carrierCode", "voidedAt"');
+  if (sErr) { const e = new Error(sErr.message); e.status = 500; throw e; }
+  const trackingById = new Map();
+  for (const s of shipments || []) {
+    if (!s.voidedAt && s.trackingNumber) trackingById.set(s.id, s);
+  }
+
+  // Sale name lookup for nicer queue labels.
+  const saleIds = [...new Set((items || []).map(i => i.saleId).filter(Boolean))];
+  let salesById = {};
+  if (saleIds.length) {
+    const { data: sales } = await supabase.from('sales').select('id, name').in('id', saleIds);
+    salesById = Object.fromEntries((sales || []).map(s => [s.id, s.name]));
+  }
+
+  // Group items by box, keeping only boxes that have a tracking number.
+  const grouped = new Map();
+  for (const it of items || []) {
+    const ship = trackingById.get(it.shipmentBoxId);
+    if (!ship) continue;
+    if (!grouped.has(it.shipmentBoxId)) {
+      grouped.set(it.shipmentBoxId, {
+        shipmentBoxId: it.shipmentBoxId,
+        trackingNumber: ship.trackingNumber,
+        carrier: ship.carrier || it.shipmentCarrier || 'usps',
+        saleId: it.saleId,
+        saleName: salesById[it.saleId] || null,
+        recipientName: it.buyer || '(unknown)',
+        buyerUsername: it.buyerUsername || '',
+        buyerAddress: it.buyerAddress || {},
+        orderIds: new Set(),
+        items: [],
+        allShipped: true, // flips false if any item isn't shipped/delivered
+      });
+    }
+    const g = grouped.get(it.shipmentBoxId);
+    if (it.orderId) g.orderIds.add(it.orderId);
+    g.items.push({ id: it.id, sku: it.sku, name: it.name, variety: it.variety, quantity: it.quantity || 1 });
+    if (!['shipped', 'delivered'].includes(it.status)) g.allShipped = false;
+  }
+
+  const boxes = [...grouped.values()]
+    .map(b => ({ ...b, orderIds: [...b.orderIds] }))
+    .sort((a, b) => a.recipientName.localeCompare(b.recipientName));
 
   return res.status(200).json({ boxes });
 }
