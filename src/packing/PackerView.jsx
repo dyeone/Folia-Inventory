@@ -8,7 +8,7 @@ import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { holdInfo } from './holdInfo.js';
+import { holdInfo, boxHasHoldItem } from './holdInfo.js';
 import { derivedBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { ItemNotes } from './ItemNotes.jsx';
@@ -456,9 +456,13 @@ export function PackerView({ onLogout }) {
 
   // Hold state of the box currently open — drives a distinct (amber) page
   // background + an easy-to-read banner so the packer can't miss a held box.
-  const activeHold = activeBox ? holdInfo(holdByBox[activeBox.id]) : { state: 'none' };
-  const activeOnHold = activeHold.state === 'holding';
-  const activeHoldReady = activeHold.state === 'ready';
+  // A box is on hold if it has a "1-week hold" item (the operator's manual
+  // flag) OR an active holdUntil timestamp; only the timestamp has a countdown.
+  const activeHoldUntil = activeBox ? holdInfo(holdByBox[activeBox.id]) : { state: 'none' };
+  const activeHasHoldItem = activeBox ? boxHasHoldItem(activeBox.items) : false;
+  const activeOnHold = activeHasHoldItem || activeHoldUntil.state === 'holding';
+  const activeHoldReady = !activeHasHoldItem && activeHoldUntil.state === 'ready';
+  const activeHoldDays = activeHoldUntil.state === 'holding' ? activeHoldUntil.daysLeft : null;
 
   return (
     <div className={`fixed inset-0 flex flex-col ${activeOnHold ? 'bg-amber-100' : 'bg-gray-50'}`}>
@@ -478,7 +482,7 @@ export function PackerView({ onLogout }) {
         <div className="flex-shrink-0 bg-amber-400 text-amber-950 px-4 py-3 flex items-center justify-center gap-2 text-center">
           <Clock className="w-6 h-6 flex-shrink-0" />
           <span className="text-lg font-extrabold tracking-wide">
-            ON HOLD · {activeHold.daysLeft} day{activeHold.daysLeft === 1 ? '' : 's'} left — do not ship yet
+            ON HOLD — do not ship yet{activeHoldDays ? ` · ${activeHoldDays} day${activeHoldDays === 1 ? '' : 's'} left` : ''}
           </span>
         </div>
       )}
@@ -644,7 +648,9 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
             box={box}
             sizeName={boxSizes.find(s => s.id === boxSizeByBox[box.id])?.name || null}
             hasLabel={!!trackingByBox?.[box.id]}
-            hold={holdInfo(holdByBox?.[box.id])}
+            onHold={boxHasHoldItem(box.items) || holdInfo(holdByBox?.[box.id]).state === 'holding'}
+            holdReady={!boxHasHoldItem(box.items) && holdInfo(holdByBox?.[box.id]).state === 'ready'}
+            holdDays={holdInfo(holdByBox?.[box.id]).state === 'holding' ? holdInfo(holdByBox?.[box.id]).daysLeft : null}
             onOpen={() => onOpen(box.id)}
           />
         ))}
@@ -654,14 +660,12 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
   );
 }
 
-function BoxCard({ box, sizeName, hasLabel, hold, onOpen }) {
+function BoxCard({ box, sizeName, hasLabel, onHold, holdReady, holdDays, onOpen }) {
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
   const allPacked = total > 0 && packed === total;
   const pct = total > 0 ? (packed / total) * 100 : 0;
-  const onHold = hold?.state === 'holding';
-  const holdReady = hold?.state === 'ready';
   return (
     <button
       type="button"
@@ -692,8 +696,8 @@ function BoxCard({ box, sizeName, hasLabel, hold, onOpen }) {
       <div className="mt-2 flex items-center gap-2 flex-wrap">
         <BoxContentBadges box={box} />
         {onHold && (
-          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-900 bg-amber-200 ring-1 ring-amber-400 px-1.5 py-0.5 rounded" title={`On hold until ${hold.until.toLocaleDateString()}`}>
-            <Clock className="w-3 h-3" /> On hold · {hold.daysLeft}d
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-900 bg-amber-200 ring-1 ring-amber-400 px-1.5 py-0.5 rounded" title="On hold — do not ship yet">
+            <Clock className="w-3 h-3" /> On hold{holdDays ? ` · ${holdDays}d` : ''}
           </span>
         )}
         {holdReady && (
