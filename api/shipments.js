@@ -47,6 +47,7 @@ export default wrap(async (req, res) => {
       if (action === 'clear-tracking') return clearTracking(req, res);
       if (action === 'set-box-note') return setBoxNote(req, res, userId);
       if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId);
+      if (action === 'set-box-hold') return setBoxHold(req, res, userId);
       if (action === 'send-to-phone') return sendToPhone(req, res, userId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
@@ -395,6 +396,34 @@ async function setBoxPackaging(req, res, userId) {
   return res.status(200).json({ box: data });
 }
 
+// POST /api/shipments  body: { action:'set-box-hold', shipmentBoxId,
+//   hold: boolean, days?: number }
+// Puts a box on hold (holdUntil = now + days, default 7) or clears it
+// (hold:false → null). The deadline is computed server-side so it doesn't
+// depend on the operator's clock. Lazy-creates the shipment_boxes row.
+async function setBoxHold(req, res, userId) {
+  const { shipmentBoxId, hold, days } = req.body || {};
+  if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
+    const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
+  }
+  let holdUntil = null;
+  if (hold) {
+    const n = parseFloat(days);
+    const d = Number.isFinite(n) && n > 0 ? n : 7;
+    holdUntil = new Date(Date.now() + d * 86400000).toISOString();
+  }
+  const { data, error } = await supabase
+    .from('shipment_boxes')
+    .upsert(
+      { id: shipmentBoxId, holdUntil, updatedAt: new Date().toISOString(), updatedBy: userId },
+      { onConflict: 'id' },
+    )
+    .select('*') // needs migration 0028 (the holdUntil column) applied
+    .single();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ box: data });
+}
+
 // Packer cross-device handoff. A packer running the iPad packing UI taps
 // "Send to phone" on an open box; their phone (same login) polls and shows
 // the box's items as a find-list. We stash the snapshot in app_settings
@@ -488,6 +517,7 @@ async function boxNotes(req, res) {
     weightOz: r.weightOz ?? null,
     serviceKey: r.serviceKey ?? null,
     carrierOverride: r.carrierOverride ?? null,
+    holdUntil: r.holdUntil ?? null,
     updatedAt: r.updatedAt,
     updatedBy: r.updatedBy,
   }]));
