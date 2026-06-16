@@ -12,3 +12,15 @@ export function holdInfo(holdUntil) {
   if (ms <= 0) return { state: 'ready', until };
   return { state: 'holding', until, daysLeft: Math.max(1, Math.ceil(ms / 86400000)) };
 }
+
+// Operators also mark a hold the manual way: they drop a placeholder line into
+// the box named like a one-week hold (e.g. "1-week hold (Not for rehabs or
+// fresh imports)"). A box that contains such an item is on hold regardless of
+// any holdUntil timestamp. Matches "1-week hold", "one week hold", "1 wk hold".
+const HOLD_ITEM_RE = /\b(?:1|one)\s*-?\s*w(?:ee)?k\s*hold\b/i;
+export function isHoldItem(name) {
+  return HOLD_ITEM_RE.test(String(name || ''));
+}
+export function boxHasHoldItem(items) {
+  return (items || []).some(i => isHoldItem(i?.name));
+}

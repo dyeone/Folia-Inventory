@@ -24,7 +24,7 @@ import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { holdInfo } from './holdInfo.js';
+import { holdInfo, boxHasHoldItem } from './holdInfo.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
@@ -2010,12 +2010,15 @@ function BoxRow({
   const hasLabel = !!liveShipment && (
     !!liveShipment.trackingNumber || !!liveShipment.labelStoragePath || liveShipment.carrierCode !== 'palmstreet'
   );
-  // One-week hold state, derived live from holdUntil vs now: 'holding' (still
-  // counting down → special amber colour + countdown) or 'ready' (week elapsed
-  // → "Time to ship"). Not shown once the box has shipped.
+  // One-week hold: a box is held if it contains a "1-week hold" item (the
+  // operator's manual flag) OR has an active holdUntil timestamp; only the
+  // timestamp has a countdown / a "Time to ship" cutover. Not shown once
+  // the box has shipped.
   const hold = holdInfo(box.holdUntil);
-  const onHold = !allShipped && hold.state === 'holding';
-  const holdReady = !allShipped && hold.state === 'ready';
+  const hasHoldItem = boxHasHoldItem(box.items);
+  const onHold = !allShipped && (hasHoldItem || hold.state === 'holding');
+  const holdReady = !allShipped && !hasHoldItem && hold.state === 'ready';
+  const holdDays = hold.state === 'holding' ? hold.daysLeft : null;
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
@@ -2169,8 +2172,8 @@ function BoxRow({
           {/* One-week hold: amber countdown while holding, then a filled
               "Time to ship" call-to-action once the week is up. */}
           {onHold && (
-            <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 ring-1 ring-amber-300 px-2 py-0.5 rounded-lg shrink-0" title={`On hold until ${new Date(box.holdUntil).toLocaleDateString()}`}>
-              <Clock className="w-3.5 h-3.5" /> Hold · {hold.daysLeft}d
+            <span className="inline-flex items-center gap-1 text-xs font-semibold text-amber-800 bg-amber-100 ring-1 ring-amber-300 px-2 py-0.5 rounded-lg shrink-0" title="On hold — do not ship yet">
+              <Clock className="w-3.5 h-3.5" /> Hold{holdDays ? ` · ${holdDays}d` : ''}
             </span>
           )}
           {holdReady && (
