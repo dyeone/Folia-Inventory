@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense } from 'react';
 import {
-  Plus, Upload, Trash2, TrendingUp, Archive, Calendar,
+  Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
   MoreHorizontal, X as XIcon, RotateCcw,
 } from 'lucide-react';
 import { api, setAuthUserId } from './api.js';
 import { AuthContext } from './AuthContext.js';
+import { newTaskId } from './tasks/taskHelpers.js';
 
 // Eager imports: auth screen, the always-rendered chrome, and the default
 // (Dashboard) tab. Everything else is code-split via React.lazy below so a
@@ -27,6 +28,7 @@ const FinancialView = lazyNamed(() => import('./financial/FinancialView.jsx'), '
 const PurchasingView = lazyNamed(() => import('./purchasing/PurchasingView.jsx'), 'PurchasingView');
 const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedView.jsx'), 'RecentlyDeletedView');
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
+const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
 
 const ChangePasswordModal = lazyNamed(() => import('./auth/ChangePasswordModal.jsx'), 'ChangePasswordModal');
 const ItemFormModal = lazyNamed(() => import('./inventory/ItemFormModal.jsx'), 'ItemFormModal');
@@ -127,6 +129,11 @@ function StaffOrAdminInventory() {
   const [sales, setSales] = useState([]);
   const [varieties, setVarieties] = useState([]);
   const [species, setSpecies] = useState([]);
+  // Personal GTD tasks for the signed-in user (Calendar tab + dashboard widget).
+  const [tasks, setTasks] = useState([]);
+  // Active users — loaded for admins only, to populate the task "Assign to"
+  // picker. Staff can't assign, so they never need this.
+  const [users, setUsers] = useState([]);
   const [showCatalogModal, setShowCatalogModal] = useState(false);
   const [catalogInitialTab, setCatalogInitialTab] = useState('species');
   const [loading, setLoading] = useState(true);
@@ -221,6 +228,78 @@ function StaffOrAdminInventory() {
     setDeletedItems(sorted.filter(i => i.deletedAt));
   };
 
+  // Personal GTD tasks — optimistic, mirroring the rest of the app: update
+  // local state first, reconcile with the server's sanitized response, and
+  // reload on failure so the UI never lies about what was saved. The server
+  // owns completedAt; we mirror it locally just for instant done-styling.
+  const saveTask = useCallback(async (input) => {
+    const now = new Date().toISOString();
+    const task = {
+      notes: '', due: null, priority: 'normal', tag: null, status: 'todo',
+      ...input,
+      id: input.id || newTaskId(),
+      createdAt: input.createdAt || now,
+    };
+    task.completedAt = task.status === 'done' ? (input.completedAt || now) : null;
+    setTasks(prev => {
+      const idx = prev.findIndex(t => t.id === task.id);
+      if (idx >= 0) { const next = prev.slice(); next[idx] = task; return next; }
+      return [task, ...prev];
+    });
+    try {
+      const saved = await api.upsertTask(task);
+      setTasks(prev => prev.map(t => (t.id === saved.id ? saved : t)));
+    } catch (e) {
+      showToast(e.message || 'Failed to save task', 'error');
+      try { setTasks(await api.getTasks()); } catch { /* keep optimistic copy */ }
+    }
+  }, [showToast]);
+
+  const removeTask = useCallback(async (id) => {
+    let snapshot;
+    setTasks(prev => { snapshot = prev; return prev.filter(t => t.id !== id); });
+    try {
+      await api.deleteTask(id);
+    } catch (e) {
+      showToast(e.message || 'Failed to delete task', 'error');
+      if (snapshot) setTasks(snapshot);
+    }
+  }, [showToast]);
+
+  const toggleTask = useCallback(
+    (task) => saveTask({ ...task, status: task.status === 'done' ? 'todo' : 'done' }),
+    [saveTask],
+  );
+
+  // Admin-only: assign a task into another user's list. Doesn't touch our own
+  // `tasks` state (the task lives in the assignee's row); the "Assigned" view
+  // re-fetches to show it. Returns the server result for the caller's toast.
+  const assignTask = useCallback(async (targetUserId, input) => {
+    const now = new Date().toISOString();
+    const task = {
+      notes: '', due: null, priority: 'normal', tag: null, status: 'todo',
+      ...input,
+      id: input.id || newTaskId(),
+      createdAt: input.createdAt || now,
+    };
+    try {
+      const r = await api.assignTask(targetUserId, task);
+      showToast(`Assigned to ${r.assigneeName || 'user'}`, 'success');
+      return r;
+    } catch (e) {
+      showToast(e.message || 'Failed to assign task', 'error');
+    }
+  }, [showToast]);
+
+  // Admins load the active user list for the task "Assign to" picker. Staff
+  // can't assign, so they never fetch it (the endpoint is admin-gated anyway).
+  useEffect(() => {
+    if (!isAdmin) return;
+    (async () => {
+      try { setUsers(await api.getUsers()); } catch { /* best-effort */ }
+    })();
+  }, [isAdmin]);
+
   // Background refresh while the Shipping tab is open. The packer is
   // marking items packed on a separate device; the admin should see
   // those changes without a manual page reload. Polls every 8s,
@@ -281,6 +360,13 @@ function StaffOrAdminInventory() {
         const ids = await api.getSaleEvalIds();
         setEvalSaleIds(new Set(ids));
       } catch { /* localStorage fallback only */ }
+
+      // Personal GTD tasks for the dashboard widget + Calendar tab. Best-effort
+      // and isolated — a failure (older API) just leaves the user with no tasks.
+      try {
+        const t = await api.getTasks();
+        setTasks(Array.isArray(t) ? t : []);
+      } catch { /* no tasks yet */ }
 
       // Once the data is in, idle-prefetch the PDF/label chunks so the
       // first "Print label" tap doesn't have to download ~600 KB on the
@@ -563,6 +649,7 @@ function StaffOrAdminInventory() {
     { id: 'inventory', label: 'Inventory', icon: Archive },
     { id: 'sales', label: 'Sale', icon: Calendar },
     { id: 'packing', label: 'Shipping', icon: Package },
+    { id: 'calendar', label: 'Calendar', icon: CalendarDays },
     { id: 'purchasing', label: 'Purchase', icon: ShoppingCart },
     { id: 'financial', label: 'Financial', icon: LineChart },
     {
@@ -786,6 +873,23 @@ function StaffOrAdminInventory() {
             onIdealRateChange={setIdealRate}
             acclimatedRate={acclimatedRate}
             onAcclimatedRateChange={setAcclimatedRate}
+            tasks={tasks}
+            onSaveTask={saveTask}
+            onToggleTask={toggleTask}
+            onOpenCalendar={() => setActiveTab('calendar')}
+            currentUserId={currentUser.id}
+          />
+        )}
+        {activeTab === 'calendar' && (
+          <TasksView
+            tasks={tasks}
+            onSaveTask={saveTask}
+            onDeleteTask={removeTask}
+            onToggleTask={toggleTask}
+            onAssignTask={assignTask}
+            currentUser={currentUser}
+            isAdmin={isAdmin}
+            users={users}
           />
         )}
         {activeTab === 'inventory' && (
