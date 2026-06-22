@@ -172,6 +172,28 @@ export const api = {
   putSettings: (id, data) =>
     request('/settings', { method: 'PUT', body: { id, data } }).then(r => r.settings),
 
+  // Personal GTD tasks — private per user. Stored as a JSON blob in
+  // app_settings keyed `tasks:<userId>` and served by /settings (Hobby's
+  // 12-function cap rules out a dedicated /tasks route). The server sanitizes
+  // every field and owns completedAt; upsert is keyed by task.id (generate one
+  // client-side for new tasks).
+  getTasks: () => request('/settings?action=task-list').then(r => r.tasks || []),
+  upsertTask: (task) =>
+    request('/settings', { method: 'POST', body: { action: 'task-upsert', task } }).then(r => r.task),
+  deleteTask: (id) =>
+    request('/settings', { method: 'POST', body: { action: 'task-delete', id } }),
+  // Admin-only: assign/edit a task in another user's list. Returns
+  // { task, assigneeId, assigneeName }.
+  assignTask: (targetUserId, task) =>
+    request('/settings', { method: 'POST', body: { action: 'task-assign', targetUserId, task } }),
+  // Admin-only: all tasks this admin assigned to others (annotated with
+  // assigneeId + assigneeName) with live completion status.
+  getAssignedByMe: () =>
+    request('/settings?action=task-assigned-by-me').then(r => r.assigned || []),
+  // Admin-only: unassign (delete) a task from another user's list.
+  deleteTaskFor: (targetUserId, id) =>
+    request('/settings', { method: 'POST', body: { action: 'task-delete', targetUserId, id } }),
+
   // Shipments (ShipStation labels). One row per shipmentBoxId.
   getShipments: (saleId) =>
     request(`/shipments${saleId ? `?saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.shipments),

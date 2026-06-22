@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from 'react';
 import { Archive, Package, DollarSign, TrendingUp, Target, Sparkles, Sprout } from 'lucide-react';
 import { StatCard } from '../ui/StatCard.jsx';
+import { DashboardTasks } from '../tasks/DashboardTasks.jsx';
 
 // Dollar formatter — prefixes $ and adds thousand-separators so
 // "1234567" reads as "$1,234,567" instead of as a bare number.
@@ -31,6 +32,7 @@ export function Dashboard({
   stats, items, sales,
   idealRate, onIdealRateChange,
   acclimatedRate, onAcclimatedRateChange,
+  tasks = [], onSaveTask, onToggleTask, onOpenCalendar, currentUserId,
 }) {
   const recentSold = items
     .filter(i => ['sold','shipped','delivered'].includes(i.status))
@@ -134,6 +136,15 @@ export function Dashboard({
         <StatCard icon={DollarSign} label="Revenue / Week" value={formatMoney(stats.revenueThisWeek)} sub={`Avg ${formatMoney(stats.avgPrice)}/sale`} color="violet" />
         <StatCard icon={TrendingUp} label="Listed Now" value={stats.listed} sub={`${stats.shipped} shipped`} color="amber" />
       </div>
+
+      {/* Personal "My Day" task agenda — private per user. */}
+      <DashboardTasks
+        tasks={tasks}
+        onSaveTask={onSaveTask}
+        onToggleTask={onToggleTask}
+        onOpenCalendar={onOpenCalendar}
+        currentUserId={currentUserId}
+      />
 
       {/* Profit stats */}
       <div>
