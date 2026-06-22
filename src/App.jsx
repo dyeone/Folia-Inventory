@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense } from 'react';
 import {
-  Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays,
+  Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
   MoreHorizontal, X as XIcon, RotateCcw,
 } from 'lucide-react';
@@ -29,6 +29,7 @@ const PurchasingView = lazyNamed(() => import('./purchasing/PurchasingView.jsx')
 const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedView.jsx'), 'RecentlyDeletedView');
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
+const CareCalendarView = lazyNamed(() => import('./care/CareCalendarView.jsx'), 'CareCalendarView');
 
 const ChangePasswordModal = lazyNamed(() => import('./auth/ChangePasswordModal.jsx'), 'ChangePasswordModal');
 const ItemFormModal = lazyNamed(() => import('./inventory/ItemFormModal.jsx'), 'ItemFormModal');
@@ -134,6 +135,8 @@ function StaffOrAdminInventory() {
   // Active users — loaded for admins only, to populate the task "Assign to"
   // picker. Staff can't assign, so they never need this.
   const [users, setUsers] = useState([]);
+  // Shared plant-care calendars (Plant Care tab). Visible to everyone.
+  const [careCalendars, setCareCalendars] = useState([]);
   const [showCatalogModal, setShowCatalogModal] = useState(false);
   const [catalogInitialTab, setCatalogInitialTab] = useState('species');
   const [loading, setLoading] = useState(true);
@@ -291,6 +294,47 @@ function StaffOrAdminInventory() {
     }
   }, [showToast]);
 
+  // Plant-care calendars (shared). Create/edit (admin) replaces the whole
+  // calendar; check-off toggles a single task. Optimistic with reconcile.
+  const saveCareCalendar = useCallback(async (calendar) => {
+    try {
+      const saved = await api.saveCareCalendar(calendar);
+      setCareCalendars(prev => {
+        const idx = prev.findIndex(c => c.id === saved.id);
+        if (idx >= 0) { const next = prev.slice(); next[idx] = saved; return next; }
+        return [...prev, saved];
+      });
+      return saved;
+    } catch (e) {
+      showToast(e.message || 'Failed to save calendar', 'error');
+    }
+  }, [showToast]);
+
+  const deleteCareCalendar = useCallback(async (id) => {
+    let snapshot;
+    setCareCalendars(prev => { snapshot = prev; return prev.filter(c => c.id !== id); });
+    try {
+      await api.deleteCareCalendar(id);
+    } catch (e) {
+      showToast(e.message || 'Failed to delete calendar', 'error');
+      if (snapshot) setCareCalendars(snapshot);
+    }
+  }, [showToast]);
+
+  const toggleCareTask = useCallback(async (calendarId, task) => {
+    const done = !task.done;
+    setCareCalendars(prev => prev.map(c => (c.id !== calendarId ? c : {
+      ...c, tasks: c.tasks.map(t => (t.id === task.id ? { ...t, done } : t)),
+    })));
+    try {
+      const updated = await api.toggleCareTask(calendarId, task.id, done);
+      setCareCalendars(prev => prev.map(c => (c.id === updated.id ? updated : c)));
+    } catch (e) {
+      showToast(e.message || 'Failed to update task', 'error');
+      try { setCareCalendars(await api.getCareCalendars()); } catch { /* keep optimistic */ }
+    }
+  }, [showToast]);
+
   // Admins load the active user list for the task "Assign to" picker. Staff
   // can't assign, so they never fetch it (the endpoint is admin-gated anyway).
   useEffect(() => {
@@ -367,6 +411,12 @@ function StaffOrAdminInventory() {
         const t = await api.getTasks();
         setTasks(Array.isArray(t) ? t : []);
       } catch { /* no tasks yet */ }
+
+      // Shared plant-care calendars (Plant Care tab) — best-effort.
+      try {
+        const cals = await api.getCareCalendars();
+        setCareCalendars(Array.isArray(cals) ? cals : []);
+      } catch { /* none yet */ }
 
       // Once the data is in, idle-prefetch the PDF/label chunks so the
       // first "Print label" tap doesn't have to download ~600 KB on the
@@ -650,6 +700,7 @@ function StaffOrAdminInventory() {
     { id: 'sales', label: 'Sale', icon: Calendar },
     { id: 'packing', label: 'Shipping', icon: Package },
     { id: 'calendar', label: 'Calendar', icon: CalendarDays },
+    { id: 'plantcare', label: 'Plant Care', icon: Leaf },
     { id: 'purchasing', label: 'Purchase', icon: ShoppingCart },
     { id: 'financial', label: 'Financial', icon: LineChart },
     {
@@ -890,6 +941,15 @@ function StaffOrAdminInventory() {
             currentUser={currentUser}
             isAdmin={isAdmin}
             users={users}
+          />
+        )}
+        {activeTab === 'plantcare' && (
+          <CareCalendarView
+            calendars={careCalendars}
+            onSave={saveCareCalendar}
+            onDelete={deleteCareCalendar}
+            onToggleTask={toggleCareTask}
+            isAdmin={isAdmin}
           />
         )}
         {activeTab === 'inventory' && (

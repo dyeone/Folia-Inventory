@@ -194,6 +194,16 @@ export const api = {
   deleteTaskFor: (targetUserId, id) =>
     request('/settings', { method: 'POST', body: { action: 'task-delete', targetUserId, id } }),
 
+  // Plant Care calendars — shared schedules. Anyone may list + check off a
+  // task; create/edit/delete are admin-only (enforced server-side).
+  getCareCalendars: () => request('/settings?action=care-list').then(r => r.calendars || []),
+  saveCareCalendar: (calendar) =>
+    request('/settings', { method: 'POST', body: { action: 'care-save', calendar } }).then(r => r.calendar),
+  deleteCareCalendar: (id) =>
+    request('/settings', { method: 'POST', body: { action: 'care-delete', id } }),
+  toggleCareTask: (calendarId, taskId, done) =>
+    request('/settings', { method: 'POST', body: { action: 'care-toggle-task', calendarId, taskId, done } }).then(r => r.calendar),
+
   // Shipments (ShipStation labels). One row per shipmentBoxId.
   getShipments: (saleId) =>
     request(`/shipments${saleId ? `?saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.shipments),

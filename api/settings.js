@@ -21,6 +21,13 @@ export default wrap(async (req, res) => {
   if (typeof action === 'string' && action.startsWith('task-')) {
     return handleTasks(action, req, res, user);
   }
+  // Plant Care calendars — shared operational schedules (one row per calendar,
+  // id `care-cal:<id>`). Same rationale as tasks: no new serverless function,
+  // no migration. Anyone may view + check off a task; only admins create,
+  // edit, or delete a calendar.
+  if (typeof action === 'string' && action.startsWith('care-')) {
+    return handleCare(action, req, res, user);
+  }
 
   const id = req.method === 'GET' ? req.query?.id : req.body?.id;
   if (!id) {
@@ -219,6 +226,138 @@ async function handleTasks(action, req, res, user) {
     }
     default: {
       const e = new Error('Unknown task action'); e.status = 400; throw e;
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Plant Care calendars — shared schedules, one app_settings row per calendar
+// (id = `care-cal:<calendarId>`).
+// ----------------------------------------------------------------------------
+
+const CARE_NS = 'care-cal:';
+const CARE_TYPES = ['probiotic', 'feed', 'scout', 'flush'];
+
+function str(v, max) {
+  return String(v ?? '').trim().slice(0, max);
+}
+
+// Coerce one care task, derive doneAt/doneBy from done state. existingById lets
+// us preserve who/when a task was completed across an admin edit.
+function cleanCareTask(input, existing, now, userId) {
+  const id = str(input?.id, 64) || `c-${Math.random().toString(36).slice(2, 10)}`;
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(input?.date) ? input.date : null;
+  const type = CARE_TYPES.includes(input?.type) ? input.type : 'probiotic';
+  const title = str(input?.title, 120);
+  const detail = str(input?.detail, 160);
+  const done = !!input?.done;
+  const doneAt = done ? (existing?.done && existing?.doneAt ? existing.doneAt : now) : null;
+  const doneBy = done ? (existing?.done && existing?.doneBy ? existing.doneBy : userId) : null;
+  return { id, date, type, title, detail, done, doneAt, doneBy };
+}
+
+// Sanitize a full calendar (metadata + tasks). Tasks without a valid date or
+// title are dropped so a malformed editor row can't poison the grid.
+function cleanCalendar(input, user, existing) {
+  if (!input || typeof input !== 'object') {
+    const e = new Error('calendar object required'); e.status = 400; throw e;
+  }
+  const id = str(input.id, 64);
+  if (!id) { const e = new Error('calendar.id required'); e.status = 400; throw e; }
+  const title = str(input.title, 120);
+  if (!title) { const e = new Error('calendar title required'); e.status = 400; throw e; }
+  const startDate = /^\d{4}-\d{2}-\d{2}$/.test(input.startDate) ? input.startDate : null;
+  if (!startDate) { const e = new Error('calendar startDate (YYYY-MM-DD) required'); e.status = 400; throw e; }
+
+  const now = new Date().toISOString();
+  const existingById = {};
+  for (const t of existing?.tasks || []) existingById[t.id] = t;
+
+  const tasks = (Array.isArray(input.tasks) ? input.tasks : [])
+    .map(t => cleanCareTask(t, existingById[str(t?.id, 64)], now, user.id))
+    .filter(t => t.date && t.title)
+    .slice(0, 400);
+
+  const weekLabels = (Array.isArray(input.weekLabels) ? input.weekLabels : [])
+    .map(l => str(l, 40)).slice(0, 52);
+
+  return {
+    id,
+    title,
+    subtitle: str(input.subtitle, 120),
+    notes: str(input.notes, 400),
+    dailyNote: str(input.dailyNote, 160),
+    startDate,
+    weekLabels,
+    tasks,
+    createdAt: existing?.createdAt || now,
+    createdBy: existing?.createdBy || user.id,
+    updatedAt: now,
+    updatedBy: user.id,
+  };
+}
+
+async function loadCalendar(id) {
+  const { data, error } = await supabase
+    .from('app_settings').select('data').eq('id', CARE_NS + id).maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return data?.data || null;
+}
+
+async function handleCare(action, req, res, user) {
+  switch (action) {
+    case 'care-list': {
+      const { data: rows, error } = await supabase
+        .from('app_settings').select('data').like('id', `${CARE_NS}%`);
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      const calendars = (rows || []).map(r => r.data).filter(Boolean)
+        .sort((a, b) => (a.startDate || '').localeCompare(b.startDate || '') || (a.title || '').localeCompare(b.title || ''));
+      return res.status(200).json({ calendars });
+    }
+    case 'care-save': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const existing = await loadCalendar(str(req.body?.calendar?.id, 64));
+      const clean = cleanCalendar(req.body?.calendar, user, existing);
+      const { error } = await supabase.from('app_settings').upsert({
+        id: CARE_NS + clean.id, data: clean,
+        updatedAt: clean.updatedAt, updatedBy: user.id,
+      });
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ calendar: clean });
+    }
+    case 'care-delete': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const id = str(req.body?.id, 64);
+      if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
+      const { error } = await supabase.from('app_settings').delete().eq('id', CARE_NS + id);
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ ok: true });
+    }
+    case 'care-toggle-task': {
+      // Any active user may check off care work (they're the ones doing it).
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      const calendarId = str(req.body?.calendarId, 64);
+      const taskId = str(req.body?.taskId, 64);
+      const cal = await loadCalendar(calendarId);
+      if (!cal) { const e = new Error('Calendar not found'); e.status = 404; throw e; }
+      const task = (cal.tasks || []).find(t => t.id === taskId);
+      if (!task) { const e = new Error('Task not found'); e.status = 404; throw e; }
+      const done = !!req.body?.done;
+      const now = new Date().toISOString();
+      task.done = done;
+      task.doneAt = done ? now : null;
+      task.doneBy = done ? user.id : null;
+      cal.updatedAt = now;
+      const { error } = await supabase.from('app_settings').upsert({
+        id: CARE_NS + calendarId, data: cal, updatedAt: now, updatedBy: user.id,
+      });
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ calendar: cal });
+    }
+    default: {
+      const e = new Error('Unknown care action'); e.status = 400; throw e;
     }
   }
 }
