@@ -32,6 +32,31 @@ import { useIsMobile } from '../ui/useIsMobile.js';
 // re-grabs focus aggressively so a stray tap never breaks scanning. The
 // camera remains as a secondary, tap-to-open option.
 
+// Merge a fresh /items fetch into the packer's local list WITHOUT regressing
+// the forward progress (packed → shipped) the packer just made locally. The
+// background sync poll can add/remove boxes and update buyer, address, carrier,
+// holds, etc., but a just-packed item must never flicker back to unpacked while
+// the server write is still in flight. Progress is monotonic, so once the
+// server catches up `fresh` equals local and this is a no-op; a failed write
+// already rolled local state back, so nothing is preserved in that case.
+function mergeItems(prev, fresh) {
+  const prevById = new Map(prev.map(i => [i.id, i]));
+  return fresh.map(f => {
+    const p = prevById.get(f.id);
+    if (!p) return f;
+    const keepPacked = !!p.packedAt && !f.packedAt;
+    const keepShipped = ['shipped', 'delivered'].includes(p.status)
+      && !['shipped', 'delivered'].includes(f.status);
+    if (!keepPacked && !keepShipped) return f;
+    return {
+      ...f,
+      packedAt: keepPacked ? p.packedAt : f.packedAt,
+      status: keepShipped ? p.status : f.status,
+      shippedAt: keepShipped ? (p.shippedAt || f.shippedAt) : f.shippedAt,
+    };
+  });
+}
+
 export function PackerView({ onLogout }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -123,6 +148,53 @@ export function PackerView({ onLogout }) {
       );
       setLoading(false);
     })();
+  }, []);
+
+  // Background sync with the shipping desk. The mount load above is one-shot;
+  // without this, a box edited on the website — item added/removed, ship-to
+  // changed, a new box, an imported label, an applied hold, a box-size pick —
+  // never reaches the packer until they reload. Mirrors the admin Shipping
+  // tab: poll every 8s, skip while the tab is hidden, and refetch immediately
+  // when it returns to the foreground. Items merge forward-progress-safe so an
+  // in-flight optimistic pack never flickers back.
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async () => {
+      if (cancelled || document.visibilityState === 'hidden') return;
+      try {
+        const [fresh, shipments, notes] = await Promise.all([
+          api.getItems(),
+          api.getShipments().catch(() => []),
+          api.getBoxNotes().catch(() => ({})),
+        ]);
+        if (cancelled) return;
+        setItems(prev => mergeItems(prev, (fresh || []).filter(i => !i.deletedAt)));
+        setTrackingByBox(
+          Object.fromEntries(
+            (shipments || [])
+              .filter(s => s.trackingNumber && !s.voidedAt)
+              .map(s => [s.id, s.trackingNumber]),
+          ),
+        );
+        setHoldByBox(
+          Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.holdUntil || null])),
+        );
+        setNoteByBox(
+          Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.note || ''])),
+        );
+        setBoxSizeByBox(
+          Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.boxSizeId || null])),
+        );
+      } catch { /* keep last good state — a single failed poll is fine */ }
+    };
+    const id = setInterval(sync, 8000);
+    const onVisible = () => { if (document.visibilityState === 'visible') sync(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   // Open boxes, keyed by short code for scan lookup. A box is "open" while it
