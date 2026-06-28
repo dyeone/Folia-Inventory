@@ -124,6 +124,14 @@ export default function InventoryApp() {
     })();
   }, []);
 
+  // Theme the whole document by the active brand. emerald-* classes resolve to
+  // the brand palette via [data-brand] (see tailwind.config.js + index.css), so
+  // setting this on <html> re-themes everything, portaled modals included.
+  // Folia is the default palette, so fall back to it when signed out.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-brand', activeBrand || 'folia');
+  }, [activeBrand]);
+
   const login = (user) => {
     activate(user);
     localStorage.setItem('session-current-user', JSON.stringify({ id: user.id }));

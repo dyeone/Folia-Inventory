@@ -7,7 +7,7 @@ export const COMPANY_NAME = '3babes';
 
 export const BRANDS = {
   folia: { name: 'Folia', accent: '#16a34a' },      // green
-  bae: { name: 'BAE', accent: '#F0382E', full: 'Best Anthuriums Ever' }, // red
+  bae: { name: 'BAE', accent: '#F0392E', full: 'Best Anthuriums Ever' }, // red (logo)
 };
 
 export const DEFAULT_BRAND = 'folia';
