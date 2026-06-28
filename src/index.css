@@ -2,6 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Brand accent palette. `emerald-*` Tailwind classes resolve to these vars
+   (see tailwind.config.js), so the whole UI re-themes per active brand.
+   Default = Folia green (exact Tailwind emerald scale). The data-brand
+   attribute is set on <html> from the active brand in App.jsx. */
+:root {
+  --brand-50: 236 253 245;
+  --brand-100: 209 250 229;
+  --brand-200: 167 243 208;
+  --brand-300: 110 231 183;
+  --brand-400: 52 211 153;
+  --brand-500: 16 185 129;
+  --brand-600: 5 150 105;
+  --brand-700: 4 120 87;
+  --brand-800: 6 95 70;
+  --brand-900: 6 78 59;
+}
+
+/* BAE — red, anchored on the logo red #F0392E at shade 500. */
+[data-brand="bae"] {
+  --brand-50: 254 242 241;
+  --brand-100: 253 226 223;
+  --brand-200: 250 198 193;
+  --brand-300: 245 156 148;
+  --brand-400: 244 110 100;
+  --brand-500: 240 57 46;
+  --brand-600: 214 33 23;
+  --brand-700: 178 26 18;
+  --brand-800: 146 24 18;
+  --brand-900: 120 24 18;
+}
+
 /* iPad / touch polish: kill the blue tap flash, prevent double-tap zoom on
    buttons, and treat .input as a touch-friendly form control. */
 @layer base {
@@ -30,7 +61,7 @@
   }
   .input:focus {
     @apply border-emerald-600;
-    box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.1);
+    box-shadow: 0 0 0 3px rgb(var(--brand-600) / 0.1);
   }
 }
 

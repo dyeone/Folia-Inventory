@@ -51,7 +51,7 @@ export function ChangePasswordModal({ user, onClose, onSuccess }) {
           </button>
         </div>
       </div>
-      <style>{`.input{width:100%;padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:.5rem;font-size:.875rem;outline:none;background:white}.input:focus{border-color:#059669;box-shadow:0 0 0 3px rgba(5,150,105,.1)}`}</style>
+      <style>{`.input{width:100%;padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:.5rem;font-size:.875rem;outline:none;background:white}.input:focus{border-color:rgb(var(--brand-600));box-shadow:0 0 0 3px rgb(var(--brand-600)/.1)}`}</style>
     </Modal>
   );
 }
