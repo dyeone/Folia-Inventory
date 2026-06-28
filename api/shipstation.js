@@ -5,7 +5,7 @@
 // POST /api/shipstation
 // Body: { action: 'buy-label' | 'void-label', userId, ... }
 
-import { supabase, requireUser } from './_lib/supabase.js';
+import { supabase, requireBrand, brandIdFromReq } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { createLabel, voidLabel, getRates as ssGetRates } from './_lib/shipstation.js';
 import {
@@ -17,13 +17,13 @@ import { SHIPPING_SERVICES } from './_lib/services.js';
 export default wrap(async (req, res) => {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
   const userId = req.body?.userId;
-  await requireUser(userId);
+  const { brandId } = await requireBrand(userId, brandIdFromReq(req));
 
   const action = req.body?.action;
   switch (action) {
-    case 'buy-label': return buyLabel(req, res, userId);
-    case 'void-label': return voidLabelHandler(req, res, userId);
-    case 'get-rates': return getRatesHandler(req, res);
+    case 'buy-label': return buyLabel(req, res, userId, brandId);
+    case 'void-label': return voidLabelHandler(req, res, userId, brandId);
+    case 'get-rates': return getRatesHandler(req, res, brandId);
     default: { const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e; }
   }
 });
@@ -36,7 +36,7 @@ export default wrap(async (req, res) => {
 // and ship-to from the box's items. ShipStation is quoted once per distinct
 // carrier; Shippo once total. Either provider failing degrades to null for
 // that column rather than failing the whole request.
-async function getRatesHandler(req, res) {
+async function getRatesHandler(req, res, brandId) {
   const { shipmentBoxId, dims, weightOz } = req.body || {};
   if (!shipmentBoxId) { const e = new Error('shipmentBoxId required'); e.status = 400; throw e; }
 
@@ -68,6 +68,7 @@ async function getRatesHandler(req, res) {
   const { data: items } = await supabase
     .from('inventory_items')
     .select('buyer, "buyerUsername", "buyerAddress"')
+    .eq('brandId', brandId)
     .eq('shipmentBoxId', shipmentBoxId)
     .limit(1);
   const sample = items?.[0];
@@ -147,7 +148,7 @@ async function getRatesHandler(req, res) {
   });
 }
 
-async function buyLabel(req, res, userId) {
+async function buyLabel(req, res, userId, brandId) {
   const { shipmentBoxId } = req.body || {};
   if (!shipmentBoxId) {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
@@ -160,6 +161,7 @@ async function buyLabel(req, res, userId) {
     .from('shipments')
     .select('id, voidedAt')
     .eq('id', shipmentBoxId)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (existing && !existing.voidedAt) {
     const e = new Error('Label already purchased for this box (void it first)');
@@ -184,6 +186,7 @@ async function buyLabel(req, res, userId) {
   const { data: items, error: itemsErr } = await supabase
     .from('inventory_items')
     .select('id, sku, variety, buyer, "buyerUsername", "buyerAddress", "shipmentCarrier", "saleId"')
+    .eq('brandId', brandId)
     .eq('shipmentBoxId', shipmentBoxId);
   if (itemsErr) { const e = new Error(itemsErr.message); e.status = 500; throw e; }
   if (!items || items.length === 0) {
@@ -207,7 +210,7 @@ async function buyLabel(req, res, userId) {
   // missing carrierOverride column (pre-migration) degrades to no override
   // rather than erroring.
   const { data: boxRow } = await supabase
-    .from('shipment_boxes').select('*').eq('id', shipmentBoxId).maybeSingle();
+    .from('shipment_boxes').select('*').eq('id', shipmentBoxId).eq('brandId', brandId).maybeSingle();
   const override = boxRow?.carrierOverride ? String(boxRow.carrierOverride).toLowerCase() : null;
   const hasAnthurium = items.some(i => (i.variety || '').toLowerCase() === 'anthurium');
   const derivedCarrier = override || (hasAnthurium ? 'ups' : (sample.shipmentCarrier || 'usps'));
@@ -339,6 +342,7 @@ async function buyLabel(req, res, userId) {
 
   const row = {
     id: shipmentBoxId,
+    brandId,
     saleId: sample.saleId || null,
     carrier,
     carrierCode: purchase.carrierCode,
@@ -401,7 +405,7 @@ async function upsertShipment(row) {
   return data;
 }
 
-async function voidLabelHandler(req, res, userId) {
+async function voidLabelHandler(req, res, userId, brandId) {
   const { shipmentBoxId } = req.body || {};
   if (!shipmentBoxId) {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
@@ -415,12 +419,14 @@ async function voidLabelHandler(req, res, userId) {
       .from('shipments')
       .select('id, provider, "shipstationShipmentId", "shippoTransactionId", "isTestLabel", "voidedAt"')
       .eq('id', shipmentBoxId)
+      .eq('brandId', brandId)
       .maybeSingle();
     if (r.error && isMissingColumn(r.error)) {
       const r2 = await supabase
         .from('shipments')
         .select('id, "shipstationShipmentId", "isTestLabel", "voidedAt"')
         .eq('id', shipmentBoxId)
+        .eq('brandId', brandId)
         .maybeSingle();
       shipment = r2.data ? { ...r2.data, provider: null, shippoTransactionId: null } : null;
     } else {
@@ -463,6 +469,7 @@ async function voidLabelHandler(req, res, userId) {
     .from('shipments')
     .update({ voidedAt: new Date().toISOString(), voidedBy: userId })
     .eq('id', shipmentBoxId)
+    .eq('brandId', brandId)
     .select()
     .single();
   if (updErr) { const e = new Error(updErr.message); e.status = 500; throw e; }

@@ -6,6 +6,12 @@
 let authUserId = null;
 export function setAuthUserId(id) { authUserId = id; }
 
+// The active brand (3babes multi-brand). Sent with every authed call so the
+// server scopes reads/writes to it. When unset, the server defaults to the
+// legacy 'folia' brand, so older flows keep working.
+let authBrandId = null;
+export function setAuthBrandId(id) { authBrandId = id; }
+
 // Routes that should NOT have userId appended (auth endpoints).
 // Everything else (items/sales/users) gets userId so the server can verify
 // the caller is an active user. The auth path collapsed into a single
@@ -27,8 +33,9 @@ async function request(path, { method = 'GET', body } = {}) {
     if (method === 'GET') {
       const sep = url.includes('?') ? '&' : '?';
       url = `${url}${sep}userId=${encodeURIComponent(authUserId ?? '')}`;
+      if (authBrandId) url += `&brandId=${encodeURIComponent(authBrandId)}`;
     } else {
-      finalBody = { ...(body || {}), userId: authUserId };
+      finalBody = { ...(body || {}), userId: authUserId, brandId: authBrandId ?? undefined };
     }
   }
 

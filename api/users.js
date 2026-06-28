@@ -2,6 +2,16 @@ import { supabase, stripUser, requireAdmin } from './_lib/supabase.js';
 import { hashPassword } from './_lib/hash.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
+// Keep only real brand ids; fall back to ['folia'] so a user always has at
+// least one accessible brand. Validated against the brands table so an admin
+// can't grant access to a brand that doesn't exist.
+async function sanitizeBrandIds(input) {
+  const { data: brands } = await supabase.from('brands').select('id');
+  const valid = new Set((brands || []).map(b => b.id));
+  const arr = Array.isArray(input) ? [...new Set(input.filter(b => valid.has(b)))] : [];
+  return arr.length ? arr : ['folia'];
+}
+
 export default wrap(async (req, res) => {
   switch (req.method) {
     case 'GET': {
@@ -14,8 +24,8 @@ export default wrap(async (req, res) => {
     }
 
     case 'POST': {
-      // Admin creates a new user (with specified role).
-      const { username, password, displayName, role, adminUserId } = req.body || {};
+      // Admin creates a new user (with specified role + brand access).
+      const { username, password, displayName, role, brandIds, adminUserId } = req.body || {};
       await requireAdmin(adminUserId);
 
       if (!username?.trim() || !password) {
@@ -40,6 +50,7 @@ export default wrap(async (req, res) => {
         role,
         createdAt: new Date().toISOString(),
         active: true,
+        brandIds: await sanitizeBrandIds(brandIds),
       };
 
       const { error } = await supabase.from('users').insert(user);
@@ -62,6 +73,7 @@ export default wrap(async (req, res) => {
           update.role = patch.role;
         }
         if ('active' in patch) update.active = patch.active;
+        if ('brandIds' in patch) update.brandIds = await sanitizeBrandIds(patch.brandIds);
       }
       if (newPassword) {
         if (newPassword.length < 6) {

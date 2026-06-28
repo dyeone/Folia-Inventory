@@ -1,4 +1,4 @@
-import { supabase, requireUser, requireAdmin } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Single-row JSON blob per settings id. Currently used only for
@@ -8,7 +8,10 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
-  const user = await requireUser(userId);
+  // Resolve the active brand alongside the user. Tasks (per-user) and generic
+  // settings (id='shipping', currently shared) ignore brandId; care calendars
+  // are brand-scoped and use it.
+  const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
 
   // Personal GTD tasks (private per user) are served from this same
   // function. Vercel Hobby caps a deployment at 12 serverless functions and
@@ -26,7 +29,7 @@ export default wrap(async (req, res) => {
   // no migration. Anyone may view + check off a task; only admins create,
   // edit, or delete a calendar.
   if (typeof action === 'string' && action.startsWith('care-')) {
-    return handleCare(action, req, res, user);
+    return handleCare(action, req, res, user, brandId);
   }
 
   const id = req.method === 'GET' ? req.query?.id : req.body?.id;
@@ -238,6 +241,16 @@ async function handleTasks(action, req, res, user) {
 const CARE_NS = 'care-cal:';
 const CARE_TYPES = ['probiotic', 'feed', 'scout', 'flush'];
 
+// Care calendars are brand-scoped. Folia keeps the legacy unprefixed row id for
+// backward-compat; other brands namespace their app_settings row ids so the two
+// brands' calendars never collide on the (single-column) primary key.
+function careRowId(calId, brandId) {
+  return (brandId === 'folia' ? '' : `${brandId}::`) + CARE_NS + calId;
+}
+function careScanPrefix(brandId) {
+  return (brandId === 'folia' ? '' : `${brandId}::`) + CARE_NS;
+}
+
 function str(v, max) {
   return String(v ?? '').trim().slice(0, max);
 }
@@ -297,18 +310,18 @@ function cleanCalendar(input, user, existing) {
   };
 }
 
-async function loadCalendar(id) {
+async function loadCalendar(id, brandId) {
   const { data, error } = await supabase
-    .from('app_settings').select('data').eq('id', CARE_NS + id).maybeSingle();
+    .from('app_settings').select('data').eq('id', careRowId(id, brandId)).maybeSingle();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return data?.data || null;
 }
 
-async function handleCare(action, req, res, user) {
+async function handleCare(action, req, res, user, brandId) {
   switch (action) {
     case 'care-list': {
       const { data: rows, error } = await supabase
-        .from('app_settings').select('data').like('id', `${CARE_NS}%`);
+        .from('app_settings').select('data').like('id', `${careScanPrefix(brandId)}%`);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       const calendars = (rows || []).map(r => r.data).filter(Boolean)
         .sort((a, b) => (a.startDate || '').localeCompare(b.startDate || '') || (a.title || '').localeCompare(b.title || ''));
@@ -317,10 +330,10 @@ async function handleCare(action, req, res, user) {
     case 'care-save': {
       if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
       requireAdminRole(user);
-      const existing = await loadCalendar(str(req.body?.calendar?.id, 64));
+      const existing = await loadCalendar(str(req.body?.calendar?.id, 64), brandId);
       const clean = cleanCalendar(req.body?.calendar, user, existing);
       const { error } = await supabase.from('app_settings').upsert({
-        id: CARE_NS + clean.id, data: clean,
+        id: careRowId(clean.id, brandId), brandId, data: clean,
         updatedAt: clean.updatedAt, updatedBy: user.id,
       });
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
@@ -331,7 +344,7 @@ async function handleCare(action, req, res, user) {
       requireAdminRole(user);
       const id = str(req.body?.id, 64);
       if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
-      const { error } = await supabase.from('app_settings').delete().eq('id', CARE_NS + id);
+      const { error } = await supabase.from('app_settings').delete().eq('id', careRowId(id, brandId));
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ ok: true });
     }
@@ -340,7 +353,7 @@ async function handleCare(action, req, res, user) {
       if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
       const calendarId = str(req.body?.calendarId, 64);
       const taskId = str(req.body?.taskId, 64);
-      const cal = await loadCalendar(calendarId);
+      const cal = await loadCalendar(calendarId, brandId);
       if (!cal) { const e = new Error('Calendar not found'); e.status = 404; throw e; }
       const task = (cal.tasks || []).find(t => t.id === taskId);
       if (!task) { const e = new Error('Task not found'); e.status = 404; throw e; }
@@ -351,7 +364,7 @@ async function handleCare(action, req, res, user) {
       task.doneBy = done ? user.id : null;
       cal.updatedAt = now;
       const { error } = await supabase.from('app_settings').upsert({
-        id: CARE_NS + calendarId, data: cal, updatedAt: now, updatedBy: user.id,
+        id: careRowId(calendarId, brandId), brandId, data: cal, updatedAt: now, updatedBy: user.id,
       });
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ calendar: cal });

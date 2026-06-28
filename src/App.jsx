@@ -4,8 +4,9 @@ import {
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
   MoreHorizontal, X as XIcon, RotateCcw,
 } from 'lucide-react';
-import { api, setAuthUserId } from './api.js';
+import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
+import { userBrands, resolveActiveBrand } from './brands.js';
 import { newTaskId } from './tasks/taskHelpers.js';
 
 // Eager imports: auth screen, the always-rendered chrome, and the default
@@ -51,9 +52,61 @@ const ShippingSettingsModal = lazyNamed(() => import('./packing/ShippingSettings
 // should be near-instant once chunks are cached, so no spinner needed.
 const LazyFallback = () => null;
 
+// Brand switcher for the 3babes shell. One brand → a static pill; multiple →
+// a segmented control. Switching reloads all brand-scoped data (App remounts).
+function BrandSwitcher({ brands, activeBrand, onSwitch }) {
+  if (!brands || brands.length === 0) return null;
+  if (brands.length === 1) {
+    const b = brands[0];
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold"
+        style={{ background: `${b.accent}1a`, color: b.accent }}
+      >
+        <span className="w-2 h-2 rounded-full" style={{ background: b.accent }} />
+        {b.name}
+      </span>
+    );
+  }
+  return (
+    <div className="inline-flex items-center rounded-full bg-gray-100 p-0.5">
+      {brands.map((b) => {
+        const active = b.id === activeBrand;
+        return (
+          <button
+            key={b.id}
+            onClick={() => onSwitch(b.id)}
+            title={`Switch to ${b.name}`}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold transition ${active ? 'bg-white shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            style={active ? { color: b.accent } : undefined}
+          >
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{ background: b.accent, opacity: active ? 1 : 0.4 }}
+            />
+            {b.name}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function InventoryApp() {
   const [currentUser, setCurrentUser] = useState(null);
+  // The active 3babes brand (Folia, BAE, …). Drives which brand's data the
+  // whole app sees; sent on every API call via setAuthBrandId.
+  const [activeBrand, setActiveBrand] = useState(null);
   const [loadingSession, setLoadingSession] = useState(true);
+
+  // Wire a signed-in user + their active brand into api.js and local state.
+  const activate = (user) => {
+    const brand = resolveActiveBrand(user.brandIds, localStorage.getItem('active-brand'));
+    setAuthUserId(user.id);
+    setAuthBrandId(brand);
+    setActiveBrand(brand);
+    setCurrentUser(user);
+  };
 
   useEffect(() => {
     (async () => {
@@ -62,10 +115,7 @@ export default function InventoryApp() {
         if (stored) {
           const { id } = JSON.parse(stored);
           const user = await api.session(id);
-          if (user) {
-            setCurrentUser(user);
-            setAuthUserId(user.id);
-          }
+          if (user) activate(user);
         }
       } catch (_e) {
         localStorage.removeItem('session-current-user');
@@ -75,15 +125,28 @@ export default function InventoryApp() {
   }, []);
 
   const login = (user) => {
-    setCurrentUser(user);
-    setAuthUserId(user.id);
+    activate(user);
     localStorage.setItem('session-current-user', JSON.stringify({ id: user.id }));
   };
 
   const logout = () => {
     setCurrentUser(null);
+    setActiveBrand(null);
     setAuthUserId(null);
+    setAuthBrandId(null);
     localStorage.removeItem('session-current-user');
+  };
+
+  // Switch the active brand. Remounting the app (key={activeBrand}) re-runs
+  // every initial data-load effect, so all brand-scoped data refetches for the
+  // new brand without touching the individual fetch sites.
+  const switchBrand = (id) => {
+    if (!currentUser) return;
+    const ids = currentUser.brandIds || [];
+    if (!ids.includes(id) || id === activeBrand) return;
+    setAuthBrandId(id);
+    localStorage.setItem('active-brand', id);
+    setActiveBrand(id);
   };
 
   if (loadingSession) {
@@ -99,8 +162,17 @@ export default function InventoryApp() {
   }
 
   return (
-    <AuthContext.Provider value={{ currentUser, logout, setCurrentUser }}>
-      <InventorySystem />
+    <AuthContext.Provider
+      value={{
+        currentUser,
+        logout,
+        setCurrentUser,
+        activeBrand,
+        brands: userBrands(currentUser.brandIds),
+        switchBrand,
+      }}
+    >
+      <InventorySystem key={activeBrand || 'none'} />
     </AuthContext.Provider>
   );
 }
@@ -121,7 +193,7 @@ function PackerRoute() {
 }
 
 function StaffOrAdminInventory() {
-  const { currentUser, logout } = useContext(AuthContext);
+  const { currentUser, logout, activeBrand, brands, switchBrand } = useContext(AuthContext);
   const isAdmin = currentUser.role === 'admin';
 
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -715,8 +787,9 @@ function StaffOrAdminInventory() {
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30 pt-safe">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <img src="/logo.png" alt="Folia Society" className="h-9 w-auto rounded-lg" />
-            <h1 className="text-lg font-semibold text-gray-900">Folia Inventory</h1>
+            <img src="/logo.png" alt="3babes" className="h-9 w-auto rounded-lg" />
+            <h1 className="text-lg font-semibold text-gray-900 hidden sm:block">3babes</h1>
+            <BrandSwitcher brands={brands} activeBrand={activeBrand} onSwitch={switchBrand} />
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowBulkModal(true)} className="hidden sm:flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 active:bg-gray-200 rounded-lg transition">

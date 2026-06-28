@@ -1,4 +1,4 @@
-import { supabase, requireUser } from './_lib/supabase.js';
+import { supabase, requireBrand, brandIdFromReq } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Routes:
@@ -29,25 +29,25 @@ const STORAGE_BUCKET = 'shipping-labels';
 
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
-  await requireUser(userId);
+  const { brandId } = await requireBrand(userId, brandIdFromReq(req));
 
   switch (req.method) {
     case 'GET': {
       const action = req.query?.action;
-      if (action === 'label-url') return labelUrl(req, res);
-      if (action === 'pending') return pending(req, res);
-      if (action === 'with-tracking') return withTracking(req, res);
-      if (action === 'box-notes') return boxNotes(req, res);
+      if (action === 'label-url') return labelUrl(req, res, brandId);
+      if (action === 'pending') return pending(req, res, brandId);
+      if (action === 'with-tracking') return withTracking(req, res, brandId);
+      if (action === 'box-notes') return boxNotes(req, res, brandId);
       if (action === 'phone-handoff') return phoneHandoff(req, res, userId);
-      return list(req, res);
+      return list(req, res, brandId);
     }
     case 'POST': {
       const action = req.body?.action;
-      if (action === 'record-tracking') return recordTracking(req, res, userId);
-      if (action === 'clear-tracking') return clearTracking(req, res);
-      if (action === 'set-box-note') return setBoxNote(req, res, userId);
-      if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId);
-      if (action === 'set-box-hold') return setBoxHold(req, res, userId);
+      if (action === 'record-tracking') return recordTracking(req, res, userId, brandId);
+      if (action === 'clear-tracking') return clearTracking(req, res, brandId);
+      if (action === 'set-box-note') return setBoxNote(req, res, userId, brandId);
+      if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId, brandId);
+      if (action === 'set-box-hold') return setBoxHold(req, res, userId, brandId);
       if (action === 'send-to-phone') return sendToPhone(req, res, userId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
@@ -56,18 +56,19 @@ export default wrap(async (req, res) => {
   }
 });
 
-async function list(req, res) {
+async function list(req, res, brandId) {
   const saleId = req.query?.saleId;
   let query = supabase
     .from('shipments')
-    .select('id, "saleId", carrier, "carrierCode", "serviceCode", "trackingNumber", "labelCost", "labelStoragePath", "shippingSlipStoragePath", "isTestLabel", "purchasedAt", "voidedAt"');
+    .select('id, "saleId", carrier, "carrierCode", "serviceCode", "trackingNumber", "labelCost", "labelStoragePath", "shippingSlipStoragePath", "isTestLabel", "purchasedAt", "voidedAt"')
+    .eq('brandId', brandId);
   if (saleId) query = query.eq('saleId', saleId);
   const { data, error } = await query;
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ shipments: data || [] });
 }
 
-async function labelUrl(req, res) {
+async function labelUrl(req, res, brandId) {
   const id = req.query?.id;
   const kind = req.query?.kind === 'slip' ? 'slip' : 'label';
   if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
@@ -76,6 +77,7 @@ async function labelUrl(req, res) {
     .from('shipments')
     .select('id, "labelStoragePath", "shippingSlipStoragePath", "labelData"')
     .eq('id', id)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   if (!row) { const e = new Error('Shipment not found'); e.status = 404; throw e; }
@@ -101,7 +103,7 @@ async function labelUrl(req, res) {
 // that has no shipments row, or only voided rows. Optionally filtered by
 // saleId and carrier. Returns enough context for the Chrome extension to
 // drive Palmstreet's flow without a second round-trip.
-async function pending(req, res) {
+async function pending(req, res, brandId) {
   const saleId = req.query?.saleId || null;
   const carrier = req.query?.carrier || null; // 'usps' | 'ups' | null
 
@@ -109,6 +111,7 @@ async function pending(req, res) {
   let q = supabase
     .from('inventory_items')
     .select('id, sku, name, variety, quantity, "saleId", "shipmentBoxId", "shipmentCarrier", buyer, "buyerUsername", "buyerAddress", "orderId"')
+    .eq('brandId', brandId)
     .not('shipmentBoxId', 'is', null);
   if (saleId) q = q.eq('saleId', saleId);
   if (carrier) q = q.eq('shipmentCarrier', carrier);
@@ -118,7 +121,8 @@ async function pending(req, res) {
   // Existing non-voided shipments to subtract.
   const { data: shipments, error: sErr } = await supabase
     .from('shipments')
-    .select('id, "voidedAt"');
+    .select('id, "voidedAt"')
+    .eq('brandId', brandId);
   if (sErr) { const e = new Error(sErr.message); e.status = 500; throw e; }
   const hasActive = new Set((shipments || []).filter(s => !s.voidedAt).map(s => s.id));
 
@@ -129,6 +133,7 @@ async function pending(req, res) {
     const { data: sales } = await supabase
       .from('sales')
       .select('id, name')
+      .eq('brandId', brandId)
       .in('id', saleIds);
     salesById = Object.fromEntries((sales || []).map(s => [s.id, s.name]));
   }
@@ -167,12 +172,13 @@ async function pending(req, res) {
 // number, joined with the recipient context needed to find the order on
 // Palmstreet. Used by the Chrome extension's "push tracking to Palmstreet"
 // flow — search the order by recipient name, then type the tracking number in.
-async function withTracking(req, res) {
+async function withTracking(req, res, brandId) {
   const saleId = req.query?.saleId || null;
 
   let q = supabase
     .from('inventory_items')
     .select('id, sku, name, variety, quantity, status, "saleId", "shipmentBoxId", "shipmentCarrier", buyer, "buyerUsername", "buyerAddress", "orderId"')
+    .eq('brandId', brandId)
     .not('shipmentBoxId', 'is', null);
   if (saleId) q = q.eq('saleId', saleId);
   const { data: items, error: iErr } = await q;
@@ -181,7 +187,8 @@ async function withTracking(req, res) {
   // Active shipments that carry a tracking number, keyed by box id.
   const { data: shipments, error: sErr } = await supabase
     .from('shipments')
-    .select('id, "trackingNumber", carrier, "carrierCode", "voidedAt"');
+    .select('id, "trackingNumber", carrier, "carrierCode", "voidedAt"')
+    .eq('brandId', brandId);
   if (sErr) { const e = new Error(sErr.message); e.status = 500; throw e; }
   const trackingById = new Map();
   for (const s of shipments || []) {
@@ -192,7 +199,7 @@ async function withTracking(req, res) {
   const saleIds = [...new Set((items || []).map(i => i.saleId).filter(Boolean))];
   let salesById = {};
   if (saleIds.length) {
-    const { data: sales } = await supabase.from('sales').select('id, name').in('id', saleIds);
+    const { data: sales } = await supabase.from('sales').select('id, name').eq('brandId', brandId).in('id', saleIds);
     salesById = Object.fromEntries((sales || []).map(s => [s.id, s.name]));
   }
 
@@ -229,7 +236,7 @@ async function withTracking(req, res) {
   return res.status(200).json({ boxes });
 }
 
-async function recordTracking(req, res, userId) {
+async function recordTracking(req, res, userId, brandId) {
   let { shipmentBoxId, trackingNumber, matchByOrderId,
         labelPdfBase64, slipPdfBase64, weightOz } = req.body || {};
 
@@ -240,6 +247,7 @@ async function recordTracking(req, res, userId) {
     const { data: matches } = await supabase
       .from('inventory_items')
       .select('"shipmentBoxId"')
+      .eq('brandId', brandId)
       .eq('orderId', String(matchByOrderId).trim())
       .not('shipmentBoxId', 'is', null)
       .limit(1);
@@ -257,6 +265,7 @@ async function recordTracking(req, res, userId) {
     .from('shipments')
     .select('id, "carrierCode", "voidedAt", "purchasedAt"')
     .eq('id', shipmentBoxId)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (existing && existing.carrierCode !== PALMSTREET_CARRIER_CODE) {
     const e = new Error('A ShipStation label already exists for this box — void it first');
@@ -266,6 +275,7 @@ async function recordTracking(req, res, userId) {
   const { data: items } = await supabase
     .from('inventory_items')
     .select('"saleId"')
+    .eq('brandId', brandId)
     .eq('shipmentBoxId', shipmentBoxId)
     .limit(1);
   const saleId = items?.[0]?.saleId || null;
@@ -281,6 +291,7 @@ async function recordTracking(req, res, userId) {
 
   const row = {
     id: shipmentBoxId,
+    brandId,
     saleId,
     carrier: 'usps',
     carrierCode: PALMSTREET_CARRIER_CODE,
@@ -307,7 +318,7 @@ async function recordTracking(req, res, userId) {
   return res.status(200).json({ shipment: saved });
 }
 
-async function clearTracking(req, res) {
+async function clearTracking(req, res, brandId) {
   const { shipmentBoxId } = req.body || {};
   if (!shipmentBoxId) { const e = new Error('shipmentBoxId required'); e.status = 400; throw e; }
 
@@ -315,6 +326,7 @@ async function clearTracking(req, res) {
     .from('shipments')
     .select('id, "carrierCode"')
     .eq('id', shipmentBoxId)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (!existing) { const e = new Error('No tracking entry for this box'); e.status = 404; throw e; }
   if (existing.carrierCode !== PALMSTREET_CARRIER_CODE) {
@@ -322,7 +334,7 @@ async function clearTracking(req, res) {
     e.status = 409; throw e;
   }
 
-  const { error } = await supabase.from('shipments').delete().eq('id', shipmentBoxId);
+  const { error } = await supabase.from('shipments').delete().eq('id', shipmentBoxId).eq('brandId', brandId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ ok: true });
 }
@@ -331,7 +343,7 @@ async function clearTracking(req, res) {
 // Upserts the per-box note. Empty/whitespace note is persisted as null so
 // the row stays as an audit trail of when the note was cleared (and by
 // whom). The row is created on first save — `shipment_boxes` is lazy.
-async function setBoxNote(req, res, userId) {
+async function setBoxNote(req, res, userId, brandId) {
   const { shipmentBoxId, note } = req.body || {};
   if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
@@ -339,6 +351,7 @@ async function setBoxNote(req, res, userId) {
   const trimmed = typeof note === 'string' ? note.trim() : '';
   const payload = {
     id: shipmentBoxId,
+    brandId,
     note: trimmed === '' ? null : trimmed,
     updatedAt: new Date().toISOString(),
     updatedBy: userId,
@@ -360,12 +373,12 @@ async function setBoxNote(req, res, userId) {
 // string / null clears a field. Mirrors set-box-note's upsert pattern.
 const VALID_SERVICE_KEYS = ['usps_priority', 'ups_2nd_day_air', 'ups_next_day_air_saver'];
 const VALID_CARRIERS = ['usps', 'ups'];
-async function setBoxPackaging(req, res, userId) {
+async function setBoxPackaging(req, res, userId, brandId) {
   const { shipmentBoxId, boxSizeId, weightOz, serviceKey, carrierOverride } = req.body || {};
   if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
   }
-  const patch = { id: shipmentBoxId, updatedAt: new Date().toISOString(), updatedBy: userId };
+  const patch = { id: shipmentBoxId, brandId, updatedAt: new Date().toISOString(), updatedBy: userId };
   if ('boxSizeId' in req.body) patch.boxSizeId = boxSizeId ? String(boxSizeId) : null;
   if ('weightOz' in req.body) {
     const n = parseFloat(weightOz);
@@ -401,7 +414,7 @@ async function setBoxPackaging(req, res, userId) {
 // Puts a box on hold (holdUntil = now + days, default 7) or clears it
 // (hold:false → null). The deadline is computed server-side so it doesn't
 // depend on the operator's clock. Lazy-creates the shipment_boxes row.
-async function setBoxHold(req, res, userId) {
+async function setBoxHold(req, res, userId, brandId) {
   const { shipmentBoxId, hold, days } = req.body || {};
   if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
@@ -415,7 +428,7 @@ async function setBoxHold(req, res, userId) {
   const { data, error } = await supabase
     .from('shipment_boxes')
     .upsert(
-      { id: shipmentBoxId, holdUntil, updatedAt: new Date().toISOString(), updatedBy: userId },
+      { id: shipmentBoxId, brandId, holdUntil, updatedAt: new Date().toISOString(), updatedBy: userId },
       { onConflict: 'id' },
     )
     .select('*') // needs migration 0028 (the holdUntil column) applied
@@ -491,17 +504,19 @@ async function phoneHandoff(req, res, userId) {
 // Without saleId: returns all box-note rows (top-level Ready/Shipped tab
 // uses this to decorate every visible box). Missing rows are absent from
 // the map (client treats absence as "no note").
-async function boxNotes(req, res) {
+async function boxNotes(req, res, brandId) {
   const saleId = req.query?.saleId;
   let query = supabase
     .from('shipment_boxes')
     // '*' so a pre-migration missing carrierOverride column doesn't 400 and
     // break all box note/packaging loading. Fields are read by name below.
-    .select('*');
+    .select('*')
+    .eq('brandId', brandId);
   if (saleId) {
     const { data: items, error: itemsErr } = await supabase
       .from('inventory_items')
       .select('"shipmentBoxId"')
+      .eq('brandId', brandId)
       .eq('saleId', saleId)
       .not('shipmentBoxId', 'is', null);
     if (itemsErr) { const e = new Error(itemsErr.message); e.status = 500; throw e; }

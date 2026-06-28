@@ -58,7 +58,7 @@ export async function requireUser(userId) {
   }
   const { data } = await supabase
     .from('users')
-    .select('id,role,active,"displayName"')
+    .select('id,role,active,"displayName","brandIds"')
     .eq('id', userId)
     .maybeSingle();
   if (!data || !data.active) {
@@ -67,6 +67,51 @@ export async function requireUser(userId) {
     throw e;
   }
   return data;
+}
+
+// The legacy brand. All pre-multi-brand data backfills here, and any request
+// that doesn't carry a brand resolves to it — so the Folia frontend keeps
+// working unchanged until the brand switcher ships (Stage 3 of the rollout).
+export const DEFAULT_BRAND = 'folia';
+
+// Pull the active brand id from a request, the same way handlers pull userId:
+// query param on GET, body field on POST/DELETE.
+export function brandIdFromReq(req) {
+  return req.method === 'GET' ? req.query?.brandId : req.body?.brandId;
+}
+
+// Authorize the active brand for a request. Resolves the brand (defaulting to
+// DEFAULT_BRAND when absent), confirms it exists, and verifies the user has
+// access to it. Returns { user, brand, brandId } where brandId is the resolved
+// id to filter queries by and stamp on inserts.
+//
+// Scoping is enforced here in code because the service-role client bypasses RLS
+// — same trust model as requireUser/requireAdmin.
+export async function requireBrand(userId, brandId) {
+  const user = await requireUser(userId);
+  const id = brandId || DEFAULT_BRAND;
+
+  const access = Array.isArray(user.brandIds) && user.brandIds.length
+    ? user.brandIds
+    : [DEFAULT_BRAND];
+  if (!access.includes(id)) {
+    const e = new Error('Brand access required');
+    e.status = 403;
+    throw e;
+  }
+
+  const { data: brand } = await supabase
+    .from('brands')
+    .select('id,slug,name')
+    .eq('id', id)
+    .maybeSingle();
+  if (!brand) {
+    const e = new Error('Unknown brand');
+    e.status = 404;
+    throw e;
+  }
+
+  return { user, brand, brandId: id };
 }
 
 export function newId() {

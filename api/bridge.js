@@ -1,4 +1,4 @@
-import { supabase, requireUser, requireAdmin, newId } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { randomBytes } from 'node:crypto';
 
@@ -77,7 +77,7 @@ async function generateToken(req, res) {
 
 async function enqueue(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
-  const user = await requireUser(req.body?.userId);
+  const { user, brandId } = await requireBrand(req.body?.userId, brandIdFromReq(req));
   const { jobAction, payload } = req.body || {};
   if (!jobAction || typeof jobAction !== 'string') {
     const e = new Error('jobAction required'); e.status = 400; throw e;
@@ -88,6 +88,7 @@ async function enqueue(req, res) {
     action: jobAction,
     payload: payload && typeof payload === 'object' ? payload : {},
     createdBy: user.displayName || user.id,
+    brandId,
   };
   const { error } = await supabase.from('bridge_jobs').insert(job);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
@@ -189,14 +190,15 @@ async function next(req, res) {
 // at a time so the URL stays short and the SELECT is bounded.
 async function status(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
-  await requireUser(req.query?.userId);
+  const { brandId } = await requireBrand(req.query?.userId, brandIdFromReq(req));
   const raw = (req.query?.ids || '').toString();
   const ids = raw.split(',').map(s => s.trim()).filter(Boolean).slice(0, 32);
   if (ids.length === 0) return res.status(200).json({ jobs: [] });
   const { data, error } = await supabase
     .from('bridge_jobs')
     .select('id, status, action, payload, result, error, "createdAt", "claimedAt", "completedAt"')
-    .in('id', ids);
+    .in('id', ids)
+    .eq('brandId', brandId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ jobs: data || [] });
 }
@@ -211,7 +213,7 @@ const HEARTBEAT_FRESH_MS = 15_000;
 
 async function health(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
-  await requireUser(req.query?.userId);
+  const { brandId } = await requireBrand(req.query?.userId, brandIdFromReq(req));
   const [{ data: heartbeatRow }, { count: queuedCount }] = await Promise.all([
     supabase.from('users')
       .select('bridgeLastSeen')
@@ -220,7 +222,7 @@ async function health(req, res) {
       .limit(1)
       .maybeSingle(),
     supabase.from('bridge_jobs')
-      .select('id', { count: 'exact', head: true }).eq('status', 'queued'),
+      .select('id', { count: 'exact', head: true }).eq('status', 'queued').eq('brandId', brandId),
   ]);
   const lastSeen = heartbeatRow?.bridgeLastSeen || null;
   const online = !!lastSeen && (Date.now() - new Date(lastSeen).getTime()) < HEARTBEAT_FRESH_MS;

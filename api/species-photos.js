@@ -1,4 +1,4 @@
-import { supabase, requireUser, newId } from './_lib/supabase.js';
+import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Photo CRUD for a catalog plant (species row). Actions:
@@ -14,12 +14,12 @@ const SIGNED_URL_TTL_SECONDS = 300;
 
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
-  const user = await requireUser(userId);
+  const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
 
   if (req.method === 'GET') {
     const action = req.query?.action;
-    if (action === 'signed-url') return signedUrl(req, res);
-    if (action === 'list')       return listItemPhotos(req, res);
+    if (action === 'signed-url') return signedUrl(req, res, brandId);
+    if (action === 'list')       return listItemPhotos(req, res, brandId);
     const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
   }
 
@@ -30,21 +30,21 @@ export default wrap(async (req, res) => {
     // Reusing this route avoids adding a serverless function. See 0019.
     const target = req.body?.target === 'item' ? 'item' : 'species';
     if (target === 'item') {
-      if (action === 'upload')  return uploadItem(req, res, user);
-      if (action === 'delete')  return removeItem(req, res);
-      if (action === 'reorder') return reorderItem(req, res);
+      if (action === 'upload')  return uploadItem(req, res, user, brandId);
+      if (action === 'delete')  return removeItem(req, res, brandId);
+      if (action === 'reorder') return reorderItem(req, res, brandId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
-    if (action === 'upload')  return upload(req, res, user);
-    if (action === 'delete')  return remove(req, res);
-    if (action === 'reorder') return reorder(req, res);
+    if (action === 'upload')  return upload(req, res, user, brandId);
+    if (action === 'delete')  return remove(req, res, brandId);
+    if (action === 'reorder') return reorder(req, res, brandId);
     const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
   }
 
   return methodNotAllowed(res, ['GET', 'POST']);
 });
 
-async function signedUrl(req, res) {
+async function signedUrl(req, res, brandId) {
   const id = req.query?.id;
   if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
   const table = req.query?.target === 'item' ? 'item_photos' : 'species_photos';
@@ -52,6 +52,7 @@ async function signedUrl(req, res) {
     .from(table)
     .select('"storagePath"')
     .eq('id', id)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   if (!row)  { const e = new Error('Photo not found'); e.status = 404; throw e; }
@@ -64,7 +65,7 @@ async function signedUrl(req, res) {
   return res.status(200).json({ url: signed.signedUrl });
 }
 
-async function upload(req, res, user) {
+async function upload(req, res, user, brandId) {
   const { speciesId, fileBase64, contentType, filename, kind: rawKind } = req.body || {};
   if (!speciesId)   { const e = new Error('speciesId required');   e.status = 400; throw e; }
   if (!fileBase64)  { const e = new Error('fileBase64 required');  e.status = 400; throw e; }
@@ -75,7 +76,7 @@ async function upload(req, res, user) {
   }
 
   const { data: sp, error: spErr } = await supabase
-    .from('species').select('id, "imageUrl"').eq('id', speciesId).maybeSingle();
+    .from('species').select('id, "imageUrl"').eq('id', speciesId).eq('brandId', brandId).maybeSingle();
   if (spErr) { const e = new Error(spErr.message); e.status = 500; throw e; }
   if (!sp)   { const e = new Error('Unknown species'); e.status = 404; throw e; }
 
@@ -87,6 +88,7 @@ async function upload(req, res, user) {
     .select('"sortOrder"')
     .eq('speciesId', speciesId)
     .eq('kind', kind)
+    .eq('brandId', brandId)
     .order('sortOrder', { ascending: false })
     .limit(1);
   if (exErr) { const e = new Error(exErr.message); e.status = 500; throw e; }
@@ -99,10 +101,11 @@ async function upload(req, res, user) {
       .from('species_photos')
       .select('id, "storagePath"')
       .eq('speciesId', speciesId)
-      .eq('kind', kind);
+      .eq('kind', kind)
+      .eq('brandId', brandId);
     for (const p of prior || []) {
       await supabase.storage.from(STORAGE_BUCKET).remove([p.storagePath]).catch(() => {});
-      await supabase.from('species_photos').delete().eq('id', p.id);
+      await supabase.from('species_photos').delete().eq('id', p.id).eq('brandId', brandId);
     }
   }
 
@@ -126,6 +129,7 @@ async function upload(req, res, user) {
     storagePath,
     sortOrder: nextSort,
     kind,
+    brandId,
     createdAt: new Date().toISOString(),
     createdBy: user.displayName,
   };
@@ -146,9 +150,10 @@ async function upload(req, res, user) {
       storagePath: sp.imageUrl,
       sortOrder: -1,
       kind: 'gallery',
+      brandId,
       createdAt: new Date().toISOString(),
       createdBy: user.displayName,
-    }).then(() => supabase.from('species').update({ imageUrl: null }).eq('id', speciesId))
+    }).then(() => supabase.from('species').update({ imageUrl: null }).eq('id', speciesId).eq('brandId', brandId))
       .catch(() => { /* best-effort */ });
   }
 
@@ -160,19 +165,20 @@ async function upload(req, res, user) {
   return res.status(200).json({ photo: row, signedUrl: signed?.signedUrl || null });
 }
 
-async function remove(req, res) {
+async function remove(req, res, brandId) {
   const { id } = req.body || {};
   if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
   const { data: row, error } = await supabase
     .from('species_photos')
     .select('id, "speciesId", "storagePath"')
     .eq('id', id)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   if (!row)  { const e = new Error('Photo not found'); e.status = 404; throw e; }
 
   await supabase.storage.from(STORAGE_BUCKET).remove([row.storagePath]).catch(() => {});
-  const { error: delErr } = await supabase.from('species_photos').delete().eq('id', id);
+  const { error: delErr } = await supabase.from('species_photos').delete().eq('id', id).eq('brandId', brandId);
   if (delErr) { const e = new Error(delErr.message); e.status = 500; throw e; }
 
   // If the deleted photo was the species's primary, clear that field —
@@ -180,12 +186,13 @@ async function remove(req, res) {
   await supabase.from('species')
     .update({ primaryPhotoId: null })
     .eq('id', row.speciesId)
-    .eq('primaryPhotoId', id);
+    .eq('primaryPhotoId', id)
+    .eq('brandId', brandId);
 
   return res.status(200).json({ ok: true });
 }
 
-async function reorder(req, res) {
+async function reorder(req, res, brandId) {
   const { speciesId, orderedPhotoIds } = req.body || {};
   if (!speciesId) { const e = new Error('speciesId required'); e.status = 400; throw e; }
   if (!Array.isArray(orderedPhotoIds)) {
@@ -196,7 +203,8 @@ async function reorder(req, res) {
       .from('species_photos')
       .update({ sortOrder: i })
       .eq('id', orderedPhotoIds[i])
-      .eq('speciesId', speciesId);
+      .eq('speciesId', speciesId)
+      .eq('brandId', brandId);
     if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   }
   return res.status(200).json({ ok: true });
@@ -218,34 +226,36 @@ function publicUrlFor(path) {
 // the export. Only manage imageUrl when it's empty or already one of this
 // item's photo URLs — a manually-entered URL is left untouched. Returns the
 // resulting imageUrl.
-async function syncItemPrimaryImage(itemId) {
+async function syncItemPrimaryImage(itemId, brandId) {
   const { data: rows } = await supabase
     .from('item_photos')
     .select('"storagePath"')
     .eq('itemId', itemId)
+    .eq('brandId', brandId)
     .order('sortOrder', { ascending: true })
     .limit(1);
   const primaryUrl = rows && rows[0] ? publicUrlFor(rows[0].storagePath) : null;
 
   const { data: it } = await supabase
-    .from('inventory_items').select('"imageUrl"').eq('id', itemId).maybeSingle();
+    .from('inventory_items').select('"imageUrl"').eq('id', itemId).eq('brandId', brandId).maybeSingle();
   const cur = it?.imageUrl || '';
   const managedPrefix = publicUrlFor(`items/${itemId}/`) || '';
   const isManaged = !cur || (managedPrefix && cur.startsWith(managedPrefix));
   if (isManaged && cur !== (primaryUrl || '')) {
-    await supabase.from('inventory_items').update({ imageUrl: primaryUrl }).eq('id', itemId);
+    await supabase.from('inventory_items').update({ imageUrl: primaryUrl }).eq('id', itemId).eq('brandId', brandId);
     return primaryUrl;
   }
   return cur || null;
 }
 
-async function listItemPhotos(req, res) {
+async function listItemPhotos(req, res, brandId) {
   const itemId = req.query?.itemId;
   if (!itemId) { const e = new Error('itemId required'); e.status = 400; throw e; }
   const { data: rows, error } = await supabase
     .from('item_photos')
     .select('id, "itemId", "storagePath", "sortOrder"')
     .eq('itemId', itemId)
+    .eq('brandId', brandId)
     .order('sortOrder', { ascending: true });
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
 
@@ -260,14 +270,14 @@ async function listItemPhotos(req, res) {
   return res.status(200).json({ photos });
 }
 
-async function uploadItem(req, res, user) {
+async function uploadItem(req, res, user, brandId) {
   const { itemId, fileBase64, contentType, filename } = req.body || {};
   if (!itemId)      { const e = new Error('itemId required');      e.status = 400; throw e; }
   if (!fileBase64)  { const e = new Error('fileBase64 required');  e.status = 400; throw e; }
   if (!contentType) { const e = new Error('contentType required'); e.status = 400; throw e; }
 
   const { data: it, error: itErr } = await supabase
-    .from('inventory_items').select('id').eq('id', itemId).maybeSingle();
+    .from('inventory_items').select('id').eq('id', itemId).eq('brandId', brandId).maybeSingle();
   if (itErr) { const e = new Error(itErr.message); e.status = 500; throw e; }
   if (!it)   { const e = new Error('Unknown item'); e.status = 404; throw e; }
 
@@ -275,6 +285,7 @@ async function uploadItem(req, res, user) {
     .from('item_photos')
     .select('"sortOrder"')
     .eq('itemId', itemId)
+    .eq('brandId', brandId)
     .order('sortOrder', { ascending: false })
     .limit(1);
   if (exErr) { const e = new Error(exErr.message); e.status = 500; throw e; }
@@ -299,6 +310,7 @@ async function uploadItem(req, res, user) {
     itemId,
     storagePath,
     sortOrder: nextSort,
+    brandId,
     createdAt: new Date().toISOString(),
     createdBy: user.displayName,
   };
@@ -313,30 +325,31 @@ async function uploadItem(req, res, user) {
     .from(STORAGE_BUCKET)
     .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
 
-  const itemImageUrl = await syncItemPrimaryImage(itemId);
+  const itemImageUrl = await syncItemPrimaryImage(itemId, brandId);
 
   return res.status(200).json({ photo: row, signedUrl: signed?.signedUrl || null, itemImageUrl });
 }
 
-async function removeItem(req, res) {
+async function removeItem(req, res, brandId) {
   const { id } = req.body || {};
   if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
   const { data: row, error } = await supabase
     .from('item_photos')
     .select('id, "itemId", "storagePath"')
     .eq('id', id)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   if (!row)  { const e = new Error('Photo not found'); e.status = 404; throw e; }
 
   await supabase.storage.from(STORAGE_BUCKET).remove([row.storagePath]).catch(() => {});
-  const { error: delErr } = await supabase.from('item_photos').delete().eq('id', id);
+  const { error: delErr } = await supabase.from('item_photos').delete().eq('id', id).eq('brandId', brandId);
   if (delErr) { const e = new Error(delErr.message); e.status = 500; throw e; }
-  const itemImageUrl = await syncItemPrimaryImage(row.itemId);
+  const itemImageUrl = await syncItemPrimaryImage(row.itemId, brandId);
   return res.status(200).json({ ok: true, itemImageUrl });
 }
 
-async function reorderItem(req, res) {
+async function reorderItem(req, res, brandId) {
   const { itemId, orderedPhotoIds } = req.body || {};
   if (!itemId) { const e = new Error('itemId required'); e.status = 400; throw e; }
   if (!Array.isArray(orderedPhotoIds)) {
@@ -347,9 +360,10 @@ async function reorderItem(req, res) {
       .from('item_photos')
       .update({ sortOrder: i })
       .eq('id', orderedPhotoIds[i])
-      .eq('itemId', itemId);
+      .eq('itemId', itemId)
+      .eq('brandId', brandId);
     if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   }
-  const itemImageUrl = await syncItemPrimaryImage(itemId);
+  const itemImageUrl = await syncItemPrimaryImage(itemId, brandId);
   return res.status(200).json({ ok: true, itemImageUrl });
 }

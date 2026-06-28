@@ -538,3 +538,53 @@ create table if not exists sale_evaluations (
   "updatedAt" timestamptz not null default now(),
   "updatedBy" text
 );
+
+-- ─── 3babes multi-brand (migration 0029) ───────────────────────────────────────
+-- One database runs multiple brands (Folia, BAE). Each brand-scoped row carries
+-- a brandId; users carry a brandIds access list. Kept as idempotent ALTERs at
+-- the end so the create-table blocks above stay the historical single-tenant
+-- shape. Full plan: docs/3babes-multi-brand.md.
+create table if not exists brands (
+  id          text        primary key,
+  slug        text        unique not null,
+  name        text        not null,
+  "createdAt" timestamptz not null default now()
+);
+insert into brands (id, slug, name) values
+  ('folia', 'folia', 'Folia'),
+  ('bae',   'bae',   'BAE — Best Anthuriums Ever')
+on conflict (id) do nothing;
+
+alter table inventory_items add column if not exists "brandId" text references brands(id);
+alter table sales add column if not exists "brandId" text references brands(id);
+alter table varieties add column if not exists "brandId" text references brands(id);
+alter table species add column if not exists "brandId" text references brands(id);
+alter table species_photos add column if not exists "brandId" text references brands(id);
+alter table purchase_orders add column if not exists "brandId" text references brands(id);
+alter table purchase_order_lines add column if not exists "brandId" text references brands(id);
+alter table purchase_order_received_items add column if not exists "brandId" text references brands(id);
+alter table shipments add column if not exists "brandId" text references brands(id);
+alter table shipment_boxes add column if not exists "brandId" text references brands(id);
+alter table bridge_jobs add column if not exists "brandId" text references brands(id);
+alter table sale_evaluations add column if not exists "brandId" text references brands(id);
+alter table item_photos add column if not exists "brandId" text references brands(id);
+alter table app_settings add column if not exists "brandId" text references brands(id);
+alter table users add column if not exists "brandIds" text[] not null default array['folia']::text[];
+
+-- SKU numbering + uniqueness are per-brand (migration 0030): each brand has its
+-- own SKU sequence and prefixes, so the unique constraint is (brandId, sku) and
+-- the max-suffix RPC takes a brand. Brand-scoped variant lives alongside the
+-- original no-arg function (kept for any legacy caller).
+drop index if exists inventory_items_sku_unique;
+create unique index if not exists inventory_items_sku_brand_unique
+  on inventory_items ("brandId", sku);
+
+create or replace function inventory_max_sku_suffix(p_brand text) returns int
+language sql stable as $$
+  select coalesce(
+    max((regexp_match(sku, '-(\d+)$'))[1]::int),
+    0
+  )
+  from inventory_items
+  where "brandId" = p_brand and sku ~ '-\d+$';
+$$;
