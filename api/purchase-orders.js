@@ -1,4 +1,4 @@
-import { supabase, requireUser, newId } from './_lib/supabase.js';
+import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Purchase orders. Action-dispatched. See:
@@ -8,8 +8,8 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 // existing /api/items handler uses. Synchronous in the request path:
 // a 10-unit receive does 10 RPC calls in sequence. Acceptable for
 // shipment-size batches.
-async function nextSku(varietyCode) {
-  const { data, error } = await supabase.rpc('inventory_max_sku_suffix');
+async function nextSku(varietyCode, brandId) {
+  const { data, error } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   const next = (data || 0) + 1;
   return `${varietyCode}-${next}`;
@@ -17,26 +17,26 @@ async function nextSku(varietyCode) {
 
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
-  const user = await requireUser(userId);
+  const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
 
   if (req.method === 'GET') {
     const action = req.query?.action;
-    if (action === 'get') return getOne(req, res);
-    return list(req, res); // default GET
+    if (action === 'get') return getOne(req, res, brandId);
+    return list(req, res, brandId); // default GET
   }
 
   if (req.method === 'POST') {
     const action = req.body?.action;
     switch (action) {
-      case 'create':              return create(req, res, user);
-      case 'update-header':       return updateHeader(req, res, user);
-      case 'add-line':            return addLine(req, res);
-      case 'update-line':         return updateLine(req, res);
-      case 'remove-line':         return removeLine(req, res);
-      case 'delete':              return softDelete(req, res, user);
-      case 'mark-ordered':        return markOrdered(req, res, user);
-      case 'receive-line':        return receiveLine(req, res, user);
-      case 'cancel-receive-line': return cancelReceiveLine(req, res, user);
+      case 'create':              return create(req, res, user, brandId);
+      case 'update-header':       return updateHeader(req, res, user, brandId);
+      case 'add-line':            return addLine(req, res, brandId);
+      case 'update-line':         return updateLine(req, res, brandId);
+      case 'remove-line':         return removeLine(req, res, brandId);
+      case 'delete':              return softDelete(req, res, user, brandId);
+      case 'mark-ordered':        return markOrdered(req, res, user, brandId);
+      case 'receive-line':        return receiveLine(req, res, user, brandId);
+      case 'cancel-receive-line': return cancelReceiveLine(req, res, user, brandId);
       default: { const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e; }
     }
   }
@@ -46,12 +46,13 @@ export default wrap(async (req, res) => {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-async function loadPo(id) {
+async function loadPo(id, brandId) {
   if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
   const { data, error } = await supabase
     .from('purchase_orders')
     .select('*')
     .eq('id', id)
+    .eq('brandId', brandId)
     .is('deletedAt', null)
     .maybeSingle();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
@@ -68,12 +69,13 @@ function requireStatus(po, allowed) {
 
 // ─── list / get ─────────────────────────────────────────────────────────────
 
-async function list(req, res) {
+async function list(req, res, brandId) {
   const statuses = (req.query?.status || 'draft,ordered')
     .split(',').map(s => s.trim()).filter(Boolean);
   const { data: pos, error } = await supabase
     .from('purchase_orders')
     .select('*')
+    .eq('brandId', brandId)
     .in('status', statuses)
     .is('deletedAt', null)
     .order('createdAt', { ascending: false });
@@ -85,6 +87,7 @@ async function list(req, res) {
     const { data: lines, error: lErr } = await supabase
       .from('purchase_order_lines')
       .select('"purchaseOrderId", "quantityOrdered"')
+      .eq('brandId', brandId)
       .in('purchaseOrderId', ids);
     if (lErr) { const e = new Error(lErr.message); e.status = 500; throw e; }
     lineRows = lines || [];
@@ -104,11 +107,12 @@ async function list(req, res) {
   return res.status(200).json({ purchaseOrders: out });
 }
 
-async function getOne(req, res) {
-  const po = await loadPo(req.query?.id);
+async function getOne(req, res, brandId) {
+  const po = await loadPo(req.query?.id, brandId);
   const { data: lines, error: lErr } = await supabase
     .from('purchase_order_lines')
     .select('*')
+    .eq('brandId', brandId)
     .eq('purchaseOrderId', po.id)
     .order('sortOrder');
   if (lErr) { const e = new Error(lErr.message); e.status = 500; throw e; }
@@ -118,6 +122,7 @@ async function getOne(req, res) {
     const { data: r, error: rErr } = await supabase
       .from('purchase_order_received_items')
       .select('*')
+      .eq('brandId', brandId)
       .in('lineId', lineIds);
     if (rErr) { const e = new Error(rErr.message); e.status = 500; throw e; }
     received = r || [];
@@ -127,10 +132,11 @@ async function getOne(req, res) {
 
 // ─── header writes ──────────────────────────────────────────────────────────
 
-async function create(req, res, user) {
+async function create(req, res, user, brandId) {
   const { supplier, shippingFee, notes } = req.body || {};
   const row = {
     id: newId(),
+    brandId,
     supplier: String(supplier || '').slice(0, 500),
     status: 'draft',
     shippingFee: parseFloat(shippingFee || 0) || 0,
@@ -143,9 +149,9 @@ async function create(req, res, user) {
   return res.status(200).json({ purchaseOrder: row });
 }
 
-async function updateHeader(req, res, user) {
+async function updateHeader(req, res, user, brandId) {
   const { id, supplier, shippingFee, notes } = req.body || {};
-  const po = await loadPo(id);
+  const po = await loadPo(id, brandId);
   requireStatus(po, ['draft', 'ordered']);
   const patch = { modifiedAt: new Date().toISOString(), modifiedBy: user.displayName };
   if (supplier    !== undefined) patch.supplier    = String(supplier || '').slice(0, 500);
@@ -155,28 +161,29 @@ async function updateHeader(req, res, user) {
     patch.shippingFee = n;
   }
   if (notes       !== undefined) patch.notes = notes ? String(notes).slice(0, 500) : null;
-  const { error } = await supabase.from('purchase_orders').update(patch).eq('id', id);
+  const { error } = await supabase.from('purchase_orders').update(patch).eq('id', id).eq('brandId', brandId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ purchaseOrder: { ...po, ...patch } });
 }
 
-async function softDelete(req, res, user) {
+async function softDelete(req, res, user, brandId) {
   const { id } = req.body || {};
-  const po = await loadPo(id);
+  const po = await loadPo(id, brandId);
   requireStatus(po, ['draft']);
   const { error } = await supabase
     .from('purchase_orders')
     .update({ deletedAt: new Date().toISOString(), modifiedBy: user.displayName })
-    .eq('id', id);
+    .eq('id', id)
+    .eq('brandId', brandId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ ok: true });
 }
 
 // ─── lines ──────────────────────────────────────────────────────────────────
 
-async function addLine(req, res) {
+async function addLine(req, res, brandId) {
   const { id, speciesId, quantityOrdered, unitWholesalePrice } = req.body || {};
-  const po = await loadPo(id);
+  const po = await loadPo(id, brandId);
   requireStatus(po, ['draft']);
   if (!speciesId) { const e = new Error('speciesId required'); e.status = 400; throw e; }
   const qty = parseInt(quantityOrdered, 10) || 1;
@@ -187,7 +194,7 @@ async function addLine(req, res) {
     : parseFloat(unitWholesalePrice);
   if (price === null) {
     const { data: sp, error: spErr } = await supabase
-      .from('species').select('"wholesalePrice"').eq('id', speciesId).maybeSingle();
+      .from('species').select('"wholesalePrice"').eq('id', speciesId).eq('brandId', brandId).maybeSingle();
     if (spErr) { const e = new Error(spErr.message); e.status = 500; throw e; }
     if (!sp)   { const e = new Error('Unknown species'); e.status = 404; throw e; }
     price = sp.wholesalePrice ?? 0;
@@ -201,6 +208,7 @@ async function addLine(req, res) {
   const { data: existing, error: exErr } = await supabase
     .from('purchase_order_lines')
     .select('*')
+    .eq('brandId', brandId)
     .eq('purchaseOrderId', id)
     .eq('speciesId', speciesId)
     .maybeSingle();
@@ -209,7 +217,7 @@ async function addLine(req, res) {
   if (existing) {
     const next = { quantityOrdered: existing.quantityOrdered + qty };
     const { error } = await supabase
-      .from('purchase_order_lines').update(next).eq('id', existing.id);
+      .from('purchase_order_lines').update(next).eq('id', existing.id).eq('brandId', brandId);
     if (error) { const e = new Error(error.message); e.status = 500; throw e; }
     return res.status(200).json({ line: { ...existing, ...next } });
   }
@@ -217,6 +225,7 @@ async function addLine(req, res) {
   const { data: last } = await supabase
     .from('purchase_order_lines')
     .select('"sortOrder"')
+    .eq('brandId', brandId)
     .eq('purchaseOrderId', id)
     .order('sortOrder', { ascending: false })
     .limit(1);
@@ -224,6 +233,7 @@ async function addLine(req, res) {
 
   const row = {
     id: newId(),
+    brandId,
     purchaseOrderId: id,
     speciesId,
     quantityOrdered: qty,
@@ -236,9 +246,9 @@ async function addLine(req, res) {
   return res.status(200).json({ line: row });
 }
 
-async function updateLine(req, res) {
+async function updateLine(req, res, brandId) {
   const { id, lineId, quantityOrdered, unitWholesalePrice } = req.body || {};
-  const po = await loadPo(id);
+  const po = await loadPo(id, brandId);
   requireStatus(po, ['draft']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
 
@@ -262,33 +272,34 @@ async function updateLine(req, res) {
   }
 
   const { error } = await supabase
-    .from('purchase_order_lines').update(patch).eq('id', lineId).eq('purchaseOrderId', id);
+    .from('purchase_order_lines').update(patch).eq('id', lineId).eq('purchaseOrderId', id).eq('brandId', brandId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ ok: true });
 }
 
-async function removeLine(req, res) {
+async function removeLine(req, res, brandId) {
   const { id, lineId } = req.body || {};
-  const po = await loadPo(id);
+  const po = await loadPo(id, brandId);
   requireStatus(po, ['draft']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
   const { error } = await supabase
-    .from('purchase_order_lines').delete().eq('id', lineId).eq('purchaseOrderId', id);
+    .from('purchase_order_lines').delete().eq('id', lineId).eq('purchaseOrderId', id).eq('brandId', brandId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ ok: true });
 }
 
 // ─── placeholders, filled in tasks 5-6 ─────────────────────────────────────
 
-async function markOrdered(req, res, user) {
+async function markOrdered(req, res, user, brandId) {
   const { id } = req.body || {};
-  const po = await loadPo(id);
+  const po = await loadPo(id, brandId);
   requireStatus(po, ['draft']);
 
   // Must have at least one line.
   const { count, error: cErr } = await supabase
     .from('purchase_order_lines')
     .select('id', { count: 'exact', head: true })
+    .eq('brandId', brandId)
     .eq('purchaseOrderId', id);
   if (cErr) { const e = new Error(cErr.message); e.status = 500; throw e; }
   if (!count) { const e = new Error('Cannot mark ordered — PO has no lines'); e.status = 409; throw e; }
@@ -297,13 +308,14 @@ async function markOrdered(req, res, user) {
   const { error } = await supabase
     .from('purchase_orders')
     .update({ status: 'ordered', orderedAt: now, modifiedAt: now, modifiedBy: user.displayName })
-    .eq('id', id);
+    .eq('id', id)
+    .eq('brandId', brandId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ purchaseOrder: { ...po, status: 'ordered', orderedAt: now } });
 }
-async function receiveLine(req, res, user) {
+async function receiveLine(req, res, user, brandId) {
   const { id, lineId, quantityReceived } = req.body || {};
-  const po = await loadPo(id);
+  const po = await loadPo(id, brandId);
   requireStatus(po, ['ordered']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
   const n = parseInt(quantityReceived, 10);
@@ -316,6 +328,7 @@ async function receiveLine(req, res, user) {
     .select('*')
     .eq('id', lineId)
     .eq('purchaseOrderId', id)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (lErr) { const e = new Error(lErr.message); e.status = 500; throw e; }
   if (!line) { const e = new Error('Line not found'); e.status = 404; throw e; }
@@ -324,18 +337,20 @@ async function receiveLine(req, res, user) {
     .from('species')
     .select('id, epithet, "varietyId", "idealSellingPrice"')
     .eq('id', line.speciesId)
+    .eq('brandId', brandId)
     .maybeSingle();
   if (spErr) { const e = new Error(spErr.message); e.status = 500; throw e; }
   if (!species) { const e = new Error('Linked species missing'); e.status = 500; throw e; }
 
   const { data: variety, error: vErr } = await supabase
-    .from('varieties').select('name, code').eq('id', species.varietyId).maybeSingle();
+    .from('varieties').select('name, code').eq('id', species.varietyId).eq('brandId', brandId).maybeSingle();
   if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
 
   // Allocate shipping per unit across ALL lines on this PO.
   const { data: allLines, error: alErr } = await supabase
     .from('purchase_order_lines')
     .select('"quantityOrdered"')
+    .eq('brandId', brandId)
     .eq('purchaseOrderId', id);
   if (alErr) { const e = new Error(alErr.message); e.status = 500; throw e; }
   const totalOrdered = (allLines || []).reduce((s, l) => s + l.quantityOrdered, 0) || 1;
@@ -347,10 +362,11 @@ async function receiveLine(req, res, user) {
 
   const createdIds = [];
   for (let i = 0; i < n; i++) {
-    const sku = await nextSku(variety?.code || 'PLT');
+    const sku = await nextSku(variety?.code || 'PLT', brandId);
     const itemId = newId();
     const itemRow = {
       id: itemId,
+      brandId,
       sku,
       type: 'plant',
       name: species.epithet,
@@ -371,6 +387,7 @@ async function receiveLine(req, res, user) {
 
     const auditRow = {
       id: newId(),
+      brandId,
       lineId,
       inventoryItemId: itemId,
       receivedAt: nowIso,
@@ -385,13 +402,15 @@ async function receiveLine(req, res, user) {
   const { error: uErr } = await supabase
     .from('purchase_order_lines')
     .update({ quantityReceived: newReceived })
-    .eq('id', lineId);
+    .eq('id', lineId)
+    .eq('brandId', brandId);
   if (uErr) { const e = new Error(uErr.message); e.status = 500; throw e; }
 
   // If every line is fully received, flip PO.
   const { data: refreshed, error: rErr } = await supabase
     .from('purchase_order_lines')
     .select('"quantityOrdered","quantityReceived"')
+    .eq('brandId', brandId)
     .eq('purchaseOrderId', id);
   if (rErr) { const e = new Error(rErr.message); e.status = 500; throw e; }
   const allDone = (refreshed || []).every(l => l.quantityReceived >= l.quantityOrdered);
@@ -399,7 +418,8 @@ async function receiveLine(req, res, user) {
     await supabase
       .from('purchase_orders')
       .update({ status: 'received', receivedAt: nowIso, modifiedAt: nowIso, modifiedBy: user.displayName })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('brandId', brandId);
   }
 
   return res.status(200).json({
@@ -409,9 +429,9 @@ async function receiveLine(req, res, user) {
   });
 }
 
-async function cancelReceiveLine(req, res, user) {
+async function cancelReceiveLine(req, res, user, brandId) {
   const { id, lineId } = req.body || {};
-  const po = await loadPo(id);
+  const po = await loadPo(id, brandId);
   // Cancel allowed on partially-received (ordered) AND fully-received POs.
   requireStatus(po, ['ordered', 'received']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
@@ -419,6 +439,7 @@ async function cancelReceiveLine(req, res, user) {
   const { data: audits, error: aErr } = await supabase
     .from('purchase_order_received_items')
     .select('"inventoryItemId"')
+    .eq('brandId', brandId)
     .eq('lineId', lineId);
   if (aErr) { const e = new Error(aErr.message); e.status = 500; throw e; }
   const itemIds = (audits || []).map(a => a.inventoryItemId);
@@ -429,6 +450,7 @@ async function cancelReceiveLine(req, res, user) {
   const { data: items, error: iErr } = await supabase
     .from('inventory_items')
     .select('id, status, "deletedAt"')
+    .eq('brandId', brandId)
     .in('id', itemIds);
   if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
   const cancelable = (items || []).filter(it => it.status === 'available' && !it.deletedAt);
@@ -442,15 +464,16 @@ async function cancelReceiveLine(req, res, user) {
   const { error: dErr } = await supabase
     .from('inventory_items')
     .update({ deletedAt: nowIso, deletedBy: user.displayName })
+    .eq('brandId', brandId)
     .in('id', cancelIds);
   if (dErr) { const e = new Error(dErr.message); e.status = 500; throw e; }
 
   const { data: line } = await supabase
-    .from('purchase_order_lines').select('*').eq('id', lineId).maybeSingle();
+    .from('purchase_order_lines').select('*').eq('id', lineId).eq('brandId', brandId).maybeSingle();
   if (line) {
     const next = Math.max(0, line.quantityReceived - cancelIds.length);
     await supabase
-      .from('purchase_order_lines').update({ quantityReceived: next }).eq('id', lineId);
+      .from('purchase_order_lines').update({ quantityReceived: next }).eq('id', lineId).eq('brandId', brandId);
     line.quantityReceived = next;
   }
 
@@ -458,7 +481,8 @@ async function cancelReceiveLine(req, res, user) {
     await supabase
       .from('purchase_orders')
       .update({ status: 'ordered', receivedAt: null, modifiedAt: nowIso, modifiedBy: user.displayName })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('brandId', brandId);
   }
 
   return res.status(200).json({ deletedCount: cancelIds.length, line });

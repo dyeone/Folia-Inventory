@@ -2,19 +2,27 @@ import { useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
+import { BRANDS, DEFAULT_BRAND } from '../brands.js';
+
+const ALL_BRANDS = Object.entries(BRANDS).map(([id, b]) => ({ id, name: b.name, accent: b.accent }));
 
 export function AddUserModal({ existingUsers, onSave, onClose }) {
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('staff');
+  const [brandIds, setBrandIds] = useState([DEFAULT_BRAND]);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const toggleBrand = (id) =>
+    setBrandIds(prev => prev.includes(id) ? prev.filter(b => b !== id) : [...prev, id]);
 
   const handleSave = async () => {
     setErr('');
     if (!username.trim()) return setErr('Username required');
     if (password.length < 6) return setErr('Password must be at least 6 characters');
+    if (brandIds.length === 0) return setErr('Select at least one brand');
     const normalized = username.trim().toLowerCase();
     if (existingUsers.find(u => u.username === normalized)) return setErr('Username already taken');
 
@@ -25,6 +33,7 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
         password,
         displayName: displayName.trim() || username.trim(),
         role,
+        brandIds,
       });
     } catch (e) {
       setErr(e.message || 'Failed to create user');
@@ -50,6 +59,27 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
             <option value="admin">Admin — full access</option>
             <option value="packer">Packer — Shipping tab only, pack workflow</option>
           </select>
+        </Field>
+        <Field label="Brand access *">
+          <div className="flex flex-wrap gap-2">
+            {ALL_BRANDS.map(b => {
+              const on = brandIds.includes(b.id);
+              return (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => toggleBrand(b.id)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition"
+                  style={on
+                    ? { background: `${b.accent}1a`, color: b.accent, borderColor: b.accent }
+                    : { background: '#fff', color: '#6b7280', borderColor: '#d1d5db' }}
+                >
+                  <span className="w-2 h-2 rounded-full" style={{ background: b.accent, opacity: on ? 1 : 0.35 }} />
+                  {b.name}
+                </button>
+              );
+            })}
+          </div>
         </Field>
         <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-2">
           Share the username and password with the new user. They should change it after first login.

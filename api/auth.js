@@ -75,6 +75,9 @@ async function register(req, res) {
     role: isFirst ? 'admin' : 'staff',
     createdAt: new Date().toISOString(),
     active: true,
+    // The first account is the 3babes owner — give it every brand. Later staff
+    // default to Folia; an admin grants additional brands in user management.
+    brandIds: isFirst ? ['folia', 'bae'] : ['folia'],
   };
 
   const { error } = await supabase.from('users').insert(newUser);

@@ -4,6 +4,9 @@
 const DEFAULTS = {
   apiBase: '',
   userId: '',
+  // Which 3babes brand this extension acts on (Folia, BAE, …). Sent with every
+  // API call so shipments are read/written under the right brand.
+  brandId: 'folia',
   selOpenShipping: '',
   selSearchInput: '',
   selOrderRow: '',

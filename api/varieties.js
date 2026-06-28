@@ -1,4 +1,4 @@
-import { supabase, requireUser, requireAdmin, newId } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Catalog of variety/genus rows. Any active user can list and create
@@ -7,13 +7,14 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
-  const user = await requireUser(userId);
+  const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
 
   switch (req.method) {
     case 'GET': {
       const { data, error } = await supabase
         .from('varieties')
         .select('*')
+        .eq('brandId', brandId)
         .order('name');
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ varieties: data || [] });
@@ -29,6 +30,7 @@ export default wrap(async (req, res) => {
       }
       const row = {
         id: newId(),
+        brandId,
         name: cleanName,
         code: cleanCode,
         createdAt: new Date().toISOString(),
@@ -71,7 +73,7 @@ export default wrap(async (req, res) => {
       if (Object.keys(patch).length === 0) {
         const e = new Error('No fields to update'); e.status = 400; throw e;
       }
-      const { error } = await supabase.from('varieties').update(patch).eq('id', id);
+      const { error } = await supabase.from('varieties').update(patch).eq('id', id).eq('brandId', brandId);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ ok: true });
     }
@@ -84,11 +86,12 @@ export default wrap(async (req, res) => {
       const { count } = await supabase
         .from('species')
         .select('id', { count: 'exact', head: true })
-        .eq('varietyId', id);
+        .eq('varietyId', id)
+        .eq('brandId', brandId);
       if (count && count > 0) {
         const e = new Error(`Variety still has ${count} species — delete those first`); e.status = 409; throw e;
       }
-      const { error } = await supabase.from('varieties').delete().eq('id', id);
+      const { error } = await supabase.from('varieties').delete().eq('id', id).eq('brandId', brandId);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ ok: true });
     }

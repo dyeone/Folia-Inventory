@@ -66,7 +66,19 @@ a time** to avoid jobs racing between them.
    # BRIDGE_DEVICE=<adb-serial>     # only if multiple devices are connected
    # POLL_MS=500
    # U2_URL=http://localhost:9008   # or "off" to disable
+   # BRIDGE_BRAND=bae               # 3babes: pin this bridge to ONE brand;
+   #                                # blank = serve every brand (normal setup)
+   # Per-brand printer overrides (optional). A brand-suffixed var wins over the
+   # shared LABEL_PRINTER/SLIP_PRINTER/DOCUMENT_PRINTER for that brand:
+   # LABEL_PRINTER_BAE=<cups-dest>
+   # SLIP_PRINTER_BAE=<cups-dest>
    ```
+
+   **3babes multi-brand:** one bridge serves every brand by default — each job
+   carries its `brandId` (shown in the claim log), and print content is already
+   brand-correct (the web builds the PDF). Set `BRIDGE_BRAND` only if you want a
+   dedicated bridge per brand, and the `*_PRINTER_<BRAND>` vars only if a brand
+   uses different physical printers.
 
 7. **Install the uiautomator2 server.** The bridge uses uiautomator2's
    on-device server for fast UI dumps (~280 ms vs ~2 s for `adb shell

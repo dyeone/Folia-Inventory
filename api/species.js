@@ -1,4 +1,4 @@
-import { supabase, requireUser, requireAdmin, newId } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Catalog of species/cultivar rows under a variety. Any active user can
@@ -7,13 +7,13 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
-  const user = await requireUser(userId);
+  const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
 
   // Combine two species into one (used when renaming or re-parenting a species
   // to a name+variety that already exists). Re-points everything — items adopt
   // the survivor's variety — then removes the duplicate; see mergeSpecies.
   if (req.method === 'POST' && req.body?.action === 'merge') {
-    return mergeSpecies(req, res, userId, user);
+    return mergeSpecies(req, res, userId, user, brandId);
   }
 
   switch (req.method) {
@@ -21,6 +21,7 @@ export default wrap(async (req, res) => {
       const { data: species, error } = await supabase
         .from('species')
         .select('*')
+        .eq('brandId', brandId)
         .order('epithet');
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       const ids = (species || []).map(s => s.id);
@@ -30,6 +31,7 @@ export default wrap(async (req, res) => {
           .from('species_photos')
           .select('id, "speciesId", "storagePath", "sortOrder", "kind"')
           .in('speciesId', ids)
+          .eq('brandId', brandId)
           .order('sortOrder');
         if (pe) { const e = new Error(pe.message); e.status = 500; throw e; }
         photos = p || [];
@@ -53,7 +55,7 @@ export default wrap(async (req, res) => {
       const cleanEpithet = String(epithet || '').trim();
       if (!cleanEpithet) { const e = new Error('epithet required'); e.status = 400; throw e; }
       const { data: vrow } = await supabase
-        .from('varieties').select('id').eq('id', varietyId).maybeSingle();
+        .from('varieties').select('id').eq('id', varietyId).eq('brandId', brandId).maybeSingle();
       if (!vrow) { const e = new Error('Unknown variety'); e.status = 400; throw e; }
 
       const parseMoney = (v, name) => {
@@ -67,6 +69,7 @@ export default wrap(async (req, res) => {
 
       const row = {
         id: newId(),
+        brandId,
         varietyId,
         epithet: cleanEpithet,
         commonName: commonName ? String(commonName).trim() : null,
@@ -101,7 +104,7 @@ export default wrap(async (req, res) => {
       // a clean 400 (matching POST) instead of a raw FK 500.
       if (varietyId !== undefined) {
         const { data: vrow } = await supabase
-          .from('varieties').select('id').eq('id', varietyId).maybeSingle();
+          .from('varieties').select('id').eq('id', varietyId).eq('brandId', brandId).maybeSingle();
         if (!vrow) { const e = new Error('Unknown variety'); e.status = 400; throw e; }
       }
 
@@ -136,7 +139,7 @@ export default wrap(async (req, res) => {
         const e = new Error('No fields to update'); e.status = 400; throw e;
       }
 
-      const { error } = await supabase.from('species').update(patch).eq('id', id);
+      const { error } = await supabase.from('species').update(patch).eq('id', id).eq('brandId', brandId);
       if (error) {
         // A duplicate (varietyId, epithet) means another species already has
         // this name — the UI offers to combine them; surface a clear message
@@ -151,17 +154,17 @@ export default wrap(async (req, res) => {
       // accurate when an admin renames a species.
       if (patch.epithet !== undefined || patch.varietyId !== undefined) {
         const { data: srow } = await supabase
-          .from('species').select('epithet, varietyId').eq('id', id).maybeSingle();
+          .from('species').select('epithet, varietyId').eq('id', id).eq('brandId', brandId).maybeSingle();
         if (srow) {
           const sync = {};
           if (patch.epithet !== undefined) sync.name = srow.epithet;
           if (patch.varietyId !== undefined) {
             const { data: vrow } = await supabase
-              .from('varieties').select('name').eq('id', srow.varietyId).maybeSingle();
+              .from('varieties').select('name').eq('id', srow.varietyId).eq('brandId', brandId).maybeSingle();
             if (vrow) sync.variety = vrow.name;
           }
           if (Object.keys(sync).length > 0) {
-            await supabase.from('inventory_items').update(sync).eq('speciesId', id);
+            await supabase.from('inventory_items').update(sync).eq('speciesId', id).eq('brandId', brandId);
           }
         }
       }
@@ -175,11 +178,12 @@ export default wrap(async (req, res) => {
       const { count } = await supabase
         .from('inventory_items')
         .select('id', { count: 'exact', head: true })
-        .eq('speciesId', id);
+        .eq('speciesId', id)
+        .eq('brandId', brandId);
       if (count && count > 0) {
         const e = new Error(`Species still has ${count} items — reassign or delete those first`); e.status = 409; throw e;
       }
-      const { error } = await supabase.from('species').delete().eq('id', id);
+      const { error } = await supabase.from('species').delete().eq('id', id).eq('brandId', brandId);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ ok: true });
     }
@@ -208,14 +212,14 @@ export default wrap(async (req, res) => {
 //
 // The re-point + delete steps are individually idempotent: a mid-way failure
 // only leaves an already-emptied duplicate that a re-run removes. Admin-only.
-async function mergeSpecies(req, res, userId, user) {
+async function mergeSpecies(req, res, userId, user, brandId) {
   await requireAdmin(userId);
   const { fromId, intoId } = req.body || {};
   if (!fromId || !intoId) { const e = new Error('fromId and intoId required'); e.status = 400; throw e; }
   if (fromId === intoId) { const e = new Error('Cannot combine a species into itself'); e.status = 400; throw e; }
 
   const { data: rows, error: selErr } = await supabase
-    .from('species').select('id, "varietyId", epithet').in('id', [fromId, intoId]);
+    .from('species').select('id, "varietyId", epithet').in('id', [fromId, intoId]).eq('brandId', brandId);
   if (selErr) { const e = new Error(selErr.message); e.status = 500; throw e; }
   const from = rows?.find(r => r.id === fromId);
   const into = rows?.find(r => r.id === intoId);
@@ -224,7 +228,7 @@ async function mergeSpecies(req, res, userId, user) {
   // Items adopt the survivor's variety too — combine can move a species across
   // varieties (e.g. fixing a duplicate that was mis-categorized under two).
   const { data: vrow, error: vErr } = await supabase
-    .from('varieties').select('name').eq('id', into.varietyId).maybeSingle();
+    .from('varieties').select('name').eq('id', into.varietyId).eq('brandId', brandId).maybeSingle();
   if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
   const intoVarietyName = vrow?.name || null;
 
@@ -234,7 +238,8 @@ async function mergeSpecies(req, res, userId, user) {
   const { count: poCount, error: poErr } = await supabase
     .from('purchase_order_lines')
     .select('id', { count: 'exact', head: true })
-    .eq('speciesId', fromId);
+    .eq('speciesId', fromId)
+    .eq('brandId', brandId);
   if (poErr) { const e = new Error(poErr.message); e.status = 500; throw e; }
   if (poCount && poCount > 0) {
     const e = new Error(`"${from.epithet}" has purchase-order history and can't be auto-combined. Remove its purchase-order lines first, then combine.`);
@@ -251,6 +256,7 @@ async function mergeSpecies(req, res, userId, user) {
     .from('inventory_items')
     .update(itemPatch)
     .eq('speciesId', fromId)
+    .eq('brandId', brandId)
     .select('id');
   if (itErr) { const e = new Error(itErr.message); e.status = 500; throw e; }
 
@@ -260,14 +266,14 @@ async function mergeSpecies(req, res, userId, user) {
   //    rest as gallery photos (nothing is lost), avoiding duplicate slots.
   const { error: demoteErr } = await supabase
     .from('species_photos').update({ kind: 'gallery' })
-    .eq('speciesId', fromId).neq('kind', 'gallery');
+    .eq('speciesId', fromId).neq('kind', 'gallery').eq('brandId', brandId);
   if (demoteErr) { const e = new Error(demoteErr.message); e.status = 500; throw e; }
   const { error: phErr } = await supabase
-    .from('species_photos').update({ speciesId: intoId }).eq('speciesId', fromId);
+    .from('species_photos').update({ speciesId: intoId }).eq('speciesId', fromId).eq('brandId', brandId);
   if (phErr) { const e = new Error(phErr.message); e.status = 500; throw e; }
 
   // 3. Remove the now-unreferenced duplicate (no PO lines, items + photos moved).
-  const { error: delErr } = await supabase.from('species').delete().eq('id', fromId);
+  const { error: delErr } = await supabase.from('species').delete().eq('id', fromId).eq('brandId', brandId);
   if (delErr) { const e = new Error(delErr.message); e.status = 500; throw e; }
 
   return res.status(200).json({ ok: true, merged: true, intoId, removedId: fromId, items: movedItems?.length || 0 });

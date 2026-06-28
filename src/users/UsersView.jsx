@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
 import { UserPlus, Key, Eye, EyeOff, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
+import { BRANDS } from '../brands.js';
 import { AddUserModal } from './AddUserModal.jsx';
 import { ResetPasswordModal } from './ResetPasswordModal.jsx';
+
+const ALL_BRANDS = Object.entries(BRANDS).map(([id, b]) => ({ id, name: b.name, accent: b.accent }));
 
 export function UsersView({ currentUser, setConfirmDialog, showToast }) {
   const [users, setUsers] = useState([]);
@@ -34,6 +37,19 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
       showToast('Role updated');
     } catch (e) {
       showToast(e.message || 'Failed to update role', 'error');
+    }
+  };
+
+  const toggleBrand = async (user, brandId) => {
+    const current = Array.isArray(user.brandIds) && user.brandIds.length ? user.brandIds : ['folia'];
+    const next = current.includes(brandId) ? current.filter(b => b !== brandId) : [...current, brandId];
+    if (next.length === 0) return showToast('A user needs access to at least one brand', 'error');
+    try {
+      await api.updateUser({ id: user.id, patch: { brandIds: next }, adminUserId: currentUser.id });
+      setUsers(users.map(u => u.id === user.id ? { ...u, brandIds: next } : u));
+      showToast('Brand access updated');
+    } catch (e) {
+      showToast(e.message || 'Failed to update brand access', 'error');
     }
   };
 
@@ -96,6 +112,7 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
             <tr className="text-left text-xs font-medium text-gray-600 uppercase tracking-wide">
               <th className="px-3 py-2.5">User</th>
               <th className="px-3 py-2.5">Role</th>
+              <th className="px-3 py-2.5">Brands</th>
               <th className="px-3 py-2.5">Status</th>
               <th className="px-3 py-2.5">Joined</th>
               <th className="px-3 py-2.5"></th>
@@ -135,6 +152,28 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
                       <option value="staff">Staff</option>
                       <option value="packer">Packer</option>
                     </select>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex flex-wrap gap-1">
+                      {ALL_BRANDS.map(b => {
+                        const on = (user.brandIds && user.brandIds.length ? user.brandIds : ['folia']).includes(b.id);
+                        return (
+                          <button
+                            key={b.id}
+                            type="button"
+                            onClick={() => toggleBrand(user, b.id)}
+                            title={on ? `Remove ${b.name} access` : `Grant ${b.name} access`}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border transition"
+                            style={on
+                              ? { background: `${b.accent}1a`, color: b.accent, borderColor: b.accent }
+                              : { color: '#9ca3af', borderColor: '#e5e7eb', background: '#fff' }}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full" style={{ background: b.accent, opacity: on ? 1 : 0.3 }} />
+                            {b.name}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </td>
                   <td className="px-3 py-2.5">
                     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${

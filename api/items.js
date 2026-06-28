@@ -1,8 +1,11 @@
-import { supabase, requireUser, newId } from './_lib/supabase.js';
+import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Fields the client must never be able to set directly. The server owns these.
-const SERVER_OWNED = ['createdAt', 'createdBy', 'modifiedAt', 'modifiedBy'];
+// brandId is server-owned too: the active brand is forced from the request, so
+// a client can neither create rows in another brand nor move a row between
+// brands via the item payload.
+const SERVER_OWNED = ['createdAt', 'createdBy', 'modifiedAt', 'modifiedBy', 'brandId'];
 
 // Supabase caps un-ranged selects at 1000 rows by default. Paginate so we
 // actually return everything for tables that can grow past that. Pass a
@@ -36,8 +39,8 @@ function stripServerOwned(item) {
 // caused new SKUs to collide with existing numbers under a different
 // variety prefix. The RPC (defined in migration 0007) extracts the suffix
 // in regex and takes max(int), which is correct regardless of width.
-async function findMaxSkuSuffix() {
-  const { data, error } = await supabase.rpc('inventory_max_sku_suffix');
+async function findMaxSkuSuffix(brandId) {
+  const { data, error } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return data ?? 0;
 }
@@ -48,11 +51,12 @@ async function findMaxSkuSuffix() {
 //
 // Variety codes come from the `varieties` table (so admin-added varieties
 // work without a code release).
-async function assignMissingSkus(items) {
+async function assignMissingSkus(items, brandId) {
   const needSku = items.filter(i => !i.sku);
   if (needSku.length === 0) return;
 
-  const { data: varieties, error: vErr } = await supabase.from('varieties').select('name, code');
+  const { data: varieties, error: vErr } = await supabase
+    .from('varieties').select('name, code').eq('brandId', brandId);
   if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
   const codeByName = Object.fromEntries((varieties || []).map(v => [v.name, v.code]));
 
@@ -62,7 +66,7 @@ async function assignMissingSkus(items) {
     }
   }
 
-  let next = (await findMaxSkuSuffix()) + 1;
+  let next = (await findMaxSkuSuffix(brandId)) + 1;
   for (const item of needSku) {
     item.sku = `${codeByName[item.variety]}-${next++}`;
   }
@@ -71,10 +75,11 @@ async function assignMissingSkus(items) {
 // Pick the next global SKU number for a given variety. Used by /convert.
 // Variety codes live in the `varieties` table (the old VARIETY_CODES
 // constants.js export is gone) so we look them up here.
-async function nextSkuForVariety(variety) {
+async function nextSkuForVariety(variety, brandId) {
   const { data: row, error: vErr } = await supabase
     .from('varieties')
     .select('code')
+    .eq('brandId', brandId)
     .eq('name', variety)
     .maybeSingle();
   if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
@@ -82,21 +87,21 @@ async function nextSkuForVariety(variety) {
   if (!code) {
     const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
   }
-  const next = (await findMaxSkuSuffix()) + 1;
+  const next = (await findMaxSkuSuffix(brandId)) + 1;
   return `${code}-${next}`;
 }
 
 export default wrap(async (req, res) => {
-  // All item operations require an authenticated user.
+  // All item operations require an authenticated user + an authorized brand.
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
-  const user = await requireUser(userId);
+  const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
 
   // Sub-action dispatch — "convert" used to live at /api/items/convert
   // but was inlined here to stay under Vercel's 12-function Hobby cap.
   // The action travels in the query string for GET, body for POST.
   const action = req.method === 'GET' ? req.query?.action : req.body?.action;
-  if (action === 'convert') return convertItem(req, res, user);
-  if (action === 'rename-names') return renameNames(req, res, user);
+  if (action === 'convert') return convertItem(req, res, user, brandId);
+  if (action === 'rename-names') return renameNames(req, res, user, brandId);
 
   switch (req.method) {
     case 'GET': {
@@ -109,10 +114,12 @@ export default wrap(async (req, res) => {
       await supabase
         .from('inventory_items')
         .delete()
+        .eq('brandId', brandId)
         .not('deletedAt', 'is', null)
         .lt('deletedAt', cutoff);
 
-      const data = await fetchAll(() => supabase.from('inventory_items').select('*'));
+      const data = await fetchAll(() =>
+        supabase.from('inventory_items').select('*').eq('brandId', brandId));
       return res.status(200).json({ items: data });
     }
 
@@ -128,7 +135,7 @@ export default wrap(async (req, res) => {
       const rawUpdates = items.filter(i => i.id).map(stripServerOwned);
 
       // Server-generate SKUs for new items that don't have one.
-      if (rawInserts.length > 0) await assignMissingSkus(rawInserts);
+      if (rawInserts.length > 0) await assignMissingSkus(rawInserts, brandId);
 
       // Self-heal Validate-Sales placeholder rows. Each unmatched order
       // line generates a deterministic UNMATCHED-<boxId>-<rowKey> SKU
@@ -145,6 +152,7 @@ export default wrap(async (req, res) => {
         const { error: delErr } = await supabase
           .from('inventory_items')
           .delete()
+          .eq('brandId', brandId)
           .in('sku', placeholderSkus);
         if (delErr) { const e = new Error(delErr.message); e.status = 500; throw e; }
       }
@@ -155,6 +163,7 @@ export default wrap(async (req, res) => {
         id: newId(),
         createdAt: now,
         createdBy: user.displayName,
+        brandId,
       }));
       const updates = rawUpdates.map(item => ({
         ...item,
@@ -195,6 +204,7 @@ export default wrap(async (req, res) => {
           const { error } = await supabase
             .from('inventory_items')
             .update(patch)
+            .eq('brandId', brandId)
             .eq('id', id);
           if (error) {
             if (error.code === '23505' && /sku/i.test(error.message || '')) {
@@ -239,6 +249,7 @@ export default wrap(async (req, res) => {
           const { data, error } = await supabase
             .from('inventory_items')
             .select('sku')
+            .eq('brandId', brandId)
             .in('id', ids.slice(i, i + CHUNK));
           if (error) { const e = new Error(error.message); e.status = 500; throw e; }
           skus.push(...(data || []));
@@ -252,7 +263,8 @@ export default wrap(async (req, res) => {
         // Deleted tab's "Delete forever" action.
         for (let i = 0; i < ids.length; i += CHUNK) {
           const batch = ids.slice(i, i + CHUNK);
-          const { error } = await supabase.from('inventory_items').delete().in('id', batch);
+          const { error } = await supabase
+            .from('inventory_items').delete().eq('brandId', brandId).in('id', batch);
           if (error) { const e = new Error(error.message); e.status = 500; throw e; }
         }
         return res.status(200).json({ ok: true, purged: ids.length });
@@ -265,7 +277,8 @@ export default wrap(async (req, res) => {
       };
       for (let i = 0; i < ids.length; i += CHUNK) {
         const batch = ids.slice(i, i + CHUNK);
-        const { error } = await supabase.from('inventory_items').update(patch).in('id', batch);
+        const { error } = await supabase
+          .from('inventory_items').update(patch).eq('brandId', brandId).in('id', batch);
         if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       }
       return res.status(200).json({ ok: true, deleted: ids.length });
@@ -279,7 +292,7 @@ export default wrap(async (req, res) => {
 // POST /api/items?action=convert
 // Body: { userId, action: 'convert', tcId, plantData }
 // Atomically converts a TC item into a new Plant item.
-async function convertItem(req, res, user) {
+async function convertItem(req, res, user, brandId) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
 
   const { tcId, plantData } = req.body || {};
@@ -291,6 +304,7 @@ async function convertItem(req, res, user) {
   const { data: tc, error: tcErr } = await supabase
     .from('inventory_items')
     .select('*')
+    .eq('brandId', brandId)
     .eq('id', tcId)
     .maybeSingle();
   if (tcErr) { const e = new Error(tcErr.message); e.status = 500; throw e; }
@@ -299,7 +313,7 @@ async function convertItem(req, res, user) {
   if (tc.status === 'converted') { const e = new Error('Item is already converted'); e.status = 409; throw e; }
 
   const variety = plantData.variety || tc.variety;
-  const newSku = await nextSkuForVariety(variety);
+  const newSku = await nextSkuForVariety(variety, brandId);
   const now = new Date().toISOString();
 
   const plant = {
@@ -320,6 +334,7 @@ async function convertItem(req, res, user) {
     createdBy: user.displayName,
     modifiedAt: null,
     modifiedBy: null,
+    brandId,
   };
 
   const { error: insErr } = await supabase.from('inventory_items').insert(plant);
@@ -338,10 +353,11 @@ async function convertItem(req, res, user) {
       modifiedAt: now,
       modifiedBy: user.displayName,
     })
+    .eq('brandId', brandId)
     .eq('id', tc.id);
   if (updErr) {
     // Best-effort rollback: delete the plant we just inserted.
-    await supabase.from('inventory_items').delete().eq('id', plant.id);
+    await supabase.from('inventory_items').delete().eq('brandId', brandId).eq('id', plant.id);
     const e = new Error(`Failed to mark TC as converted: ${updErr.message}`); e.status = 500; throw e;
   }
 
@@ -357,7 +373,7 @@ async function convertItem(req, res, user) {
 // set-based UPDATE by id — atomic per group (a group can never be left
 // half-renamed) and one round-trip per chunk instead of per item (no timeout
 // on large renames). Renaming two groups to the same name merges them.
-async function renameNames(req, res, user) {
+async function renameNames(req, res, user, brandId) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
   const { renames } = req.body || {};
   if (!Array.isArray(renames) || renames.length === 0) {
@@ -377,6 +393,7 @@ async function renameNames(req, res, user) {
       const { data, error } = await supabase
         .from('inventory_items')
         .update({ name, modifiedAt: now, modifiedBy: user.displayName })
+        .eq('brandId', brandId)
         .in('id', batch)
         .select('id');
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
