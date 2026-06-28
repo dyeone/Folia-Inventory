@@ -1,6 +1,10 @@
 # 3babes — multi-brand architecture
 
-> Status: in progress (branch `feat/3babes-multi-brand`).
+> Status: Stages 1–3 done; Stage 4 in progress (branch `feat/3babes-multi-brand`).
+> Done: foundation + migrations 0029/0030, all 12 API functions brand-scoped,
+> 3babes shell + Folia/BAE switcher, and per-user brand assignment in user
+> management. Remaining: live BAE dogfood (needs migrations applied) + Stage 5
+> (bridge/mac-app/extension brand routing).
 > Goal: turn the single-tenant **Folia** app into a **3babes** house that runs
 > multiple brands from one codebase + one Supabase, starting with **Folia** and
 > **BAE** (Best Anthuriums Ever). Each brand's operational data is fully

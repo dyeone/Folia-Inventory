@@ -288,8 +288,8 @@ export const api = {
 
   // Users (admin only, enforced server-side)
   getUsers: () => request('/users').then(r => r.users),
-  createUser: ({ username, password, displayName, role, adminUserId }) =>
-    request('/users', { method: 'POST', body: { username, password, displayName, role, adminUserId } }).then(r => r.user),
+  createUser: ({ username, password, displayName, role, brandIds, adminUserId }) =>
+    request('/users', { method: 'POST', body: { username, password, displayName, role, brandIds, adminUserId } }).then(r => r.user),
   updateUser: ({ id, patch, newPassword, adminUserId }) =>
     request('/users', { method: 'PATCH', body: { id, patch, newPassword, adminUserId } }),
   deleteUsers: (ids, adminUserId) =>
