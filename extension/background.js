@@ -48,7 +48,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 async function get(settings, path) {
   const sep = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${settings.apiBase}${path}${sep}userId=${encodeURIComponent(settings.userId)}`);
+  // brandId scopes the call to the chosen 3babes brand (Folia, BAE, …). When
+  // unset the server defaults to Folia, so older extension configs keep working.
+  const brand = settings.brandId ? `&brandId=${encodeURIComponent(settings.brandId)}` : '';
+  const res = await fetch(`${settings.apiBase}${path}${sep}userId=${encodeURIComponent(settings.userId)}${brand}`);
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
   return data;
@@ -58,7 +61,7 @@ async function post(settings, path, body) {
   const res = await fetch(`${settings.apiBase}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, userId: settings.userId }),
+    body: JSON.stringify({ ...body, userId: settings.userId, brandId: settings.brandId || undefined }),
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);

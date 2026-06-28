@@ -121,15 +121,19 @@ function roleActionFilter(query, role) {
 // is allowed to handle. Atomic via CAS: select candidate, then guarded UPDATE
 // on its prior status. If 0 rows return, another bridge raced us; treat as
 // "nothing claimed".
-async function tryClaim(user, role) {
+async function tryClaim(user, role, brand) {
   const staleCutoff = new Date(Date.now() - STALE_RUNNING_MS).toISOString();
-  const { data: candidate, error: selErr } = await roleActionFilter(
+  let query = roleActionFilter(
     supabase
       .from('bridge_jobs')
       .select('*')
       .or(`status.eq.queued,and(status.eq.running,claimedAt.lt.${staleCutoff})`),
     role,
-  )
+  );
+  // Optional brand pin: a bridge launched with BRIDGE_BRAND only claims that
+  // brand's jobs. Unset = claim every brand (the normal single-Mac setup).
+  if (brand) query = query.eq('brandId', brand);
+  const { data: candidate, error: selErr } = await query
     .order('createdAt', { ascending: true })
     .limit(1)
     .maybeSingle();
@@ -167,6 +171,7 @@ async function next(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
   const user = await requireBridgeUser(req);
   const role = (req.query?.role || '').toString().toLowerCase();
+  const brand = (req.query?.brand || '').toString().toLowerCase();
 
   // Heartbeat. /health reads this to decide if the bridge is online.
   // With long-poll, the bridge issues at most one request per ~9 s when
@@ -179,7 +184,7 @@ async function next(req, res) {
 
   const deadline = Date.now() + NEXT_LONG_POLL_MS;
   while (true) {
-    const claimed = await tryClaim(user, role);
+    const claimed = await tryClaim(user, role, brand);
     if (claimed) return res.status(200).json({ job: claimed });
     if (Date.now() >= deadline) return res.status(200).json({ job: null });
     await new Promise(r => setTimeout(r, NEXT_POLL_INTERVAL_MS));

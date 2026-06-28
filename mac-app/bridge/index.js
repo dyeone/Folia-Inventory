@@ -55,10 +55,9 @@ const U2_ENABLED = U2_URL.toLowerCase() !== 'off';
 // Printers panel writes these into bridge/.env. A 'print' job carries a role
 // ('label' | 'slip' | 'document') that maps to one of these, with sensible
 // fallbacks (slip→label, anything→system default when unset). Leaving them all
-// blank means every print goes to the Mac's default printer.
-const LABEL_PRINTER = process.env.LABEL_PRINTER || '';
-const SLIP_PRINTER = process.env.SLIP_PRINTER || '';
-const DOCUMENT_PRINTER = process.env.DOCUMENT_PRINTER || '';
+// blank means every print goes to the Mac's default printer. resolvePrinter()
+// reads these (and optional per-brand LABEL_PRINTER_<BRAND> overrides) from
+// process.env at print time.
 // This machine's job, sent to /next so the server only hands it matching jobs:
 //   'printer'    → only print jobs (this Mac has the label printers)
 //   'palmstreet' → only the phone-driving jobs (this Mac has the Android device)
@@ -66,6 +65,10 @@ const DOCUMENT_PRINTER = process.env.DOCUMENT_PRINTER || '';
 // Lets an operator run two bridges — phone on one Mac, printers on another —
 // without them stealing each other's jobs.
 const BRIDGE_ROLE = (process.env.BRIDGE_ROLE || '').toLowerCase().trim();
+// Optional 3babes brand pin. Blank = serve every brand (the normal single-Mac
+// setup). Set to a brand id (e.g. 'bae') to dedicate this bridge to one brand —
+// it then only claims that brand's jobs. Mirrors BRIDGE_ROLE.
+const BRIDGE_BRAND = (process.env.BRIDGE_BRAND || '').toLowerCase().trim();
 // "Watch live" flag file. The Mac app creates/removes it (BridgeRunner
 // .setWatchLive) to toggle the live monitor; the poll loop only scrapes the
 // live screen while it exists, so monitoring is OFF (zero extra dumps) by
@@ -1004,14 +1007,18 @@ const LP_TIMEOUT_MS = 30_000;
 // Roles never fall back to each other — a slip (80mm) and a label (2×1) are
 // different media — so an unconfigured role drops to the system default (empty
 // string → `lp` with no -d) rather than misprinting on the wrong printer.
-function resolvePrinter({ role, printer }) {
+//
+// Per-brand override: a brand can target different hardware via a brand-suffixed
+// env var (e.g. LABEL_PRINTER_BAE), which wins over the shared default. Folia
+// and any brand without an override use the shared LABEL_PRINTER/SLIP_PRINTER/
+// DOCUMENT_PRINTER, so existing setups are unchanged.
+const ROLE_PRINTER_ENV = { label: 'LABEL_PRINTER', slip: 'SLIP_PRINTER', document: 'DOCUMENT_PRINTER' };
+function resolvePrinter(brandId, { role, printer }) {
   if (printer && typeof printer === 'string') return printer.trim();
-  switch (role) {
-    case 'label':    return LABEL_PRINTER;
-    case 'slip':     return SLIP_PRINTER;
-    case 'document': return DOCUMENT_PRINTER;
-    default:         return '';
-  }
+  const envName = ROLE_PRINTER_ENV[role];
+  if (!envName) return '';
+  const override = brandId ? process.env[`${envName}_${brandId.toUpperCase()}`] : '';
+  return (override && override.trim()) || (process.env[envName] || '').trim();
 }
 
 // Decode the PDF bytes for a print job. The only accepted transport is inline
@@ -1034,8 +1041,8 @@ function resolvePdfBytes(payload) {
 
 // Execute a 'print' job: write the PDF to a temp file and hand it to `lp`.
 // Returns a small status object (never the bytes) for the job result.
-async function printLabel(payload) {
-  const printer = resolvePrinter(payload);
+async function printLabel(payload, brandId) {
+  const printer = resolvePrinter(brandId, payload);
   const copies = Math.max(1, Math.min(50, parseInt(payload.copies, 10) || 1));
   const bytes = resolvePdfBytes(payload);
 
@@ -1095,7 +1102,7 @@ function runJob(job) {
     case 'listing':
       return listing(job.payload || {});
     case 'print':
-      return printLabel(job.payload || {});
+      return printLabel(job.payload || {}, job.brandId);
     default:
       return Promise.reject(new Error(`unknown action: ${job.action}`));
   }
@@ -1157,7 +1164,10 @@ async function apiCall(path, init = {}) {
 // claims print jobs. Only OLD bridges (pre-role) send no role at all, and the
 // server deliberately keeps those away from print jobs.
 const nextJob = () =>
-  apiCall(`/api/bridge?action=next&role=${encodeURIComponent(BRIDGE_ROLE || 'all')}`);
+  apiCall(
+    `/api/bridge?action=next&role=${encodeURIComponent(BRIDGE_ROLE || 'all')}` +
+    (BRIDGE_BRAND ? `&brand=${encodeURIComponent(BRIDGE_BRAND)}` : ''),
+  );
 const completeJob = (id, result, error) =>
   apiCall('/api/bridge?action=complete', {
     method: 'POST',
@@ -1290,7 +1300,7 @@ async function pollOnce() {
   const { job } = await nextJob();
   if (!job) return false;
   consecutiveErrors = 0;
-  console.log(`[${new Date().toISOString()}] job ${job.id} (${job.action}) claimed`);
+  console.log(`[${new Date().toISOString()}] job ${job.id} (${job.action})${job.brandId ? ` [${job.brandId}]` : ''} claimed`);
   let result = null, error = null;
   try {
     result = await handleJob(job);
@@ -1312,6 +1322,7 @@ async function main() {
   console.log(`Folia bridge starting`);
   console.log(`  api    ${API_URL}`);
   console.log(`  role   ${BRIDGE_ROLE || 'all (print + palmstreet)'}`);
+  console.log(`  brand  ${BRIDGE_BRAND || 'all brands'}`);
   console.log(`  device ${DEVICE || '(default adb device)'}`);
   console.log(`  poll   ${POLL_MS}ms`);
 
