@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
-import { userBrands, resolveActiveBrand } from './brands.js';
+import { userBrands, resolveActiveBrand, brandLogo, brandName } from './brands.js';
 import { newTaskId } from './tasks/taskHelpers.js';
 
 // Eager imports: auth screen, the always-rendered chrome, and the default
@@ -795,7 +795,7 @@ function StaffOrAdminInventory() {
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30 pt-safe">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <img src="/logo.png" alt="3babes" className="h-9 w-auto rounded-lg" />
+            <img src={brandLogo(activeBrand)} alt={brandName(activeBrand)} className="h-9 w-auto rounded-lg" />
             <h1 className="text-lg font-semibold text-gray-900 hidden sm:block">3babes</h1>
             <BrandSwitcher brands={brands} activeBrand={activeBrand} onSwitch={switchBrand} />
           </div>
