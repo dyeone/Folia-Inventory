@@ -13,7 +13,7 @@ import { F, FILTERS, INK, RED, defaultContent, mergeContent } from './baeContent
 // Ported from the bae-landing repo's app/edit/page.tsx; keep the field set in
 // sync with src/landing/baeContent.js when the schema changes.
 
-const SITE_URL = 'https://bae-landing.vercel.app';
+const SITE_URL = 'https://bae-landing-sand.vercel.app';
 
 const CREAM = '#F4F0E6';
 const MUTE = '#9B9488';
