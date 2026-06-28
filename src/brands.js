@@ -6,8 +6,8 @@
 export const COMPANY_NAME = '3babes';
 
 export const BRANDS = {
-  folia: { name: 'Folia', accent: '#16a34a' },      // green
-  bae: { name: 'BAE', accent: '#F0392E', full: 'Best Anthuriums Ever' }, // red (logo)
+  folia: { name: 'Folia', accent: '#16a34a', logo: '/logo.png' },      // green
+  bae: { name: 'BAE', accent: '#F0392E', logo: '/logo-bae.png', full: 'Best Anthuriums Ever' }, // red (logo)
 };
 
 export const DEFAULT_BRAND = 'folia';
@@ -18,6 +18,11 @@ export function brandName(id) {
 
 export function brandAccent(id) {
   return BRANDS[id]?.accent || '#16a34a';
+}
+
+// Header logo (served from public/), per brand. Falls back to the Folia logo.
+export function brandLogo(id) {
+  return BRANDS[id]?.logo || '/logo.png';
 }
 
 // Resolve the list of brands a user can access into [{ id, name, accent }],
