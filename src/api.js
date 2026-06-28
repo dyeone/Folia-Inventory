@@ -211,6 +211,13 @@ export const api = {
   toggleCareTask: (calendarId, taskId, done) =>
     request('/settings', { method: 'POST', body: { action: 'care-toggle-task', calendarId, taskId, done } }).then(r => r.calendar),
 
+  // BAE landing-page CMS — one brand-scoped JSON blob the public landing site
+  // reads. getLanding returns the published content (or null → editor uses its
+  // built-in defaults); saveLanding publishes (admin-only, enforced server-side).
+  getLanding: () => request('/settings?action=landing-get').then(r => r.content),
+  saveLanding: (content) =>
+    request('/settings', { method: 'POST', body: { action: 'landing-save', content } }).then(r => r.content),
+
   // Shipments (ShipStation labels). One row per shipmentBoxId.
   getShipments: (saleId) =>
     request(`/shipments${saleId ? `?saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.shipments),

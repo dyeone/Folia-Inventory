@@ -7,6 +7,18 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 // new endpoints.
 
 export default wrap(async (req, res) => {
+  // ── Public, unauthenticated read of published landing content ──
+  // The BAE landing site lives on a separate origin and fetches this from the
+  // browser to render whatever the admin published. Marketing copy is public by
+  // nature, so there's no auth gate; CORS is opened so the cross-origin fetch
+  // succeeds. Handled before requireBrand so no session is needed.
+  if (req.method === 'GET' && req.query?.action === 'landing-public') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    const pubBrand = String(req.query?.brandId || '').trim();
+    if (!pubBrand) { const e = new Error('brandId required'); e.status = 400; throw e; }
+    return res.status(200).json({ content: await loadLanding(pubBrand) });
+  }
+
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   // Resolve the active brand alongside the user. Tasks (per-user) and generic
   // settings (id='shipping', currently shared) ignore brandId; care calendars
@@ -30,6 +42,13 @@ export default wrap(async (req, res) => {
   // edit, or delete a calendar.
   if (typeof action === 'string' && action.startsWith('care-')) {
     return handleCare(action, req, res, user, brandId);
+  }
+  // BAE landing-page CMS — one brand-scoped JSON blob (id `landing:<brandId>`)
+  // that the public BAE landing site reads (via the `landing-public` branch
+  // above). Same no-new-function / no-migration rationale as tasks + care.
+  // Authed read for the in-app editor; admin-only save.
+  if (typeof action === 'string' && action.startsWith('landing-')) {
+    return handleLanding(action, req, res, user, brandId);
   }
 
   const id = req.method === 'GET' ? req.query?.id : req.body?.id;
@@ -371,6 +390,64 @@ async function handleCare(action, req, res, user, brandId) {
     }
     default: {
       const e = new Error('Unknown care action'); e.status = 400; throw e;
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// BAE landing-page CMS — one brand-scoped JSON blob (id = `landing:<brandId>`).
+// The public BAE landing site reads it through the `landing-public` branch at
+// the top of the handler; the in-app editor reads (`landing-get`) and the admin
+// publishes (`landing-save`).
+// ----------------------------------------------------------------------------
+
+const LANDING_NS = 'landing:';
+// Worst-case full landing blob is a few KB; 256KB is a generous abuse ceiling
+// that still rejects someone pasting a novel into a text field.
+const LANDING_MAX_BYTES = 256 * 1024;
+
+function landingRowId(brandId) {
+  return LANDING_NS + brandId;
+}
+
+// Read the published landing content for a brand (null if never published).
+async function loadLanding(brandId) {
+  const { data, error } = await supabase
+    .from('app_settings').select('data').eq('id', landingRowId(brandId)).maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return data?.data || null;
+}
+
+async function handleLanding(action, req, res, user, brandId) {
+  switch (action) {
+    case 'landing-get': {
+      // Any active user may read; the editor itself is admin-gated in the UI.
+      return res.status(200).json({ content: await loadLanding(brandId) });
+    }
+    case 'landing-save': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const content = req.body?.content;
+      if (!content || typeof content !== 'object' || Array.isArray(content)) {
+        const e = new Error('content (object) required'); e.status = 400; throw e;
+      }
+      // The landing renderer outputs React text nodes (no innerHTML), so admin
+      // copy is XSS-safe; we just guard the blob size and that it's serializable.
+      let serialized;
+      try { serialized = JSON.stringify(content); }
+      catch { const e = new Error('content is not JSON-serializable'); e.status = 400; throw e; }
+      if (serialized.length > LANDING_MAX_BYTES) {
+        const e = new Error('content too large'); e.status = 413; throw e;
+      }
+      const now = new Date().toISOString();
+      const { error } = await supabase.from('app_settings').upsert({
+        id: landingRowId(brandId), brandId, data: content, updatedAt: now, updatedBy: user.id,
+      });
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ content });
+    }
+    default: {
+      const e = new Error('Unknown landing action'); e.status = 400; throw e;
     }
   }
 }

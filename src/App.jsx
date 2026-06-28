@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense }
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
-  MoreHorizontal, X as XIcon, RotateCcw,
+  MoreHorizontal, X as XIcon, RotateCcw, Globe,
 } from 'lucide-react';
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -31,6 +31,7 @@ const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedV
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
 const CareCalendarView = lazyNamed(() => import('./care/CareCalendarView.jsx'), 'CareCalendarView');
+const BaeLandingEditor = lazyNamed(() => import('./landing/BaeLandingEditor.jsx'), 'BaeLandingEditor');
 
 const ChangePasswordModal = lazyNamed(() => import('./auth/ChangePasswordModal.jsx'), 'ChangePasswordModal');
 const ItemFormModal = lazyNamed(() => import('./inventory/ItemFormModal.jsx'), 'ItemFormModal');
@@ -788,6 +789,8 @@ function StaffOrAdminInventory() {
       badge: deletedItems.length > 0 ? deletedItems.length : null,
     },
   ];
+  // BAE-only landing-page CMS — admins editing the public BAE landing site.
+  if (isAdmin && activeBrand === 'bae') tabs.push({ id: 'bae-landing', label: 'Landing', icon: Globe });
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users });
 
   return (
@@ -1512,6 +1515,9 @@ function StaffOrAdminInventory() {
             setConfirmDialog={setConfirmDialog}
             showToast={showToast}
           />
+        )}
+        {activeTab === 'bae-landing' && isAdmin && activeBrand === 'bae' && (
+          <BaeLandingEditor showToast={showToast} />
         )}
         </Suspense>
       </main>
