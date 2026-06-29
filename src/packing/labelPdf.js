@@ -77,6 +77,10 @@ export async function openLabelPdf(shipment, kind, showToast) {
   // printer, which is separate hardware from the 2×1 item-label printer — so
   // they use the 'shipping' role, not 'label'. Slips use the slip printer.
   const role = kind === 'slip' ? 'slip' : 'shipping';
+  // Carrier labels are 4×6 — force that media so the printer uses the label
+  // size instead of its CUPS default (which clips the label to "half"). Slips
+  // are native (80mm roll). Mirrors the item-label sheets' Custom.2x1in.
+  const media = kind === 'slip' ? undefined : 'Custom.4x6in';
   const safari = isSafari();
   // Open the Safari tab synchronously so the click's user-gesture carries
   // through (avoids the pop-up blocker). If we end up printing via the bridge
@@ -85,12 +89,12 @@ export async function openLabelPdf(shipment, kind, showToast) {
   try {
     const url = await api.getLabelUrl(shipment.id, kind);
 
-    // 1) Direct print via the bridge (the Mac app). Native page size — the
-    //    carrier label PDF is already sized; don't force/scale it.
+    // 1) Direct print via the bridge (the Mac app). Force the 4×6 carrier-label
+    //    media so it prints full size, not clipped to the printer's CUPS default.
     if (await bridgeOnlineNow()) {
       try {
         const res = await printPdfViaBridge({
-          pdfBase64: bytesToBase64(await urlToBytes(url)), role,
+          pdfBase64: bytesToBase64(await urlToBytes(url)), role, media,
         });
         win?.close();
         showToast?.(`Sent ${kind} to ${res?.printer || 'printer'}`);
@@ -155,7 +159,7 @@ export async function printShippingLabels(boxIds, showToast) {
       try {
         const url = await api.getLabelUrl(id, 'label');
         const res = await printPdfViaBridge({
-          pdfBase64: bytesToBase64(await urlToBytes(url)), role: 'shipping',
+          pdfBase64: bytesToBase64(await urlToBytes(url)), role: 'shipping', media: 'Custom.4x6in',
         });
         printer = res?.printer || printer;
         printed++;

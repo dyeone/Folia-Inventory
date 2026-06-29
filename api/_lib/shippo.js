@@ -117,7 +117,9 @@ export async function createLabel({ addressFrom, addressTo, parcel, serviceToken
 
   const txn = await call('POST', '/transactions/', {
     rate: rate.object_id,
-    label_file_type: 'PDF',
+    // Force a 4×6 thermal label (not the account-default 'PDF', which can be an
+    // 8.5×11 sheet that prints clipped to "half" on a 4×6 label printer).
+    label_file_type: 'PDF_4x6',
     async: false,
   });
   if (txn?.status !== 'SUCCESS') {
