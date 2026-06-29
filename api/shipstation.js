@@ -13,6 +13,7 @@ import {
   refund as shippoRefund, shippoConfigured, isTestToken as shippoIsTest,
 } from './_lib/shippo.js';
 import { SHIPPING_SERVICES } from './_lib/services.js';
+import { normalizeLabelTo4x6 } from './_lib/labelNormalize.js';
 
 export default wrap(async (req, res) => {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
@@ -322,6 +323,20 @@ async function buyLabel(req, res, userId, brandId) {
   // better a working bigger row than losing a label we've paid for.
   let labelStoragePath = null;
   let labelData = purchase.labelData || null;
+  // Normalize to 4×6 before storing so both the bridge print path and any
+  // re-download get a 4×6 label. ShipStation "letter" labels come back 8.5×11
+  // with the label top-left; crop them so a 4×6 thermal printer doesn't render
+  // only the blank bottom half. No-op for labels already ≤4×6 (Shippo PDF_4x6,
+  // ShipStation thermal). Never throws — falls back to the original bytes.
+  if (labelData) {
+    const norm = await normalizeLabelTo4x6(labelData);
+    if (norm.changed) {
+      console.log(`[${provider}] cropped oversized label ${norm.from?.join('x')}pt -> ${norm.to?.join('x')}pt (4x6 top-left)`);
+      labelData = norm.base64;
+    } else if (norm.error) {
+      console.error(`[${provider}] label 4x6 normalize failed, using original:`, norm.error);
+    }
+  }
   if (labelData) {
     try {
       const buf = Buffer.from(labelData, 'base64');
