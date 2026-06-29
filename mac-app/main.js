@@ -8,7 +8,7 @@
 // streamed line-by-line to the renderer; renderer doesn't get raw
 // access to the child process.
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -91,6 +91,11 @@ function locateBridgeDir() {
 
 let mainWindow = null;
 let runner = null;
+let tray = null;
+let lastState = {};
+// Set true only when the operator really wants to quit (tray "Quit" or Cmd-Q),
+// so closing the window hides it to the menu bar instead of killing the bridge.
+let isQuitting = false;
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -107,6 +112,66 @@ function createWindow() {
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => { mainWindow = null; });
+  // Closing the window keeps the app (and the bridge) alive in the menu bar.
+  // The menu bar icon makes the still-running bridge visible — which is why we
+  // no longer quit on close (the old "invisible bridge" concern). The Dock icon
+  // hides while backgrounded so it behaves like a proper menu bar app; it comes
+  // back when the window is reopened.
+  mainWindow.on('close', (e) => {
+    if (isQuitting) return;
+    e.preventDefault();
+    mainWindow.hide();
+    if (process.platform === 'darwin') app.dock?.hide();
+  });
+}
+
+// Show (or recreate) the main window and restore the Dock icon.
+function showWindow() {
+  if (process.platform === 'darwin') app.dock?.show();
+  if (!mainWindow) createWindow();
+  else { mainWindow.show(); mainWindow.focus(); }
+}
+
+// ─── Menu bar (tray) ────────────────────────────────────────────────────────
+function buildTrayMenu(s = {}) {
+  const status = s.lastError
+    ? `⚠ ${String(s.lastError).slice(0, 40)}`
+    : (s.running && s.phoneConnected) ? 'Running · phone connected'
+      : s.running ? 'Running'
+        : 'Stopped';
+  return Menu.buildFromTemplate([
+    { label: 'Open Folia Bridge', click: showWindow },
+    { type: 'separator' },
+    { label: status, enabled: false },
+    { label: `Queue: ${s.queued ?? 0}`, enabled: false },
+    { type: 'separator' },
+    s.running
+      ? { label: 'Stop bridge', click: () => { runner?.stop(); } }
+      : { label: 'Start bridge', click: () => { runner?.start(); } },
+    { label: 'Restart bridge', click: async () => { await runner?.stop(); runner?.start(); } },
+    {
+      label: 'Check for updates…',
+      click: async () => { const r = await runUpdateCheck(); showWindow(); mainWindow?.webContents.send('app:update-status', r); },
+    },
+    { type: 'separator' },
+    { label: 'Quit Folia Bridge', click: () => { isQuitting = true; app.quit(); } },
+  ]);
+}
+
+function updateTray(s = {}) {
+  lastState = s;
+  if (!tray) return;
+  tray.setToolTip(`Folia Bridge — ${s.running ? 'running' : 'stopped'}`);
+  tray.setContextMenu(buildTrayMenu(s));
+}
+
+function createTray() {
+  // Template image → macOS renders it monochrome and auto-inverts for the
+  // light/dark menu bar. nativeImage auto-picks iconTemplate@2x.png on retina.
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'renderer', 'iconTemplate.png'));
+  icon.setTemplateImage(true);
+  tray = new Tray(icon);
+  updateTray(runner?.getState() || {});
 }
 
 app.whenReady().then(() => {
@@ -124,6 +189,7 @@ app.whenReady().then(() => {
   });
   runner.on('state', (state) => {
     mainWindow?.webContents.send('bridge:state', state);
+    updateTray(state);
   });
   // Live-monitor snapshots (Watch live panel). Best-effort screen scrape of the
   // Palmstreet live; the renderer derives a sold feed by diffing snapshots.
@@ -132,6 +198,7 @@ app.whenReady().then(() => {
   });
 
   createWindow();
+  createTray();
 
   updateTimer = setInterval(async () => {
     const result = await runUpdateCheck();
@@ -140,20 +207,19 @@ app.whenReady().then(() => {
     }
   }, UPDATE_POLL_MS);
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  // Dock click (or reopen) → bring the window back.
+  app.on('activate', () => { showWindow(); });
 });
 
 app.on('window-all-closed', () => {
-  // Standard macOS behavior would keep the app alive, but a bridge
-  // running with no UI is invisible and confusing — quit fully on
-  // window close so the bridge process also dies. Operator can re-open
-  // anytime.
-  app.quit();
+  // On macOS the app lives in the menu bar — closing the window backgrounds it
+  // (bridge keeps running), it does NOT quit. Only a real quit (tray Quit /
+  // Cmd-Q sets isQuitting) tears it down. Other platforms keep prior behavior.
+  if (isQuitting || process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
   if (updateTimer) clearInterval(updateTimer);
   runner?.stop();
 });
