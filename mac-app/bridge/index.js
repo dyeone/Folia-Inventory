@@ -1002,6 +1002,22 @@ async function openNewListingForm() {
 // clean error instead of stalling the poll loop.
 const LP_TIMEOUT_MS = 30_000;
 
+// Best-effort queue self-heal before each print. A flaky USB link can make CUPS
+// disable the queue mid-job ("Unable to send data to printer"), after which the
+// operator silently gets half-labels (or nothing) until someone re-enables it.
+// cupsenable/cupsaccept are idempotent, so we just run them before every print.
+const CUPS_HEAL_TIMEOUT_MS = 5_000;
+// Absolute paths: cupsenable/cupsaccept live in /usr/sbin, which is often NOT on
+// a bundled Electron app's PATH (unlike /usr/bin/lp). cupsenable is a symlink to
+// cupsaccept; the binary dispatches on argv[0], so call each by its own path.
+async function reviveQueue(printer) {
+  if (!printer) return; // no -d → system default; can't target it to re-enable
+  await Promise.allSettled([
+    exec('/usr/sbin/cupsenable', [printer], { timeout: CUPS_HEAL_TIMEOUT_MS }),
+    exec('/usr/sbin/cupsaccept', [printer], { timeout: CUPS_HEAL_TIMEOUT_MS }),
+  ]);
+}
+
 // Pick the CUPS destination for a job's role. Explicit payload.printer wins
 // (the web can override); otherwise map the role to its configured printer.
 // Roles never fall back to each other — a slip (80mm) and a label (2×1) are
@@ -1066,6 +1082,10 @@ async function printLabel(payload, brandId) {
     }
     args.push('-t', `folia-${payload.role || 'label'}`);
     args.push(file);
+
+    // Clear any disabled/rejecting state left by a prior USB hiccup so this job
+    // actually prints instead of silently queueing behind a wedged queue.
+    await reviveQueue(printer);
 
     let stdout = '';
     try {
