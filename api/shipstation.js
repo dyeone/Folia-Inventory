@@ -417,14 +417,14 @@ async function voidLabelHandler(req, res, userId, brandId) {
   {
     const r = await supabase
       .from('shipments')
-      .select('id, provider, "shipstationShipmentId", "shippoTransactionId", "isTestLabel", "voidedAt"')
+      .select('id, "carrierCode", provider, "shipstationShipmentId", "shippoTransactionId", "isTestLabel", "voidedAt"')
       .eq('id', shipmentBoxId)
       .eq('brandId', brandId)
       .maybeSingle();
     if (r.error && isMissingColumn(r.error)) {
       const r2 = await supabase
         .from('shipments')
-        .select('id, "shipstationShipmentId", "isTestLabel", "voidedAt"')
+        .select('id, "carrierCode", "shipstationShipmentId", "isTestLabel", "voidedAt"')
         .eq('id', shipmentBoxId)
         .eq('brandId', brandId)
         .maybeSingle();
@@ -440,11 +440,15 @@ async function voidLabelHandler(req, res, userId, brandId) {
     const e = new Error('Label already voided'); e.status = 409; throw e;
   }
 
-  // Test labels are placeholders — nothing was charged and no real carrier
-  // shipment exists, so there is nothing to void/refund. (ShipStation's
-  // voidlabel even throws a .NET "Index was out of range" on the fake test
-  // id.) Skip the carrier call and just mark our row voided below.
-  if (!shipment.isTestLabel) {
+  // Two cases have nothing to undo at the carrier, so we skip the void/refund
+  // call and just mark our row voided below — which frees the box to switch
+  // carriers and buy a new label:
+  //   • Test labels — placeholders, nothing charged (ShipStation's voidlabel
+  //     even throws a .NET "Index was out of range" on the fake test id).
+  //   • Palmstreet/manual USPS rows — the label was generated in Palmstreet and
+  //     the operator just entered the tracking here; there's no purchase to void.
+  const isManual = shipment.carrierCode === 'palmstreet';
+  if (!shipment.isTestLabel && !isManual) {
     // Route the void by who sold the label. A null provider on a row with a
     // ShipStation id is a legacy ShipStation label.
     const isShippo = shipment.provider === 'shippo' || (!!shipment.shippoTransactionId && !shipment.shipstationShipmentId);
