@@ -68,10 +68,16 @@ a time** to avoid jobs racing between them.
    # U2_URL=http://localhost:9008   # or "off" to disable
    # BRIDGE_BRAND=bae               # 3babes: pin this bridge to ONE brand;
    #                                # blank = serve every brand (normal setup)
-   # Per-brand printer overrides (optional). A brand-suffixed var wins over the
-   # shared LABEL_PRINTER/SLIP_PRINTER/DOCUMENT_PRINTER for that brand:
+   # Direct-print destinations (optional; normally set via the Mac app →
+   # Printers panel). A print job's role maps to one of these CUPS dests:
+   # LABEL_PRINTER=<cups-dest>      # 2x1 SKU / box labels
+   # SHIPPING_PRINTER=<cups-dest>   # 4x6 carrier shipping labels
+   # SLIP_PRINTER=<cups-dest>       # 80mm shipping slips
+   # DOCUMENT_PRINTER=<cups-dest>   # letter documents / packing lists
+   # Per-brand override (optional). A brand-suffixed var wins over the shared
+   # one for that brand, e.g.:
    # LABEL_PRINTER_BAE=<cups-dest>
-   # SLIP_PRINTER_BAE=<cups-dest>
+   # SHIPPING_PRINTER_BAE=<cups-dest>
    ```
 
    **3babes multi-brand:** one bridge serves every brand by default — each job

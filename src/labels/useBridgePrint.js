@@ -20,6 +20,20 @@ export function pdfToBase64(pdf) {
   return uri.slice(uri.indexOf(',') + 1);
 }
 
+// Raw PDF bytes (Uint8Array / ArrayBuffer) → base64 (no `data:` prefix). Used
+// for PDFs we didn't build with jsPDF — e.g. carrier shipping labels fetched
+// from Storage. Chunked so a large buffer doesn't blow the argument stack of
+// String.fromCharCode(...spread).
+export function bytesToBase64(input) {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
 // Label PDFs are a few KB; this only guards against an accidental giant (the
 // base64 rides through the Vercel enqueue request and lands in bridge_jobs).
 const MAX_PDF_BASE64 = 3_000_000; // ~2.2 MB of binary
@@ -50,6 +64,31 @@ async function pollPrintJob(jobId, isCancelled = () => false, { timeoutMs = 35_0
     if (job.status === 'failed') throw new Error(job.error || 'Print failed at the bridge');
   }
   throw new Error('Print timed out — is the Folia Bridge (Mac app) running?');
+}
+
+// ── Plain-async bridge print (for code outside React, e.g. labelPdf.js) ──
+// The hook above is for sheets that live in the component tree; these two let
+// any module print through the same durable queue without a React context.
+
+// Is the local Folia Bridge (Mac app) reachable right now? One-shot, never
+// throws — callers use it to decide bridge-vs-browser before a one-off print.
+export async function bridgeOnlineNow() {
+  try {
+    const h = await api.bridgeHealth();
+    return !!h?.online;
+  } catch {
+    return false;
+  }
+}
+
+// Enqueue a single print job and resolve once the bridge spools it. Throws on
+// failure / timeout / oversized PDF so the caller can fall back to browser
+// print. role = 'label' | 'slip' | 'document'.
+export async function printPdfViaBridge({ pdfBase64, role, copies = 1, media } = {}) {
+  if (!pdfBase64) throw new Error('Nothing to print');
+  if (pdfBase64.length > MAX_PDF_BASE64) throw new Error('PDF too large to print via bridge');
+  const job = await api.bridgePrint({ pdfBase64, role, copies, media });
+  return await pollPrintJob(job.id);
 }
 
 export function useBridgePrint() {
