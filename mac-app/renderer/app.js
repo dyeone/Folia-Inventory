@@ -56,9 +56,11 @@ const els = {
   printersResult: $('printers-result'),
   btnRefreshPrinters: $('btn-refresh-printers'),
   selLabel:      $('sel-label'),
+  selShipping:   $('sel-shipping'),
   selSlip:       $('sel-slip'),
   selDocument:   $('sel-document'),
   btnTestLabel:  $('btn-test-label'),
+  btnTestShipping: $('btn-test-shipping'),
   btnTestSlip:   $('btn-test-slip'),
   btnTestDocument: $('btn-test-document'),
   btnSavePrinters: $('btn-save-printers'),
@@ -189,6 +191,7 @@ async function refreshPrinters() {
   const printers = list.printers || [];
   els.selRole.value = (cfg.BRIDGE_ROLE || '').toLowerCase();
   fillSelect(els.selLabel,    printers, cfg.LABEL_PRINTER || '');
+  fillSelect(els.selShipping, printers, cfg.SHIPPING_PRINTER || '');
   fillSelect(els.selSlip,     printers, cfg.SLIP_PRINTER || '');
   fillSelect(els.selDocument, printers, cfg.DOCUMENT_PRINTER || '');
   els.printersStatus.textContent = list.error
@@ -225,6 +228,7 @@ els.btnSaveRole.addEventListener('click', async () => {
 
 els.btnRefreshPrinters.addEventListener('click', refreshPrinters);
 els.btnTestLabel.addEventListener('click',    () => testPrinter(els.selLabel, els.btnTestLabel));
+els.btnTestShipping.addEventListener('click', () => testPrinter(els.selShipping, els.btnTestShipping));
 els.btnTestSlip.addEventListener('click',     () => testPrinter(els.selSlip, els.btnTestSlip));
 els.btnTestDocument.addEventListener('click', () => testPrinter(els.selDocument, els.btnTestDocument));
 els.btnSavePrinters.addEventListener('click', async () => {
@@ -237,6 +241,7 @@ els.btnSavePrinters.addEventListener('click', async () => {
     await window.bridge.saveConfig({
       ...existing,
       LABEL_PRINTER:    els.selLabel.value,
+      SHIPPING_PRINTER: els.selShipping.value,
       SLIP_PRINTER:     els.selSlip.value,
       DOCUMENT_PRINTER: els.selDocument.value,
     });

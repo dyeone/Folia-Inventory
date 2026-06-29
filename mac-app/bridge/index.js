@@ -53,8 +53,8 @@ const U2_ENABLED = U2_URL.toLowerCase() !== 'off';
 // Printers for the direct-print path (web → bridge → local CUPS). Each is an
 // optional CUPS destination name (as shown by `lpstat -e`); the Mac app's
 // Printers panel writes these into bridge/.env. A 'print' job carries a role
-// ('label' | 'slip' | 'document') that maps to one of these, with sensible
-// fallbacks (slip→label, anything→system default when unset). Leaving them all
+// ('label' | 'shipping' | 'slip' | 'document') that maps to one of these, with
+// sensible fallbacks (anything→system default when unset). Leaving them all
 // blank means every print goes to the Mac's default printer. resolvePrinter()
 // reads these (and optional per-brand LABEL_PRINTER_<BRAND> overrides) from
 // process.env at print time.
@@ -1012,7 +1012,12 @@ const LP_TIMEOUT_MS = 30_000;
 // env var (e.g. LABEL_PRINTER_BAE), which wins over the shared default. Folia
 // and any brand without an override use the shared LABEL_PRINTER/SLIP_PRINTER/
 // DOCUMENT_PRINTER, so existing setups are unchanged.
-const ROLE_PRINTER_ENV = { label: 'LABEL_PRINTER', slip: 'SLIP_PRINTER', document: 'DOCUMENT_PRINTER' };
+const ROLE_PRINTER_ENV = {
+  label: 'LABEL_PRINTER',        // 2×1 SKU / box labels
+  shipping: 'SHIPPING_PRINTER',  // 4×6 carrier shipping labels (separate hardware)
+  slip: 'SLIP_PRINTER',          // 80mm shipping slips
+  document: 'DOCUMENT_PRINTER',  // letter documents / packing lists
+};
 function resolvePrinter(brandId, { role, printer }) {
   if (printer && typeof printer === 'string') return printer.trim();
   const envName = ROLE_PRINTER_ENV[role];
