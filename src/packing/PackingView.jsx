@@ -267,18 +267,24 @@ export function PackingView({
   // / refund (Shippo) via api.voidLabel. On success the shipment row is
   // marked voided, so the box's quote panel + Buy actions return.
   const onCancelLabel = (box) => {
+    // Palmstreet/manual USPS rows have no carrier purchase to undo — disabling
+    // just clears the row so the box can switch carriers and buy a new label.
+    const manual = shipmentsByBox?.[box.id]?.carrierCode === 'palmstreet';
+    const who = box.buyer || box.recipientName || 'this box';
     setConfirmDialog?.({
-      title: `Cancel the label for ${box.buyer || box.recipientName || 'this box'}?`,
-      message: 'Voids the ShipStation label (or refunds the Shippo purchase) and re-enables rate quoting. A carrier may decline if the label was already used or scanned.',
-      confirmLabel: 'Cancel label',
+      title: manual ? `Disable the USPS label for ${who}?` : `Cancel the label for ${who}?`,
+      message: manual
+        ? 'Removes the Palmstreet USPS tracking so you can switch the carrier and buy a new label. No refund — the USPS label was generated in Palmstreet, not bought here.'
+        : 'Voids the ShipStation label (or refunds the Shippo purchase) and re-enables rate quoting. A carrier may decline if the label was already used or scanned.',
+      confirmLabel: manual ? 'Disable label' : 'Cancel label',
       danger: true,
       onConfirm: async () => {
         try {
           await api.voidLabel(box.id);
-          showToast('Label canceled');
+          showToast(manual ? 'USPS label disabled' : 'Label canceled');
           refreshShipments();
         } catch (e) {
-          showToast(e.message || 'Cancel failed');
+          showToast(e.message || (manual ? 'Disable failed' : 'Cancel failed'));
         }
       },
     });
@@ -2001,9 +2007,10 @@ function BoxRow({
   const canPrintLabel = !!liveShipment && (
     !!liveShipment.labelStoragePath || liveShipment.carrierCode !== 'palmstreet'
   );
-  // A live bought label (ShipStation/Shippo, not the manual Palmstreet
-  // tracking flow) can be cancelled — voids the label / refunds the buy.
-  const canCancelLabel = !!liveShipment && liveShipment.carrierCode !== 'palmstreet' && !!onCancelLabel;
+  // Any live label can be removed: ShipStation/Shippo labels void/refund;
+  // Palmstreet USPS rows just clear so the box can switch carriers and re-buy.
+  const canCancelLabel = !!liveShipment && !!onCancelLabel;
+  const isManualLabel = !!liveShipment && liveShipment.carrierCode === 'palmstreet';
   // A shipping label has been added (imported / typed tracking) or bought for
   // this box — drives the at-a-glance "Label" color mark on the row so the
   // operator can see which open boxes are label-ready.
@@ -2333,15 +2340,18 @@ function BoxRow({
                 <Printer className="w-3 h-3" /> Print label
               </button>
             )}
-            {/* Cancel the bought label — voids ShipStation / refunds Shippo.
-                Re-shows the quote panel once the label is gone. */}
+            {/* Remove the label so the quote panel + carrier switch return.
+                ShipStation/Shippo labels void/refund; USPS (Palmstreet) rows
+                just clear so the box can be re-bought under a new carrier. */}
             {canCancelLabel && (
               <button
                 onClick={(e) => { stop(e); onCancelLabel(); }}
-                title="Cancel this label (void / refund) and re-enable rate quoting"
+                title={isManualLabel
+                  ? 'Disable this USPS label so you can switch carriers and buy a new one'
+                  : 'Cancel this label (void / refund) and re-enable rate quoting'}
                 className="text-xs font-medium px-2.5 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-red-50 hover:text-red-600 hover:border-red-200 active:bg-red-100 flex items-center gap-1"
               >
-                <RotateCcw className="w-3 h-3" /> Cancel label
+                <RotateCcw className="w-3 h-3" /> {isManualLabel ? 'Disable label' : 'Cancel label'}
               </button>
             )}
             {action && onPrintSlip && (
