@@ -6,7 +6,16 @@ import { jsPDF } from 'jspdf';
 import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
 import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 
-function Label({ item }) {
+// BAE and Folia share nothing — not SKUs, varieties, or species — so a label
+// has to say which brand it belongs to or it's ambiguous on the bench. We tag
+// any non-Folia brand with its name (BAE → "BAE"); Folia (the default) stays
+// clean. The active brand lives on <html data-brand> (set in App.jsx).
+function brandTag() {
+  const b = (document.documentElement.getAttribute('data-brand') || 'folia').toLowerCase();
+  return b && b !== 'folia' ? b.toUpperCase() : '';
+}
+
+function Label({ item, tag }) {
   const svgRef = useRef(null);
   const sku = item.sku ? String(item.sku) : '';
 
@@ -30,6 +39,7 @@ function Label({ item }) {
   return (
     <div className="folia-label bg-white border border-gray-300 flex flex-col items-center justify-between text-center"
          style={{ width: '2in', height: '1in', padding: '0.08in', boxSizing: 'border-box' }}>
+      {tag && <div className="text-[6pt] font-bold text-black leading-none">{tag}</div>}
       <div className="text-[8pt] leading-tight text-gray-700 truncate w-full">
         {item.name}{item.variety ? ` · ${item.variety}` : ''}
       </div>
@@ -70,16 +80,28 @@ function buildPdf(items) {
     orientation: 'landscape',
   });
   const canvas = document.createElement('canvas');
+  const tag = brandTag();
 
   items.forEach((item, idx) => {
     if (idx > 0) pdf.addPage([LABEL_W, LABEL_H], 'landscape');
 
-    // Top: name + variety — 8pt, centered, truncated to fit the label width.
+    // Brand tag (e.g. BAE) — a small bold header centered above the name. BAE
+    // and Folia share no SKUs/varieties, so non-Folia labels are marked to
+    // avoid bench mix-ups; Folia (the default) prints without a tag.
+    if (tag) {
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(7);
+      pdf.setTextColor(0);
+      pdf.text(tag, LABEL_W / 2, 0.11, { align: 'center' });
+    }
+
+    // Name + variety — 8pt, centered, truncated to the label width. Drops a
+    // touch when a brand tag occupies the top line.
     const title = `${item.name || ''}${item.variety ? ` · ${item.variety}` : ''}`;
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(70);
-    pdf.text(title, LABEL_W / 2, 0.18, {
+    pdf.text(title, LABEL_W / 2, tag ? 0.24 : 0.18, {
       align: 'center',
       maxWidth: LABEL_W - 0.15,
     });
@@ -175,7 +197,7 @@ export function LabelSheet({ items, onClose, showToast }) {
         </div>
       </div>
       <div className="p-4 flex flex-wrap gap-2 justify-center folia-label-grid">
-        {items.map(item => <Label key={item.id} item={item} />)}
+        {items.map(item => <Label key={item.id} item={item} tag={brandTag()} />)}
       </div>
       <style>{`
         @media print {

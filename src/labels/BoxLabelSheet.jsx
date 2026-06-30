@@ -63,13 +63,18 @@ function Label({ box }) {
 // the placeholder row didn't tie to a known SKU, so something needs
 // attention before this box ships.
 function displayHeader(box) {
+  // Brand first — Folia and BAE share no inventory, species, or SKUs, so a box
+  // at the handoff station has to say which brand it belongs to. Always shown
+  // (FOLIA / BAE), unlike item labels which only flag the non-default brand.
+  // The active brand lives on <html data-brand> (set in App.jsx).
+  const brand = (document.documentElement.getAttribute('data-brand') || 'folia').toUpperCase();
   const carrier = String(box.carrier || 'usps').toUpperCase();
   const items = box.items || [];
   const hasUnmatched = items.some(i => i.lotKind === 'unmatched');
   const hasAnthurium = items.some(i => (i.variety || '').toLowerCase() === 'anthurium');
   const marker = hasUnmatched ? '#' : '*';
   const tag = hasAnthurium ? ' · ANT' : '';
-  return `${carrier} · ${marker}${tag}`;
+  return `${brand} · ${carrier} · ${marker}${tag}`;
 }
 
 const LABEL_W = 2;
