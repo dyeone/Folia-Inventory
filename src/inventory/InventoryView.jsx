@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react';
-import { Search, Download, ArrowRightLeft, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil } from 'lucide-react';
+import { Search, Download, ArrowRightLeft, ArrowLeftRight, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
 import { buildLookups, speciesForItem, computeIdealPrice, rateSourceLabel, displayPrice } from './pricing.js';
 import { CultivarRateInput } from './CultivarRateInput.jsx';
 import { AcclimationModal } from './AcclimationModal.jsx';
+import { StatusChangeModal } from './StatusChangeModal.jsx';
 import { DeleteScanModal } from './DeleteScanModal.jsx';
 import { BulkRenameModal } from './BulkRenameModal.jsx';
 
@@ -21,7 +22,7 @@ function fmtAddedAt(iso) {
   return `${datePart}, ${timePart}`;
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onBulkRename, onStatusChange, isAdmin }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onBulkRename, onStatusChange, isAdmin, brand }) {
   const isMobile = useIsMobile();
   // O(1) lookups for speciesForItem / computeIdealPrice — built once per
   // varieties/species change instead of linear-scanning per item per render.
@@ -131,6 +132,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   const [anchorId, setAnchorId] = useState(null);
   const [groupAnchor, setGroupAnchor] = useState(null);
   const [showAcclimation, setShowAcclimation] = useState(false);
+  const [showStatusChange, setShowStatusChange] = useState(false);
   const [showDeleteScan, setShowDeleteScan] = useState(false);
   const [showBulkRename, setShowBulkRename] = useState(false);
 
@@ -253,13 +255,23 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               </button>
             )}
           </div>
-          <button
-            onClick={() => setShowAcclimation(true)}
-            title="Scan TC SKUs in bulk to mark them Acclimated"
-            className="flex items-center gap-1.5 px-3 py-2 text-sm text-fuchsia-700 border border-fuchsia-300 bg-fuchsia-50 rounded-lg hover:bg-fuchsia-100"
-          >
-            <Sprout className="w-4 h-4" /> Acclimation Mode
-          </button>
+          {brand === 'bae' ? (
+            <button
+              onClick={() => setShowStatusChange(true)}
+              title="Pick a status, then scan SKUs to change them in bulk"
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-indigo-700 border border-indigo-300 bg-indigo-50 rounded-lg hover:bg-indigo-100"
+            >
+              <ArrowLeftRight className="w-4 h-4" /> Status Change
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowAcclimation(true)}
+              title="Scan TC SKUs in bulk to mark them Acclimated"
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-fuchsia-700 border border-fuchsia-300 bg-fuchsia-50 rounded-lg hover:bg-fuchsia-100"
+            >
+              <Sprout className="w-4 h-4" /> Acclimation Mode
+            </button>
+          )}
           {isAdmin && onBulkDelete && (
             <button
               onClick={() => setShowDeleteScan(true)}
@@ -302,6 +314,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
             { value: 'available', label: 'Available' },
             { value: 'listed', label: 'Listed' },
             { value: 'acclimated', label: 'Acclimated' },
+            { value: 'consigned', label: 'On Consignment' },
             { value: 'sold', label: 'Sold' },
             { value: 'shipped', label: 'Shipped' },
             { value: 'delivered', label: 'Delivered' },
@@ -576,6 +589,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                         item.status === 'available' ? 'bg-gray-100 text-gray-700' :
                         item.status === 'listed' ? 'bg-amber-100 text-amber-800' :
                         item.status === 'acclimated' ? 'bg-fuchsia-100 text-fuchsia-800' :
+                        item.status === 'consigned' ? 'bg-orange-100 text-orange-800' :
                         item.status === 'sold' ? 'bg-blue-100 text-blue-800' :
                         item.status === 'shipped' ? 'bg-violet-100 text-violet-800' :
                         item.status === 'delivered' ? 'bg-emerald-100 text-emerald-800' :
@@ -585,6 +599,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                       <option value="available">Available</option>
                       <option value="listed">Listed</option>
                       {item.type === 'tc' && <option value="acclimated">Acclimated</option>}
+                      <option value="consigned">On Consignment</option>
                       <option value="sold">Sold</option>
                       <option value="shipped">Shipped</option>
                       <option value="delivered">Delivered</option>
@@ -767,6 +782,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                               item.status === 'available' ? 'bg-gray-100 text-gray-700' :
                               item.status === 'listed' ? 'bg-amber-100 text-amber-800' :
                               item.status === 'acclimated' ? 'bg-fuchsia-100 text-fuchsia-800' :
+                              item.status === 'consigned' ? 'bg-orange-100 text-orange-800' :
                               item.status === 'sold' ? 'bg-blue-100 text-blue-800' :
                               item.status === 'shipped' ? 'bg-violet-100 text-violet-800' :
                               item.status === 'delivered' ? 'bg-emerald-100 text-emerald-800' :
@@ -776,6 +792,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                             <option value="available">Available</option>
                             <option value="listed">Listed</option>
                             {item.type === 'tc' && <option value="acclimated">Acclimated</option>}
+                            <option value="consigned">On Consignment</option>
                             <option value="sold">Sold</option>
                             <option value="shipped">Shipped</option>
                             <option value="delivered">Delivered</option>
@@ -878,6 +895,14 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           acclimatedRate={acclimatedRate}
           onStatusChange={onStatusChange}
           onClose={() => setShowAcclimation(false)}
+        />
+      )}
+
+      {showStatusChange && (
+        <StatusChangeModal
+          items={allItems}
+          onStatusChange={onStatusChange}
+          onClose={() => setShowStatusChange(false)}
         />
       )}
 

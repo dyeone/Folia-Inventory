@@ -232,6 +232,7 @@ export function ItemFormModal({
                 <option value="available">Available</option>
                 <option value="listed">Listed</option>
                 {form.type === 'tc' && <option value="acclimated">Acclimated</option>}
+                <option value="consigned">On Consignment</option>
                 <option value="sold">Sold</option>
                 <option value="shipped">Shipped</option>
                 <option value="delivered">Delivered</option>

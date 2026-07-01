@@ -1041,6 +1041,7 @@ function StaffOrAdminInventory() {
         )}
         {activeTab === 'inventory' && (
           <InventoryView
+            brand={activeBrand}
             items={filteredItems}
             allItems={items}
             sales={sales}
