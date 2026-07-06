@@ -57,6 +57,17 @@ function mergeItems(prev, fresh) {
   });
 }
 
+// Recipient label for the packer: the shipping full name plus the client's
+// Palmstreet @handle when we have both, so the packer can match a box against
+// either the label (full name) or the order/chat (username). Falls back to
+// whichever single one is known; empty when neither is.
+function buyerLabel(box) {
+  const name = (box.buyer || '').trim();
+  const handle = (box.buyerUsername || '').trim();
+  if (name && handle) return `${name} · @${handle}`;
+  return name || (handle ? `@${handle}` : '');
+}
+
 export function PackerView({ onLogout }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -385,7 +396,7 @@ export function PackerView({ onLogout }) {
       // Shipped — celebrate, then jump back to the grid.
       setSuccess({
         code: activeBox.code,
-        who: activeBox.buyer || (activeBox.buyerUsername ? `@${activeBox.buyerUsername}` : ''),
+        who: buyerLabel(activeBox),
       });
       setTimeout(() => { setSuccess(null); goToBox(null); }, 2600);
       return;
@@ -594,7 +605,7 @@ export function PackerView({ onLogout }) {
         tone={pageTone}
         title={activeBox ? activeBox.code : 'Packing'}
         subtitle={activeBox
-          ? (activeBox.buyer || (activeBox.buyerUsername ? `@${activeBox.buyerUsername}` : 'Box'))
+          ? (buyerLabel(activeBox) || 'Box')
           : `${totalOpen} open · ${fullyPacked} packed`}
         onBack={activeBox ? () => goToBox(null) : null}
       />
@@ -869,8 +880,13 @@ function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, onOpen }) {
         {allPacked && <Check className="w-5 h-5 text-emerald-600 ml-auto" />}
         {!allPacked && <ChevronRight className="w-5 h-5 text-gray-300 ml-auto" />}
       </div>
-      <div className="mt-2 text-sm font-medium text-gray-900 truncate">
-        {box.buyer || (box.buyerUsername ? `@${box.buyerUsername}` : 'Box')}
+      <div className="mt-2">
+        <div className="text-sm font-medium text-gray-900 truncate">
+          {box.buyer || (box.buyerUsername ? `@${box.buyerUsername}` : 'Box')}
+        </div>
+        {box.buyer && box.buyerUsername && (
+          <div className="text-xs text-gray-500 truncate">@{box.buyerUsername}</div>
+        )}
       </div>
       <div className="mt-2 flex items-center gap-2">
         <div className="flex-1 bg-gray-200 rounded-full h-2 overflow-hidden">
@@ -1173,7 +1189,7 @@ function PhoneHandoffOverlay({ box, onClose }) {
           </div>
           <div className="text-sm text-blue-100 leading-tight truncate">
             <span className="font-mono tracking-wide">{box.code}</span>
-            {box.buyer ? ` · ${box.buyer}` : box.buyerUsername ? ` · @${box.buyerUsername}` : ''}
+            {buyerLabel(box) ? ` · ${buyerLabel(box)}` : ''}
           </div>
         </div>
         <button
