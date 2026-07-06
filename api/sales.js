@@ -85,11 +85,26 @@ export default wrap(async (req, res) => {
         const { error } = await supabase.from('sales').insert(inserts);
         if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       }
+      // The upsert keys on the PK alone, so without a brand guard a caller
+      // could pass another brand's sale id and overwrite / re-brand it. Filter
+      // the submitted ids down to the ones that already belong to the caller's
+      // brand first (one extra query, not one-per-row, so large CSV batches
+      // stay fast); foreign ids are silently dropped.
+      let updated = 0;
       if (rawUpdates.length > 0) {
-        const { error } = await supabase.from('sales').upsert(rawUpdates);
-        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        const ids = rawUpdates.map(s => s.id);
+        const { data: owned, error: oErr } = await supabase
+          .from('sales').select('id').eq('brandId', brandId).in('id', ids);
+        if (oErr) { const e = new Error(oErr.message); e.status = 500; throw e; }
+        const ownedIds = new Set((owned || []).map(r => r.id));
+        const safe = rawUpdates.filter(s => ownedIds.has(s.id));
+        if (safe.length > 0) {
+          const { error } = await supabase.from('sales').upsert(safe);
+          if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+          updated = safe.length;
+        }
       }
-      return res.status(200).json({ ok: true, inserted: inserts.length, updated: rawUpdates.length });
+      return res.status(200).json({ ok: true, inserted: inserts.length, updated });
     }
     case 'DELETE': {
       await requireAdmin(userId);
