@@ -94,7 +94,7 @@ export function PackerView({ onLogout }) {
   // Transport: Supabase Realtime broadcast when configured (instant), else a
   // polled app_settings row (~2.5s). Both are namespaced by the packer's user
   // id, so the iPad + phone must be the same login.
-  const { currentUser } = useContext(AuthContext);
+  const { currentUser, activeBrand, brands, switchBrand } = useContext(AuthContext);
   const isMobile = useIsMobile();
   const [handoff, setHandoff] = useState(null);     // box snapshot to show on the phone
   const channelRef = useRef(null);                  // live realtime channel (or null)
@@ -599,6 +599,13 @@ export function PackerView({ onLogout }) {
         onBack={activeBox ? () => goToBox(null) : null}
       />
 
+      {/* Brand chooser — only on the landing screen (no box open) and only when
+          the packer's account spans more than one 3babes brand. Picking a brand
+          swaps which brand's boxes appear (BAE and Folia ship separately). */}
+      {!activeBox && brands && brands.length > 1 && (
+        <BrandStrip brands={brands} activeBrand={activeBrand} onSwitch={switchBrand} />
+      )}
+
       {/* Easy-to-read flag banners under the bar — both can show (a box can be
           held AND local-pickup). Amber "ON HOLD"; violet "LOCAL PICKUP". */}
       {activeBox && activeIsPickup && (
@@ -712,6 +719,45 @@ function TopBar({ onLogout, title, subtitle, onBack, tone }) {
         >
           <LogOut className="w-6 h-6" />
         </button>
+      </div>
+    </div>
+  );
+}
+
+// Big, touch-first brand chooser for the packing table. Switching remounts the
+// app (App is keyed by activeBrand), so PackerView refetches the chosen brand's
+// boxes and lands back on the grid. Active brand uses its accent colour (Folia
+// green / BAE red) so it's obvious which brand's boxes are on screen.
+function BrandStrip({ brands, activeBrand, onSwitch }) {
+  return (
+    <div className="flex-shrink-0 bg-white border-b border-gray-200 px-3 sm:px-5 py-2.5">
+      <div className="max-w-5xl mx-auto flex items-center gap-3">
+        <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 flex-shrink-0">
+          Brand
+        </span>
+        <div className="flex-1 flex gap-2">
+          {brands.map((b) => {
+            const active = b.id === activeBrand;
+            return (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => { if (!active) onSwitch(b.id); }}
+                aria-pressed={active}
+                className={`flex-1 h-11 rounded-xl border-2 text-sm font-semibold inline-flex items-center justify-center gap-2 transition active:scale-[0.99] ${
+                  active ? 'text-white shadow-sm' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                }`}
+                style={active ? { background: b.accent, borderColor: b.accent } : undefined}
+              >
+                <span
+                  className="w-2.5 h-2.5 rounded-full"
+                  style={{ background: active ? '#fff' : b.accent }}
+                />
+                {b.name}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
