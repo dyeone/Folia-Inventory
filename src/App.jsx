@@ -1200,6 +1200,7 @@ function StaffOrAdminInventory() {
             onSellerSettlement={(sale) => setSellerSettlement({ sale })}
             onIntakeSeller={intakeSellerPlants}
             onReloadSellers={reloadSellers}
+            onPrintLabels={(labels) => { if (labels.length) setLabelItems(labels); }}
             onStageItems={async (updates) => {
               // Functional updater so rapid back-to-back quick-add scans
               // compose instead of overwriting each other (each call merging a
