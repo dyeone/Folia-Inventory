@@ -94,6 +94,13 @@ export function PreSaleTab({
   const [addedOrder, setAddedOrder] = useState([]);
   // Quick add: scan straight through, each item staged at $300, no detail editor.
   const [quickAdd, setQuickAdd] = useState(false);
+  // Which staged rows are checked for "Print labels" (prints only these).
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const toggleSelect = (id) => setSelectedIds(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
 
   useEffect(() => { scanRef.current?.focus(); }, [saleId]);
   useEffect(() => {
@@ -288,6 +295,14 @@ export function PreSaleTab({
   }
 
   const stagedValue = staged.reduce((s, i) => s + (parseFloat(i.listingPrice) || 0), 0);
+
+  // Print selection, derived from the checked ids intersected with what's
+  // actually staged now (so removed rows drop out automatically).
+  const selectedStaged = staged.filter(i => selectedIds.has(i.id));
+  const allSelected = staged.length > 0 && selectedStaged.length === staged.length;
+  const someSelected = selectedStaged.length > 0;
+  const toggleSelectAll = () =>
+    setSelectedIds(allSelected ? new Set() : new Set(staged.map(i => i.id)));
 
   // Consignment plants already staged in this event, grouped by seller — the
   // little per-seller summary under the intake control. Plain const (not a hook)
@@ -516,13 +531,26 @@ export function PreSaleTab({
             </h3>
             {staged.length > 0 && (
               <div className="flex items-center gap-1">
-                <button
-                  onClick={() => onPrintLabels?.(staged)}
-                  disabled={busy || !onPrintLabels}
-                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 rounded-lg disabled:opacity-50"
-                  title="Print labels for every staged plant"
+                <label
+                  className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-gray-600 cursor-pointer select-none"
+                  title={allSelected ? 'Deselect all' : 'Select all'}
                 >
-                  <Printer className="w-3.5 h-3.5" /> Print labels
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                    onChange={toggleSelectAll}
+                    className="w-3.5 h-3.5 rounded text-emerald-600 focus:ring-emerald-500"
+                  />
+                  All
+                </label>
+                <button
+                  onClick={() => onPrintLabels?.(selectedStaged)}
+                  disabled={busy || !onPrintLabels || !someSelected}
+                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 rounded-lg disabled:opacity-40"
+                  title={someSelected ? 'Print labels for the selected plants' : 'Select plants to print their labels'}
+                >
+                  <Printer className="w-3.5 h-3.5" /> Print labels{someSelected ? ` (${selectedStaged.length})` : ''}
                 </button>
                 <button
                   onClick={removeAllStaged}
@@ -551,6 +579,8 @@ export function PreSaleTab({
                   busy={busy}
                   showToast={showToast}
                   sellerName={it.sellerId ? (sellerById.get(it.sellerId)?.name || null) : null}
+                  selected={selectedIds.has(it.id)}
+                  onToggleSelect={() => toggleSelect(it.id)}
                   open={openId === it.id}
                   onToggle={() => setOpenId(o => (o === it.id ? null : it.id))}
                   autoFocusPrice={lastAddedId === it.id}
@@ -586,7 +616,7 @@ function defaultTitle(item) {
   return (item.name || '').slice(0, 80);
 }
 
-function PreSaleRow({ item, busy, showToast, sellerName, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
+function PreSaleRow({ item, busy, showToast, sellerName, selected, onToggleSelect, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
   const [saving, setSaving] = useState(false);
   const rowRef = useRef(null);
   const priceRef = useRef(null);
@@ -712,6 +742,15 @@ function PreSaleRow({ item, busy, showToast, sellerName, open, onToggle, autoFoc
       }`}
     >
       <div className="flex items-center gap-2.5 px-3 py-2.5">
+        <input
+          type="checkbox"
+          checked={!!selected}
+          onChange={onToggleSelect}
+          onClick={(e) => e.stopPropagation()}
+          className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 flex-shrink-0"
+          title="Select for label printing"
+          aria-label="Select for label printing"
+        />
         <button onClick={toggle} className="flex items-center gap-2.5 min-w-0 flex-1 text-left" aria-expanded={open}>
           <ChevronRight className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
           <span className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${item.type === 'tc' ? 'bg-sky-500' : 'bg-emerald-500'}`} />
