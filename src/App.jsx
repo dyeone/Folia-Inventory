@@ -45,6 +45,8 @@ const SalesUploadModal = lazyNamed(() => import('./sales/SalesUploadModal.jsx'),
 const LiveScanModal = lazyNamed(() => import('./sales/LiveScanModal.jsx'), 'LiveScanModal');
 const LiveModal = lazyNamed(() => import('./sales/LiveModal.jsx'), 'LiveModal');
 const SaleEvalModal = lazyNamed(() => import('./sales/SaleEvalModal.jsx'), 'SaleEvalModal');
+const SellersModal = lazyNamed(() => import('./sales/SellersModal.jsx'), 'SellersModal');
+const SellerSettlementModal = lazyNamed(() => import('./sales/SellerSettlementModal.jsx'), 'SellerSettlementModal');
 const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
 const BoxLabelSheet = lazyNamed(() => import('./labels/BoxLabelSheet.jsx'), 'BoxLabelSheet');
 const PackerView = lazyNamed(() => import('./packing/PackerView.jsx'), 'PackerView');
@@ -212,6 +214,8 @@ function StaffOrAdminInventory() {
   const [sales, setSales] = useState([]);
   const [varieties, setVarieties] = useState([]);
   const [species, setSpecies] = useState([]);
+  // Consignment sellers (BAE). Best-effort load; empty for Folia / un-migrated.
+  const [sellers, setSellers] = useState([]);
   // Personal GTD tasks for the signed-in user (Calendar tab + dashboard widget).
   const [tasks, setTasks] = useState([]);
   // Active users — loaded for admins only, to populate the task "Assign to"
@@ -241,6 +245,10 @@ function StaffOrAdminInventory() {
   // "Financial Report" button appears immediately.
   const [saleEval, setSaleEval] = useState(null);
   const [evalVersion, setEvalVersion] = useState(0);
+  // Consignment: brand-level "Manage sellers" modal, and the per-event
+  // { sale } settlement report.
+  const [showSellers, setShowSellers] = useState(false);
+  const [sellerSettlement, setSellerSettlement] = useState(null);
   // Sale ids that have a saved evaluation in the DB — so the "Financial Report"
   // button appears even on a device whose localStorage cache is empty.
   const [evalSaleIds, setEvalSaleIds] = useState(() => new Set());
@@ -500,6 +508,13 @@ function StaffOrAdminInventory() {
         setCareCalendars(Array.isArray(cals) ? cals : []);
       } catch { /* none yet */ }
 
+      // Consignment sellers (BAE) — best-effort and isolated: an older API or
+      // an un-migrated brand just leaves an empty list (Folia has no sellers).
+      try {
+        const ss = await api.getSellers();
+        setSellers(Array.isArray(ss) ? ss : []);
+      } catch { /* no sellers */ }
+
       // Once the data is in, idle-prefetch the PDF/label chunks so the
       // first "Print label" tap doesn't have to download ~600 KB on the
       // hot path. requestIdleCallback when available, fallback to a
@@ -648,6 +663,20 @@ function StaffOrAdminInventory() {
     // Only send id + updates; server stamps modifiedAt/modifiedBy.
     saveItems(items.map(i => i.id === id ? { ...i, ...updates } : i));
     showToast('Updated');
+  };
+
+  // Refresh the consignment seller list from the server (after a CRUD change).
+  const reloadSellers = useCallback(async () => {
+    try { setSellers(await api.getSellers()); } catch { /* keep current */ }
+  }, []);
+
+  // Intake a batch of seller-owned plants: the server assigns each a
+  // <SELLERCODE>-<VARIETY>-<n> SKU and stores sellerId/commissionPct/saleId, so
+  // they land straight in the event's lineup. Refresh items so they show up in
+  // Pre Sale immediately. Throws so the intake modal can surface failures.
+  const intakeSellerPlants = async (payloads) => {
+    await api.upsertItems(payloads);
+    applyItemsFresh(await api.getItems());
   };
 
   const deleteItem = (id) => {
@@ -1164,6 +1193,13 @@ function StaffOrAdminInventory() {
             items={items}
             isAdmin={isAdmin}
             showToast={showToast}
+            activeBrand={activeBrand}
+            sellers={sellers}
+            varieties={varieties}
+            onManageSellers={() => setShowSellers(true)}
+            onSellerSettlement={(sale) => setSellerSettlement({ sale })}
+            onIntakeSeller={intakeSellerPlants}
+            onReloadSellers={reloadSellers}
             onStageItems={async (updates) => {
               // Functional updater so rapid back-to-back quick-add scans
               // compose instead of overwriting each other (each call merging a
@@ -1621,6 +1657,7 @@ function StaffOrAdminInventory() {
       )}
       {showSaleModal && (
         <SaleFormModal
+          isBae={activeBrand === 'bae'}
           onSave={async (data) => {
             try {
               await api.upsertSales([data]);
@@ -1703,9 +1740,27 @@ function StaffOrAdminInventory() {
           onClose={() => setSaleEval(null)}
         />
       )}
+      {showSellers && (
+        <SellersModal
+          sellers={sellers}
+          isAdmin={isAdmin}
+          onChanged={reloadSellers}
+          showToast={showToast}
+          onClose={() => setShowSellers(false)}
+        />
+      )}
+      {sellerSettlement && (
+        <SellerSettlementModal
+          sale={sellerSettlement.sale}
+          items={items}
+          sellers={sellers}
+          onClose={() => setSellerSettlement(null)}
+        />
+      )}
       {editingSale && (
         <SaleFormModal
           initial={editingSale}
+          isBae={activeBrand === 'bae'}
           onSave={async (data) => {
             try {
               await api.upsertSales([data]);
@@ -1846,7 +1901,7 @@ function StaffOrAdminInventory() {
         <BoxLabelSheet boxes={boxLabelBoxes} onClose={() => setBoxLabelBoxes(null)} showToast={showToast} />
       )}
       {labelItems && labelItems.length > 0 && (
-        <LabelSheet items={labelItems} onClose={() => setLabelItems(null)} showToast={showToast} />
+        <LabelSheet items={labelItems} sellers={sellers} onClose={() => setLabelItems(null)} showToast={showToast} />
       )}
       </Suspense>
 

@@ -28,9 +28,21 @@ export function matchInventory(palmItem, inventoryItems) {
   // without duplicating or moving it.
   if (palmItem?.sku) {
     const k = normalizeSku(palmItem.sku);
+    // Candidate keys, tried in order. The exact key first; then, if it has 3+
+    // segments (a possible greedy over-capture like "GREEN-ANT-142" where a
+    // stray hyphenated word glued onto a real SKU), retry with the trailing two
+    // segments ("ANT-142"). Seller-consignment SKUs (JADE-ANT-142) match on the
+    // exact key against their own inventory row, so this only kicks in as a
+    // fallback when the exact key finds nothing.
+    const candidates = [];
     if (k) {
+      candidates.push(k);
+      const segs = k.split('-');
+      if (segs.length >= 3) candidates.push(segs.slice(-2).join('-'));
+    }
+    for (const key of candidates) {
       const hits = inventoryItems.filter(
-        i => !i.deletedAt && normalizeSku(i.sku) === k,
+        i => !i.deletedAt && normalizeSku(i.sku) === key,
       );
       if (hits.length > 0) {
         const fresh = hits.find(

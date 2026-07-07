@@ -11,8 +11,17 @@ function toIsoLocal(date, time) {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-export function SaleFormModal({ initial, onSave, onClose }) {
+export function SaleFormModal({ initial, onSave, onClose, isBae }) {
   const isEdit = Boolean(initial?.id);
+  // BAE sells finished plants only (no tissue culture), so its events default to
+  // plants-only and hide the TC toggles.
+  const itemTypeOptions = isBae
+    ? [{ v: 'plant', label: 'Plants only' }]
+    : [
+        { v: 'tc', label: 'TC only' },
+        { v: 'plant', label: 'Plants only' },
+        { v: 'both', label: 'TC + Plants' },
+      ];
   const initialDate = initial?.startTime
     ? new Date(initial.startTime).toISOString().slice(0, 10)
     : (initial?.date || new Date().toISOString().slice(0, 10));
@@ -25,7 +34,7 @@ export function SaleFormModal({ initial, onSave, onClose }) {
     date: initialDate,
     startTimeHm: initialTime,
     durationMinutes: initial?.durationMinutes ?? 60,
-    itemTypes: initial?.itemTypes || 'both',
+    itemTypes: initial?.itemTypes || (isBae ? 'plant' : 'both'),
     platform: initial?.platform || 'Palmstreet',
     notes: initial?.notes || '',
   });
@@ -89,11 +98,7 @@ export function SaleFormModal({ initial, onSave, onClose }) {
         </div>
         <Field label="Item types">
           <div className="flex gap-1 bg-gray-100 p-1 rounded-lg">
-            {[
-              { v: 'tc', label: 'TC only' },
-              { v: 'plant', label: 'Plants only' },
-              { v: 'both', label: 'TC + Plants' },
-            ].map(opt => (
+            {itemTypeOptions.map(opt => (
               <button
                 key={opt.v}
                 type="button"

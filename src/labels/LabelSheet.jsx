@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
@@ -15,9 +15,12 @@ function brandTag() {
   return b && b !== 'folia' ? b.toUpperCase() : '';
 }
 
-function Label({ item, tag }) {
+function Label({ item, tag, sellerName }) {
   const svgRef = useRef(null);
   const sku = item.sku ? String(item.sku) : '';
+  // Consignment plants print the seller's name alongside the brand tag so the
+  // bench knows whose plant it is (the SKU carries the seller code too).
+  const top = [tag, sellerName].filter(Boolean).join(' · ');
 
   useEffect(() => {
     if (svgRef.current && sku) {
@@ -39,7 +42,7 @@ function Label({ item, tag }) {
   return (
     <div className="folia-label bg-white border border-gray-300 flex flex-col items-center justify-between text-center"
          style={{ width: '2in', height: '1in', padding: '0.08in', boxSizing: 'border-box' }}>
-      {tag && <div className="text-[6pt] font-bold text-black leading-none">{tag}</div>}
+      {top && <div className="text-[6pt] font-bold text-black leading-none">{top}</div>}
       <div className="text-[8pt] leading-tight text-gray-700 truncate w-full">
         {item.name}{item.variety ? ` · ${item.variety}` : ''}
       </div>
@@ -73,7 +76,7 @@ function barcodeDataUrl(canvas, value) {
   }
 }
 
-function buildPdf(items) {
+function buildPdf(items, sellerNameById) {
   const pdf = new jsPDF({
     unit: 'in',
     format: [LABEL_W, LABEL_H],
@@ -85,23 +88,26 @@ function buildPdf(items) {
   items.forEach((item, idx) => {
     if (idx > 0) pdf.addPage([LABEL_W, LABEL_H], 'landscape');
 
-    // Brand tag (e.g. BAE) — a small bold header centered above the name. BAE
-    // and Folia share no SKUs/varieties, so non-Folia labels are marked to
-    // avoid bench mix-ups; Folia (the default) prints without a tag.
-    if (tag) {
+    // Top line: brand tag (e.g. BAE) plus, for consignment plants, the seller's
+    // name — so the bench can tell whose plant it is. BAE and Folia share no
+    // SKUs/varieties, so non-Folia labels are marked to avoid bench mix-ups;
+    // Folia (the default, no sellers) prints without a top line.
+    const sellerName = item.sellerId && sellerNameById ? sellerNameById.get(item.sellerId) : null;
+    const topTag = [tag, sellerName].filter(Boolean).join(' · ').slice(0, 28);
+    if (topTag) {
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(7);
       pdf.setTextColor(0);
-      pdf.text(tag, LABEL_W / 2, 0.11, { align: 'center' });
+      pdf.text(topTag, LABEL_W / 2, 0.11, { align: 'center' });
     }
 
     // Name + variety — 8pt, centered, truncated to the label width. Drops a
-    // touch when a brand tag occupies the top line.
+    // touch when a top line occupies the first row.
     const title = `${item.name || ''}${item.variety ? ` · ${item.variety}` : ''}`;
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(70);
-    pdf.text(title, LABEL_W / 2, tag ? 0.24 : 0.18, {
+    pdf.text(title, LABEL_W / 2, topTag ? 0.24 : 0.18, {
       align: 'center',
       maxWidth: LABEL_W - 0.15,
     });
@@ -127,7 +133,15 @@ function buildPdf(items) {
   return pdf;
 }
 
-export function LabelSheet({ items, onClose, showToast }) {
+export function LabelSheet({ items, sellers, onClose, showToast }) {
+  // Resolve sellerId → name once so both the preview and the PDF can print the
+  // seller on consignment labels. Empty for Folia / any non-consignment batch.
+  const sellerNameById = useMemo(
+    () => new Map((sellers || []).map(s => [s.id, s.name])),
+    [sellers],
+  );
+  const buildLabelPdf = (its) => buildPdf(its, sellerNameById);
+
   // Print directly on open when the printer's ready — skip the preview grid.
   // Only when the bridge is offline (or the direct print fails) do we fall back
   // to showing the preview below so the operator can browser-print. Large
@@ -135,11 +149,11 @@ export function LabelSheet({ items, onClose, showToast }) {
   // media: force 2"×1" so the printer uses the label size, not its CUPS default
   // (the iDPRT defaults to 4×6, which is why prints came out 4×6).
   const printDirect = (printViaBridge) =>
-    printChunked({ items, buildPdf, role: 'label', media: 'Custom.2x1in', printViaBridge });
+    printChunked({ items, buildPdf: buildLabelPdf, role: 'label', media: 'Custom.2x1in', printViaBridge });
   const auto = useAutoBridgePrint({ printDirect, onClose, showToast });
 
   const handleDownloadPdf = () => {
-    const pdf = buildPdf(items);
+    const pdf = buildLabelPdf(items);
     const stamp = new Date().toISOString().slice(0, 10);
     pdf.save(`folia-labels-${stamp}.pdf`);
   };
@@ -187,7 +201,7 @@ export function LabelSheet({ items, onClose, showToast }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close
           </button>
-          <PrintControls printDirect={printDirect} buildPdf={() => buildPdf(items)} onBrowserPrint={printInBrowser} />
+          <PrintControls printDirect={printDirect} buildPdf={() => buildLabelPdf(items)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownloadPdf}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white"
@@ -197,7 +211,14 @@ export function LabelSheet({ items, onClose, showToast }) {
         </div>
       </div>
       <div className="p-4 flex flex-wrap gap-2 justify-center folia-label-grid">
-        {items.map(item => <Label key={item.id} item={item} tag={brandTag()} />)}
+        {items.map(item => (
+          <Label
+            key={item.id}
+            item={item}
+            tag={brandTag()}
+            sellerName={item.sellerId ? sellerNameById.get(item.sellerId) : null}
+          />
+        ))}
       </div>
       <style>{`
         @media print {
