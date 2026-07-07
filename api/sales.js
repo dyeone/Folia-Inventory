@@ -45,6 +45,17 @@ export default wrap(async (req, res) => {
         }
         return res.status(200).json({ evalSaleIds: (data || []).map(r => r.saleId) });
       }
+      // Reusable per-brand sellers (consignment). Graceful no-op until 0033 is
+      // applied so Folia / un-migrated brands just see an empty list.
+      if (action === 'sellers-list') {
+        const { data, error } = await supabase
+          .from('sellers').select('*').eq('brandId', brandId).order('name');
+        if (error) {
+          if (isMissingTable(error)) return res.status(200).json({ sellers: [], unmigrated: true });
+          const e = new Error(error.message); e.status = 500; throw e;
+        }
+        return res.status(200).json({ sellers: data || [] });
+      }
       const { data, error } = await supabase.from('sales').select('*').eq('brandId', brandId);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ sales: data || [] });
@@ -62,6 +73,49 @@ export default wrap(async (req, res) => {
           const e = new Error(error.message); e.status = 500; throw e;
         }
         return res.status(200).json({ ok: true });
+      }
+      // Create / update a seller (consignment). `code` is the SKU prefix, so it
+      // is validated to 2–8 letters and kept unique per brand (DB index).
+      if (req.body?.action === 'seller-upsert') {
+        const s = req.body.seller || {};
+        const name = String(s.name || '').trim();
+        const code = String(s.code || '').trim().toUpperCase();
+        if (!name) { const e = new Error('Seller name is required'); e.status = 400; throw e; }
+        if (!/^[A-Z]{2,8}$/.test(code)) {
+          const e = new Error('Seller code must be 2–8 letters'); e.status = 400; throw e;
+        }
+        const pct = s.defaultCommissionPct == null || s.defaultCommissionPct === ''
+          ? null : parseFloat(s.defaultCommissionPct);
+        const dupCode = () => { const e = new Error(`Seller code "${code}" is already in use`); e.status = 409; return e; };
+        const now = new Date().toISOString();
+        if (s.id) {
+          // Brand-guard the id so a caller can't re-brand another brand's seller.
+          const { data: owned, error: oErr } = await supabase
+            .from('sellers').select('id').eq('brandId', brandId).eq('id', s.id).maybeSingle();
+          if (oErr) { const e = new Error(oErr.message); e.status = 500; throw e; }
+          if (!owned) { const e = new Error('Seller not found'); e.status = 404; throw e; }
+          const { error } = await supabase.from('sellers').update({
+            name, code, defaultCommissionPct: pct,
+            username: s.username || null, contact: s.contact || null,
+            modifiedAt: now, modifiedBy: user.displayName,
+          }).eq('brandId', brandId).eq('id', s.id);
+          if (error) {
+            if (error.code === '23505') throw dupCode();
+            const e = new Error(error.message); e.status = 500; throw e;
+          }
+          return res.status(200).json({ ok: true, id: s.id });
+        }
+        const row = {
+          id: newId(), brandId, name, code, defaultCommissionPct: pct,
+          username: s.username || null, contact: s.contact || null,
+          createdAt: now, createdBy: user.displayName,
+        };
+        const { error } = await supabase.from('sellers').insert(row);
+        if (error) {
+          if (error.code === '23505') throw dupCode();
+          const e = new Error(error.message); e.status = 500; throw e;
+        }
+        return res.status(200).json({ seller: row });
       }
       const { sales } = req.body || {};
       if (!Array.isArray(sales)) {
@@ -108,6 +162,24 @@ export default wrap(async (req, res) => {
     }
     case 'DELETE': {
       await requireAdmin(userId);
+      // Delete a seller — refused while any inventory still references it, so a
+      // seller with live consignment plants can't be orphaned (FK guard).
+      if (req.body?.action === 'seller-delete') {
+        const { id } = req.body || {};
+        if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
+        const { count, error: cErr } = await supabase
+          .from('inventory_items')
+          .select('id', { count: 'exact', head: true })
+          .eq('brandId', brandId).eq('sellerId', id);
+        if (cErr) { const e = new Error(cErr.message); e.status = 500; throw e; }
+        if (count && count > 0) {
+          const e = new Error(`Seller still has ${count} plant${count === 1 ? '' : 's'} in inventory — remove those first`);
+          e.status = 409; throw e;
+        }
+        const { error } = await supabase.from('sellers').delete().eq('brandId', brandId).eq('id', id);
+        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        return res.status(200).json({ ok: true });
+      }
       const { ids } = req.body || {};
       if (!Array.isArray(ids) || ids.length === 0) {
         const e = new Error('ids required'); e.status = 400; throw e;

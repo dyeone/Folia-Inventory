@@ -588,3 +588,29 @@ language sql stable as $$
   from inventory_items
   where "brandId" = p_brand and sku ~ '-\d+$';
 $$;
+
+-- ─── Seller consignment (migration 0033) ─────────────────────────────────────
+-- Reusable per-brand sellers whose plants BAE sells on consignment. `code` is
+-- the SKU prefix segment (SKUs become <SELLERCODE>-<VARIETYCODE>-<n>), unique
+-- per brand. Per-item sellerId/commissionPct tag the consigned plants.
+create table if not exists sellers (
+  id                     text        primary key,
+  "brandId"              text        not null references brands(id),
+  name                   text        not null,
+  code                   text        not null,
+  "defaultCommissionPct" numeric,
+  username               text,
+  contact                text,
+  "createdAt"            timestamptz not null default now(),
+  "createdBy"            text,
+  "modifiedAt"           timestamptz,
+  "modifiedBy"           text
+);
+create unique index if not exists sellers_brand_code_unique on sellers ("brandId", upper(code));
+create index if not exists sellers_brand_idx on sellers ("brandId");
+alter table sellers enable row level security;
+
+alter table inventory_items add column if not exists "sellerId" text references sellers(id);
+alter table inventory_items add column if not exists "commissionPct" numeric;
+create index if not exists inventory_items_seller_idx
+  on inventory_items ("brandId", "sellerId") where "sellerId" is not null;

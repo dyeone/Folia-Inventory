@@ -19,6 +19,16 @@ export function nextSkuForCode(code, existingItems) {
   return `${code}-${next}`;
 }
 
+// SKU preview for a seller-consignment plant: <SELLERCODE>-<VARIETYCODE>-<n>
+// (e.g. JADE-ANT-142). Cosmetic only — the server assigns the authoritative SKU
+// on save (see api/items.js assignMissingSkus); this just shows the operator
+// what to expect in the intake form.
+export function nextSkuForSeller(sellerCode, varietyCode, existingItems) {
+  const base = nextSkuForCode(varietyCode, existingItems); // "ANT-<n>"
+  if (!base) return '';
+  return sellerCode ? `${sellerCode}-${base}` : base;
+}
+
 export const PRICE_BUCKETS = [
   { label: '$0 – 25', min: 0, max: 25 },
   { label: '$25 – 50', min: 25, max: 50 },

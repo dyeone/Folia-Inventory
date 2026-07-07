@@ -103,6 +103,14 @@ export const api = {
   saveSaleEval: (saleId, result) =>
     request('/sales', { method: 'POST', body: { action: 'saveEval', saleId, result } }),
 
+  // Sellers (consignment) — reusable per-brand records. getSellers is
+  // best-effort empty for brands / installs without the 0033 table.
+  getSellers: () => request('/sales?action=sellers-list').then(r => r.sellers || []),
+  upsertSeller: (seller) =>
+    request('/sales', { method: 'POST', body: { action: 'seller-upsert', seller } }),
+  deleteSeller: (id) =>
+    request('/sales', { method: 'DELETE', body: { action: 'seller-delete', id } }),
+
   // Varieties (genus catalog)
   getVarieties: () => request('/varieties').then(r => r.varieties),
   createVariety: ({ name, code }) =>

@@ -51,6 +51,12 @@ async function findMaxSkuSuffix(brandId) {
 //
 // Variety codes come from the `varieties` table (so admin-added varieties
 // work without a code release).
+//
+// Seller-consignment items (those carrying a sellerId) get an extra leading
+// segment — the seller's code — so their SKU reads <SELLERCODE>-<VARIETYCODE>-<n>
+// (e.g. JADE-ANT-142) while still drawing from the same global number sequence.
+// The trailing "-<n>" is what inventory_max_sku_suffix keys on, so the seller
+// prefix doesn't disturb numbering or (brandId, sku) uniqueness.
 async function assignMissingSkus(items, brandId) {
   const needSku = items.filter(i => !i.sku);
   if (needSku.length === 0) return;
@@ -60,15 +66,30 @@ async function assignMissingSkus(items, brandId) {
   if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
   const codeByName = Object.fromEntries((varieties || []).map(v => [v.name, v.code]));
 
+  // Seller codes for any items being intaken on consignment.
+  const needSeller = needSku.some(i => i.sellerId);
+  let codeBySellerId = {};
+  if (needSeller) {
+    const { data: sellers, error: sErr } = await supabase
+      .from('sellers').select('id, code').eq('brandId', brandId);
+    if (sErr) { const e = new Error(sErr.message); e.status = 500; throw e; }
+    codeBySellerId = Object.fromEntries((sellers || []).map(s => [s.id, s.code]));
+  }
+
   for (const item of needSku) {
     if (!codeByName[item.variety]) {
       const e = new Error(`Unknown variety: ${item.variety}`); e.status = 400; throw e;
+    }
+    if (item.sellerId && !codeBySellerId[item.sellerId]) {
+      const e = new Error(`Unknown seller: ${item.sellerId}`); e.status = 400; throw e;
     }
   }
 
   let next = (await findMaxSkuSuffix(brandId)) + 1;
   for (const item of needSku) {
-    item.sku = `${codeByName[item.variety]}-${next++}`;
+    const varietyCode = codeByName[item.variety];
+    const prefix = item.sellerId ? `${codeBySellerId[item.sellerId]}-${varietyCode}` : varietyCode;
+    item.sku = `${prefix}-${next++}`;
   }
 }
 

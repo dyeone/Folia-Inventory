@@ -24,9 +24,11 @@ export const STORAGE_KEY = (saleId) => `sale-eval-${saleId}`;
 
 // Bump when the result shape OR a stored calculation changes. loadEval/fetchEval
 // discard caches from an older version, so the operator re-uploads and the report
-// recomputes. (v6: commission is now 15% of revenue NET of Palmstreet selling +
-// payment fees; totals carry the platform fees. v5: cutoff SKU 2380.)
-export const RESULT_VERSION = 6;
+// recomputes. (v7: seller-consignment plants (0033) book the seller payout as
+// cost and pay no internal 15% commission; lines carry sellerId. v6: commission
+// is now 15% of revenue NET of Palmstreet selling + payment fees; totals carry
+// the platform fees. v5: cutoff SKU 2380.)
+export const RESULT_VERSION = 7;
 
 // Operating-cost assumptions for the net-profit waterfall.
 export const LABOR_PER_BOX = 2;
@@ -135,6 +137,18 @@ function parseSkuNumber(sku) {
 // Cost/profit fields for a line given the matched item (or null). $0/negative
 // cost counts as "no known cost", matching financialHelpers.rollup.
 function costFor(item, revenue) {
+  // Seller-consignment plant (0033): we never bought it, so our real "cost" is
+  // the payout owed to the seller — revenue minus the commission we keep. Booking
+  // that as the line cost nets the plant down to just our commission in the
+  // gross/net waterfall, so a consigned sale can't overstate our profit.
+  // commissionPct is written at intake (seller default or per-plant override);
+  // if it's somehow missing we keep nothing (conservative — never overstates).
+  if (item && item.sellerId) {
+    const pct = num(item.commissionPct);
+    const rate = pct != null ? pct / 100 : 0;
+    const payout = revenue * (1 - rate);
+    return { cost: payout, profit: revenue - payout, hasCost: true };
+  }
   const rawCost = item ? num(item.grossCost ?? item.cost) : null;
   const hasCost = rawCost != null && rawCost > 0;
   return {
@@ -152,11 +166,22 @@ function buildLines(boxes, items) {
     const k = normalizeSku(it.sku);
     if (k && !bySku.has(k)) bySku.set(k, it);
   }
+  // Exact SKU first; then fall back to the trailing two segments if a greedy
+  // title parse over-captured a hyphenated word onto a real SKU (mirrors
+  // matchInventory). Seller SKUs like JADE-ANT-142 match their own row exactly,
+  // so this only fires when the exact key finds nothing.
+  const lookup = (k) => {
+    if (!k) return null;
+    const hit = bySku.get(k);
+    if (hit) return hit;
+    const segs = k.split('-');
+    return segs.length >= 3 ? (bySku.get(segs.slice(-2).join('-')) || null) : null;
+  };
   const lines = [];
   for (const box of boxes) {
     for (const li of box.items) {
       const k = normalizeSku(li.sku);
-      const item = k ? bySku.get(k) : null;
+      const item = lookup(k);
       const revenue = num(li.price) || 0;
       const cf = costFor(item, revenue);
       lines.push({
@@ -167,6 +192,7 @@ function buildLines(boxes, items) {
         csvTitle: li.title || '',
         title: item?.name || li.title || '',
         variety: item?.variety || null,
+        sellerId: item?.sellerId || null,
         buyer: box.recipientName || '',
         username: box.username || '',
         orderNumber: li.orderNumber || '',
@@ -204,7 +230,9 @@ export function aggregate(lines, meta = {}) {
     const paymentFee = l.revenue * PALMSTREET_PAYMENT_FEE_RATE;
     const netRevenue = l.revenue - sellingFee - paymentFee;
     // Commission is 15% of revenue AFTER Palmstreet fees, new plants only.
-    const commission = l.matched && !oldPlant ? netRevenue * SELLER_COMMISSION_RATE : 0;
+    // Seller-consignment plants (0033) are excluded — their economics are the
+    // seller payout booked as cost (see costFor), not this internal commission.
+    const commission = l.matched && !oldPlant && !l.sellerId ? netRevenue * SELLER_COMMISSION_RATE : 0;
     return { ...l, skuNum, oldPlant, offDay, sellingFee, paymentFee, netRevenue, commission };
   });
 

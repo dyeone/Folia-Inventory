@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tag, ScanLine, Search, X, Loader2, ImagePlus, Trash2, Calendar, Plus, Check,
-  Download, ChevronRight,
+  Download, ChevronRight, Users, Sprout,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ImageDropZone } from '../purchasing/ImageDropZone.jsx';
 import { exportPalmstreetCsv } from './palmstreetExport.js';
+import { SellerIntakeModal } from './SellerIntakeModal.jsx';
 
 // Pre Sale — stage individual inventory items into an upcoming sale event's
 // lineup by SKU (scan or type), fill in their Palmstreet listing details
@@ -54,11 +55,19 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChanged }) {
+export function PreSaleTab({
+  sales, items, showToast, onStageItems, onItemsChanged,
+  isBae, sellers = [], varieties = [], onIntakeSeller, onManageSellers,
+}) {
   const openSales = useMemo(
     () => sales.filter(s => s.status !== 'closed').slice().sort((a, b) => saleSortKey(a) - saleSortKey(b)),
     [sales],
   );
+
+  // Seller (consignment) lookups + the intake modal target.
+  const sellerById = useMemo(() => new Map(sellers.map(s => [s.id, s])), [sellers]);
+  const [addSellerId, setAddSellerId] = useState('');
+  const [intakeSeller, setIntakeSeller] = useState(null);
 
   const [saleSel, setSaleSel] = useState('');
   const saleId = (saleSel && openSales.some(s => s.id === saleSel))
@@ -280,6 +289,21 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
 
   const stagedValue = staged.reduce((s, i) => s + (parseFloat(i.listingPrice) || 0), 0);
 
+  // Consignment plants already staged in this event, grouped by seller — the
+  // little per-seller summary under the intake control. Plain const (not a hook)
+  // because this point sits past the early "no sales" return above.
+  const stagedSellers = (() => {
+    const m = new Map();
+    for (const it of staged) {
+      if (!it.sellerId) continue;
+      let g = m.get(it.sellerId);
+      if (!g) { g = { seller: sellerById.get(it.sellerId), count: 0, value: 0 }; m.set(it.sellerId, g); }
+      g.count += 1;
+      g.value += parseFloat(it.listingPrice) || 0;
+    }
+    return [...m.values()];
+  })();
+
   return (
     <div className="space-y-3">
       {/* Sale picker + scanner + export */}
@@ -363,6 +387,59 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
           </p>
         </div>
       </div>
+
+      {/* Seller consignment (BAE) — intake another seller's plants into this event */}
+      {isBae && (
+        <div className="bg-white rounded-xl border border-amber-200 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold text-gray-900">
+              <Users className="w-4 h-4 text-amber-600" /> Seller consignment
+            </h3>
+            <button
+              onClick={onManageSellers}
+              className="text-xs font-medium text-emerald-700 hover:underline"
+            >
+              Manage sellers
+            </button>
+          </div>
+          {sellers.length === 0 ? (
+            <p className="text-sm text-gray-500">
+              No sellers yet. <button onClick={onManageSellers} className="text-emerald-700 font-medium hover:underline">Add a seller</button> to intake their plants on consignment.
+            </p>
+          ) : (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+              <select
+                value={addSellerId}
+                onChange={(e) => setAddSellerId(e.target.value)}
+                className="input flex-1"
+              >
+                <option value="">Choose a seller…</option>
+                {sellers.map(s => <option key={s.id} value={s.id}>{s.name} ({s.code})</option>)}
+              </select>
+              <button
+                onClick={() => { const s = sellerById.get(addSellerId); if (s) setIntakeSeller(s); }}
+                disabled={!addSellerId || !sale}
+                className="flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium rounded-lg bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white disabled:bg-gray-200 disabled:text-gray-400"
+              >
+                <Sprout className="w-4 h-4" /> Add plants
+              </button>
+            </div>
+          )}
+          {stagedSellers.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {stagedSellers.map(g => (
+                <span key={g.seller?.id || 'x'} className="inline-flex items-center gap-1.5 text-xs bg-amber-50 border border-amber-200 rounded-full px-2.5 py-1">
+                  <span className="font-mono font-bold text-amber-700">{g.seller?.code || '?'}</span>
+                  <span className="text-gray-600">{g.seller?.name || 'unknown'}</span>
+                  <span className="text-amber-400">·</span>
+                  <span className="font-medium text-gray-700">{g.count}</span>
+                  <span className="text-gray-400">· ${g.value.toFixed(0)}</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-3 items-start">
         {/* Available inventory — always visible, click to stage */}
@@ -463,6 +540,7 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
                   item={it}
                   busy={busy}
                   showToast={showToast}
+                  sellerName={it.sellerId ? (sellerById.get(it.sellerId)?.name || null) : null}
                   open={openId === it.id}
                   onToggle={() => setOpenId(o => (o === it.id ? null : it.id))}
                   autoFocusPrice={lastAddedId === it.id}
@@ -477,6 +555,18 @@ export function PreSaleTab({ sales, items, showToast, onStageItems, onItemsChang
           )}
         </div>
       </div>
+
+      {intakeSeller && sale && (
+        <SellerIntakeModal
+          seller={intakeSeller}
+          sale={sale}
+          varieties={varieties}
+          existingItems={items}
+          onIntake={onIntakeSeller}
+          showToast={showToast}
+          onClose={() => { setIntakeSeller(null); setAddSellerId(''); }}
+        />
+      )}
     </div>
   );
 }
@@ -486,7 +576,7 @@ function defaultTitle(item) {
   return (item.name || '').slice(0, 80);
 }
 
-function PreSaleRow({ item, busy, showToast, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
+function PreSaleRow({ item, busy, showToast, sellerName, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
   const [saving, setSaving] = useState(false);
   const rowRef = useRef(null);
   const priceRef = useRef(null);
@@ -619,6 +709,11 @@ function PreSaleRow({ item, busy, showToast, open, onToggle, autoFocusPrice, hig
             <span className="flex items-center gap-2">
               <span className="font-medium text-sm text-gray-900 truncate">{form.title || item.name || item.sku}</span>
               {item.variety && <span className="text-xs text-gray-500 truncate">· {item.variety}</span>}
+              {sellerName && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded-full flex-shrink-0" title={`Consignment — ${sellerName}`}>
+                  <Users className="w-2.5 h-2.5" /> {sellerName}
+                </span>
+              )}
             </span>
             <span className="block text-xs text-gray-500 font-mono">{item.sku}</span>
           </span>

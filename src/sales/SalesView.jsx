@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   Plus, Calendar, Layers, Download, Trash2, Edit2, PackageOpen,
   Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock, Radio, Tag,
-  BarChart3, FileText,
+  BarChart3, FileText, Users, Coins,
 } from 'lucide-react';
 import { PreSaleTab } from './PreSaleTab.jsx';
 import { hasEval } from './saleEval.js';
@@ -32,8 +32,12 @@ export function SalesView({
   onSendToPacking, onGoLive, onValidateSales, onStartLiveScan, isAdmin,
   onStageItems, onItemsChanged, showToast,
   onEvaluateSale, onViewReport, evalVersion, evalSaleIds,
+  activeBrand, sellers = [], varieties = [],
+  onManageSellers, onSellerSettlement, onIntakeSeller, onReloadSellers,
 }) {
   const [tab, setTab] = useState('active');
+  // Consignment (seller sections + settlement) is a BAE-only workflow.
+  const isBae = activeBrand === 'bae';
 
   const visible = useMemo(() => {
     return sales.filter(s => tab === 'archive' ? s.status === 'closed' : s.status !== 'closed');
@@ -72,6 +76,15 @@ export function SalesView({
               className="flex items-center gap-1.5 px-4 py-2.5 bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 text-sm font-medium rounded-lg"
             >
               <Upload className="w-4 h-4" /> Validate Sales
+            </button>
+          )}
+          {isBae && (
+            <button
+              onClick={onManageSellers}
+              title="Manage consignment sellers — their plants can be added to any event"
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 text-sm font-medium rounded-lg"
+            >
+              <Users className="w-4 h-4" /> Sellers
             </button>
           )}
           <button onClick={onCreate} className="flex items-center gap-1.5 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-medium rounded-lg">
@@ -117,6 +130,12 @@ export function SalesView({
           showToast={showToast}
           onStageItems={onStageItems}
           onItemsChanged={onItemsChanged}
+          isBae={isBae}
+          sellers={sellers}
+          varieties={varieties}
+          onIntakeSeller={onIntakeSeller}
+          onManageSellers={onManageSellers}
+          onReloadSellers={onReloadSellers}
         />
       ) : visible.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
@@ -133,6 +152,7 @@ export function SalesView({
               sale={sale}
               items={items}
               isAdmin={isAdmin}
+              isBae={isBae}
               onBuildLineup={() => onBuildLineup(sale)}
               onExportCsv={() => onExportCsv(sale)}
               onSendToPacking={() => onSendToPacking(sale)}
@@ -141,6 +161,7 @@ export function SalesView({
               onDelete={() => onDelete(sale.id)}
               onEvaluateSale={() => onEvaluateSale(sale)}
               onViewReport={() => onViewReport(sale)}
+              onSellerSettlement={() => onSellerSettlement(sale)}
               evalVersion={evalVersion}
               hasDbEval={!!evalSaleIds && evalSaleIds.has(sale.id)}
             />
@@ -152,9 +173,9 @@ export function SalesView({
 }
 
 function SaleCard({
-  sale, items, isAdmin,
+  sale, items, isAdmin, isBae,
   onBuildLineup, onExportCsv, onSendToPacking, onGoLive, onEdit, onDelete,
-  onEvaluateSale, onViewReport, evalVersion, hasDbEval,
+  onEvaluateSale, onViewReport, onSellerSettlement, evalVersion, hasDbEval,
 }) {
   // Show "Financial Report" if a report exists in the DB (hasDbEval) OR in this
   // browser's localStorage cache. Re-check the cache when evalVersion bumps
@@ -166,6 +187,8 @@ function SaleCard({
   );
   const saleLots = items.filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway');
   const giveaways = items.filter(i => i.saleId === sale.id && i.lotKind === 'giveaway');
+  // Consignment plants in this event → enables the per-seller settlement report.
+  const sellerCount = items.filter(i => i.saleId === sale.id && i.sellerId).length;
   const totalAssigned = saleLots.length + giveaways.length;
   const totalValue = saleLots.reduce((s, i) => s + (parseFloat(i.listingPrice) || 0), 0);
 
@@ -304,6 +327,18 @@ function SaleCard({
           </button>
         )}
       </div>
+      {isBae && sellerCount > 0 && (
+        <div className="mt-2 flex">
+          <button
+            onClick={onSellerSettlement}
+            title="Per-seller settlement — what sold, our commission, and what's owed to each seller"
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-white border border-amber-300 text-amber-700 hover:bg-amber-50 active:bg-amber-100"
+          >
+            <Coins className="w-3.5 h-3.5" /> Seller Settlement
+            <span className="text-amber-400">· {sellerCount}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }
