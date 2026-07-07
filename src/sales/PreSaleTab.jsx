@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tag, ScanLine, Search, X, Loader2, ImagePlus, Trash2, Calendar, Plus, Check,
-  Download, ChevronRight, Users, Sprout,
+  Download, ChevronRight, Users, Sprout, Printer,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ImageDropZone } from '../purchasing/ImageDropZone.jsx';
@@ -57,7 +57,7 @@ function numOrNull(v) {
 
 export function PreSaleTab({
   sales, items, showToast, onStageItems, onItemsChanged,
-  isBae, sellers = [], varieties = [], onIntakeSeller, onManageSellers,
+  isBae, sellers = [], varieties = [], onIntakeSeller, onManageSellers, onPrintLabels,
 }) {
   const openSales = useMemo(
     () => sales.filter(s => s.status !== 'closed').slice().sort((a, b) => saleSortKey(a) - saleSortKey(b)),
@@ -515,14 +515,24 @@ export function PreSaleTab({
               <span className="ml-1.5 text-xs font-normal text-gray-500">({staged.length})</span>
             </h3>
             {staged.length > 0 && (
-              <button
-                onClick={removeAllStaged}
-                disabled={busy}
-                className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg disabled:opacity-50"
-                title="Remove all staged items from this sale"
-              >
-                <Trash2 className="w-3.5 h-3.5" /> Remove all
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => onPrintLabels?.(staged)}
+                  disabled={busy || !onPrintLabels}
+                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 rounded-lg disabled:opacity-50"
+                  title="Print labels for every staged plant"
+                >
+                  <Printer className="w-3.5 h-3.5" /> Print labels
+                </button>
+                <button
+                  onClick={removeAllStaged}
+                  disabled={busy}
+                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg disabled:opacity-50"
+                  title="Remove all staged items from this sale"
+                >
+                  <Trash2 className="w-3.5 h-3.5" /> Remove all
+                </button>
+              </div>
             )}
           </div>
           {staged.length === 0 ? (
