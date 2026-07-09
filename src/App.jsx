@@ -48,6 +48,7 @@ const SaleEvalModal = lazyNamed(() => import('./sales/SaleEvalModal.jsx'), 'Sale
 const SellersModal = lazyNamed(() => import('./sales/SellersModal.jsx'), 'SellersModal');
 const SellerSettlementModal = lazyNamed(() => import('./sales/SellerSettlementModal.jsx'), 'SellerSettlementModal');
 const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
+const NumberLabelSheet = lazyNamed(() => import('./labels/NumberLabelSheet.jsx'), 'NumberLabelSheet');
 const BoxLabelSheet = lazyNamed(() => import('./labels/BoxLabelSheet.jsx'), 'BoxLabelSheet');
 const PackerView = lazyNamed(() => import('./packing/PackerView.jsx'), 'PackerView');
 const ShippingSettingsModal = lazyNamed(() => import('./packing/ShippingSettingsModal.jsx'), 'ShippingSettingsModal');
@@ -299,6 +300,9 @@ function StaffOrAdminInventory() {
   const [filterSale, setFilterSale] = useState('all');
   const [toast, setToast] = useState(null);
   const [labelItems, setLabelItems] = useState(null);
+  // Big-number lineup labels (Pre Sale "# labels"). Separate from labelItems so
+  // they render through NumberLabelSheet instead of the SKU LabelSheet.
+  const [numberLabelItems, setNumberLabelItems] = useState(null);
   const [boxLabelBoxes, setBoxLabelBoxes] = useState(null);
   // { items: [...], title: 'Added N items' } — summary dialog after creation
   const [addSummary, setAddSummary] = useState(null);
@@ -1201,6 +1205,7 @@ function StaffOrAdminInventory() {
             onIntakeSeller={intakeSellerPlants}
             onReloadSellers={reloadSellers}
             onPrintLabels={(labels) => { if (labels.length) setLabelItems(labels); }}
+            onPrintNumberLabels={(labels) => { if (labels.length) setNumberLabelItems(labels); }}
             onStageItems={async (updates) => {
               // Functional updater so rapid back-to-back quick-add scans
               // compose instead of overwriting each other (each call merging a
@@ -1903,6 +1908,9 @@ function StaffOrAdminInventory() {
       )}
       {labelItems && labelItems.length > 0 && (
         <LabelSheet items={labelItems} sellers={sellers} onClose={() => setLabelItems(null)} showToast={showToast} />
+      )}
+      {numberLabelItems && numberLabelItems.length > 0 && (
+        <NumberLabelSheet items={numberLabelItems} onClose={() => setNumberLabelItems(null)} showToast={showToast} />
       )}
       </Suspense>
 
