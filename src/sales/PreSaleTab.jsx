@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tag, ScanLine, Search, X, Loader2, ImagePlus, Trash2, Calendar, Plus, Check,
-  Download, ChevronRight, Users, Sprout, Printer,
+  Download, ChevronRight, Users, Sprout, Printer, GripVertical, Hash, Images, ListOrdered,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ImageDropZone } from '../purchasing/ImageDropZone.jsx';
 import { exportPalmstreetCsv } from './palmstreetExport.js';
 import { SellerIntakeModal } from './SellerIntakeModal.jsx';
+import { BulkPhotoAssignModal } from './BulkPhotoAssignModal.jsx';
 
 // Pre Sale — stage individual inventory items into an upcoming sale event's
 // lineup by SKU (scan or type), fill in their Palmstreet listing details
@@ -47,6 +48,13 @@ function skuNum(sku) {
   return m ? parseInt(m[1], 10) : -1;
 }
 
+// A plant's live lineup position (its lotNumber), or null if not yet numbered.
+// lotNumber is stored as text, so parse it; only positive integers count.
+function lotNum(item) {
+  const n = parseInt(item?.lotNumber, 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 // Postgres rejects "" for numeric columns, so blanks become null.
 function numOrNull(v) {
   const s = String(v ?? '').trim();
@@ -57,7 +65,8 @@ function numOrNull(v) {
 
 export function PreSaleTab({
   sales, items, showToast, onStageItems, onItemsChanged,
-  isBae, sellers = [], varieties = [], onIntakeSeller, onManageSellers, onPrintLabels,
+  isBae, sellers = [], varieties = [], onIntakeSeller, onManageSellers,
+  onPrintLabels, onPrintNumberLabels,
 }) {
   const openSales = useMemo(
     () => sales.filter(s => s.status !== 'closed').slice().sort((a, b) => saleSortKey(a) - saleSortKey(b)),
@@ -101,6 +110,10 @@ export function PreSaleTab({
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   });
+  // Drag-to-reorder the lineup: the id of the row currently being dragged.
+  const [dragId, setDragId] = useState(null);
+  // Bulk photo → listings modal (open when true).
+  const [showPhotoAssign, setShowPhotoAssign] = useState(false);
 
   useEffect(() => { scanRef.current?.focus(); }, [saleId]);
   useEffect(() => {
@@ -138,8 +151,10 @@ export function PreSaleTab({
 
   const staged = useMemo(() => {
     if (!saleId) return [];
-    // Items staged this session float to the top (newest first) so the one
-    // you just scanned is right there to edit; the rest stay sorted by SKU.
+    // Fixed lineup order: plants with a lot number come first in numeric order
+    // (that's the live lineup — 1..N). Un-numbered plants (freshly scanned, not
+    // yet placed in the lineup) collect below, newest first so the one you just
+    // scanned is right there to edit; ties break by SKU.
     const rank = (id) => {
       const i = addedOrder.indexOf(id);
       return i === -1 ? Infinity : i;
@@ -148,6 +163,10 @@ export function PreSaleTab({
       .filter(it => (it.id in override ? override[it.id] : it.saleId) === saleId)
       .slice()
       .sort((a, b) => {
+        const la = lotNum(a), lb = lotNum(b);
+        if (la != null && lb != null) return la - lb;
+        if (la != null) return -1;
+        if (lb != null) return 1;
         const ra = rank(a.id), rb = rank(b.id);
         if (ra !== rb) return ra - rb;
         return (a.sku || '').localeCompare(b.sku || '');
@@ -303,6 +322,36 @@ export function PreSaleTab({
   const someSelected = selectedStaged.length > 0;
   const toggleSelectAll = () =>
     setSelectedIds(allSelected ? new Set() : new Set(staged.map(i => i.id)));
+
+  // Persist a lineup order: lotNumber = 1..N in the given id order. One batch of
+  // partial patches through the parent's proven item-save path.
+  const persistOrder = async (orderedIds) => {
+    const patches = orderedIds.map((id, idx) => ({ id, lotNumber: String(idx + 1) }));
+    try { await onStageItems?.(patches); }
+    catch (e) { showToast?.(e.message || 'Could not save order', 'error'); }
+  };
+  // "Number 1–N" — lock the current display order in as the lineup.
+  const numberAll = () => persistOrder(staged.map(i => i.id));
+  // Drop `sourceId` at `targetId`'s position and renumber the whole lineup.
+  const handleReorder = (sourceId, targetId) => {
+    if (!sourceId || sourceId === targetId) return;
+    const ids = staged.map(i => i.id);
+    const from = ids.indexOf(sourceId);
+    const to = ids.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    ids.splice(to, 0, ids.splice(from, 1)[0]);
+    persistOrder(ids);
+  };
+  // Print big-number lineup labels. Bake each plant's current 1..N position onto
+  // its lotNumber so the printed number always matches the row (position in the
+  // fixed order), then also persist that numbering so export/scan stay in sync.
+  const printNumberLabels = () => {
+    const lineup = staged.map((it, idx) => ({ ...it, lotNumber: String(idx + 1) }));
+    const chosen = someSelected ? lineup.filter(it => selectedIds.has(it.id)) : lineup;
+    if (!chosen.length) return;
+    persistOrder(staged.map(i => i.id));
+    onPrintNumberLabels?.(chosen);
+  };
 
   // Consignment plants already staged in this event, grouped by seller — the
   // little per-seller summary under the intake control. Plain const (not a hook)
@@ -524,41 +573,71 @@ export function PreSaleTab({
 
         {/* Staged for this sale */}
         <div className="bg-white rounded-xl border border-gray-200 flex flex-col">
-          <div className="p-3 border-b border-gray-100 flex items-center justify-between gap-2">
-            <h3 className="text-sm font-semibold text-gray-900">
-              Staged for this sale
-              <span className="ml-1.5 text-xs font-normal text-gray-500">({staged.length})</span>
-            </h3>
+          <div className="border-b border-gray-100">
+            <div className="p-3 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-gray-900">
+                Staged for this sale
+                <span className="ml-1.5 text-xs font-normal text-gray-500">({staged.length})</span>
+              </h3>
+              {staged.length > 0 && (
+                <div className="flex items-center gap-1">
+                  <label
+                    className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-gray-600 cursor-pointer select-none"
+                    title={allSelected ? 'Deselect all' : 'Select all'}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 rounded text-emerald-600 focus:ring-emerald-500"
+                    />
+                    All
+                  </label>
+                  <button
+                    onClick={removeAllStaged}
+                    disabled={busy}
+                    className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg disabled:opacity-50"
+                    title="Remove all staged items from this sale"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Remove all
+                  </button>
+                </div>
+              )}
+            </div>
             {staged.length > 0 && (
-              <div className="flex items-center gap-1">
-                <label
-                  className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-gray-600 cursor-pointer select-none"
-                  title={allSelected ? 'Deselect all' : 'Select all'}
+              <div className="px-3 pb-2.5 flex flex-wrap items-center gap-1.5">
+                <button
+                  onClick={numberAll}
+                  disabled={busy}
+                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
+                  title="Lock the current order in as the lineup, numbered 1…N"
                 >
-                  <input
-                    type="checkbox"
-                    checked={allSelected}
-                    ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
-                    onChange={toggleSelectAll}
-                    className="w-3.5 h-3.5 rounded text-emerald-600 focus:ring-emerald-500"
-                  />
-                  All
-                </label>
+                  <ListOrdered className="w-3.5 h-3.5" /> Number 1–{staged.length}
+                </button>
                 <button
                   onClick={() => onPrintLabels?.(selectedStaged)}
                   disabled={busy || !onPrintLabels || !someSelected}
                   className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 rounded-lg disabled:opacity-40"
-                  title={someSelected ? 'Print labels for the selected plants' : 'Select plants to print their labels'}
+                  title={someSelected ? 'Print SKU labels for the selected plants' : 'Select plants to print their SKU labels'}
                 >
-                  <Printer className="w-3.5 h-3.5" /> Print labels{someSelected ? ` (${selectedStaged.length})` : ''}
+                  <Printer className="w-3.5 h-3.5" /> SKU labels{someSelected ? ` (${selectedStaged.length})` : ''}
                 </button>
                 <button
-                  onClick={removeAllStaged}
-                  disabled={busy}
-                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 active:bg-red-100 rounded-lg disabled:opacity-50"
-                  title="Remove all staged items from this sale"
+                  onClick={printNumberLabels}
+                  disabled={busy || !onPrintNumberLabels}
+                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50 active:bg-indigo-100 rounded-lg disabled:opacity-40"
+                  title="Print big-number lineup labels (selected, or all if none selected)"
                 >
-                  <Trash2 className="w-3.5 h-3.5" /> Remove all
+                  <Hash className="w-3.5 h-3.5" /> # labels{someSelected ? ` (${selectedStaged.length})` : ` (${staged.length})`}
+                </button>
+                <button
+                  onClick={() => setShowPhotoAssign(true)}
+                  disabled={busy}
+                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 active:bg-sky-100 rounded-lg disabled:opacity-40"
+                  title="Bulk-assign a batch of photos to these listings in order"
+                >
+                  <Images className="w-3.5 h-3.5" /> Assign photos
                 </button>
               </div>
             )}
@@ -572,15 +651,20 @@ export function PreSaleTab({
             </div>
           ) : (
             <div className="p-3 space-y-2 max-h-[640px] overflow-y-auto">
-              {staged.map(it => (
+              {staged.map((it, idx) => (
                 <PreSaleRow
                   key={it.id}
                   item={it}
+                  number={idx + 1}
                   busy={busy}
                   showToast={showToast}
                   sellerName={it.sellerId ? (sellerById.get(it.sellerId)?.name || null) : null}
                   selected={selectedIds.has(it.id)}
                   onToggleSelect={() => toggleSelect(it.id)}
+                  dragging={dragId === it.id}
+                  onHandleDragStart={() => setDragId(it.id)}
+                  onRowDrop={() => { handleReorder(dragId, it.id); setDragId(null); }}
+                  onDragEnd={() => setDragId(null)}
                   open={openId === it.id}
                   onToggle={() => setOpenId(o => (o === it.id ? null : it.id))}
                   autoFocusPrice={lastAddedId === it.id}
@@ -607,6 +691,16 @@ export function PreSaleTab({
           onClose={() => { setIntakeSeller(null); setAddSellerId(''); }}
         />
       )}
+
+      {showPhotoAssign && (
+        <BulkPhotoAssignModal
+          sale={sale}
+          orderedItems={staged}
+          onUploaded={onItemsChanged}
+          showToast={showToast}
+          onClose={() => setShowPhotoAssign(false)}
+        />
+      )}
     </div>
   );
 }
@@ -616,7 +710,7 @@ function defaultTitle(item) {
   return (item.name || '').slice(0, 80);
 }
 
-function PreSaleRow({ item, busy, showToast, sellerName, selected, onToggleSelect, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
+function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onToggleSelect, dragging, onHandleDragStart, onRowDrop, onDragEnd, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
   const [saving, setSaving] = useState(false);
   const rowRef = useRef(null);
   const priceRef = useRef(null);
@@ -737,11 +831,26 @@ function PreSaleRow({ item, busy, showToast, sellerName, selected, onToggleSelec
   return (
     <div
       ref={rowRef}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={onRowDrop}
       className={`bg-white rounded-lg border overflow-hidden transition-shadow ${
-        highlight ? 'border-emerald-400 ring-2 ring-emerald-300' : 'border-gray-200'
+        dragging ? 'opacity-40 border-dashed border-gray-400'
+        : highlight ? 'border-emerald-400 ring-2 ring-emerald-300' : 'border-gray-200'
       }`}
     >
-      <div className="flex items-center gap-2.5 px-3 py-2.5">
+      <div className="flex items-center gap-2 px-3 py-2.5">
+        <span
+          draggable
+          onDragStart={onHandleDragStart}
+          onDragEnd={onDragEnd}
+          className="cursor-grab active:cursor-grabbing text-gray-300 hover:text-gray-500 flex-shrink-0 touch-none"
+          title="Drag to reorder the lineup"
+        >
+          <GripVertical className="w-4 h-4" />
+        </span>
+        <span className="w-6 text-center text-base font-bold text-gray-800 tabular-nums flex-shrink-0" title="Lineup number">
+          {number}
+        </span>
         <input
           type="checkbox"
           checked={!!selected}
