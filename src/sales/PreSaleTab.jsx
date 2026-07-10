@@ -156,8 +156,10 @@ export function PreSaleTab({
     if (!saleId) return [];
     // Fixed lineup order: plants with a lot number come first in numeric order
     // (that's the live lineup — 1..N). Un-numbered plants (freshly scanned, not
-    // yet placed in the lineup) collect below, newest first so the one you just
-    // scanned is right there to edit; ties break by SKU.
+    // yet placed in the lineup) collect below. Normally the just-scanned one
+    // floats to the top so it's right there to edit; in Quick add there's no
+    // editing, so new scans sink to the bottom in scan order (receipt style).
+    // Ties break by SKU.
     const rank = (id) => {
       const i = addedOrder.indexOf(id);
       return i === -1 ? Infinity : i;
@@ -171,10 +173,10 @@ export function PreSaleTab({
         if (la != null) return -1;
         if (lb != null) return 1;
         const ra = rank(a.id), rb = rank(b.id);
-        if (ra !== rb) return ra - rb;
+        if (ra !== rb) return quickAdd ? rb - ra : ra - rb;
         return (a.sku || '').localeCompare(b.sku || '');
       });
-  }, [items, saleId, override, addedOrder]);
+  }, [items, saleId, override, addedOrder, quickAdd]);
 
   const eligibleToAdd = (it) => {
     const cur = effSaleId(it);
