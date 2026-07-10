@@ -769,6 +769,8 @@ function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onTog
   });
   const setField = (k, val) => setForm(f => ({ ...f, [k]: val }));
   const setVar = (i, k, val) => setForm(f => ({ ...f, v: f.v.map((x, j) => j === i ? { ...x, [k]: val } : x) }));
+  // Title shown when the row opened — used to detect an unsaved rename on blur.
+  const seededTitleRef = useRef((d.title || item.name || '').trim());
 
   const hasDetails = !!(form.title || form.description || form.v.some(x => x.name || x.value) || form.shipping || form.private);
 
@@ -840,21 +842,24 @@ function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onTog
     }
   };
 
+  const detailsPayload = () => ({
+    listingPrice: numOrNull(form.price),
+    quantity: parseInt(form.quantity, 10) || 1,
+    imageUrl: form.imageUrl?.trim() || null,
+    listingDetails: {
+      title: form.title?.trim() || '',
+      description: form.description?.trim() || '',
+      variations: form.v.map(x => ({ name: x.name.trim(), value: x.value.trim() })),
+      private: !!form.private,
+      shipping: form.shipping?.trim() || '',
+    },
+  });
+
   const save = async () => {
     setSaving(true);
     try {
-      await onSaveDetails({
-        listingPrice: numOrNull(form.price),
-        quantity: parseInt(form.quantity, 10) || 1,
-        imageUrl: form.imageUrl?.trim() || null,
-        listingDetails: {
-          title: form.title?.trim() || '',
-          description: form.description?.trim() || '',
-          variations: form.v.map(x => ({ name: x.name.trim(), value: x.value.trim() })),
-          private: !!form.private,
-          shipping: form.shipping?.trim() || '',
-        },
-      });
+      await onSaveDetails(detailsPayload());
+      seededTitleRef.current = (form.title || '').trim();
       showToast?.('Details saved');
       onSaved?.();
     } catch (e) {
@@ -862,6 +867,18 @@ function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onTog
     } finally {
       setSaving(false);
     }
+  };
+
+  // Persist a renamed Title as soon as the operator leaves the field, so the
+  // label and Palmstreet export use the entered name even if they never click
+  // "Save details". Quiet: no toast / no collapse. Only fires when the title
+  // actually changed since the row opened.
+  const persistTitleOnBlur = async () => {
+    const t = (form.title || '').trim();
+    if (t === seededTitleRef.current) return;
+    seededTitleRef.current = t;
+    try { await onSaveDetails(detailsPayload()); }
+    catch { /* the explicit Save button surfaces errors */ }
   };
 
   const photoCount = photos === null ? null : photos.length;
@@ -942,6 +959,7 @@ function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onTog
               <input
                 type="text" maxLength={80} value={form.title}
                 onChange={(e) => setField('title', e.target.value)}
+                onBlur={persistTitleOnBlur}
                 placeholder={defaultTitle(item) || 'Listing title'}
                 className={inputCls}
               />
