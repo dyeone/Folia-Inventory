@@ -30,6 +30,15 @@ function lotFontPt(lot) {
   return lot.length <= 1 ? 60 : lot.length === 2 ? 50 : lot.length === 3 ? 34 : 26;
 }
 
+// The name to print: the operator's listing Title override (entered on the Pre
+// Sale tab, and what Palmstreet lists it as) if set, else the item's own name.
+// So a relabelled plant prints the new name, not the stale species name.
+function displayName(item) {
+  const d = item && item.listingDetails;
+  const t = d && typeof d === 'object' && d.title != null ? String(d.title).trim() : '';
+  return t || (item.name || '');
+}
+
 function Label({ item, tag, sellerName }) {
   const svgRef = useRef(null);
   const sku = item.sku ? String(item.sku) : '';
@@ -53,7 +62,7 @@ function Label({ item, tag, sellerName }) {
   }, [sku]);
 
   const lot = lotStr(item);
-  const titleLine = `${item.name || ''}${item.variety ? ` · ${item.variety}` : ''}`;
+  const titleLine = `${displayName(item)}${item.variety ? ` · ${item.variety}` : ''}`;
 
   // Sized to a standard 2" x 1" thermal label. This is both the on-screen
   // preview and the printed size. When the plant has a lineup number, it fills
@@ -125,7 +134,7 @@ function buildPdf(items, sellerNameById) {
     // Folia (the default, no sellers) prints without a top line.
     const sellerName = item.sellerId && sellerNameById ? sellerNameById.get(item.sellerId) : null;
     const topTag = [tag, sellerName].filter(Boolean).join(' · ').slice(0, 28);
-    const title = `${item.name || ''}${item.variety ? ` · ${item.variety}` : ''}`;
+    const title = `${displayName(item)}${item.variety ? ` · ${item.variety}` : ''}`;
     const sku = String(item.sku || '');
     const lot = lotStr(item);
 
