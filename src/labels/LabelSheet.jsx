@@ -24,10 +24,10 @@ function lotStr(item) {
   return Number.isFinite(n) && n > 0 ? String(n) : '';
 }
 
-// Big-number font size (pt) picked by digit count so 1–4 digits all fit the
-// left column of a 2"×1" label.
+// Big-number font size (pt) picked by digit count so it fills the (wide) left
+// column of a 2"×1" label and stays readable across the room during a live.
 function lotFontPt(lot) {
-  return lot.length <= 1 ? 46 : lot.length === 2 ? 40 : lot.length === 3 ? 30 : 24;
+  return lot.length <= 1 ? 60 : lot.length === 2 ? 50 : lot.length === 3 ? 34 : 26;
 }
 
 function Label({ item, tag, sellerName }) {
@@ -63,15 +63,15 @@ function Label({ item, tag, sellerName }) {
          style={{ width: '2in', height: '1in', padding: '0.06in', boxSizing: 'border-box' }}>
       {lot ? (
         <div className="flex items-stretch h-full w-full">
-          <div className="flex items-center justify-center pr-1 border-r border-gray-300" style={{ width: '0.56in' }}>
+          <div className="flex items-center justify-center pr-1 border-r border-gray-300" style={{ width: '0.78in' }}>
             <span className="font-extrabold text-black leading-none"
-                  style={{ fontSize: lot.length >= 3 ? '26pt' : '38pt' }}>{lot}</span>
+                  style={{ fontSize: lot.length >= 4 ? '30pt' : lot.length === 3 ? '38pt' : '52pt' }}>{lot}</span>
           </div>
           <div className="flex-1 min-w-0 flex flex-col items-center justify-between text-center pl-1">
             {top && <div className="text-[6pt] font-bold text-black leading-none truncate w-full">{top}</div>}
             <div className="text-[7pt] leading-tight text-gray-700 truncate w-full">{titleLine}</div>
-            <div className="font-mono font-bold text-gray-900 leading-none" style={{ fontSize: '11pt' }}>{sku}</div>
-            <svg ref={svgRef} style={{ width: '1.25in', height: '0.3in' }} preserveAspectRatio="none" />
+            <div className="font-mono font-bold text-gray-900 leading-none" style={{ fontSize: '10.5pt' }}>{sku}</div>
+            <svg ref={svgRef} style={{ width: '1.05in', height: '0.3in' }} preserveAspectRatio="none" />
           </div>
         </div>
       ) : (
@@ -130,19 +130,20 @@ function buildPdf(items, sellerNameById) {
     const lot = lotStr(item);
 
     if (lot) {
-      // Combined layout: the big lineup number fills the left column (easy to
-      // read across the room during a live), with name / SKU / barcode stacked
+      // Combined layout: the big lineup number fills the wide left column (easy
+      // to read across the room during a live), with name / SKU / barcode stacked
       // in the right column. A thin divider separates the two.
+      const DIV = 0.82;                 // left column width / divider x
       pdf.setFont('helvetica', 'bold');
       pdf.setTextColor(0);
       pdf.setFontSize(lotFontPt(lot));
-      pdf.text(lot, 0.31, 0.68, { align: 'center' });
+      pdf.text(lot, DIV / 2, 0.74, { align: 'center' });
       pdf.setDrawColor(170);
       pdf.setLineWidth(0.008);
-      pdf.line(0.6, 0.12, 0.6, 0.88);
+      pdf.line(DIV, 0.1, DIV, 0.9);
 
-      const cx = 1.31;                 // center of the right column
-      const cw = LABEL_W - 0.62 - 0.04; // right column text width
+      const cx = DIV + (LABEL_W - DIV) / 2; // center of the right column
+      const cw = LABEL_W - DIV - 0.04;      // right column text width
       if (topTag) {
         pdf.setFont('helvetica', 'bold');
         pdf.setFontSize(6.5);
@@ -154,12 +155,12 @@ function buildPdf(items, sellerNameById) {
       pdf.setTextColor(70);
       pdf.text(title, cx, topTag ? 0.29 : 0.22, { align: 'center', maxWidth: cw });
       pdf.setFont('courier', 'bold');
-      pdf.setFontSize(11);
+      pdf.setFontSize(10.5);
       pdf.setTextColor(0);
       pdf.text(sku, cx, 0.50, { align: 'center' });
       if (sku) {
         const dataUrl = barcodeDataUrl(canvas, sku);
-        if (dataUrl) pdf.addImage(dataUrl, 'PNG', 0.66, 0.58, 1.28, 0.34, undefined, 'FAST');
+        if (dataUrl) pdf.addImage(dataUrl, 'PNG', DIV + 0.05, 0.58, LABEL_W - DIV - 0.11, 0.34, undefined, 'FAST');
       }
       return;
     }
