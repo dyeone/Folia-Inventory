@@ -39,18 +39,20 @@ function details(item) {
   return o && typeof o === 'object' ? o : {};
 }
 
-// Title: "<SKU> <name>" so every Palmstreet listing carries its SKU
-// (which is how orders match back to inventory). The name part is the
-// operator's title override if set, else the item's name. The SKU is
-// prepended unless it's already at the front of the override. Capped at
-// 80 chars.
+// Title: "<#> <name>" — the lineup number then the plant name — so buyers see a
+// clean product name and the operator can call lots by number during the live.
+// The SKU is deliberately NOT in the title; it still travels in the dedicated
+// SKU column (which is what order reconciliation reads). The number is the
+// item's lotNumber (its lineup position); items without one (e.g. the
+// whole-inventory export) get just the name. The operator's title override, if
+// set, replaces the name. Capped at 80 chars.
 function buildTitle(item) {
   const override = (details(item).title != null ? String(details(item).title) : '').trim();
   const base = override || (item.name || '');
-  const sku = (item.sku || '').trim();
+  const num = String(item.lotNumber ?? '').trim();
   let t = base;
-  if (sku && !base.toLowerCase().startsWith(sku.toLowerCase())) {
-    t = base ? `${sku} ${base}` : sku;
+  if (num && !base.startsWith(`${num} `)) {
+    t = base ? `${num} ${base}` : num;
   }
   return t.length > 80 ? t.slice(0, 80) : t;
 }
