@@ -15,6 +15,21 @@ function brandTag() {
   return b && b !== 'folia' ? b.toUpperCase() : '';
 }
 
+// The plant's lineup number (lotNumber) as a display string, or '' when it isn't
+// a positive integer. When present it prints big on the left of the label so the
+// plant is easy to spot during a live; labels for items not in a numbered
+// lineup keep the plain full-width SKU layout.
+function lotStr(item) {
+  const n = parseInt(item?.lotNumber, 10);
+  return Number.isFinite(n) && n > 0 ? String(n) : '';
+}
+
+// Big-number font size (pt) picked by digit count so 1–4 digits all fit the
+// left column of a 2"×1" label.
+function lotFontPt(lot) {
+  return lot.length <= 1 ? 46 : lot.length === 2 ? 40 : lot.length === 3 ? 30 : 24;
+}
+
 function Label({ item, tag, sellerName }) {
   const svgRef = useRef(null);
   const sku = item.sku ? String(item.sku) : '';
@@ -37,20 +52,36 @@ function Label({ item, tag, sellerName }) {
     }
   }, [sku]);
 
+  const lot = lotStr(item);
+  const titleLine = `${item.name || ''}${item.variety ? ` · ${item.variety}` : ''}`;
+
   // Sized to a standard 2" x 1" thermal label. This is both the on-screen
-  // preview and the printed size.
+  // preview and the printed size. When the plant has a lineup number, it fills
+  // the left; the name/SKU/barcode stack on the right.
   return (
-    <div className="folia-label bg-white border border-gray-300 flex flex-col items-center justify-between text-center"
-         style={{ width: '2in', height: '1in', padding: '0.08in', boxSizing: 'border-box' }}>
-      {top && <div className="text-[6pt] font-bold text-black leading-none">{top}</div>}
-      <div className="text-[8pt] leading-tight text-gray-700 truncate w-full">
-        {item.name}{item.variety ? ` · ${item.variety}` : ''}
-      </div>
-      <div className="font-mono font-bold text-gray-900 tracking-wider leading-none"
-           style={{ fontSize: '14pt' }}>
-        {sku}
-      </div>
-      <svg ref={svgRef} style={{ width: '1.8in', height: '0.35in' }} preserveAspectRatio="none" />
+    <div className="folia-label bg-white border border-gray-300"
+         style={{ width: '2in', height: '1in', padding: '0.06in', boxSizing: 'border-box' }}>
+      {lot ? (
+        <div className="flex items-stretch h-full w-full">
+          <div className="flex items-center justify-center pr-1 border-r border-gray-300" style={{ width: '0.56in' }}>
+            <span className="font-extrabold text-black leading-none"
+                  style={{ fontSize: lot.length >= 3 ? '26pt' : '38pt' }}>{lot}</span>
+          </div>
+          <div className="flex-1 min-w-0 flex flex-col items-center justify-between text-center pl-1">
+            {top && <div className="text-[6pt] font-bold text-black leading-none truncate w-full">{top}</div>}
+            <div className="text-[7pt] leading-tight text-gray-700 truncate w-full">{titleLine}</div>
+            <div className="font-mono font-bold text-gray-900 leading-none" style={{ fontSize: '11pt' }}>{sku}</div>
+            <svg ref={svgRef} style={{ width: '1.25in', height: '0.3in' }} preserveAspectRatio="none" />
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-col items-center justify-between text-center h-full w-full">
+          {top && <div className="text-[6pt] font-bold text-black leading-none">{top}</div>}
+          <div className="text-[8pt] leading-tight text-gray-700 truncate w-full">{titleLine}</div>
+          <div className="font-mono font-bold text-gray-900 tracking-wider leading-none" style={{ fontSize: '14pt' }}>{sku}</div>
+          <svg ref={svgRef} style={{ width: '1.8in', height: '0.35in' }} preserveAspectRatio="none" />
+        </div>
+      )}
     </div>
   );
 }
@@ -94,32 +125,60 @@ function buildPdf(items, sellerNameById) {
     // Folia (the default, no sellers) prints without a top line.
     const sellerName = item.sellerId && sellerNameById ? sellerNameById.get(item.sellerId) : null;
     const topTag = [tag, sellerName].filter(Boolean).join(' · ').slice(0, 28);
+    const title = `${item.name || ''}${item.variety ? ` · ${item.variety}` : ''}`;
+    const sku = String(item.sku || '');
+    const lot = lotStr(item);
+
+    if (lot) {
+      // Combined layout: the big lineup number fills the left column (easy to
+      // read across the room during a live), with name / SKU / barcode stacked
+      // in the right column. A thin divider separates the two.
+      pdf.setFont('helvetica', 'bold');
+      pdf.setTextColor(0);
+      pdf.setFontSize(lotFontPt(lot));
+      pdf.text(lot, 0.31, 0.68, { align: 'center' });
+      pdf.setDrawColor(170);
+      pdf.setLineWidth(0.008);
+      pdf.line(0.6, 0.12, 0.6, 0.88);
+
+      const cx = 1.31;                 // center of the right column
+      const cw = LABEL_W - 0.62 - 0.04; // right column text width
+      if (topTag) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(6.5);
+        pdf.setTextColor(0);
+        pdf.text(topTag, cx, 0.15, { align: 'center', maxWidth: cw });
+      }
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7);
+      pdf.setTextColor(70);
+      pdf.text(title, cx, topTag ? 0.29 : 0.22, { align: 'center', maxWidth: cw });
+      pdf.setFont('courier', 'bold');
+      pdf.setFontSize(11);
+      pdf.setTextColor(0);
+      pdf.text(sku, cx, 0.50, { align: 'center' });
+      if (sku) {
+        const dataUrl = barcodeDataUrl(canvas, sku);
+        if (dataUrl) pdf.addImage(dataUrl, 'PNG', 0.66, 0.58, 1.28, 0.34, undefined, 'FAST');
+      }
+      return;
+    }
+
+    // Full-width layout (no lineup number): brand tag, name, big SKU, barcode.
     if (topTag) {
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(7);
       pdf.setTextColor(0);
       pdf.text(topTag, LABEL_W / 2, 0.11, { align: 'center' });
     }
-
-    // Name + variety — 8pt, centered, truncated to the label width. Drops a
-    // touch when a top line occupies the first row.
-    const title = `${item.name || ''}${item.variety ? ` · ${item.variety}` : ''}`;
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(70);
-    pdf.text(title, LABEL_W / 2, topTag ? 0.24 : 0.18, {
-      align: 'center',
-      maxWidth: LABEL_W - 0.15,
-    });
-
-    // Middle: SKU — 14pt bold monospace, centered.
-    const sku = String(item.sku || '');
+    pdf.text(title, LABEL_W / 2, topTag ? 0.24 : 0.18, { align: 'center', maxWidth: LABEL_W - 0.15 });
     pdf.setFont('courier', 'bold');
     pdf.setFontSize(14);
     pdf.setTextColor(0);
     pdf.text(sku, LABEL_W / 2, 0.45, { align: 'center' });
-
-    // Bottom: barcode image (0.1" side gutters, ~0.4" tall).
     if (sku) {
       const dataUrl = barcodeDataUrl(canvas, sku);
       if (dataUrl) {

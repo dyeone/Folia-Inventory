@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tag, ScanLine, Search, X, Loader2, ImagePlus, Trash2, Calendar, Plus, Check,
-  Download, ChevronRight, Users, Sprout, Printer, GripVertical, Hash, Images, ListOrdered,
+  Download, ChevronRight, Users, Sprout, Printer, GripVertical, Images, ListOrdered,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ImageDropZone } from '../purchasing/ImageDropZone.jsx';
@@ -66,7 +66,7 @@ function numOrNull(v) {
 export function PreSaleTab({
   sales, items, showToast, onStageItems, onItemsChanged,
   isBae, sellers = [], varieties = [], onIntakeSeller, onManageSellers,
-  onPrintLabels, onPrintNumberLabels,
+  onPrintLabels,
 }) {
   const openSales = useMemo(
     () => sales.filter(s => s.status !== 'closed').slice().sort((a, b) => saleSortKey(a) - saleSortKey(b)),
@@ -342,15 +342,16 @@ export function PreSaleTab({
     ids.splice(to, 0, ids.splice(from, 1)[0]);
     persistOrder(ids);
   };
-  // Print big-number lineup labels. Bake each plant's current 1..N position onto
-  // its lotNumber so the printed number always matches the row (position in the
-  // fixed order), then also persist that numbering so export/scan stay in sync.
-  const printNumberLabels = () => {
+  // Print labels for the selected plants. Each label carries the big lineup
+  // number AND the SKU/barcode (see LabelSheet), so we bake every plant's current
+  // 1..N position onto its lotNumber — so the printed number matches its row —
+  // and persist that numbering so export/scan stay in sync.
+  const printLabels = () => {
     const lineup = staged.map((it, idx) => ({ ...it, lotNumber: String(idx + 1) }));
-    const chosen = someSelected ? lineup.filter(it => selectedIds.has(it.id)) : lineup;
+    const chosen = lineup.filter(it => selectedIds.has(it.id));
     if (!chosen.length) return;
     persistOrder(staged.map(i => i.id));
-    onPrintNumberLabels?.(chosen);
+    onPrintLabels?.(chosen);
   };
 
   // Consignment plants already staged in this event, grouped by seller — the
@@ -616,20 +617,12 @@ export function PreSaleTab({
                   <ListOrdered className="w-3.5 h-3.5" /> Number 1–{staged.length}
                 </button>
                 <button
-                  onClick={() => onPrintLabels?.(selectedStaged)}
+                  onClick={printLabels}
                   disabled={busy || !onPrintLabels || !someSelected}
                   className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 rounded-lg disabled:opacity-40"
-                  title={someSelected ? 'Print SKU labels for the selected plants' : 'Select plants to print their SKU labels'}
+                  title={someSelected ? 'Print labels (big lineup number + SKU/barcode) for the selected plants' : 'Select plants to print their labels'}
                 >
-                  <Printer className="w-3.5 h-3.5" /> SKU labels{someSelected ? ` (${selectedStaged.length})` : ''}
-                </button>
-                <button
-                  onClick={printNumberLabels}
-                  disabled={busy || !onPrintNumberLabels}
-                  className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50 active:bg-indigo-100 rounded-lg disabled:opacity-40"
-                  title="Print big-number lineup labels (selected, or all if none selected)"
-                >
-                  <Hash className="w-3.5 h-3.5" /> # labels{someSelected ? ` (${selectedStaged.length})` : ` (${staged.length})`}
+                  <Printer className="w-3.5 h-3.5" /> Print labels{someSelected ? ` (${selectedStaged.length})` : ''}
                 </button>
                 <button
                   onClick={() => setShowPhotoAssign(true)}

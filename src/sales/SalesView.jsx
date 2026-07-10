@@ -34,7 +34,7 @@ export function SalesView({
   onEvaluateSale, onViewReport, evalVersion, evalSaleIds,
   activeBrand, sellers = [], varieties = [],
   onManageSellers, onSellerSettlement, onIntakeSeller, onReloadSellers,
-  onPrintLabels, onPrintNumberLabels,
+  onPrintLabels,
 }) {
   const [tab, setTab] = useState('active');
   // Consignment (seller sections + settlement) is a BAE-only workflow.
@@ -138,7 +138,6 @@ export function SalesView({
           onManageSellers={onManageSellers}
           onReloadSellers={onReloadSellers}
           onPrintLabels={onPrintLabels}
-          onPrintNumberLabels={onPrintNumberLabels}
         />
       ) : visible.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
