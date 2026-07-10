@@ -114,6 +114,9 @@ export function PreSaleTab({
   const [dragId, setDragId] = useState(null);
   // Bulk photo → listings modal (open when true).
   const [showPhotoAssign, setShowPhotoAssign] = useState(false);
+  // A scanned item that's staged on another sale — offer to move it here.
+  // { item, otherName } or null.
+  const [conflict, setConflict] = useState(null);
 
   useEffect(() => { scanRef.current?.focus(); }, [saleId]);
   useEffect(() => {
@@ -153,8 +156,10 @@ export function PreSaleTab({
     if (!saleId) return [];
     // Fixed lineup order: plants with a lot number come first in numeric order
     // (that's the live lineup — 1..N). Un-numbered plants (freshly scanned, not
-    // yet placed in the lineup) collect below, newest first so the one you just
-    // scanned is right there to edit; ties break by SKU.
+    // yet placed in the lineup) collect below. Normally the just-scanned one
+    // floats to the top so it's right there to edit; in Quick add there's no
+    // editing, so new scans sink to the bottom in scan order (receipt style).
+    // Ties break by SKU.
     const rank = (id) => {
       const i = addedOrder.indexOf(id);
       return i === -1 ? Infinity : i;
@@ -168,20 +173,20 @@ export function PreSaleTab({
         if (la != null) return -1;
         if (lb != null) return 1;
         const ra = rank(a.id), rb = rank(b.id);
-        if (ra !== rb) return ra - rb;
+        if (ra !== rb) return quickAdd ? rb - ra : ra - rb;
         return (a.sku || '').localeCompare(b.sku || '');
       });
-  }, [items, saleId, override, addedOrder]);
+  }, [items, saleId, override, addedOrder, quickAdd]);
 
   const eligibleToAdd = (it) => {
     const cur = effSaleId(it);
-    if (cur === saleId) return { ok: false, reason: 'Already staged' };
-    if (cur && cur !== saleId) return { ok: false, reason: `${it.sku} is already on another sale` };
+    if (cur === saleId) return { ok: false, code: 'staged', reason: 'Already staged' };
+    if (cur && cur !== saleId) return { ok: false, code: 'other-sale', reason: `${it.sku} is already on another sale`, otherSaleId: cur };
     if (!['available', 'listed'].includes(it.status)) {
-      return { ok: false, reason: `${it.sku} is ${it.status}, not available` };
+      return { ok: false, code: 'status', reason: `${it.sku} is ${it.status}, not available` };
     }
-    if (sale?.itemTypes === 'tc' && it.type !== 'tc') return { ok: false, reason: `${it.sku} is not a TC; this sale is TC only` };
-    if (sale?.itemTypes === 'plant' && it.type !== 'plant') return { ok: false, reason: `${it.sku} is not a plant; this sale is plants only` };
+    if (sale?.itemTypes === 'tc' && it.type !== 'tc') return { ok: false, code: 'type', reason: `${it.sku} is not a TC; this sale is TC only` };
+    if (sale?.itemTypes === 'plant' && it.type !== 'plant') return { ok: false, code: 'type', reason: `${it.sku} is not a plant; this sale is plants only` };
     return { ok: true };
   };
 
@@ -213,15 +218,33 @@ export function PreSaleTab({
     }
   };
 
+  // Move a staged item off its current sale onto this one. Clears the stale
+  // lot number so it lands in this lineup's un-numbered tail (renumber to place).
+  const moveConflictHere = async () => {
+    const it = conflict?.item;
+    setConflict(null);
+    if (!it) return;
+    if (await assign(it, saleId, { lotNumber: null })) {
+      markAdded(it.id);
+      flash('ok', `Moved ${it.sku} here`);
+    }
+  };
+
   const addItem = async (it) => {
     if (!saleId) { flash('error', 'Pick a sale event first'); return; }
+    setConflict(null); // each new scan clears any pending move prompt
     const elig = eligibleToAdd(it);
     if (!elig.ok) {
-      if (elig.reason === 'Already staged') {
+      if (elig.code === 'staged') {
         // In quick mode, re-scanning a staged item is a no-op cue; otherwise
         // reopen it to edit.
         if (quickAdd) flash('ok', `${it.sku} already staged`);
         else { markAdded(it.id); flash('ok', `Editing ${it.sku}`); }
+      } else if (elig.code === 'other-sale') {
+        // Don't hard-reject — offer to move it here (see the banner below).
+        const otherName = sales.find(s => s.id === elig.otherSaleId)?.name || 'another sale';
+        setConflict({ item: it, otherName });
+        flash('error', `${it.sku} is on ${otherName}`);
       } else flash('error', elig.reason);
       return;
     }
@@ -434,6 +457,29 @@ export function PreSaleTab({
             </div>
           )}
         </div>
+        {conflict && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
+            <span className="text-sm text-amber-800">
+              <span className="font-mono font-semibold">{conflict.item.sku}</span> is staged on{' '}
+              <span className="font-semibold">{conflict.otherName}</span>.
+            </span>
+            <div className="flex gap-1.5 flex-shrink-0">
+              <button
+                onClick={moveConflictHere}
+                disabled={busy}
+                className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white disabled:opacity-50"
+              >
+                Move it here
+              </button>
+              <button
+                onClick={() => setConflict(null)}
+                className="px-3 py-1.5 text-xs font-medium rounded-lg text-gray-600 hover:bg-gray-100"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
             <input
