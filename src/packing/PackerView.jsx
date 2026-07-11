@@ -1233,6 +1233,16 @@ function PhoneHandoffOverlay({ box, onClose }) {
                   {packed
                     ? <Check className="w-6 h-6 text-emerald-600 shrink-0" />
                     : <div className="w-6 h-6 rounded-full border-2 border-blue-300 shrink-0" />}
+                  {it.lotNumber && (
+                    <span
+                      className={`shrink-0 min-w-[2.25rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums ${
+                        packed ? 'bg-gray-100 text-gray-400' : 'bg-blue-600 text-white'
+                      }`}
+                      title="Lineup number — find the plant labelled with this #"
+                    >
+                      {it.lotNumber}
+                    </span>
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className={`text-base font-mono ${packed ? 'text-gray-400 line-through' : 'text-blue-800 font-semibold'}`}>
                       {it.sku || '(no SKU)'}
@@ -1242,7 +1252,6 @@ function PhoneHandoffOverlay({ box, onClose }) {
                         {[it.name, it.variety].filter(Boolean).join(' · ')}
                       </div>
                     )}
-                    {it.lotNumber && <div className="text-xs text-gray-400 font-mono">Lot #{it.lotNumber}</div>}
                   </div>
                   {it.quantity > 1 && <span className="text-sm font-medium text-gray-600 shrink-0">×{it.quantity}</span>}
                 </div>
