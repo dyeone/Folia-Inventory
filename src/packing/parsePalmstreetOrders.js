@@ -43,6 +43,16 @@ function normalizeSku(raw) {
   return /^(?:[A-Za-z]{2,8}-)?[A-Za-z]{2,8}-\d+$/.test(s) ? s.toUpperCase() : s;
 }
 
+// The lineup number our Palmstreet export prepends to the title ("<#> <name>",
+// e.g. "12 NSE port"). It's a leading 1–4 digit run — SKUs start with letters,
+// so this never grabs a SKU. Returns the number as a string, or null. Lets the
+// packer identify the physical plant by the number on its label even when the
+// listing name is unhelpful ("no id").
+function leadingIndex(title) {
+  const m = /^\s*(\d{1,4})(?:\s|$)/.exec(String(title || ''));
+  return m ? m[1] : null;
+}
+
 function extractAllSkus(title) {
   const t = String(title || '');
   const seen = new Set();
@@ -187,6 +197,7 @@ export function parsePalmstreetOrders(rows) {
     // gave us; the matcher will return null and the row stays unmatched
     // in the preview (manual linking has been removed by design).
     const skusInTitle = extractAllSkus(title);
+    const lineupIndex = leadingIndex(title);
 
     if (skusInTitle.length > 1) {
       const each = price / skusInTitle.length;
@@ -198,6 +209,7 @@ export function parsePalmstreetOrders(rows) {
           rowKey: `r${idx}_${i}`,
           title,                 // keep full title for context in the UI
           sku: sk,
+          lineupIndex,
           quantity,
           price: Number.isFinite(each) ? each : 0,
           orderShippingFee: Number.isFinite(feeEach) ? feeEach : 0,
@@ -214,6 +226,7 @@ export function parsePalmstreetOrders(rows) {
       rowKey: `r${idx}`,
       title,
       sku: resolvedSku,
+      lineupIndex,
       quantity,
       price,
       orderShippingFee: shippingFee,

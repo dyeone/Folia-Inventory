@@ -249,6 +249,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
               quantity: it.quantity || 1,
               status: 'sold',
               lotKind: 'unmatched',
+              lotNumber: it.lineupIndex || null,
               saleId: fallbackSaleId,
               salePrice: it.price > 0 ? it.price : 0,
               soldAt: it.orderDate || now,
@@ -288,6 +289,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
           if (inv.buyerAddress == null) patch.buyerAddress = buyerAddress;
           if (inv.salePrice == null && it.price > 0) patch.salePrice = it.price;
           if (it.notes && !inv.notes) patch.notes = it.notes;
+          if (it.lineupIndex && !inv.lotNumber) patch.lotNumber = it.lineupIndex;
           // Only enqueue a write if something actually changed.
           if (Object.keys(patch).length > 1) updates.push(patch);
           continue;
@@ -322,6 +324,10 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             orderDate: it.orderDate || null,
             orderShippingFee: it.orderShippingFee ?? null,
             notes: it.notes || null,
+            // The lineup number the order title carried ("<#> <name>") is the
+            // number printed on the plant's label — persist it so the packer can
+            // find the plant by it (authoritative over any earlier lot number).
+            ...(it.lineupIndex ? { lotNumber: it.lineupIndex } : {}),
           });
         } else {
           // No matching inventory row — emit a placeholder insert so the
@@ -340,6 +346,9 @@ export function SalesUploadModal({ items, onApply, onClose }) {
             quantity: it.quantity || 1,
             status: 'sold',
             lotKind: 'unmatched',
+            // Even unmatched, the title's lineup number helps the packer find
+            // the physical plant (its label carries the same number).
+            lotNumber: it.lineupIndex || null,
             saleId: fallbackSaleId,
             salePrice: it.price > 0 ? it.price : 0,
             soldAt: it.orderDate || now,
