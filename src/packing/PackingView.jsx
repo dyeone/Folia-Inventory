@@ -1806,6 +1806,16 @@ function BoxItemsList({ box, salesById, onTogglePacked, onResolveReview }) {
                 </button>
               )
             )}
+            {item.lotNumber && (
+              <span
+                className={`shrink-0 self-center min-w-[1.9rem] px-1.5 py-0.5 rounded-md text-sm font-extrabold text-center tabular-nums ${
+                  isPacked ? 'bg-gray-100 text-gray-400' : 'bg-blue-600 text-white'
+                }`}
+                title="Lineup number — find the plant labelled with this #"
+              >
+                {item.lotNumber}
+              </span>
+            )}
             <div className="min-w-0 flex-1">
               <div className={`flex items-baseline gap-2 flex-wrap ${isPacked ? 'line-through text-gray-500' : ''}`}>
                 {item.sku && (
