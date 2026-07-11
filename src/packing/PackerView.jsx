@@ -1136,6 +1136,16 @@ function ItemCard({ item, onMarkPacked }) {
         {isPacked
           ? <Check className={`w-6 h-6 ${family.icon} shrink-0`} />
           : <div className={`w-6 h-6 rounded-full border-2 ${family.ring} shrink-0`} />}
+        {item.lotNumber && (
+          <span
+            className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-xl font-extrabold text-center tabular-nums ${
+              isPacked ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 text-white'
+            }`}
+            title="Lineup number — find the plant labelled with this #"
+          >
+            {item.lotNumber}
+          </span>
+        )}
         <div className="flex-1 min-w-0">
           <div className={`text-base font-mono ${family.accent} ${isPacked ? '' : 'font-semibold'}`}>
             {item.sku || '(no SKU)'}
