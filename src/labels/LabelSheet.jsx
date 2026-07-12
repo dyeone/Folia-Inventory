@@ -32,16 +32,30 @@ function lotFontPt(lot) {
 
 // The name to print: the operator's listing Title override (entered on the Pre
 // Sale tab, and what Palmstreet lists it as) if set, else the item's own name.
-// So a relabelled plant prints the new name, not the stale species name.
+// So a relabelled plant prints the new name, not the stale species name. If the
+// name already starts with the lineup number (e.g. an unmatched line named
+// "31 no id"), drop that prefix — the number is already printed big.
 function displayName(item) {
   const d = item && item.listingDetails;
   const t = d && typeof d === 'object' && d.title != null ? String(d.title).trim() : '';
-  return t || (item.name || '');
+  let name = t || (item.name || '');
+  const lot = lotStr(item);
+  if (lot && name.startsWith(`${lot} `)) name = name.slice(lot.length + 1).trim();
+  return name;
+}
+
+// The SKU to print / barcode. UNMATCHED-… and DBL-… are synthetic placeholder
+// SKUs (a line that didn't match real inventory) — they're long and don't scan
+// to anything, so we suppress them: those labels show just the big lineup number
+// + name for identification.
+function realSku(item) {
+  const s = String(item?.sku || '');
+  return /^(UNMATCHED|DBL)-/i.test(s) ? '' : s;
 }
 
 function Label({ item, tag, sellerName }) {
   const svgRef = useRef(null);
-  const sku = item.sku ? String(item.sku) : '';
+  const sku = realSku(item);
   // Consignment plants print the seller's name alongside the brand tag so the
   // bench knows whose plant it is (the SKU carries the seller code too).
   const top = [tag, sellerName].filter(Boolean).join(' · ');
@@ -135,7 +149,7 @@ function buildPdf(items, sellerNameById) {
     const sellerName = item.sellerId && sellerNameById ? sellerNameById.get(item.sellerId) : null;
     const topTag = [tag, sellerName].filter(Boolean).join(' · ').slice(0, 28);
     const title = `${displayName(item)}${item.variety ? ` · ${item.variety}` : ''}`;
-    const sku = String(item.sku || '');
+    const sku = realSku(item);
     const lot = lotStr(item);
 
     if (lot) {

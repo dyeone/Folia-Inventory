@@ -1059,13 +1059,14 @@ export function PackingView({
                   );
                 })()}
                 {onPrintItemLabels && (() => {
-                  // Count Anthurium items across the currently-visible
-                  // open boxes (after any sort/filter already applied
-                  // upstream). Same predicate the box-label header uses
-                  // (src/labels/BoxLabelSheet.jsx).
+                  // Every plant to label across the currently-visible open boxes:
+                  // Anthurium items PLUS unmatched placeholders (which have no
+                  // variety but are still a physical plant the packer must find by
+                  // its lineup number). Each label carries the big lineup # + name
+                  // + SKU, like the live-sale labels.
                   const allBoxes = groups.flatMap(g => g.boxes);
                   const antItems = allBoxes.flatMap(b =>
-                    (b.items || []).filter(i => (i.variety || '').toLowerCase() === 'anthurium')
+                    (b.items || []).filter(i => isAnthuriumItem(i) || i.lotKind === 'unmatched')
                   );
                   const n = antItems.length;
                   return (
