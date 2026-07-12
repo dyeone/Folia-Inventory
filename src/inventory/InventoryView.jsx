@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Search, Download, ArrowRightLeft, ArrowLeftRight, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil } from 'lucide-react';
+import { Search, Download, ArrowRightLeft, ArrowLeftRight, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil, FileText } from 'lucide-react';
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
@@ -9,6 +9,7 @@ import { AcclimationModal } from './AcclimationModal.jsx';
 import { StatusChangeModal } from './StatusChangeModal.jsx';
 import { DeleteScanModal } from './DeleteScanModal.jsx';
 import { BulkRenameModal } from './BulkRenameModal.jsx';
+import { InvoiceModal } from './InvoiceModal.jsx';
 
 // e.g. "May 8, 3:45 PM" (same year) or "May 8, 2024" (prior year).
 function fmtAddedAt(iso) {
@@ -135,6 +136,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   const [showStatusChange, setShowStatusChange] = useState(false);
   const [showDeleteScan, setShowDeleteScan] = useState(false);
   const [showBulkRename, setShowBulkRename] = useState(false);
+  const [showInvoice, setShowInvoice] = useState(false);
 
   // Drop selections that are no longer visible (e.g. filtered out) to avoid
   // acting on rows the user can't see.
@@ -290,6 +292,13 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               <Pencil className="w-4 h-4" /> Edit Names
             </button>
           )}
+          <button
+            onClick={() => setShowInvoice(true)}
+            title="Scan plants into an invoice — set a profit rate and export a priced list"
+            className="flex items-center gap-1.5 px-3 py-2 text-sm text-emerald-700 border border-emerald-300 bg-emerald-50 rounded-lg hover:bg-emerald-100"
+          >
+            <FileText className="w-4 h-4" /> Create Invoice
+          </button>
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">
             <Download className="w-4 h-4" /> Export CSV
           </button>
@@ -922,6 +931,15 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
             if (ok) setShowBulkRename(false);
           }}
           onClose={() => setShowBulkRename(false)}
+        />
+      )}
+
+      {showInvoice && (
+        <InvoiceModal
+          items={allItems}
+          idealRate={idealRate}
+          brand={brand}
+          onClose={() => setShowInvoice(false)}
         />
       )}
     </div>
