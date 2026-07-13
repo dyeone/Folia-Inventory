@@ -1,4 +1,4 @@
-import { supabase, requireAdmin, requireBrand, brandIdFromReq } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Single-row JSON blob per settings id. Currently used only for
@@ -498,6 +498,81 @@ async function loadLoyaltyStats(brandId) {
   }
 }
 
+// ── Customer hub additions (migration 0035) ─────────────────────────────────
+// customer_content: news + growing tips authored by staff here, read by
+// customers in the BAE Badges app via RLS (active rows only — this editor
+// sees everything). Plus a staff-side customer roster with per-customer
+// aggregate counts (badges / orders / rewards).
+
+const CONTENT_KINDS = ['news', 'tip'];
+
+// Never trust the editor's entry shape: validate/coerce every field. Returns
+// only the content columns — id/brandId/audit stamps are decided by the caller.
+function cleanContentEntry(input) {
+  if (!input || typeof input !== 'object') {
+    const e = new Error('entry (object) required'); e.status = 400; throw e;
+  }
+  if (!CONTENT_KINDS.includes(input.kind)) {
+    const e = new Error("kind must be 'news' or 'tip'"); e.status = 400; throw e;
+  }
+  const title = str(input.title, 120);
+  if (!title) { const e = new Error('title required'); e.status = 400; throw e; }
+  const body = str(input.body, 5000);
+  if (!body) { const e = new Error('body required'); e.status = 400; throw e; }
+  const imageUrl = str(input.imageUrl, 500) || null;
+  if (imageUrl && !imageUrl.startsWith('https://')) {
+    const e = new Error('imageUrl must start with https://'); e.status = 400; throw e;
+  }
+  // null = "not provided": create defaults it to now, edit keeps the row's
+  // existing date (else clearing the field silently re-dates an old post to
+  // the top of the customer feed).
+  let publishedAt = null;
+  if (input.publishedAt != null && input.publishedAt !== '') {
+    const d = new Date(input.publishedAt);
+    if (Number.isNaN(d.getTime())) {
+      const e = new Error('publishedAt must be a valid ISO timestamp'); e.status = 400; throw e;
+    }
+    publishedAt = d.toISOString();
+  }
+  return { kind: input.kind, title, body, imageUrl, publishedAt, active: !!input.active };
+}
+
+// Reads degrade to `unavailable: true` pre-migration; writes can't (the client
+// would mistake the response for a success), so they fail loudly but clearly —
+// same pattern as the loyalty-code action in shipments.js.
+function throwIfMissing0035(error) {
+  if (isMissingLoyaltyTable(error)) {
+    const e = new Error('Customer hub tables missing — apply supabase/migrations/0035_bae_customer_hub.sql');
+    e.status = 503;
+    throw e;
+  }
+}
+
+// Page through every brand-scoped row of a table (Supabase caps one read at
+// 1000 rows). Fetch only the columns the aggregate needs; stops at the first
+// short page, hard-capped at 20 pages (20k rows — far above the 500-customer
+// roster this feeds). Throws the raw supabase error so the caller can
+// distinguish a missing table.
+async function fetchAllBrandRows(table, columns, brandId) {
+  const PAGE = 1000, MAX_PAGES = 20;
+  const rows = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(columns)
+      .eq('brandId', brandId)
+      // Deterministic order matters: LIMIT/OFFSET without ORDER BY lets a
+      // concurrent claim (customers write these tables) shift rows between
+      // pages, skipping/double-counting badges in the roster aggregates.
+      .order('id')
+      .range(page * PAGE, page * PAGE + PAGE - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  return rows;
+}
+
 async function handleLoyalty(action, req, res, user, brandId) {
   switch (action) {
     case 'loyalty-get': {
@@ -589,6 +664,145 @@ async function handleLoyalty(action, req, res, user, brandId) {
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       if (!row) { const e = new Error('Redemption not found'); e.status = 404; throw e; }
       return res.status(200).json({ redemption: row });
+    }
+    case 'loyalty-content-list': {
+      // Any staff may read. This is the editor list, so inactive (unpublished)
+      // rows are included — the customer app only ever sees active ones (RLS).
+      const { data: rows, error } = await supabase
+        .from('customer_content')
+        .select('*')
+        .eq('brandId', brandId)
+        .order('publishedAt', { ascending: false })
+        .limit(200);
+      if (error) {
+        if (isMissingLoyaltyTable(error)) {
+          return res.status(200).json({ content: [], unavailable: true });
+        }
+        const e = new Error(error.message); e.status = 500; throw e;
+      }
+      return res.status(200).json({ content: rows || [] });
+    }
+    case 'loyalty-content-save': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const clean = cleanContentEntry(req.body?.entry);
+      const id = str(req.body?.entry?.id, 64);
+      const now = new Date().toISOString();
+      const row = { ...clean, brandId };
+      if (id) {
+        // Editing: the row must already exist for THIS brand — a wrong or
+        // cross-brand id 404s instead of upsert-inserting under it.
+        const { data: existing, error: exErr } = await supabase
+          .from('customer_content')
+          .select('id, "publishedAt"')
+          .eq('id', id)
+          .eq('brandId', brandId)
+          .maybeSingle();
+        if (exErr) {
+          throwIfMissing0035(exErr);
+          const e = new Error(exErr.message); e.status = 500; throw e;
+        }
+        if (!existing) { const e = new Error('Post not found'); e.status = 404; throw e; }
+        Object.assign(row, {
+          id,
+          publishedAt: clean.publishedAt ?? existing.publishedAt,
+          updatedAt: now,
+          updatedBy: user.id,
+        });
+      } else {
+        Object.assign(row, {
+          id: 'cc_' + newId(),
+          publishedAt: clean.publishedAt ?? now,
+          createdAt: now,
+          createdBy: user.id,
+        });
+      }
+      // Upsert only touches the columns present in `row`, so an edit keeps the
+      // original createdAt/createdBy.
+      const { data: saved, error } = await supabase
+        .from('customer_content')
+        .upsert(row)
+        .select('*')
+        .single();
+      if (error) {
+        throwIfMissing0035(error);
+        const e = new Error(error.message); e.status = 500; throw e;
+      }
+      return res.status(200).json({ entry: saved });
+    }
+    case 'loyalty-content-delete': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const id = str(req.body?.id, 64);
+      if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
+      const { data: deleted, error } = await supabase
+        .from('customer_content')
+        .delete()
+        .eq('id', id)
+        .eq('brandId', brandId)
+        .select('id');
+      if (error) {
+        throwIfMissing0035(error);
+        const e = new Error(error.message); e.status = 500; throw e;
+      }
+      if (!deleted?.length) { const e = new Error('Post not found'); e.status = 404; throw e; }
+      return res.status(200).json({ ok: true });
+    }
+    case 'loyalty-customers': {
+      // Admin-only: the roster carries customer PII (email/phone) — same gate
+      // and rationale as loyalty-redemptions.
+      requireAdminRole(user);
+      const { data: customers, error } = await supabase
+        .from('customers')
+        .select('id, "displayName", email, phone, "createdAt"')
+        .eq('brandId', brandId)
+        .order('createdAt', { ascending: false })
+        .limit(500);
+      if (error) {
+        // `unavailable` only when even the 0034 customers table is missing.
+        if (isMissingLoyaltyTable(error)) {
+          return res.status(200).json({ customers: [], unavailable: true });
+        }
+        const e = new Error(error.message); e.status = 500; throw e;
+      }
+
+      // Per-customer aggregates, counted in JS from paginated id-only reads.
+      const [badgeRows, redemptionRows] = await Promise.all([
+        fetchAllBrandRows('badge_events', '"customerId"', brandId),
+        fetchAllBrandRows('reward_redemptions', '"customerId", status', brandId),
+      ]);
+      // customer_orders ships in 0035; pre-migration every count is simply 0.
+      let orderRows = [];
+      try {
+        orderRows = await fetchAllBrandRows('customer_orders', '"customerId"', brandId);
+      } catch (ordErr) {
+        if (!isMissingLoyaltyTable(ordErr)) {
+          const e = new Error(ordErr.message); e.status = 500; throw e;
+        }
+      }
+
+      const badges = new Map(), orders = new Map(), pending = new Map(), fulfilledCounts = new Map();
+      const bump = (map, key) => map.set(key, (map.get(key) || 0) + 1);
+      for (const r of badgeRows) bump(badges, r.customerId);
+      for (const r of orderRows) bump(orders, r.customerId);
+      for (const r of redemptionRows) {
+        if (r.status === 'pending') bump(pending, r.customerId);
+        else if (r.status === 'fulfilled') bump(fulfilledCounts, r.customerId);
+      }
+
+      return res.status(200).json({
+        customers: (customers || []).map(c => ({
+          id: c.id,
+          displayName: c.displayName,
+          email: c.email,
+          phone: c.phone,
+          createdAt: c.createdAt,
+          badges: badges.get(c.id) || 0,
+          orders: orders.get(c.id) || 0,
+          rewardsPending: pending.get(c.id) || 0,
+          rewardsFulfilled: fulfilledCounts.get(c.id) || 0,
+        })),
+      });
     }
     default: {
       const e = new Error('Unknown loyalty action'); e.status = 400; throw e;

@@ -238,6 +238,17 @@ export const api = {
     request('/settings?action=loyalty-redemptions').then(r => r.redemptions || []),
   fulfillLoyaltyRedemption: (id, fulfilled = true) =>
     request('/settings', { method: 'POST', body: { action: 'loyalty-fulfill', id, fulfilled } }).then(r => r.redemption),
+  // BAE customer hub (migration 0035) — news/tips authored here and read by
+  // the BAE Badges app, plus the customer roster with per-customer aggregate
+  // counts. The list helpers return the whole response object ({ content } /
+  // { customers } plus unavailable?) so the UI can show a "run migration"
+  // banner before the tables exist.
+  listLoyaltyContent: () => request('/settings?action=loyalty-content-list'),
+  saveLoyaltyContent: (entry) =>
+    request('/settings', { method: 'POST', body: { action: 'loyalty-content-save', entry } }).then(r => r.entry),
+  deleteLoyaltyContent: (id) =>
+    request('/settings', { method: 'POST', body: { action: 'loyalty-content-delete', id } }),
+  listLoyaltyCustomers: () => request('/settings?action=loyalty-customers'),
 
   // Shipments (ShipStation labels). One row per shipmentBoxId.
   getShipments: (saleId) =>
