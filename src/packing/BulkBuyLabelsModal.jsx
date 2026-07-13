@@ -10,12 +10,19 @@ import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
 // listed (so the operator sees why they're excluded) but never pre-checked,
 // and select-all skips them. They stay manually tickable for the odd
 // exception (e.g. buying a hold's label a day early).
+//
+// Buyers can also purchase an expedited-shipping upgrade in the live; it
+// lands in the box as a placeholder item named like "UPS Next Day". Such a
+// box defaults its service to UPS Next Day Air Saver (the buyer paid for
+// it) and gets a "Next Day" chip.
+const NEXT_DAY_RE = /\bnext\s*-?\s*day\b/i;
 function boxFlags(b) {
   const hold = boxHoldState(b.items, b.holdUntil);
   return {
     holding: hold.state === 'holding',
     daysLeft: hold.daysLeft,
     pickup: boxIsLocalPickup(b.note, b.items),
+    nextDay: (b.items || []).some(i => NEXT_DAY_RE.test(i?.name)),
   };
 }
 
@@ -70,15 +77,19 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
     const init = {};
     for (const b of boxes) {
       const size = boxSizes.find(s => s.id === b.boxSizeId) || null;
-      const { holding, pickup } = boxFlags(b);
+      const { holding, pickup, nextDay } = boxFlags(b);
       init[b.id] = {
         checked: (preselectedIds ? preselectedIds.has(b.id) : b.carrier === 'ups')
           && !holding && !pickup,
         sizeId: b.boxSizeId || '',
         weight: b.weightOz != null ? String(b.weightOz)
           : (size?.weightOz != null ? String(size.weightOz) : ''),
-        serviceKey: b.serviceKey
-          || (b.carrier === 'ups' ? 'ups_2nd_day_air' : 'usps_priority'),
+        // A paid Next Day upgrade in the box wins the default — even over a
+        // previously saved serviceKey (likely stale from before the upgrade
+        // sold). The chip + preselected service make the override visible;
+        // the operator can still change it per-row.
+        serviceKey: nextDay ? 'ups_next_day_air_saver'
+          : (b.serviceKey || (b.carrier === 'ups' ? 'ups_2nd_day_air' : 'usps_priority')),
       };
     }
     return init;
@@ -356,6 +367,11 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
                                 Local pickup
                               </span>
                             )}
+                            {flags.nextDay && (
+                              <span className="ml-1.5 inline-block px-1.5 py-px rounded bg-red-100 text-red-700 font-semibold">
+                                Next Day
+                              </span>
+                            )}
                           </div>
                         </div>
                         <select
@@ -398,6 +414,11 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
                             <span className="text-red-600 truncate block" title={st.message}>{st.message}</span>
                           )}
                           {!st && problem && <span className="text-amber-600">{problem}</span>}
+                          {/* The buyer paid for Next Day — flag any drift away
+                              from it (e.g. the operator changed the service). */}
+                          {!st && !problem && flags.nextDay && row.serviceKey !== 'ups_next_day_air_saver' && (
+                            <span className="text-red-600">buyer paid Next Day</span>
+                          )}
                         </div>
                       </div>
                     );
