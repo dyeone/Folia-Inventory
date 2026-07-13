@@ -4,6 +4,20 @@ import {
 } from 'lucide-react';
 import { api } from '../api.js';
 import { shortBoxCode } from '../labels/boxCode.js';
+import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
+
+// One-week-hold boxes don't ship yet and local pickups never ship — both are
+// listed (so the operator sees why they're excluded) but never pre-checked,
+// and select-all skips them. They stay manually tickable for the odd
+// exception (e.g. buying a hold's label a day early).
+function boxFlags(b) {
+  const hold = boxHoldState(b.items, b.holdUntil);
+  return {
+    holding: hold.state === 'holding',
+    daysLeft: hold.daysLeft,
+    pickup: boxIsLocalPickup(b.note, b.items),
+  };
+}
 
 // Bulk label purchase for open boxes. The operator ticks which boxes to buy,
 // picks each box's size (dims come from the Shipping Settings catalog) and
@@ -56,8 +70,10 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
     const init = {};
     for (const b of boxes) {
       const size = boxSizes.find(s => s.id === b.boxSizeId) || null;
+      const { holding, pickup } = boxFlags(b);
       init[b.id] = {
-        checked: preselectedIds ? preselectedIds.has(b.id) : b.carrier === 'ups',
+        checked: (preselectedIds ? preselectedIds.has(b.id) : b.carrier === 'ups')
+          && !holding && !pickup,
         sizeId: b.boxSizeId || '',
         weight: b.weightOz != null ? String(b.weightOz)
           : (size?.weightOz != null ? String(size.weightOz) : ''),
@@ -117,13 +133,39 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
   const knownBoxes = boxes.filter(b => rows[b.id]);
   const selected = knownBoxes.filter(b => rows[b.id].checked);
   const invalidSelected = selected.filter(b => rowProblem(rows[b.id]));
-  const allChecked = knownBoxes.length > 0 && selected.length === knownBoxes.length;
+  // "All" means all SHIPPABLE boxes — held / local-pickup rows don't count
+  // toward select-all and are never swept up by it.
+  const eligible = knownBoxes.filter(b => {
+    const { holding, pickup } = boxFlags(b);
+    return !holding && !pickup;
+  });
+  const allChecked = eligible.length > 0 && eligible.every(b => rows[b.id].checked);
   const canBuy = phase === 'edit' && !loadingSettings && shipFromOk
     && selected.length > 0 && invalidSelected.length === 0;
 
   const toggleAll = () => {
     if (phase !== 'edit') return;
-    setRows(r => Object.fromEntries(Object.entries(r).map(([id, row]) => [id, { ...row, checked: !allChecked }])));
+    const eligibleIds = new Set(eligible.map(b => b.id));
+    setRows(r => Object.fromEntries(Object.entries(r).map(([id, row]) => [
+      id,
+      // Check-all touches only shippable boxes; uncheck-all clears everything
+      // (including a manually-ticked held box).
+      allChecked ? { ...row, checked: false }
+        : (eligibleIds.has(id) ? { ...row, checked: true } : row),
+    ])));
+  };
+
+  // Bulk size: apply one catalog size to every selected row (seeding each
+  // blank weight from the size's default, same as picking it per-row).
+  const applySizeToSelected = (sizeId) => {
+    if (!sizeId || phase !== 'edit') return;
+    const preset = boxSizes.find(s => s.id === sizeId) || null;
+    setRows(r => Object.fromEntries(Object.entries(r).map(([id, row]) => {
+      if (!row.checked) return [id, row];
+      const next = { ...row, sizeId };
+      if (preset?.weightOz != null && !String(row.weight).trim()) next.weight = String(preset.weightOz);
+      return [id, next];
+    })));
   };
 
   // The modal must not vanish mid-purchase — money is moving.
@@ -239,18 +281,33 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
                   />
                   {selected.length} of {knownBoxes.length} box{knownBoxes.length === 1 ? '' : 'es'} selected
                 </label>
-                <label className="flex items-center gap-2 text-sm text-gray-700">
-                  Buy via
+                <div className="flex items-center gap-3 flex-wrap">
+                  {/* Command-style select: applies to all selected rows, then
+                      snaps back to the placeholder (value stays ''). */}
                   <select
-                    value={provider}
-                    onChange={e => setProvider(e.target.value)}
-                    disabled={phase !== 'edit'}
-                    className="px-2 py-1.5 border border-gray-300 rounded-lg text-sm"
+                    value=""
+                    onChange={e => applySizeToSelected(e.target.value)}
+                    disabled={phase !== 'edit' || selected.length === 0}
+                    className="px-2 py-1.5 border border-gray-300 rounded-lg text-sm text-gray-700"
                   >
-                    <option value="shipstation">ShipStation</option>
-                    <option value="shippo">Shippo</option>
+                    <option value="">Set size for selected…</option>
+                    {boxSizes.map(s => (
+                      <option key={s.id} value={s.id}>{s.name} · {s.length}×{s.width}×{s.height}</option>
+                    ))}
                   </select>
-                </label>
+                  <label className="flex items-center gap-2 text-sm text-gray-700">
+                    Buy via
+                    <select
+                      value={provider}
+                      onChange={e => setProvider(e.target.value)}
+                      disabled={phase !== 'edit'}
+                      className="px-2 py-1.5 border border-gray-300 rounded-lg text-sm"
+                    >
+                      <option value="shipstation">ShipStation</option>
+                      <option value="shippo">Shippo</option>
+                    </select>
+                  </label>
+                </div>
               </div>
 
               <div className="border border-gray-200 rounded-xl overflow-x-auto">
@@ -270,6 +327,7 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
                     // draft row, so skip it — it'll be there on next open.
                     if (!row) return null;
                     const st = statuses[b.id];
+                    const flags = boxFlags(b);
                     const problem = row.checked ? rowProblem(row) : null;
                     return (
                       <div key={b.id} className={`grid grid-cols-[2rem_minmax(0,1fr)_9rem_5.5rem_12rem_minmax(6rem,0.6fr)] gap-2 items-center px-3 py-2 border-b border-gray-100 last:border-b-0 ${row.checked ? '' : 'opacity-50'}`}>
@@ -288,6 +346,16 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
                           <div className="text-[11px] text-gray-500">
                             {(b.items || []).length} item{(b.items || []).length === 1 ? '' : 's'}
                             <span className={`ml-1.5 uppercase font-semibold ${b.carrier === 'ups' ? 'text-amber-700' : 'text-blue-700'}`}>{b.carrier}</span>
+                            {flags.holding && (
+                              <span className="ml-1.5 inline-block px-1.5 py-px rounded bg-amber-100 text-amber-800 font-semibold">
+                                On hold{flags.daysLeft ? ` · ${flags.daysLeft}d left` : ''}
+                              </span>
+                            )}
+                            {flags.pickup && (
+                              <span className="ml-1.5 inline-block px-1.5 py-px rounded bg-gray-100 text-gray-600 font-semibold">
+                                Local pickup
+                              </span>
+                            )}
                           </div>
                         </div>
                         <select
