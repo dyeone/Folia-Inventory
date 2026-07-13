@@ -3,11 +3,13 @@ import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
   Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin, Clock,
+  ShoppingCart,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
+import { BulkBuyLabelsModal } from './BulkBuyLabelsModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { PrintListButton } from './PrintListButton.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
@@ -215,6 +217,7 @@ export function PackingView({
   // box when rate-shopping. Read-only here; edited in ShippingSettingsModal.
   const [boxSizes, setBoxSizes] = useState([]);
   const [buyingFor, setBuyingFor] = useState(null);
+  const [bulkBuyOpen, setBulkBuyOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
   const showToast = (msg) => {
@@ -229,7 +232,7 @@ export function PackingView({
   // mirrors the overlay state so a click that opens a modal doesn't yank
   // focus back to the (now-hidden) scan box. preventScroll keeps the page
   // from jumping to the top when refocusing after a click further down.
-  const overlayOpen = !!(buyingFor || editingBox || editingAddressBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
+  const overlayOpen = !!(buyingFor || bulkBuyOpen || importOpen || editingBox || editingAddressBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
   const overlayOpenRef = useRef(overlayOpen);
   useEffect(() => { overlayOpenRef.current = overlayOpen; }, [overlayOpen]);
   useEffect(() => {
@@ -1058,6 +1061,39 @@ export function PackingView({
                     </button>
                   );
                 })()}
+                {/* Bulk label purchase: every open box in scope (selected-else-
+                    all, same idiom as the print buttons) that doesn't already
+                    have an active label. The modal lets the operator tick
+                    boxes, pick each one's size + service, then buys them
+                    sequentially. */}
+                {totalBoxes > 0 && (() => {
+                  const allBoxes = groups.flatMap(g => g.boxes);
+                  const pool = selectedBoxIds.size > 0
+                    ? allBoxes.filter(b => selectedBoxIds.has(b.id))
+                    : allBoxes;
+                  const needsLabel = pool.filter(b => {
+                    const s = shipmentsByBox[b.id];
+                    return !(s && !s.voidedAt);
+                  });
+                  // Badge counts UPS boxes so it matches the button's label;
+                  // the modal itself lists every carrier (UPS pre-checked).
+                  const upsCount = needsLabel.filter(b => b.carrier === 'ups').length;
+                  return (
+                    <button
+                      type="button"
+                      disabled={needsLabel.length === 0}
+                      title={needsLabel.length === 0
+                        ? 'Every box in scope already has a label'
+                        : `${needsLabel.length} open box${needsLabel.length === 1 ? '' : 'es'} without a label (${upsCount} UPS — pre-selected in the modal)`}
+                      onClick={() => setBulkBuyOpen(true)}
+                      className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-amber-300 text-amber-800 bg-white hover:bg-amber-50 active:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <ShoppingCart className="w-4 h-4" />
+                      Buy UPS labels
+                      <span className="text-xs text-amber-600/70 ml-1">· {upsCount}</span>
+                    </button>
+                  );
+                })()}
                 {onPrintItemLabels && (() => {
                   // Every plant to label across the currently-visible open boxes:
                   // Anthurium items PLUS unmatched placeholders (which have no
@@ -1356,6 +1392,32 @@ export function PackingView({
           showToast={showToast}
         />
       )}
+
+      {bulkBuyOpen && (() => {
+        // Same scope as the button: selected-else-all open boxes without an
+        // active label, with each box's saved packaging (size/weight/service)
+        // merged in — the same merge BoxRow does per-row (boxNotesByBox).
+        const allBoxes = groups.flatMap(g => g.boxes);
+        const pool = selectedBoxIds.size > 0
+          ? allBoxes.filter(b => selectedBoxIds.has(b.id))
+          : allBoxes;
+        const buyable = pool
+          .filter(b => {
+            const s = shipmentsByBox[b.id];
+            return !(s && !s.voidedAt);
+          })
+          .map(b => ({ ...b, ...(boxNotesByBox?.[b.id] || {}) }));
+        return (
+          <BulkBuyLabelsModal
+            boxes={buyable}
+            boxSizes={boxSizes}
+            preselectedIds={selectedBoxIds.size > 0 ? selectedBoxIds : null}
+            onClose={() => setBulkBuyOpen(false)}
+            onBought={refreshShipments}
+            showToast={showToast}
+          />
+        );
+      })()}
 
       {importOpen && (
         <ImportLabelsModal
