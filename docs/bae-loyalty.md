@@ -1,8 +1,31 @@
-# BAE loyalty — badges (数字徽章) + punch-card rewards
+# BAE loyalty — badges (数字徽章), rewards + customer hub
 
-> Status: built, awaiting first deploy (migration 0034 + Supabase Auth setup).
+> Status: v1 loop shipped (PR #86); v2 customer hub built on top (migration 0035).
+> Awaiting: migrations 0034 + 0035 applied + Supabase Auth email setup.
 > Design doc: `~/Projects/bae-loyalty-app/DESIGN.md` (approved, /office-hours 2026-07-12).
 > Customer app: separate Expo repo at `~/Projects/bae-loyalty-app` ("BAE Badges").
+
+## v2 — customer hub (migration 0035)
+
+The app grows from a punch card into BAE's customer surface; the Loyalty tab
+grows into customer management. Three additions, all riding the same
+two-audience architecture:
+
+- **Shopping history** — `customer_orders`, one row per *claimed* code. The
+  claim RPC snapshots the box's plants ({sku, name, variety, quantity}) at
+  claim time, so customers never read `inventory_items` and later inventory
+  edits can't rewrite history. Derived from scans (verified purchases), NOT
+  Palmstreet-username matching — same decision as v1 codes.
+- **Collection gallery** — `badge_events."plantRef"` is now populated at claim
+  (plant name, multi-quantity lots expanded), so badges group by species.
+- **News + growing tips** — `customer_content` (kind 'news'|'tip'), authored
+  by admins in the Loyalty tab's **Content** section, read by the app via RLS
+  (active rows only). The Loyalty tab also gains a **Customers** section:
+  every app customer with badge/order/reward counts and contact info.
+
+App IA: Home (feed + reward banner + progress) · Badges (ring + collection) ·
+Scan · Orders · Profile; Rewards is a stack screen reachable from Home/Badges/
+the unlock moment.
 
 ## The loop
 
@@ -58,9 +81,13 @@ the `SECURITY DEFINER` RPC.
 
 1. Apply `supabase/migrations/0034_bae_loyalty.sql` in the Supabase SQL editor.
 2. Supabase Dashboard → Authentication: enable the **Email** provider, then
-   edit the **Magic Link** email template to include `{{ .Token }}` — the
-   default template only sends a login link, but the app asks the customer to
-   type a 6-digit code. (Phone OTP = later, needs Twilio.)
+   edit **both** the **Magic Link** AND **Confirm signup** email templates to
+   include `{{ .Token }}` — the defaults only send a login link, but the app
+   asks the customer to type a 6-digit code, and Supabase uses Confirm signup
+   for a customer's FIRST sign-in (Magic Link for returning ones). Before real
+   customers: set custom SMTP (Authentication → Emails → SMTP Settings, e.g.
+   Resend) — the built-in sender allows only a few emails/hour. (Phone OTP =
+   later, needs Twilio.)
 3. Deploy this repo to Vercel as usual (no new functions, no new env vars).
 4. In the app: BAE brand → **Loyalty** tab → set the real reward text +
    threshold (seeded: 10 → "Free BAE anthurium" placeholder).
