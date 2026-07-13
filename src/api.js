@@ -226,6 +226,19 @@ export const api = {
   saveLanding: (content) =>
     request('/settings', { method: 'POST', body: { action: 'landing-save', content } }).then(r => r.content),
 
+  // BAE loyalty program (migration 0034). Config + redemptions live in real
+  // tables — the customer app reads them directly via Supabase RLS — but staff
+  // admin rides the existing /settings function (12-function cap). getLoyalty
+  // returns { config, stats, unavailable? }; unavailable means the 0034 tables
+  // aren't migrated yet.
+  getLoyalty: () => request('/settings?action=loyalty-get'),
+  saveLoyaltyConfig: (config) =>
+    request('/settings', { method: 'POST', body: { action: 'loyalty-save', config } }).then(r => r.config),
+  listLoyaltyRedemptions: () =>
+    request('/settings?action=loyalty-redemptions').then(r => r.redemptions || []),
+  fulfillLoyaltyRedemption: (id, fulfilled = true) =>
+    request('/settings', { method: 'POST', body: { action: 'loyalty-fulfill', id, fulfilled } }).then(r => r.redemption),
+
   // Shipments (ShipStation labels). One row per shipmentBoxId.
   getShipments: (saleId) =>
     request(`/shipments${saleId ? `?saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.shipments),
@@ -266,6 +279,11 @@ export const api = {
   // 7) or clear it (hold:false). The deadline is computed server-side.
   setBoxHold: ({ shipmentBoxId, hold, days }) =>
     request('/shipments', { method: 'POST', body: { action: 'set-box-hold', shipmentBoxId, hold, days } }).then(r => r.box),
+  // Get-or-create the BAE loyalty redemption code for a box (printed on the
+  // shipping slip as QR + short code — see migration 0034). Returns
+  // { code, qrPayload, badgeCount, status }. BAE boxes only.
+  getBoxLoyaltyCode: (shipmentBoxId) =>
+    request('/shipments', { method: 'POST', body: { action: 'loyalty-code', shipmentBoxId } }).then(r => r.loyalty),
   // Packer cross-device handoff: the iPad sends an open box's items to the
   // packer's phone (same login), which polls getPhoneHandoff and shows them
   // as a find-list. Returns { ok, sentAt } so the sender can mark its own

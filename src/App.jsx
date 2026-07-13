@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense }
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
-  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film,
+  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award,
 } from 'lucide-react';
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -33,6 +33,7 @@ const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
 const CareCalendarView = lazyNamed(() => import('./care/CareCalendarView.jsx'), 'CareCalendarView');
 const BaeLandingEditor = lazyNamed(() => import('./landing/BaeLandingEditor.jsx'), 'BaeLandingEditor');
 const BaeVideoStudio = lazyNamed(() => import('./video/BaeVideoStudio.jsx'), 'BaeVideoStudio');
+const LoyaltyAdmin = lazyNamed(() => import('./loyalty/LoyaltyAdmin.jsx'), 'LoyaltyAdmin');
 
 const ChangePasswordModal = lazyNamed(() => import('./auth/ChangePasswordModal.jsx'), 'ChangePasswordModal');
 const ItemFormModal = lazyNamed(() => import('./inventory/ItemFormModal.jsx'), 'ItemFormModal');
@@ -821,6 +822,9 @@ function StaffOrAdminInventory() {
   ];
   // BAE-only landing-page CMS — admins editing the public BAE landing site.
   if (isAdmin && activeBrand === 'bae') tabs.push({ id: 'bae-landing', label: 'Landing', icon: Globe });
+  // BAE-only loyalty program admin — punch-card config + reward fulfillment
+  // for the customer BAE Badges app (see migration 0034).
+  if (isAdmin && activeBrand === 'bae') tabs.push({ id: 'bae-loyalty', label: 'Loyalty', icon: Award });
   // BAE-only video tools hub (Marquee Studio + future live-sales video tools).
   if (activeBrand === 'bae') tabs.push({ id: 'bae-video', label: 'Video', icon: Film });
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users });
@@ -1559,6 +1563,9 @@ function StaffOrAdminInventory() {
         )}
         {activeTab === 'bae-landing' && isAdmin && activeBrand === 'bae' && (
           <BaeLandingEditor showToast={showToast} />
+        )}
+        {activeTab === 'bae-loyalty' && isAdmin && activeBrand === 'bae' && (
+          <LoyaltyAdmin showToast={showToast} />
         )}
         {activeTab === 'bae-video' && activeBrand === 'bae' && (
           <BaeVideoStudio />

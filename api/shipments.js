@@ -1,4 +1,5 @@
-import { supabase, requireBrand, brandIdFromReq } from './_lib/supabase.js';
+import crypto from 'node:crypto';
+import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Routes:
@@ -21,6 +22,9 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 //       to the shipping-labels Storage bucket.
 //   POST /api/shipments  body: { action: 'clear-tracking', shipmentBoxId }
 //     → deletes a manual Palmstreet row (refuses to touch ShipStation rows).
+//   POST /api/shipments  body: { action: 'loyalty-code', shipmentBoxId }
+//     → get-or-create the BAE loyalty redemption code for a box (printed on
+//       the shipping slip as QR + short code; claimed in the customer app).
 
 const SIGNED_URL_TTL_SECONDS = 300;
 const PALMSTREET_CARRIER_CODE = 'palmstreet';
@@ -49,6 +53,7 @@ export default wrap(async (req, res) => {
       if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId, brandId);
       if (action === 'set-box-hold') return setBoxHold(req, res, userId, brandId);
       if (action === 'send-to-phone') return sendToPhone(req, res, userId);
+      if (action === 'loyalty-code') return loyaltyCode(req, res, userId, brandId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
     default:
@@ -537,6 +542,146 @@ async function boxNotes(req, res, brandId) {
     updatedBy: r.updatedBy,
   }]));
   return res.status(200).json({ boxNotes: map });
+}
+
+// POST /api/shipments  body: { action: 'loyalty-code', shipmentBoxId }
+// Get-or-create the loyalty redemption code for a box. The slip printer calls
+// this right before rendering a BAE slip, so the code always exists before
+// it's printed. See supabase/migrations/0034_bae_loyalty.sql for the customer
+// side (the app claims the code → badges → punch-card rewards).
+//
+// Idempotent per box: redemption_codes has a unique index on shipmentBoxId,
+// so reprints and the packer's optimistic retries always get the same code.
+// While the code is unclaimed, badgeCount is refreshed from the box's current
+// contents so a slip reprinted after box edits grants the right badge count.
+const LOYALTY_BRAND = 'bae';
+// Unambiguous alphabet (no 0/O/1/I/L) — the customer may hand-type this off a
+// thermal slip. 8 chars over 31 symbols ≈ 8.5e11 codes: unguessable in
+// practice, and the claim path is a single-row RPC (no enumeration surface).
+const LOYALTY_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const LOYALTY_CODE_LENGTH = 8;
+
+function newLoyaltyCode() {
+  let code = '';
+  for (let i = 0; i < LOYALTY_CODE_LENGTH; i++) {
+    code += LOYALTY_CODE_ALPHABET[crypto.randomInt(LOYALTY_CODE_ALPHABET.length)];
+  }
+  return code;
+}
+
+// Same shim as sales.js: the redemption_codes table ships via migration 0034,
+// applied manually. Until then, surface a clear 503 the slip printer treats
+// as "print without the QR block".
+function isMissingLoyaltyTable(error) {
+  return !!error && (error.code === '42P01' || error.code === 'PGRST205'
+    || /does not exist|schema cache|find the table/i.test(error.message || ''));
+}
+
+function loyaltyPublicFields(row) {
+  return { code: row.code, qrPayload: row.qrPayload, badgeCount: row.badgeCount, status: row.status };
+}
+
+// New codes are only minted around print time. A box whose items all shipped
+// longer ago than this never got a code printed (pre-launch backlog), and
+// DESIGN.md accepts that those don't earn badges — so refuse to mint, which
+// also stops a staff account from bulk-harvesting claimable codes for every
+// historical BAE box. Existing rows keep returning (reprints still work).
+const LOYALTY_MINT_GRACE_MS = 48 * 3600 * 1000;
+
+async function loyaltyCode(req, res, userId, brandId) {
+  const { shipmentBoxId } = req.body || {};
+  if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
+    const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
+  }
+  // v1 is BAE-only (the loyalty program is a BAE product); the row carries
+  // brandId so opening this up later is a one-line change.
+  if (brandId !== LOYALTY_BRAND) {
+    const e = new Error('Loyalty codes are only issued for BAE boxes'); e.status = 400; throw e;
+  }
+
+  // Badge-eligible contents: every real (non-deleted) item in the box,
+  // counting multi-quantity lots as their plant count. UNMATCHED-*
+  // placeholders count too — they're real shipped plants whose SKU didn't
+  // match (PR #33/#84 treat them as such), and the slip prints them as
+  // ordinary item rows next to "1 badge per plant".
+  const { data: items, error: iErr } = await supabase
+    .from('inventory_items')
+    .select('id, quantity, status, "deletedAt", "shippedAt"')
+    .eq('brandId', brandId)
+    .eq('shipmentBoxId', shipmentBoxId);
+  if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
+  const eligible = (items || []).filter(it => !it.deletedAt);
+  const badgeCount = eligible.reduce((n, it) => n + (it.quantity || 1), 0);
+  if (badgeCount === 0) {
+    const e = new Error('No badge-eligible items in this box'); e.status = 400; throw e;
+  }
+  const isHistorical = eligible.every(it =>
+    ['shipped', 'delivered'].includes(it.status)
+    && it.shippedAt && (Date.now() - new Date(it.shippedAt).getTime() > LOYALTY_MINT_GRACE_MS));
+
+  const { data: existing, error: exErr } = await supabase
+    .from('redemption_codes')
+    .select('*')
+    .eq('shipmentBoxId', shipmentBoxId)
+    .maybeSingle();
+  if (exErr) {
+    if (isMissingLoyaltyTable(exErr)) {
+      const e = new Error('Loyalty tables not found — apply migration 0034_bae_loyalty'); e.status = 503; throw e;
+    }
+    const e = new Error(exErr.message); e.status = 500; throw e;
+  }
+
+  if (existing) {
+    if (existing.status === 'unclaimed' && existing.badgeCount !== badgeCount) {
+      const { data: updated } = await supabase
+        .from('redemption_codes')
+        .update({ badgeCount })
+        .eq('id', existing.id)
+        .eq('status', 'unclaimed') // no-op if the customer claimed it mid-flight
+        .select('*')
+        .maybeSingle();
+      if (updated) return res.status(200).json({ loyalty: loyaltyPublicFields(updated) });
+    }
+    return res.status(200).json({ loyalty: loyaltyPublicFields(existing) });
+  }
+
+  if (isHistorical) {
+    const e = new Error('Box shipped before the loyalty program — codes are only issued at print time');
+    e.status = 403; throw e;
+  }
+
+  // Create. Retries cover the two unique indexes: a code collision (retry
+  // with a fresh code) and the per-box index (another device printing the
+  // same slip won the race — return their row).
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const code = newLoyaltyCode();
+    const { data: created, error: cErr } = await supabase
+      .from('redemption_codes')
+      .insert({
+        id: `rc_${newId()}`,
+        code,
+        qrPayload: code, // the QR encodes the bare code; the app scanner reads it directly
+        shipmentBoxId,
+        brandId,
+        badgeCount,
+        status: 'unclaimed',
+        createdBy: userId,
+      })
+      .select('*')
+      .single();
+    if (!cErr) return res.status(200).json({ loyalty: loyaltyPublicFields(created) });
+    if (cErr.code === '23505') {
+      const { data: raced } = await supabase
+        .from('redemption_codes')
+        .select('*')
+        .eq('shipmentBoxId', shipmentBoxId)
+        .maybeSingle();
+      if (raced) return res.status(200).json({ loyalty: loyaltyPublicFields(raced) });
+      continue; // code collision — new random code
+    }
+    const e = new Error(cErr.message); e.status = 500; throw e;
+  }
+  const e = new Error('Could not allocate a unique loyalty code'); e.status = 500; throw e;
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

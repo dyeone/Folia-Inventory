@@ -50,6 +50,13 @@ export default wrap(async (req, res) => {
   if (typeof action === 'string' && action.startsWith('landing-')) {
     return handleLanding(action, req, res, user, brandId);
   }
+  // BAE loyalty program admin (config + reward fulfillment). Unlike the other
+  // groups, the data lives in real tables (migration 0034) — the customer app
+  // reads them directly via Supabase RLS — but staff access still rides this
+  // function for the same no-new-function reason.
+  if (typeof action === 'string' && action.startsWith('loyalty-')) {
+    return handleLoyalty(action, req, res, user, brandId);
+  }
 
   const id = req.method === 'GET' ? req.query?.id : req.body?.id;
   if (!id) {
@@ -448,6 +455,143 @@ async function handleLanding(action, req, res, user, brandId) {
     }
     default: {
       const e = new Error('Unknown landing action'); e.status = 400; throw e;
+    }
+  }
+}
+
+// ----------------------------------------------------------------------------
+// BAE loyalty program — punch-card reward economics + redemption fulfillment.
+// Config lives in the reward_config TABLE (not app_settings) because the
+// customer app (bae-loyalty-app repo) reads it directly through Supabase RLS;
+// reward_redemptions rows are created by the claim_redemption_code() RPC when
+// a customer's badge total crosses the threshold. See migration 0034.
+// ----------------------------------------------------------------------------
+
+// Same shim as sales.js: the 0034 tables are applied manually; until then the
+// admin panel gets `unavailable: true` instead of a hard error.
+function isMissingLoyaltyTable(error) {
+  return !!error && (error.code === '42P01' || error.code === 'PGRST205'
+    || /does not exist|schema cache|find the table/i.test(error.message || ''));
+}
+
+// Program-at-a-glance counters for the admin panel. Best-effort: any failure
+// (including missing tables) renders the panel without the stats row.
+async function loadLoyaltyStats(brandId) {
+  const countRows = async (table, filters) => {
+    let q = supabase.from(table).select('*', { count: 'exact', head: true }).eq('brandId', brandId);
+    for (const [k, v] of Object.entries(filters || {})) q = q.eq(k, v);
+    const { count, error } = await q;
+    if (error) throw error;
+    return count || 0;
+  };
+  try {
+    const [codesIssued, codesClaimed, badgesGranted, rewardsPending, rewardsFulfilled] = await Promise.all([
+      countRows('redemption_codes'),
+      countRows('redemption_codes', { status: 'claimed' }),
+      countRows('badge_events'),
+      countRows('reward_redemptions', { status: 'pending' }),
+      countRows('reward_redemptions', { status: 'fulfilled' }),
+    ]);
+    return { codesIssued, codesClaimed, badgesGranted, rewardsPending, rewardsFulfilled };
+  } catch {
+    return null;
+  }
+}
+
+async function handleLoyalty(action, req, res, user, brandId) {
+  switch (action) {
+    case 'loyalty-get': {
+      // Any active user may view; edits are admin-gated below.
+      const { data: config, error } = await supabase
+        .from('reward_config').select('*').eq('brandId', brandId).maybeSingle();
+      if (error) {
+        if (isMissingLoyaltyTable(error)) {
+          return res.status(200).json({ config: null, stats: null, unavailable: true });
+        }
+        const e = new Error(error.message); e.status = 500; throw e;
+      }
+      return res.status(200).json({ config: config || null, stats: await loadLoyaltyStats(brandId) });
+    }
+    case 'loyalty-save': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const c = req.body?.config;
+      if (!c || typeof c !== 'object') {
+        const e = new Error('config (object) required'); e.status = 400; throw e;
+      }
+      const threshold = parseInt(c.threshold, 10);
+      if (!Number.isInteger(threshold) || threshold < 1 || threshold > 1000) {
+        const e = new Error('threshold must be an integer between 1 and 1000'); e.status = 400; throw e;
+      }
+      const rewardTitle = str(c.rewardTitle, 120);
+      if (!rewardTitle) { const e = new Error('rewardTitle required'); e.status = 400; throw e; }
+      const rewardDetail = str(c.rewardDetail, 2000) || null;
+      const { data: row, error } = await supabase
+        .from('reward_config')
+        .upsert({
+          brandId, threshold, rewardTitle, rewardDetail, active: !!c.active,
+          updatedAt: new Date().toISOString(), updatedBy: user.id,
+        }, { onConflict: 'brandId' })
+        .select('*')
+        .single();
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ config: row });
+    }
+    case 'loyalty-redemptions': {
+      // Newest first, joined with customer contact so staff can verify the
+      // person in front of them (customers are Supabase Auth users, not staff).
+      // Admin-only like fulfill: the list carries customer email/phone and its
+      // only UI consumer (the Loyalty tab) is admin-gated — keep the server
+      // gate matching so a non-admin can't pull it via curl.
+      requireAdminRole(user);
+      const { data: rows, error } = await supabase
+        .from('reward_redemptions')
+        .select('*')
+        .eq('brandId', brandId)
+        .order('createdAt', { ascending: false })
+        .limit(500);
+      if (error) {
+        if (isMissingLoyaltyTable(error)) {
+          return res.status(200).json({ redemptions: [], unavailable: true });
+        }
+        const e = new Error(error.message); e.status = 500; throw e;
+      }
+      const customerIds = [...new Set((rows || []).map(r => r.customerId))];
+      let customersById = {};
+      if (customerIds.length) {
+        const { data: customers } = await supabase
+          .from('customers')
+          .select('id, "displayName", email, phone')
+          .in('id', customerIds);
+        customersById = Object.fromEntries((customers || []).map(cu => [cu.id, cu]));
+      }
+      return res.status(200).json({
+        redemptions: (rows || []).map(r => ({ ...r, customer: customersById[r.customerId] || null })),
+      });
+    }
+    case 'loyalty-fulfill': {
+      // Mark a reward handed out (or undo an accidental tap via fulfilled:false).
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const id = str(req.body?.id, 64);
+      if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
+      const fulfilled = req.body?.fulfilled !== false;
+      const patch = fulfilled
+        ? { status: 'fulfilled', fulfilledAt: new Date().toISOString(), fulfilledBy: user.id }
+        : { status: 'pending', fulfilledAt: null, fulfilledBy: null };
+      const { data: row, error } = await supabase
+        .from('reward_redemptions')
+        .update(patch)
+        .eq('id', id)
+        .eq('brandId', brandId)
+        .select('*')
+        .maybeSingle();
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      if (!row) { const e = new Error('Redemption not found'); e.status = 404; throw e; }
+      return res.status(200).json({ redemption: row });
+    }
+    default: {
+      const e = new Error('Unknown loyalty action'); e.status = 400; throw e;
     }
   }
 }
