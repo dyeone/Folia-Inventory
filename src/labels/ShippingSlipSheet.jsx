@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Download, X, Loader2 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
+import QRCode from 'qrcode';
+import { api } from '../api.js';
 import { shortBoxCode } from './boxCode.js';
 import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
 import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
@@ -40,6 +42,11 @@ const H = {
   itemRow: 7,
   // Single-line footer (was two lines).
   footer: 7,
+  // BAE loyalty block (heading + 26mm QR with code/text beside it + its own
+  // divider). Added to the total ONLY when a loyalty code was fetched — a
+  // Folia slip, or a BAE slip printed while the loyalty API is unreachable,
+  // keeps the original length.
+  loyalty: 37,
 };
 
 // Logo image is drawn centered at this size (mm). H.logo above must be
@@ -105,7 +112,43 @@ function formatDate(d) {
   }
 }
 
-async function buildPdf(box) {
+// XXXXXXXX → XXXX-XXXX for the printed slip; the claim RPC strips separators.
+function formatLoyaltyCode(code) {
+  return String(code || '').replace(/(.{4})(?=.)/g, '$1-');
+}
+
+// BAE loyalty: get-or-create this box's redemption code and pre-render its QR.
+// Resolves to null for non-BAE brands and on ANY failure (offline, 0034 not
+// migrated, timeout) — the slip must never be blocked from printing by the
+// loyalty program, it just prints without the badge block. Brand comes from
+// <html data-brand> (same pattern as BoxLabelSheet): buildPdf runs outside
+// React context and the box object carries no brand field.
+const LOYALTY_FETCH_TIMEOUT_MS = 8000;
+function fetchLoyalty(box) {
+  const brand = (document.documentElement.getAttribute('data-brand') || 'folia').toLowerCase();
+  if (brand !== 'bae') return Promise.resolve(null);
+  const load = (async () => {
+    const loyalty = await api.getBoxLoyaltyCode(box.id);
+    if (!loyalty?.code) return null;
+    // Pure black-on-white at a chunky scale so the 1-bit thermal printer
+    // binarizes it cleanly (see the logo threshold pass above); margin: 2
+    // keeps a scannable quiet zone inside the image itself.
+    const qrDataUrl = await QRCode.toDataURL(loyalty.qrPayload || loyalty.code, {
+      errorCorrectionLevel: 'M',
+      margin: 2,
+      scale: 8,
+      color: { dark: '#000000', light: '#FFFFFF' },
+    }).catch(() => null);
+    return { ...loyalty, qrDataUrl };
+  })().catch((err) => {
+    console.error('[slip] loyalty code unavailable — printing without QR:', err?.message || err);
+    return null;
+  });
+  const timeout = new Promise((resolve) => setTimeout(() => resolve(null), LOYALTY_FETCH_TIMEOUT_MS));
+  return Promise.race([load, timeout]);
+}
+
+async function buildPdf(box, loyalty) {
   const visibleItems = box.items.filter(i => !i.deletedAt);
   // Order: still-sold (about to ship) first, then already-shipped.
   // Same intent as the on-screen packing list.
@@ -122,6 +165,7 @@ async function buildPdf(box) {
     H.itemsHeader +
     items.length * H.itemRow +
     H.divider +
+    (loyalty ? H.loyalty : 0) +
     H.footer;
 
   const pdf = new jsPDF({ unit: 'mm', format: [SLIP_W_MM, totalH], orientation: 'portrait' });
@@ -214,6 +258,40 @@ async function buildPdf(box) {
   pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
   y += 4;
 
+  // BAE loyalty block — QR + short code the customer claims for badges in
+  // the BAE Badges app. Only present when a code was fetched (BAE brand +
+  // loyalty API reachable); its height is budgeted into totalH above.
+  if (loyalty) {
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9);
+    pdf.setTextColor(0);
+    pdf.text('BAE BADGES', H.margin, y);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7);
+    pdf.text('1 badge per plant', SLIP_W_MM - H.margin, y, { align: 'right' });
+    y += 4;
+
+    const qrSize = 26;
+    if (loyalty.qrDataUrl) {
+      pdf.addImage(loyalty.qrDataUrl, 'PNG', H.margin, y, qrSize, qrSize, undefined, 'FAST');
+    }
+    const tx = H.margin + qrSize + 4;
+    pdf.setFont('courier', 'bold');
+    pdf.setFontSize(13);
+    pdf.text(formatLoyaltyCode(loyalty.code), tx, y + 6);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.text(`${loyalty.badgeCount} badge${loyalty.badgeCount === 1 ? '' : 's'} in this box`, tx, y + 12);
+    pdf.setFontSize(7);
+    pdf.text('Scan or enter this code in the', tx, y + 17);
+    pdf.text('BAE Badges app to collect.', tx, y + 20.5);
+    y += qrSize + 3;
+
+    pdf.setDrawColor(0);
+    pdf.line(H.margin, y, SLIP_W_MM - H.margin, y);
+    y += 4;
+  }
+
   // Footer — single line.
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(9);
@@ -224,10 +302,18 @@ async function buildPdf(box) {
 }
 
 export function ShippingSlipSheet({ box, onClose, showToast }) {
+  // Kick the loyalty-code fetch during render (memo, not effect) so the
+  // promise exists before useAutoBridgePrint's mount effect fires the first
+  // print — every PDF build below awaits it. Idempotent server-side, so the
+  // dev-mode double render is harmless.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const loyaltyPromise = useMemo(() => fetchLoyalty(box), [box.id]);
+  const buildSlip = useCallback(async (b) => buildPdf(b, await loyaltyPromise), [loyaltyPromise]);
+
   // Print directly on open when the printer's ready — skip the preview; fall
   // back to the preview only when the bridge is offline or the print fails.
   // (One box = one small slip, so no chunking really happens here.)
-  const printDirect = (printViaBridge) => printChunked({ items: [box], buildPdf: ([b]) => buildPdf(b), role: 'slip', printViaBridge });
+  const printDirect = (printViaBridge) => printChunked({ items: [box], buildPdf: ([b]) => buildSlip(b), role: 'slip', printViaBridge });
   const auto = useAutoBridgePrint({ printDirect, onClose, showToast });
 
   const [busy, setBusy] = useState(false);
@@ -242,7 +328,7 @@ export function ShippingSlipSheet({ box, onClose, showToast }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const pdf = await buildPdf(box);
+      const pdf = await buildSlip(box);
       const url = pdf.output('bloburl');
       if (cancelled) { URL.revokeObjectURL(url); return; }
       urlRef.current = url;
@@ -255,7 +341,7 @@ export function ShippingSlipSheet({ box, onClose, showToast }) {
         urlRef.current = null;
       }
     };
-  }, [box]);
+  }, [box, buildSlip]);
 
   // Browser-print fallback (used when the bridge is offline or errors). Prefer
   // the already-loaded preview iframe: contentWindow.print() needs no popup and
@@ -286,7 +372,7 @@ export function ShippingSlipSheet({ box, onClose, showToast }) {
   const handleDownload = async () => {
     setBusy(true);
     try {
-      const pdf = await buildPdf(box);
+      const pdf = await buildSlip(box);
       pdf.save(`folia-slip-${shortBoxCode(box.id)}.pdf`);
     } finally {
       setBusy(false);
@@ -314,7 +400,7 @@ export function ShippingSlipSheet({ box, onClose, showToast }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700 flex items-center gap-1">
             <X className="w-4 h-4" /> Close
           </button>
-          <PrintControls printDirect={printDirect} buildPdf={() => buildPdf(box)} onBrowserPrint={printInBrowser} />
+          <PrintControls printDirect={printDirect} buildPdf={() => buildSlip(box)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownload}
             disabled={busy}
