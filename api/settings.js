@@ -57,6 +57,12 @@ export default wrap(async (req, res) => {
   if (typeof action === 'string' && action.startsWith('loyalty-')) {
     return handleLoyalty(action, req, res, user, brandId);
   }
+  // Lineup running index — one brand-scoped counter so weekly sales number
+  // continuously (Tue 1–58 → Fri starts at 59). Any active user in the brand
+  // may read + advance it; same no-new-function rationale as the groups above.
+  if (typeof action === 'string' && action.startsWith('lineup-')) {
+    return handleLineup(action, req, res, user, brandId);
+  }
 
   const id = req.method === 'GET' ? req.query?.id : req.body?.id;
   if (!id) {
@@ -93,6 +99,55 @@ export default wrap(async (req, res) => {
       return methodNotAllowed(res, ['GET', 'PUT']);
   }
 });
+
+// ----------------------------------------------------------------------------
+// Lineup running index — one brand-scoped counter (id `lineup-counter:<brand>`)
+// holding the next lineup number to hand out, so weekly sales number
+// continuously (Tue 1–58 → Fri starts at 59) instead of each restarting at 1.
+// Any active user in the brand may read + advance it (numbering is a routine
+// operator action, not admin-gated). No new function, no migration.
+// ----------------------------------------------------------------------------
+
+const LINEUP_NS = 'lineup-counter:';
+
+async function handleLineup(action, req, res, user, brandId) {
+  const id = LINEUP_NS + brandId;
+  switch (action) {
+    case 'lineup-get': {
+      const { data, error } = await supabase
+        .from('app_settings').select('data').eq('id', id).maybeSingle();
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      const next = Number(data?.data?.next);
+      return res.status(200).json({ next: Number.isFinite(next) && next > 0 ? next : 1 });
+    }
+    case 'lineup-bump': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      const incoming = Math.floor(Number(req.body?.next));
+      if (!Number.isFinite(incoming) || incoming < 1) {
+        const e = new Error('next (positive integer) required'); e.status = 400; throw e;
+      }
+      // Advance-only: the shared counter only ever moves forward, so a fresh
+      // sale never gets a start below one already handed out. This is a
+      // read-then-write (not atomic); under two simultaneous bumps one update
+      // can be lost, but the workflow is effectively single-writer and the
+      // Start # is editable, so any drift self-corrects on the next sale. Note
+      // this guards the COUNTER only — it does not stop an operator manually
+      // re-numbering an already-numbered older sale into a colliding range.
+      const { data: existingRow, error: rErr } = await supabase
+        .from('app_settings').select('data').eq('id', id).maybeSingle();
+      if (rErr) { const e = new Error(rErr.message); e.status = 500; throw e; }
+      const current = Number(existingRow?.data?.next);
+      const next = Math.max(Number.isFinite(current) && current > 0 ? current : 1, incoming);
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert({ id, data: { next }, updatedAt: new Date().toISOString(), updatedBy: user.id });
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ next });
+    }
+    default:
+      return methodNotAllowed(res, ['GET', 'POST']);
+  }
+}
 
 // ----------------------------------------------------------------------------
 // Personal GTD tasks — per-user JSON blob in app_settings (id = `tasks:<id>`).
