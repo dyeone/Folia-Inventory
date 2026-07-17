@@ -271,7 +271,12 @@ export function PreSaleTab({
   };
 
   const removeFromSale = async (it) => {
-    if (await assign(it, null)) flash('ok', `Removed ${it.sku}`);
+    if (await assign(it, null)) {
+      // Drop its session rank too, so a later re-scan appends at the bottom
+      // (receipt order) instead of resurfacing at its old mid-list position.
+      setAddedOrder(o => o.filter(x => x !== it.id));
+      flash('ok', `Removed ${it.sku}`);
+    }
   };
 
   // Un-stage every item currently staged for this sale (one batched save).
