@@ -19,12 +19,28 @@
 -- username — it is only ever derived from a claimed slip. Customers still
 -- have no read access to inventory_items or shipments; both RPCs are
 -- SECURITY DEFINER. Addresses are never copied into customer-visible rows.
+-- customers."verifiedBuyers" is a definer-only cache — UPDATE on it is
+-- revoked from the authenticated role, and sync recomputes it from claimed
+-- codes every run rather than trusting the stored value as input.
 --
 -- Depends on 0035 (replaces its claim RPC). Idempotent.
+--
+-- OPERATIONAL NOTE: the two `create index` statements on inventory_items
+-- below take a SHARE lock that blocks writes (packing scans, sales imports,
+-- bridge jobs) for the build duration. inventory_items is the largest table
+-- in the app. If applying during business hours, run those two statements
+-- separately as `create index concurrently if not exists ...` (which cannot
+-- run inside a transaction / the SQL editor's implicit txn) and apply the
+-- rest of this script as one block. During a quiet window, apply as-is.
 
 -- ── customers: verified buyer identities ───────────────────────────────────
 
 alter table customers add column if not exists "verifiedBuyers" text[] not null default '{}';
+-- verifiedBuyers is a definer-only cache. customers_update_own (0034) gates by
+-- row id but NOT by column, so without this revoke an authenticated customer
+-- could write any username into their own row and sync would trust it — pulling
+-- that buyer's whole order history. Revoke so only the SECURITY DEFINER RPC writes it.
+revoke update ("verifiedBuyers") on customers from authenticated;
 
 -- ── customer_orders: shipping fields, synced rows have no code ─────────────
 
@@ -39,9 +55,13 @@ alter table customer_orders add column if not exists "shippedAt" timestamptz;
 create unique index if not exists customer_orders_customer_box_unique
   on customer_orders ("customerId", "shipmentBoxId");
 
--- The sync sweeps inventory_items by buyer username.
+-- The sync sweeps inventory_items by buyer username (normalized lower(trim())
+-- so padded usernames match the derivation).
 create index if not exists inventory_items_buyer_username_lower_idx
-  on inventory_items (lower("buyerUsername")) where "buyerUsername" is not null;
+  on inventory_items (lower(trim("buyerUsername"))) where "buyerUsername" is not null;
+-- Both RPCs snapshot a box's plants by shipmentBoxId on every claim / Orders open.
+create index if not exists inventory_items_shipmentboxid_idx
+  on inventory_items ("shipmentBoxId") where "shipmentBoxId" is not null;
 
 -- ── sync_customer_orders ────────────────────────────────────────────────────
 -- Upsert the caller's full shipping history from their verified buyers.
@@ -56,26 +76,28 @@ security definer
 set search_path = public
 as $$
 declare
-  v_uid         uuid := auth.uid();
-  v_buyers      text[];
-  v_code_buyers text[];
-  v_brand       text;
-  v_added       integer := 0;
+  v_uid    uuid := auth.uid();
+  v_buyers text[];
+  v_brand  text;
+  v_added  integer := 0;
 begin
   if v_uid is null then
     return jsonb_build_object('ok', false, 'error', 'not_authenticated');
   end if;
 
-  select "verifiedBuyers", "brandId" into v_buyers, v_brand
-    from customers where id = v_uid;
+  select "brandId" into v_brand from customers where id = v_uid;
   if v_brand is null then
     return jsonb_build_object('ok', true, 'added', 0);
   end if;
 
-  -- self-healing: (re)derive verified buyers from every code this customer
-  -- has claimed — covers claims made before this migration existed and
-  -- boxes whose buyer data landed after the claim
-  select array_agg(distinct lower(trim(i."buyerUsername"))) into v_code_buyers
+  -- The slip is the ONLY proof of identity. Derive verified buyers SOLELY from
+  -- the codes this customer has claimed — never read the stored verifiedBuyers
+  -- column as input. A customer can write their own customers row, so trusting
+  -- the stored value would let them inject any username and pull that buyer's
+  -- history. Recomputing from claimed codes every run is also self-healing:
+  -- it covers pre-migration claims, buyer data that landed after a claim, AND
+  -- retroactively drops a username once a mistyped buyerUsername is corrected.
+  select coalesce(array_agg(distinct lower(trim(i."buyerUsername"))), '{}') into v_buyers
   from redemption_codes rc
   join inventory_items i
     on i."shipmentBoxId" = rc."shipmentBoxId"
@@ -84,16 +106,13 @@ begin
     and i."deletedAt" is null
     and nullif(trim(i."buyerUsername"), '') is not null;
 
-  v_buyers := (
-    select coalesce(array_agg(distinct u), '{}')
-    from unnest(coalesce(v_buyers, '{}') || coalesce(v_code_buyers, '{}')) as t(u));
+  -- refresh the definer-only cache (clients can't write this column)
+  update customers set "verifiedBuyers" = v_buyers
+    where id = v_uid and "verifiedBuyers" is distinct from v_buyers;
 
   if coalesce(array_length(v_buyers, 1), 0) = 0 then
     return jsonb_build_object('ok', true, 'added', 0);
   end if;
-
-  update customers set "verifiedBuyers" = v_buyers
-    where id = v_uid and "verifiedBuyers" is distinct from v_buyers;
 
   with boxes as (
     select
@@ -105,8 +124,8 @@ begin
       max(i."shippedAt") as shipped
     from inventory_items i
     where i."brandId" = v_brand
-      and i."buyerUsername" is not null
-      and lower(i."buyerUsername") = any (v_buyers)
+      and nullif(trim(i."buyerUsername"), '') is not null
+      and lower(trim(i."buyerUsername")) = any (v_buyers)
       and i."shipmentBoxId" is not null
       and i."deletedAt" is null
     group by i."shipmentBoxId"
@@ -246,9 +265,16 @@ begin
           "orderedAt"    = excluded."orderedAt";
 
   -- the slip proves this customer IS the box's buyer: the sync derives the
-  -- verified identity from the just-claimed code and backfills history
-  v_sync := sync_customer_orders();
-  v_orders_added := coalesce((v_sync ->> 'added')::integer, 0);
+  -- verified identity from the just-claimed code and backfills history.
+  -- Best-effort: the badge claim is the primary action and must not roll back
+  -- if the history sweep hits a bad legacy row or a statement timeout — the
+  -- Orders tab re-runs sync on open, so a skipped backfill is retryable.
+  begin
+    v_sync := sync_customer_orders();
+    v_orders_added := coalesce((v_sync ->> 'added')::integer, 0);
+  exception when others then
+    v_orders_added := 0;
+  end;
 
   v_total := v_before + v_code."badgeCount";
 

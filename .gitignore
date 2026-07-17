@@ -43,3 +43,4 @@ android-helper/app/build/
 mac-app/bridge/live-captures/
 .vercel
 .env*
+!.env.example

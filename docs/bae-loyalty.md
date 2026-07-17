@@ -74,9 +74,12 @@ boxes. The link is earned, never typed:
   row's snapshot is never rewritten. "Shipped" = `shippedAt` set OR a live
   (un-voided) label exists.
 - `customer_orders."sourceCodeId"` is now nullable (synced rows have no
-  code); uniqueness moves to `("customerId","shipmentBoxId")`. Addresses are
-  never copied into customer-visible rows; customers still can't read
-  `inventory_items` or `shipments`.
+  code); a second unique key on `("customerId","shipmentBoxId")` is added (the
+  per-code unique key stays). Addresses are never copied into customer-visible
+  rows; customers still can't read `inventory_items` or `shipments`.
+- `customers."verifiedBuyers"` is a definer-only cache: `UPDATE` on it is
+  revoked from `authenticated`, and sync recomputes it from claimed codes
+  every run — the stored value is never trusted as an identity input.
 - The claim result gains `ordersAdded` — the app's gate says "we also found
   N past orders".
 
