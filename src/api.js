@@ -187,6 +187,13 @@ export const api = {
   putSettings: (id, data) =>
     request('/settings', { method: 'PUT', body: { id, data } }).then(r => r.settings),
 
+  // Lineup running index (brand-scoped) — the next lineup number to hand out,
+  // so weekly sales number continuously. Non-admin: numbering is routine.
+  // bump advances the counter (never regresses); returns the stored next.
+  getLineupNext: () => request('/settings?action=lineup-get').then(r => r.next ?? 1),
+  bumpLineupNext: (next) =>
+    request('/settings', { method: 'POST', body: { action: 'lineup-bump', next } }).then(r => r.next),
+
   // Personal GTD tasks — private per user. Stored as a JSON blob in
   // app_settings keyed `tasks:<userId>` and served by /settings (Hobby's
   // 12-function cap rules out a dedicated /tasks route). The server sanitizes

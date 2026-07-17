@@ -118,8 +118,30 @@ export function PreSaleTab({
   // A scanned item that's staged on another sale — offer to move it here.
   // { item, otherName } or null.
   const [conflict, setConflict] = useState(null);
+  // Weekly running index: the brand's next lineup number to hand out (Tue ends
+  // at 58 → Fri starts at 59). Fetched once; advanced whenever a lineup is
+  // numbered. `startEdited` is the operator's manual override of the start for
+  // THIS sale ('' = use the auto-suggested value), cleared when the sale changes.
+  const [lineupNext, setLineupNext] = useState(1);
+  const [lineupLoaded, setLineupLoaded] = useState(false);
+  const [startEdited, setStartEdited] = useState('');
 
   useEffect(() => { scanRef.current?.focus(); }, [saleId]);
+  // Load the brand's running index once (brand is fixed for the session).
+  // Numbering stays disabled until this resolves — otherwise a click inside the
+  // fetch window would number a fresh sale from the default 1, colliding with
+  // last week's lineup.
+  useEffect(() => {
+    let alive = true;
+    api.getLineupNext?.()
+      .then(n => { if (alive) setLineupNext(Math.max(1, parseInt(n, 10) || 1)); })
+      .catch(() => {})
+      .finally(() => { if (alive) setLineupLoaded(true); });
+    return () => { alive = false; };
+  }, []);
+  // A manual start override belongs to one sale; drop it when switching sales.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setStartEdited(''); }, [saleId]);
   useEffect(() => {
     if (!msg) return undefined;
     const t = setTimeout(() => setMsg(null), 2500);
@@ -192,6 +214,18 @@ export function PreSaleTab({
         return (a.sku || '').localeCompare(b.sku || '', undefined, { numeric: true });
       });
   }, [items, saleId, override, addedOrder]);
+
+  // Where this sale's lineup numbering begins. A sale that's already numbered
+  // shows its own lowest number (so the display matches after reload); a fresh
+  // sale suggests the brand's running index; either way the operator can type
+  // an override into the Start # box.
+  const numberedMin = useMemo(() => {
+    const nums = staged.map(lotNum).filter(n => n != null);
+    return nums.length ? Math.min(...nums) : null;
+  }, [staged]);
+  const suggestedStart = numberedMin != null ? numberedMin : lineupNext;
+  const startTyped = parseInt(startEdited, 10);
+  const startNum = (Number.isFinite(startTyped) && startTyped > 0) ? startTyped : suggestedStart;
 
   const eligibleToAdd = (it) => {
     const cur = effSaleId(it);
@@ -368,15 +402,30 @@ export function PreSaleTab({
   const toggleSelectAll = () =>
     setSelectedIds(allSelected ? new Set() : new Set(staged.map(i => i.id)));
 
-  // Persist a lineup order: lotNumber = 1..N in the given id order. One batch of
-  // partial patches through the parent's proven item-save path.
+  // Persist a lineup order: lotNumber = startNum..startNum+N-1 in the given id
+  // order. One batch of partial patches through the parent's proven item-save
+  // path. After a successful save, advance the brand's running index past this
+  // lineup so the next sale continues where this one ended.
   const persistOrder = async (orderedIds) => {
-    const patches = orderedIds.map((id, idx) => ({ id, lotNumber: String(idx + 1) }));
-    try { await onStageItems?.(patches); }
-    catch (e) { showToast?.(e.message || 'Could not save order', 'error'); }
+    const patches = orderedIds.map((id, idx) => ({ id, lotNumber: String(startNum + idx) }));
+    try {
+      await onStageItems?.(patches);
+      const end = startNum + orderedIds.length; // next number after this lineup
+      if (end > lineupNext) {
+        setLineupNext(end);
+        api.bumpLineupNext?.(end).catch(() => {});
+      }
+    } catch (e) { showToast?.(e.message || 'Could not save order', 'error'); }
   };
-  // "Number 1–N" — lock the current display order in as the lineup.
-  const numberAll = () => persistOrder(staged.map(i => i.id));
+  // The brand's running index only moves forward and there's no in-app walk-
+  // back, so a fat-fingered Start # (590 for 59) would strand every future
+  // sale. A large forward jump from the suggestion is almost always a typo —
+  // confirm it before committing.
+  const confirmStartJump = () =>
+    startNum <= suggestedStart + 200 ||
+    window.confirm(`Start this lineup at ${startNum}? That's well above the expected ${suggestedStart}, and the weekly count only moves forward — a wrong number here is hard to undo.`);
+  // "Number {start}–{end}" — lock the current display order in as the lineup.
+  const numberAll = () => { if (confirmStartJump()) persistOrder(staged.map(i => i.id)); };
   // Drop `sourceId` at `targetId`'s position and renumber the whole lineup.
   const handleReorder = (sourceId, targetId) => {
     if (!sourceId || sourceId === targetId) return;
@@ -392,9 +441,10 @@ export function PreSaleTab({
   // 1..N position onto its lotNumber — so the printed number matches its row —
   // and persist that numbering so export/scan stay in sync.
   const printLabels = () => {
-    const lineup = staged.map((it, idx) => ({ ...it, lotNumber: String(idx + 1) }));
+    const lineup = staged.map((it, idx) => ({ ...it, lotNumber: String(startNum + idx) }));
     const chosen = lineup.filter(it => selectedIds.has(it.id));
     if (!chosen.length) return;
+    if (!confirmStartJump()) return;
     persistOrder(staged.map(i => i.id));
     onPrintLabels?.(chosen);
   };
@@ -676,17 +726,31 @@ export function PreSaleTab({
             </div>
             {staged.length > 0 && (
               <div className="px-3 pb-2.5 flex flex-wrap items-center gap-1.5">
+                <label
+                  className="flex items-center gap-1 px-1 text-xs font-medium text-gray-500 select-none"
+                  title="Where this sale's lineup numbering starts. Auto-continues from last week's sale; edit to override."
+                >
+                  Start #
+                  <input
+                    type="number"
+                    min="1"
+                    value={startEdited === '' ? String(suggestedStart) : startEdited}
+                    onChange={(e) => setStartEdited(e.target.value)}
+                    disabled={busy}
+                    className="w-16 px-1.5 py-1 text-xs text-gray-800 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-40"
+                  />
+                </label>
                 <button
                   onClick={numberAll}
-                  disabled={busy}
+                  disabled={busy || !lineupLoaded}
                   className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
-                  title="Lock the current order in as the lineup, numbered 1…N"
+                  title={lineupLoaded ? `Lock the current order in as the lineup, numbered ${startNum}…${startNum + staged.length - 1}` : 'Loading the running index…'}
                 >
-                  <ListOrdered className="w-3.5 h-3.5" /> Number 1–{staged.length}
+                  <ListOrdered className="w-3.5 h-3.5" /> Number {startNum}–{startNum + staged.length - 1}
                 </button>
                 <button
                   onClick={printLabels}
-                  disabled={busy || !onPrintLabels || !someSelected}
+                  disabled={busy || !onPrintLabels || !someSelected || !lineupLoaded}
                   className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 rounded-lg disabled:opacity-40"
                   title={someSelected ? 'Print labels (big lineup number + SKU/barcode) for the selected plants' : 'Select plants to print their labels'}
                 >
@@ -716,7 +780,7 @@ export function PreSaleTab({
                 <PreSaleRow
                   key={it.id}
                   item={it}
-                  number={idx + 1}
+                  number={startNum + idx}
                   busy={busy}
                   showToast={showToast}
                   sellerName={it.sellerId ? (sellerById.get(it.sellerId)?.name || null) : null}
@@ -927,7 +991,7 @@ function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onTog
         >
           <GripVertical className="w-4 h-4" />
         </span>
-        <span className="w-6 text-center text-base font-bold text-gray-800 tabular-nums flex-shrink-0" title="Lineup number">
+        <span className="min-w-[1.75rem] px-0.5 text-center text-base font-bold text-gray-800 tabular-nums flex-shrink-0" title="Lineup number">
           {number}
         </span>
         <input
