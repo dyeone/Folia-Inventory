@@ -97,7 +97,8 @@ export function PreSaleTab({
 
   // Scan-driven workflow state: which staged row is expanded (single-open
   // accordion), which item was just added (for highlight + price focus), and
-  // the order items were staged this session (newest floats to the top).
+  // the order items were staged this session (new adds append at the bottom
+  // in scan order, receipt style).
   const [openId, setOpenId] = useState(null);
   const [lastAddedId, setLastAddedId] = useState(null);
   const [addedOrder, setAddedOrder] = useState([]);
@@ -131,12 +132,14 @@ export function PreSaleTab({
     return () => clearTimeout(t);
   }, [lastAddedId]);
 
-  // Flag a row as freshly added and float it to the top. In quick-add mode we
-  // pass open=false so the editor stays closed and the scanner keeps focus.
+  // Flag a row as freshly added; it appends at the bottom of the list (the
+  // row scrolls itself into view). A row that's already ranked — re-scanned
+  // to edit — keeps its place instead of jumping. In quick-add mode we pass
+  // open=false so the editor stays closed and the scanner keeps focus.
   const markAdded = (id, open = true) => {
     if (open) setOpenId(id);
     setLastAddedId(id);
-    setAddedOrder(o => [id, ...o.filter(x => x !== id)]);
+    setAddedOrder(o => (o.includes(id) ? o : [...o, id]));
   };
 
   // After saving a row's details, collapse it and hand focus back to the
@@ -155,15 +158,12 @@ export function PreSaleTab({
   const staged = useMemo(() => {
     if (!saleId) return [];
     // Fixed lineup order: plants with a lot number come first in numeric order
-    // (that's the live lineup — 1..N). Un-numbered plants (freshly scanned, not
-    // yet placed in the lineup) collect below. Normally the just-scanned one
-    // floats to the top so it's right there to edit; in Quick add there's no
-    // editing, so new scans sink to the bottom in scan order (receipt style).
-    // Ties break by SKU.
-    const rank = (id) => {
-      const i = addedOrder.indexOf(id);
-      return i === -1 ? Infinity : i;
-    };
+    // (that's the live lineup — 1..N). Un-numbered plants collect below:
+    // first anything staged before this session (intake batches, earlier
+    // sessions) in SKU order (numeric-aware, so -999 sorts before -5545),
+    // then this session's adds at the very bottom in scan order — the same
+    // placement whether Quick add is on or off.
+    const rank = (id) => addedOrder.indexOf(id); // -1 = staged before this session
     return items
       .filter(it => (it.id in override ? override[it.id] : it.saleId) === saleId)
       .slice()
@@ -173,10 +173,10 @@ export function PreSaleTab({
         if (la != null) return -1;
         if (lb != null) return 1;
         const ra = rank(a.id), rb = rank(b.id);
-        if (ra !== rb) return quickAdd ? rb - ra : ra - rb;
-        return (a.sku || '').localeCompare(b.sku || '');
+        if (ra !== rb) return ra - rb;
+        return (a.sku || '').localeCompare(b.sku || '', undefined, { numeric: true });
       });
-  }, [items, saleId, override, addedOrder, quickAdd]);
+  }, [items, saleId, override, addedOrder]);
 
   const eligibleToAdd = (it) => {
     const cur = effSaleId(it);
@@ -205,8 +205,10 @@ export function PreSaleTab({
   const assign = async (it, toSaleId, extra = {}) => {
     setBusy(true);
     try {
-      const patch = { saleId: toSaleId, lotKind: 'sale', ...extra };
-      if (!toSaleId) patch.lotNumber = null;
+      // Always reset lotNumber: staging must start un-numbered (a stale
+      // number from an old lineup would drop the plant mid-lineup), and
+      // un-staging must not leave one behind.
+      const patch = { saleId: toSaleId, lotKind: 'sale', lotNumber: null, ...extra };
       await patchItem(it.id, patch, toSaleId);
       return true;
     } catch (e) {
@@ -218,13 +220,13 @@ export function PreSaleTab({
     }
   };
 
-  // Move a staged item off its current sale onto this one. Clears the stale
-  // lot number so it lands in this lineup's un-numbered tail (renumber to place).
+  // Move a staged item off its current sale onto this one. assign() clears
+  // the stale lot number, so it lands in this lineup's un-numbered tail.
   const moveConflictHere = async () => {
     const it = conflict?.item;
     setConflict(null);
     if (!it) return;
-    if (await assign(it, saleId, { lotNumber: null })) {
+    if (await assign(it, saleId)) {
       markAdded(it.id);
       flash('ok', `Moved ${it.sku} here`);
     }
@@ -725,6 +727,7 @@ export function PreSaleTab({
           sale={sale}
           varieties={varieties}
           existingItems={items}
+          isBae={isBae}
           onIntake={onIntakeSeller}
           showToast={showToast}
           onClose={() => { setIntakeSeller(null); setAddSellerId(''); }}
