@@ -21,23 +21,29 @@ function numOrNull(v) {
 }
 
 let ROW_SEQ = 0;
-const newRow = (commissionPct) => ({
+const newRow = (commissionPct, varietyId = '') => ({
   key: `r${ROW_SEQ++}`,
-  varietyId: '',
+  varietyId,
   name: '',
   quantity: 1,
   listingPrice: '',
   commissionPct: commissionPct ?? '',
 });
 
-export function SellerIntakeModal({ seller, sale, varieties = [], existingItems = [], onIntake, onClose, showToast }) {
+export function SellerIntakeModal({ seller, sale, varieties = [], existingItems = [], isBae = false, onIntake, onClose, showToast }) {
   const defPct = seller?.defaultCommissionPct ?? '';
-  const [rows, setRows] = useState([newRow(defPct)]);
+  // BAE sells anthuriums — every row starts on the Anthurium variety (the
+  // dropdown stays editable). Folia's mixed catalog keeps the explicit pick.
+  const defaultVarietyId = isBae
+    ? (varieties.find(v => (v.code || '').toUpperCase() === 'ANT')
+        ?? varieties.find(v => /^anthurium/i.test(v.name || '')))?.id ?? ''
+    : '';
+  const [rows, setRows] = useState([newRow(defPct, defaultVarietyId)]);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
   const patch = (key, p) => setRows(rs => rs.map(r => (r.key === key ? { ...r, ...p } : r)));
-  const addRow = () => setRows(rs => [...rs, newRow(defPct)]);
+  const addRow = () => setRows(rs => [...rs, newRow(defPct, defaultVarietyId)]);
   const removeRow = (key) => setRows(rs => (rs.length > 1 ? rs.filter(r => r.key !== key) : rs));
 
   const varietyById = new Map(varieties.map(v => [v.id, v]));

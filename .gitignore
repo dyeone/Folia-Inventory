@@ -41,3 +41,6 @@ android-helper/build/
 android-helper/app/build/
 .gstack/
 mac-app/bridge/live-captures/
+.vercel
+.env*
+!.env.example
