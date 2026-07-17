@@ -1,7 +1,9 @@
 # BAE loyalty — badges (数字徽章), rewards + customer hub
 
-> Status: v1 loop shipped (PR #86); v2 customer hub built on top (migration 0035).
-> Awaiting: migrations 0034 + 0035 applied + Supabase Auth email setup.
+> Status: v1 loop shipped (PR #86); v2 customer hub built on top (migration 0035);
+> v3 app auth: email+password + Apple/Google, slip-code-gated registration;
+> v4 shipping-linked order history (migration 0036).
+> Applied in prod: 0034 + 0035. Awaiting: 0036 + Supabase Auth provider setup.
 > Design doc: `~/Projects/bae-loyalty-app/DESIGN.md` (approved, /office-hours 2026-07-12).
 > Customer app: separate Expo repo at `~/Projects/bae-loyalty-app` ("BAE Badges").
 
@@ -15,7 +17,9 @@ two-audience architecture:
   claim RPC snapshots the box's plants ({sku, name, variety, quantity}) at
   claim time, so customers never read `inventory_items` and later inventory
   edits can't rewrite history. Derived from scans (verified purchases), NOT
-  Palmstreet-username matching — same decision as v1 codes.
+  Palmstreet-username matching — same decision as v1 codes. (v4 extends the
+  *display*: after one verified scan, that buyer's full history syncs in —
+  but identity itself is still only ever proven by a physical slip.)
 - **Collection gallery** — `badge_events."plantRef"` is now populated at claim
   (plant name, multi-quantity lots expanded), so badges group by species.
 - **News + growing tips** — `customer_content` (kind 'news'|'tip'), authored
@@ -26,6 +30,55 @@ two-audience architecture:
 App IA: Home (feed + reward banner + progress) · Badges (ring + collection) ·
 Scan · Orders · Profile; Rewards is a stack screen reachable from Home/Badges/
 the unlock moment.
+
+## v3 — app sign-in: password + Apple/Google, slip-code registration
+
+All in the app repo (no server/API changes here). Email OTP login is replaced:
+
+- **Create account** = email + password + **the slip code** (printed under the
+  QR). The code is parked locally, the email is verified with a 6-digit code
+  (Confirm signup template), then the **claim-gate** screen claims it — one
+  claim path for every flow.
+- **Sign in** = email + password, with a code-based **Forgot password** reset
+  (Reset Password template needs `{{ .Token }}` too).
+- **Apple / Google** sign-in on both screens. Social accounts skip the code
+  field but land on the claim-gate: *every* account must claim one slip code
+  (≥1 `badge_events` row) before entering the app. Soft gate by design — the
+  claim RPC is the real protection; the gate fails open on network errors so
+  a flaky connection never locks a real customer out.
+
+Dashboard setup (one-time, in addition to the email templates below):
+
+- **Apple**: Auth → Providers → Apple → enable, and under **Client IDs** add
+  `com.threebabes.baebadges` (standalone build) *and* `host.exp.Exponent`
+  (Expo Go dev — its entitlement signs the token). Native flow: no secret.
+- **Google**: Google Cloud Console → OAuth **web** client with redirect URI
+  `https://smymisjjlprrhnfzrgfo.supabase.co/auth/v1/callback`; paste client ID
+  + secret into Auth → Providers → Google.
+- **Redirect URLs** (Auth → URL Configuration): add `baebadges://**` (builds)
+  and `exp://**` (Expo Go dev) so the Google flow may return to the app.
+- Recommended: leave **Confirm email** ON (the register flow handles both).
+
+## v4 — shipping-linked order history (migration 0036)
+
+The Orders tab shows the customer's FULL shipping history, not just scanned
+boxes. The link is earned, never typed:
+
+- Claiming a slip code is proof of identity (the slip travels inside that
+  buyer's box) — claim v3 records the box's `buyerUsername` into
+  `customers."verifiedBuyers"` (lowercased).
+- `sync_customer_orders()` (SECURITY DEFINER, called by the app's Orders tab
+  on load and by the claim itself) upserts one `customer_orders` row per
+  shipped box of any verified buyer: items snapshot + `trackingNumber` +
+  `carrier` from the `shipments` table. Re-runs refresh tracking; a claimed
+  row's snapshot is never rewritten. "Shipped" = `shippedAt` set OR a live
+  (un-voided) label exists.
+- `customer_orders."sourceCodeId"` is now nullable (synced rows have no
+  code); uniqueness moves to `("customerId","shipmentBoxId")`. Addresses are
+  never copied into customer-visible rows; customers still can't read
+  `inventory_items` or `shipments`.
+- The claim result gains `ordersAdded` — the app's gate says "we also found
+  N past orders".
 
 ## The loop
 
@@ -47,7 +100,7 @@ pack a BAE box ──▶ slip prints with QR + short code   (this repo)
 
 | | Staff (this app) | Customers (BAE Badges app) |
 |---|---|---|
-| Auth | custom `users` table | **Supabase Auth** (email OTP) |
+| Auth | custom `users` table | **Supabase Auth** (email+password, Apple, Google) |
 | Data path | Vercel `/api` + service key (bypasses RLS, scoped in code) | Supabase directly, **real RLS policies** |
 | Why | unchanged | `/api` is at the 12-function Hobby cap and must not carry customer traffic |
 
@@ -79,15 +132,18 @@ the `SECURITY DEFINER` RPC.
 
 ## First-deploy checklist
 
-1. Apply `supabase/migrations/0034_bae_loyalty.sql` in the Supabase SQL editor.
+1. Apply `supabase/migrations/0034_bae_loyalty.sql`, then `0035_bae_customer_hub.sql`,
+   then `0036_bae_order_sync.sql` in the Supabase SQL editor (0034 + 0035 are
+   already applied in prod as of 2026-07-13).
 2. Supabase Dashboard → Authentication: enable the **Email** provider, then
-   edit **both** the **Magic Link** AND **Confirm signup** email templates to
-   include `{{ .Token }}` — the defaults only send a login link, but the app
-   asks the customer to type a 6-digit code, and Supabase uses Confirm signup
-   for a customer's FIRST sign-in (Magic Link for returning ones). Before real
-   customers: set custom SMTP (Authentication → Emails → SMTP Settings, e.g.
-   Resend) — the built-in sender allows only a few emails/hour. (Phone OTP =
-   later, needs Twilio.)
+   add `{{ .Token }}` to the **Confirm signup**, **Reset Password**, and
+   **Magic Link** email templates — the defaults only send a link, but the app
+   asks the customer to type a 6-digit code (Confirm signup verifies new
+   accounts; Reset Password powers "Forgot password?"). Then do the v3
+   provider setup above (Apple client IDs, Google OAuth client, redirect
+   URLs). Before real customers: set custom SMTP (Authentication → Emails →
+   SMTP Settings, e.g. Resend) — the built-in sender allows only a few
+   emails/hour. (Phone OTP = later, needs Twilio.)
 3. Deploy this repo to Vercel as usual (no new functions, no new env vars).
 4. In the app: BAE brand → **Loyalty** tab → set the real reward text +
    threshold (seeded: 10 → "Free BAE anthurium" placeholder).
