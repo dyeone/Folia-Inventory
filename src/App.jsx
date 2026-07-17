@@ -676,8 +676,11 @@ function StaffOrAdminInventory() {
   // they land straight in the event's lineup. Refresh items so they show up in
   // Pre Sale immediately. Throws so the intake modal can surface failures.
   const intakeSellerPlants = async (payloads) => {
-    await api.upsertItems(payloads);
+    const res = await api.upsertItems(payloads);
     applyItemsFresh(await api.getItems());
+    // Hand the new rows' ids back so the caller (PreSaleTab) can slot them
+    // into its session scan-order, appending at the bottom like a scan.
+    return res?.insertedIds || [];
   };
 
   const deleteItem = (id) => {
