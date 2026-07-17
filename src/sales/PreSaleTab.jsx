@@ -142,6 +142,21 @@ export function PreSaleTab({
     setAddedOrder(o => (o.includes(id) ? o : [...o, id]));
   };
 
+  // Seller-consignment intake creates its plants through a different path than
+  // scanning, so they never entered addedOrder and the sort treated them as
+  // prior-session rows (floating them above this session's scans). Register the
+  // new ids here so an intake batch appends at the bottom in add-order, like a
+  // scan. onIntakeSeller returns the server-assigned ids of the created rows.
+  const handleIntake = async (payloads) => {
+    // No optional-chaining: if the handler is ever unwired, let it throw so the
+    // modal surfaces the error rather than showing a false "Added" success.
+    const ids = await onIntakeSeller(payloads);
+    if (Array.isArray(ids) && ids.length) {
+      setAddedOrder(o => [...o, ...ids.filter(id => !o.includes(id))]);
+    }
+    return ids;
+  };
+
   // After saving a row's details, collapse it and hand focus back to the
   // scanner so the next barcode stages the next item immediately.
   const handleSavedDetails = () => {
@@ -733,7 +748,7 @@ export function PreSaleTab({
           varieties={varieties}
           existingItems={items}
           isBae={isBae}
-          onIntake={onIntakeSeller}
+          onIntake={handleIntake}
           showToast={showToast}
           onClose={() => { setIntakeSeller(null); setAddSellerId(''); }}
         />
