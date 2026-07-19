@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Printer, X, Loader2, Tablet, Monitor, Check } from 'lucide-react';
 import { useBridgePrint } from '../labels/useBridgePrint.js';
 import { printTestLabel } from './packerPrint.js';
@@ -13,12 +13,16 @@ import { printTestLabel } from './packerPrint.js';
 export function PrinterSettingsSheet({ dest, onDestChange, onClose, showToast }) {
   const { bridgeOnline } = useBridgePrint();
   const [testing, setTesting] = useState(false);
+  // Flipped on unmount so a bridge test print stops polling (and skips state
+  // updates) once the sheet has closed.
+  const unmountedRef = useRef(false);
+  useEffect(() => () => { unmountedRef.current = true; }, []);
 
   const runTest = async () => {
     if (testing) return;
     setTesting(true);
-    try { await printTestLabel(dest, showToast); }
-    finally { setTesting(false); }
+    try { await printTestLabel(dest, showToast, () => unmountedRef.current); }
+    finally { if (!unmountedRef.current) setTesting(false); }
   };
 
   return (
@@ -98,10 +102,15 @@ function DestCard({ active, onSelect, icon, title, subtitle, status }) {
           <span className="text-base font-semibold text-gray-900">{title}</span>
           {status && (
             <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-1.5 py-0.5 rounded ${
-              status === 'online' ? 'text-emerald-700 bg-emerald-100' : 'text-gray-500 bg-gray-100'
+              status === 'online'
+                ? 'text-emerald-700 bg-emerald-100'
+                // Loud amber when this is the SELECTED destination and it's
+                // down (matches the hold-badge warning idiom); quiet gray
+                // when it's just the unselected alternative.
+                : active ? 'text-amber-900 bg-amber-200 ring-1 ring-amber-400' : 'text-gray-500 bg-gray-100'
             }`}
             >
-              <span className={`w-1.5 h-1.5 rounded-full ${status === 'online' ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+              <span className={`w-1.5 h-1.5 rounded-full ${status === 'online' ? 'bg-emerald-500' : active ? 'bg-amber-500' : 'bg-gray-400'}`} />
               {status === 'online' ? 'Online' : 'Offline'}
             </span>
           )}

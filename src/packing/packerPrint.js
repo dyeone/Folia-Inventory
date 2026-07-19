@@ -36,14 +36,24 @@ export function savePrintDest(dest) {
 
 // Render every page of a PDF to a PNG data URL at ~300 dpi (a 4×6 label →
 // 1200×1800 px) so the carrier barcode stays crisp and scannable on paper.
+// The scale is bounded so an oversized page (e.g. a letter-size carrier PDF)
+// can't blow past iOS Safari's canvas limits and silently render blank, and
+// the page count is capped so a runaway multi-page PDF can't hold dozens of
+// full-res PNGs in memory at once.
+const MAX_RENDER_DIM = 2400;
+const MAX_PRINT_PAGES = 10;
+
 async function pdfToPageImages(bytes) {
   const pdfjs = await getPdfjs();
   const doc = await pdfjs.getDocument({ data: bytes }).promise;
   const urls = [];
   try {
-    for (let p = 1; p <= doc.numPages; p++) {
+    const pages = Math.min(doc.numPages, MAX_PRINT_PAGES);
+    for (let p = 1; p <= pages; p++) {
       const page = await doc.getPage(p);
-      const viewport = page.getViewport({ scale: 300 / 72 });
+      const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(300 / 72, MAX_RENDER_DIM / Math.max(base.width, base.height));
+      const viewport = page.getViewport({ scale });
       const canvas = document.createElement('canvas');
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
@@ -52,7 +62,9 @@ async function pdfToPageImages(bytes) {
       canvas.width = 0; canvas.height = 0; // release the backing store
     }
   } finally {
-    try { await doc.cleanup?.(); } catch { /* best effort */ }
+    // destroy(), not cleanup() — it frees the parsed document AND terminates
+    // the per-document worker; cleanup() leaks a Web Worker on every print.
+    try { await doc.destroy(); } catch { /* best effort */ }
   }
   if (urls.length === 0) throw new Error('The label PDF has no pages');
   return urls;
@@ -62,6 +74,12 @@ async function pdfToPageImages(bytes) {
 // sheet. The container (and its @media print rules that hide the app) stays in
 // the DOM until afterprint so iPadOS can build its preview from it.
 async function printImagesViaOsSheet(dataUrls) {
+  // A dismissed print sheet can skip afterprint and leave the previous root
+  // in the DOM; if it survived, the next job would print its pages too — the
+  // packer could pull a stale label off the printer and stick it on the wrong
+  // box. Purge any leftovers before building the new root.
+  document.querySelectorAll('.packer-print-root').forEach((el) => el.remove());
+
   const root = document.createElement('div');
   root.className = 'packer-print-root';
   const style = document.createElement('style');
@@ -87,16 +105,18 @@ async function printImagesViaOsSheet(dataUrls) {
   await Promise.all(images.map((img) => img.decode().catch(() => {})));
 
   let done = false;
+  let timer = null;
   const cleanup = () => {
     if (done) return;
     done = true;
+    clearTimeout(timer);
     window.removeEventListener('afterprint', cleanup);
     root.remove();
   };
   window.addEventListener('afterprint', cleanup);
   // Safety net — some WebKit builds skip afterprint when the sheet is
   // dismissed without printing.
-  setTimeout(cleanup, 120_000);
+  timer = setTimeout(cleanup, 120_000);
 
   window.print();
 }
@@ -160,7 +180,9 @@ async function buildTestLabelPdf(destName) {
   return pdf;
 }
 
-export async function printTestLabel(dest, showToast) {
+// isCancelled lets the settings sheet stop the bridge status poll when it
+// closes mid-test, so no zombie polling or late toasts after dismissal.
+export async function printTestLabel(dest, showToast, isCancelled) {
   try {
     const destName = dest === 'bridge' ? 'Destination: shipping desk (Mac)' : 'Destination: this iPad';
     const pdf = await buildTestLabelPdf(destName);
@@ -171,7 +193,8 @@ export async function printTestLabel(dest, showToast) {
       }
       const res = await printPdfViaBridge({
         pdfBase64: pdfToBase64(pdf), role: 'shipping', media: 'Custom.4x6in',
-      });
+      }, isCancelled);
+      if (res?.cancelled) return true;
       showToast?.(`Sent test label to ${res?.printer || 'the shipping desk printer'}`);
       return true;
     }

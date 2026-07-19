@@ -83,12 +83,13 @@ export async function bridgeOnlineNow() {
 
 // Enqueue a single print job and resolve once the bridge spools it. Throws on
 // failure / timeout / oversized PDF so the caller can fall back to browser
-// print. role = 'label' | 'slip' | 'document'.
-export async function printPdfViaBridge({ pdfBase64, role, copies = 1, media } = {}) {
+// print. role = 'label' | 'slip' | 'document'. isCancelled lets a caller stop
+// the status poll early (e.g. its sheet closed) — resolves { cancelled: true }.
+export async function printPdfViaBridge({ pdfBase64, role, copies = 1, media } = {}, isCancelled) {
   if (!pdfBase64) throw new Error('Nothing to print');
   if (pdfBase64.length > MAX_PDF_BASE64) throw new Error('PDF too large to print via bridge');
   const job = await api.bridgePrint({ pdfBase64, role, copies, media });
-  return await pollPrintJob(job.id);
+  return await pollPrintJob(job.id, isCancelled);
 }
 
 export function useBridgePrint() {

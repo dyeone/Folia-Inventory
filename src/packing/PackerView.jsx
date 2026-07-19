@@ -60,6 +60,14 @@ function mergeItems(prev, fresh) {
   });
 }
 
+// Does this shipment actually have a printable label PDF? Carrier rows
+// (ShipStation / Shippo) always store one; manual Palmstreet rows only when
+// the label was imported. Mirrors the Shipping tab's hasLabel rule — a
+// tracking number alone (typed in by hand) is NOT printable.
+function shipmentHasLabelPdf(s) {
+  return !!s.labelStoragePath || s.carrierCode !== 'palmstreet';
+}
+
 // Recipient label for the packer: the shipping full name plus the client's
 // Palmstreet @handle when we have both, so the packer can match a box against
 // either the label (full name) or the order/chat (username). Falls back to
@@ -103,6 +111,9 @@ export function PackerView({ onLogout }) {
   const [printDest, setPrintDest] = useState(getPrintDest);
   const [printerSheetOpen, setPrinterSheetOpen] = useState(false);
   const [printingLabel, setPrintingLabel] = useState(false);
+  // Which boxes have a printable label PDF (shipmentBoxId → true). Distinct
+  // from trackingByBox: a manually recorded tracking number has no PDF.
+  const [labelByBox, setLabelByBox] = useState({});
 
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
@@ -166,6 +177,13 @@ export function PackerView({ onLogout }) {
             .map(s => [s.id, s.trackingNumber]),
         ),
       );
+      setLabelByBox(
+        Object.fromEntries(
+          (shipments || [])
+            .filter(s => !s.voidedAt && shipmentHasLabelPdf(s))
+            .map(s => [s.id, true]),
+        ),
+      );
       setLoading(false);
     })();
   }, []);
@@ -179,8 +197,13 @@ export function PackerView({ onLogout }) {
   // in-flight optimistic pack never flickers back.
   useEffect(() => {
     let cancelled = false;
+    // Guard against overlapping polls: a slow request resolving late would
+    // overwrite fresher state (e.g. tracking/label flags flickering off, which
+    // now unmounts the Print button mid-tap).
+    let inFlight = false;
     const sync = async () => {
-      if (cancelled || document.visibilityState === 'hidden') return;
+      if (cancelled || inFlight || document.visibilityState === 'hidden') return;
+      inFlight = true;
       try {
         const [fresh, shipments, notes] = await Promise.all([
           api.getItems(),
@@ -196,6 +219,13 @@ export function PackerView({ onLogout }) {
               .map(s => [s.id, s.trackingNumber]),
           ),
         );
+        setLabelByBox(
+          Object.fromEntries(
+            (shipments || [])
+              .filter(s => !s.voidedAt && shipmentHasLabelPdf(s))
+              .map(s => [s.id, true]),
+          ),
+        );
         setHoldByBox(
           Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.holdUntil || null])),
         );
@@ -206,6 +236,7 @@ export function PackerView({ onLogout }) {
           Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.boxSizeId || null])),
         );
       } catch { /* keep last good state — a single failed poll is fine */ }
+      finally { inFlight = false; }
     };
     const id = setInterval(sync, 8000);
     const onVisible = () => { if (document.visibilityState === 'visible') sync(); };
@@ -262,9 +293,13 @@ export function PackerView({ onLogout }) {
     [boxesByCode],
   );
 
+  const toastTimerRef = useRef(null);
   const showToast = (msg, durationMs = 2200) => {
+    // Clear the previous timer so a short-lived toast (e.g. "Packed X",
+    // 1.5s) can't cut off a long instructional one shown right after.
+    clearTimeout(toastTimerRef.current);
     setToast(msg);
-    setTimeout(() => setToast(null), durationMs);
+    toastTimerRef.current = setTimeout(() => setToast(null), durationMs);
   };
 
   const activeBox = activeBoxId
@@ -285,6 +320,13 @@ export function PackerView({ onLogout }) {
           (shipments || [])
             .filter(s => s.trackingNumber && !s.voidedAt)
             .map(s => [s.id, s.trackingNumber]),
+        ),
+      );
+      setLabelByBox(
+        Object.fromEntries(
+          (shipments || [])
+            .filter(s => !s.voidedAt && shipmentHasLabelPdf(s))
+            .map(s => [s.id, true]),
         ),
       );
       setHoldByBox(
@@ -321,7 +363,10 @@ export function PackerView({ onLogout }) {
   // Keep the scan input focused whenever the camera overlay is closed, so the
   // USB scanner's keystrokes always land in it. A ref mirrors the overlay
   // state so a click that opens the camera doesn't yank focus back.
-  const overlayOpen = !!cameraMode;
+  // The printer sheet counts as an overlay too: while it's open the scan
+  // field must not steal focus back from it, and stray hardware-scanner
+  // input must not drive the (covered) packing flow behind it.
+  const overlayOpen = !!cameraMode || printerSheetOpen;
   const overlayRef = useRef(overlayOpen);
   useEffect(() => { overlayRef.current = overlayOpen; }, [overlayOpen]);
   useEffect(() => {
@@ -681,7 +726,7 @@ export function PackerView({ onLogout }) {
             onCamera={() => setCameraMode('item')}
             onScanLabel={() => setCameraMode('label')}
             onSendToPhone={isMobile ? null : () => sendToPhone(activeBox)}
-            onPrintLabel={trackingByBox[activeBox.id] ? printActiveLabel : null}
+            onPrintLabel={labelByBox[activeBox.id] ? printActiveLabel : null}
             printingLabel={printingLabel}
             onDone={() => goToBox(null)}
           />
@@ -1103,7 +1148,11 @@ function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, printingLabel,
       </div>
       {assignedTracking ? (
         <>
-          <p className="text-lg text-gray-600 mb-6">Last step — print the shipping label, stick it on, then scan it to confirm it's the right one.</p>
+          <p className="text-lg text-gray-600 mb-6">
+            {onPrintLabel
+              ? "Last step — print the shipping label, stick it on, then scan it to confirm it's the right one."
+              : "Last step — scan the shipping label to confirm it's the right one."}
+          </p>
           {onPrintLabel && (
             <button
               type="button"
