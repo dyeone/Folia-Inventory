@@ -2,6 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
+  Printer,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
@@ -11,6 +12,8 @@ import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
 import { derivedBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
+import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
+import { getPrintDest, savePrintDest, printBoxLabel } from './packerPrint.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
@@ -94,6 +97,12 @@ export function PackerView({ onLogout }) {
   // Seller note per box (shipmentBoxId → note), so the packer can detect a
   // "local pickup" note and flag the box not-to-ship.
   const [noteByBox, setNoteByBox] = useState({});
+  // Label printing at the packing table. Destination is a per-device choice
+  // (this iPad's USB/AirPrint printer vs the shipping desk's via the bridge);
+  // the sheet lets the packer switch it and fire a test label.
+  const [printDest, setPrintDest] = useState(getPrintDest);
+  const [printerSheetOpen, setPrinterSheetOpen] = useState(false);
+  const [printingLabel, setPrintingLabel] = useState(false);
 
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
@@ -295,6 +304,17 @@ export function PackerView({ onLogout }) {
     setActiveBoxId(boxId);
     setCameraMode(null);
     if (boxId) refreshBoxMeta();
+  };
+
+  // Print the open box's shipping label on the packer's chosen printer.
+  const printActiveLabel = async () => {
+    if (!activeBox || printingLabel) return;
+    setPrintingLabel(true);
+    try {
+      await printBoxLabel(activeBox.id, printDest, showToast);
+    } finally {
+      setPrintingLabel(false);
+    }
   };
 
   // ── Scan field focus management ──────────────────────────────────────────
@@ -608,6 +628,7 @@ export function PackerView({ onLogout }) {
           ? (buyerLabel(activeBox) || 'Box')
           : `${totalOpen} open · ${fullyPacked} packed`}
         onBack={activeBox ? () => goToBox(null) : null}
+        onPrinterSettings={() => setPrinterSheetOpen(true)}
       />
 
       {/* Brand chooser — only on the landing screen (no box open) and only when
@@ -660,6 +681,8 @@ export function PackerView({ onLogout }) {
             onCamera={() => setCameraMode('item')}
             onScanLabel={() => setCameraMode('label')}
             onSendToPhone={isMobile ? null : () => sendToPhone(activeBox)}
+            onPrintLabel={trackingByBox[activeBox.id] ? printActiveLabel : null}
+            printingLabel={printingLabel}
             onDone={() => goToBox(null)}
           />
         : <LandingGrid
@@ -683,6 +706,14 @@ export function PackerView({ onLogout }) {
           onClose={() => setCameraMode(null)}
         />
       )}
+      {printerSheetOpen && (
+        <PrinterSettingsSheet
+          dest={printDest}
+          onDestChange={(d) => { savePrintDest(d); setPrintDest(d); }}
+          onClose={() => setPrinterSheetOpen(false)}
+          showToast={showToast}
+        />
+      )}
       {handoff && <PhoneHandoffOverlay box={handoff} onClose={() => setHandoff(null)} />}
       {success && <GoodJobOverlay info={success} />}
       {toast && <Toast text={toast} />}
@@ -690,7 +721,7 @@ export function PackerView({ onLogout }) {
   );
 }
 
-function TopBar({ onLogout, title, subtitle, onBack, tone }) {
+function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings }) {
   const isCodeTitle = /^B-/.test(title || '');
   // Flagged box → coloured bar so the whole top of the screen reads the state:
   // amber = on hold, violet = local pickup, else the normal emerald.
@@ -723,6 +754,15 @@ function TopBar({ onLogout, title, subtitle, onBack, tone }) {
           </div>
           {subtitle && <div className={`text-sm ${subTone} leading-tight truncate mt-0.5`}>{subtitle}</div>}
         </div>
+        {onPrinterSettings && (
+          <button
+            onClick={onPrinterSettings}
+            aria-label="Printer settings"
+            className={`w-12 h-12 rounded-full flex items-center justify-center ${btnHover}`}
+          >
+            <Printer className="w-6 h-6" />
+          </button>
+        )}
         <button
           onClick={onLogout}
           aria-label="Log out"
@@ -952,7 +992,7 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onDone }) {
+function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, printingLabel, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -985,7 +1025,13 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
       <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
         <div className="max-w-5xl mx-auto">
           {allPacked ? (
-            <FinalStep assignedTracking={assignedTracking} onScanLabel={onScanLabel} onDone={onDone} />
+            <FinalStep
+              assignedTracking={assignedTracking}
+              onScanLabel={onScanLabel}
+              onPrintLabel={onPrintLabel}
+              printingLabel={printingLabel}
+              onDone={onDone}
+            />
           ) : (
             <>
               {total === 0 ? (
@@ -1020,6 +1066,18 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
                 <Smartphone className="w-5 h-5" /> Send to phone
               </button>
             )}
+            {/* Print this box's shipping label at the packing table — only
+                offered once the label exists (imported at the shipping desk). */}
+            {onPrintLabel && (
+              <button
+                type="button"
+                onClick={onPrintLabel}
+                disabled={printingLabel}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50 disabled:opacity-60"
+              >
+                {printingLabel ? <Loader2 className="w-5 h-5 animate-spin" /> : <Printer className="w-5 h-5" />} Print label
+              </button>
+            )}
             <button
               type="button"
               onClick={onCamera}
@@ -1036,7 +1094,7 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
 
 // Shown once every item is packed: the final step is scanning the shipping
 // label. A correct scan triggers the "Good job" screen (see handleScanLabel).
-function FinalStep({ assignedTracking, onScanLabel, onDone }) {
+function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, printingLabel, onDone }) {
   return (
     <div className="text-center max-w-md mx-auto pt-2">
       <div className="flex items-center justify-center gap-2.5 mb-1.5">
@@ -1045,7 +1103,17 @@ function FinalStep({ assignedTracking, onScanLabel, onDone }) {
       </div>
       {assignedTracking ? (
         <>
-          <p className="text-lg text-gray-600 mb-6">Last step — scan the shipping label to confirm it's the right one.</p>
+          <p className="text-lg text-gray-600 mb-6">Last step — print the shipping label, stick it on, then scan it to confirm it's the right one.</p>
+          {onPrintLabel && (
+            <button
+              type="button"
+              onClick={onPrintLabel}
+              disabled={printingLabel}
+              className="w-full flex items-center justify-center gap-2 px-4 py-4 mb-3 text-lg font-semibold bg-white border-2 border-emerald-300 text-emerald-700 rounded-xl active:bg-emerald-50 disabled:opacity-60"
+            >
+              {printingLabel ? <Loader2 className="w-6 h-6 animate-spin" /> : <Printer className="w-6 h-6" />} Print shipping label
+            </button>
+          )}
           <button
             type="button"
             onClick={onScanLabel}
@@ -1299,7 +1367,8 @@ function FullScreenMessage({ children, tone }) {
 
 function Toast({ text }) {
   return (
-    <div className="fixed bottom-[calc(2rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2.5 rounded-xl shadow-lg z-50 max-w-[90%] text-center">
+    // z-[90]: above the printer sheet (z-[80]) so print feedback stays visible.
+    <div className="fixed bottom-[calc(2rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-4 py-2.5 rounded-xl shadow-lg z-[90] max-w-[90%] text-center">
       {text}
     </div>
   );
