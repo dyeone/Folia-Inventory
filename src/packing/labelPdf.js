@@ -23,7 +23,7 @@ function dataUrlToBlob(dataUrl) {
 // Fetch a label's PDF bytes from a signed Storage URL (or decode a legacy
 // data: URL). Used by the bridge path, which needs the raw bytes to base64.
 // Throws on a failed fetch (e.g. CORS) so the caller falls back to browser.
-async function urlToBytes(url) {
+export async function urlToBytes(url) {
   if (url.startsWith('data:')) {
     return new Uint8Array(await dataUrlToBlob(url).arrayBuffer());
   }

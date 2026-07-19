@@ -17,21 +17,9 @@ import { BrowserMultiFormatReader } from '@zxing/browser';
 import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 import { jsPDF } from 'jspdf';
 import { canonicalTracking, extractTrackingFromText } from '../labels/tracking.js';
+import { getPdfjs } from './pdfjsLoader.js';
 
 // ── lazy singletons ──────────────────────────────────────────────────────
-
-let pdfjsPromise = null;
-async function getPdfjs() {
-  if (!pdfjsPromise) {
-    pdfjsPromise = (async () => {
-      const pdfjs = await import('pdfjs-dist');
-      const workerUrl = (await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
-      pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-      return pdfjs;
-    })();
-  }
-  return pdfjsPromise;
-}
 
 let ocrWorkerPromise = null;
 async function getOcrWorker() {
