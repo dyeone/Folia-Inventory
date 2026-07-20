@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Ruler, Loader2, Settings, Sparkles, ShoppingCart, Check, FlaskConical } from 'lucide-react';
 import { api } from '../api.js';
 import { ShippingMarginNote } from './ShippingMarginNote.jsx';
+import { ShipDateField } from './ShipDateField.jsx';
+import { shipDateProblem } from './shipDate.js';
 
 // Per-box packaging + live rate comparison. The operator picks the box
 // size (from the Shipping Settings catalog), sets the weight, and picks
@@ -47,6 +49,9 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
   const [confirmBuy, setConfirmBuy] = useState(null);
   const [buying, setBuying] = useState(false);
   const [buyErr, setBuyErr] = useState('');
+  // Deliberately empty: the operator must pick the ship date in the confirm
+  // step before the buy button arms.
+  const [shipDate, setShipDate] = useState('');
 
   const save = async (patch) => {
     try { await onSavePackaging?.(patch); }
@@ -105,9 +110,13 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
 
   const doBuy = async () => {
     if (!confirmBuy || buying) return;
+    // Click-time re-check (the panel can sit open across midnight) — and say
+    // so, rather than a silent no-op on a button that still looks enabled.
+    const dateProblem = shipDateProblem(shipDate);
+    if (dateProblem) { setBuyErr(`Ship date: ${dateProblem}`); return; }
     setBuying(true); setBuyErr('');
     try {
-      await api.buyLabel({ shipmentBoxId: box.id, provider: confirmBuy.provider, serviceKey, dims, weightOz });
+      await api.buyLabel({ shipmentBoxId: box.id, provider: confirmBuy.provider, serviceKey, dims, weightOz, shipDate });
       showToast?.(`Label purchased${providerIsTest(confirmBuy.provider) ? ' (test)' : ''}`);
       setConfirmBuy(null);
       onBought?.();
@@ -235,6 +244,8 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
                     </span>
                   )}
                 </div>
+                {/* Required first step: the ship date the carrier gets. */}
+                <ShipDateField value={shipDate} onChange={setShipDate} disabled={buying} />
                 {/* Loss/profit vs. what the buyer paid to ship — the
                     "are we underwater on this box" check at the moment of buying. */}
                 {box.shippingFeeCollected != null && (
@@ -249,7 +260,8 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
                   <button
                     type="button"
                     onClick={doBuy}
-                    disabled={buying}
+                    disabled={buying || !!shipDateProblem(shipDate)}
+                    title={shipDateProblem(shipDate) ? `Ship date: ${shipDateProblem(shipDate)}` : undefined}
                     className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md text-white disabled:bg-gray-300 ${
                       providerIsTest(confirmBuy.provider) ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
                     }`}

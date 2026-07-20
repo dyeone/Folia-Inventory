@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { X, Truck, MapPin, Package, AlertCircle, Check, FlaskConical, ShoppingCart } from 'lucide-react';
 import { api } from '../api.js';
+import { ShipDateField } from './ShipDateField.jsx';
+import { shipDateProblem } from './shipDate.js';
 
 // Confirmation modal for buying a single shipping label. Pre-fills weight
 // and dims from the saved settings; the user can override before
@@ -22,6 +24,8 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
   const [width, setWidth] = useState('');
   const [height, setHeight] = useState('');
   const [serviceCode, setServiceCode] = useState('');
+  // Deliberately empty: the operator must pick the ship date before buying.
+  const [shipDate, setShipDate] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -46,6 +50,10 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
     ['name','street1','city','state','zip','country'].every(k => (settings.shipFrom[k] || '').trim());
 
   const handleBuy = async () => {
+    // Click-time re-check (the modal can sit open across midnight) — and say
+    // so, rather than a silent no-op on a button that still looks enabled.
+    const dateProblem = shipDateProblem(shipDate);
+    if (dateProblem) { setErr(`Ship date: ${dateProblem}`); return; }
     setErr('');
     setBuying(true);
     try {
@@ -54,6 +62,7 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
         weightOz: parseFloat(weightOz) || undefined,
         dims: { length: parseFloat(length), width: parseFloat(width), height: parseFloat(height) },
         serviceCode: serviceCode || undefined,
+        shipDate,
       });
       showToast?.(`Label purchased${shipment.isTestLabel ? ' (test)' : ''} · ${shipment.trackingNumber || 'no tracking'}`);
       onPurchased?.(shipment);
@@ -117,6 +126,12 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
                 </div>
               </div>
 
+              {/* Required first step: the date the carrier gets for this
+                  label — pick it before the buy button arms. */}
+              <div className="border border-gray-200 rounded-xl px-3 py-2 bg-gray-50">
+                <ShipDateField value={shipDate} onChange={setShipDate} disabled={buying} />
+              </div>
+
               {/* Service code (overridable) */}
               <Field label="Service code" value={serviceCode} onChange={setServiceCode}
                 hint={`Default for ${box.carrier?.toUpperCase()}: ${settings.carriers?.[box.carrier]?.serviceCode || '—'}`} />
@@ -144,7 +159,8 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
           <button onClick={onClose} className="px-5 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg">Cancel</button>
           <button
             onClick={handleBuy}
-            disabled={buying || loading || !shipFromOk}
+            disabled={buying || loading || !shipFromOk || !!shipDateProblem(shipDate)}
+            title={shipDateProblem(shipDate) ? `Ship date: ${shipDateProblem(shipDate)}` : undefined}
             className={`px-5 py-2.5 text-sm font-medium text-white rounded-lg flex items-center gap-1.5 disabled:bg-gray-300 ${
               settings?.testMode === false ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-amber-600 hover:bg-amber-700'
             }`}
