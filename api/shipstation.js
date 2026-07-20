@@ -164,10 +164,14 @@ async function buyLabel(req, res, userId, brandId) {
   let shipDate = todayStr;
   if (req.body?.shipDate != null && req.body.shipDate !== '') {
     const raw = String(req.body.shipDate);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(Date.parse(`${raw}T00:00:00Z`))) {
-      const e = new Error('shipDate must be YYYY-MM-DD'); e.status = 422; throw e;
+    // Round-trip check: Date.parse rolls impossible dates over (2026-02-30
+    // parses as Mar 2), so the parsed date must format back to the input.
+    const parsed = new Date(`${raw}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(parsed.getTime())
+      || parsed.toISOString().slice(0, 10) !== raw) {
+      const e = new Error('shipDate must be a real YYYY-MM-DD date'); e.status = 422; throw e;
     }
-    const days = (Date.parse(`${raw}T00:00:00Z`) - Date.parse(`${todayStr}T00:00:00Z`)) / 86400000;
+    const days = (parsed.getTime() - Date.parse(`${todayStr}T00:00:00Z`)) / 86400000;
     if (days < -1 || days > 30) {
       const e = new Error('shipDate must be between today and 30 days out'); e.status = 422; throw e;
     }
@@ -274,8 +278,12 @@ async function buyLabel(req, res, userId, brandId) {
       addressTo: shipToAddr,
       parcel: { length: Number(dims.length), width: Number(dims.width), height: Number(dims.height), weightOz },
       serviceToken: svc.shippoToken,
-      // Noon UTC keeps the calendar date stable across US timezones.
-      shipmentDate: `${shipDate}T12:00:00Z`,
+      // Only send a date that's still in the future: noon UTC on "today" is
+      // already past for most of the US day, and some carriers reject a past
+      // tender time. Same-day (or grace-day) buys omit it — Shippo assumes
+      // "now", which is exactly the pre-feature behavior. Noon UTC keeps the
+      // calendar date stable across US timezones for future dates.
+      shipmentDate: shipDate > todayStr ? `${shipDate}T12:00:00Z` : undefined,
     });
     if (!r.labelUrl) { const e = new Error('Shippo did not return a label PDF'); e.status = 502; throw e; }
     const pdfRes = await fetch(r.labelUrl);

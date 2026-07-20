@@ -109,7 +109,11 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
   const providerIsTest = (provider) => provider === 'shippo' ? !!meta?.shippoTest : meta?.shipstationTestMode !== false;
 
   const doBuy = async () => {
-    if (!confirmBuy || buying || shipDateProblem(shipDate)) return;
+    if (!confirmBuy || buying) return;
+    // Click-time re-check (the panel can sit open across midnight) — and say
+    // so, rather than a silent no-op on a button that still looks enabled.
+    const dateProblem = shipDateProblem(shipDate);
+    if (dateProblem) { setBuyErr(`Ship date: ${dateProblem}`); return; }
     setBuying(true); setBuyErr('');
     try {
       await api.buyLabel({ shipmentBoxId: box.id, provider: confirmBuy.provider, serviceKey, dims, weightOz, shipDate });
@@ -257,7 +261,7 @@ export function BoxPackagingPanel({ box, boxSizes = [], onSavePackaging, showToa
                     type="button"
                     onClick={doBuy}
                     disabled={buying || !!shipDateProblem(shipDate)}
-                    title={shipDateProblem(shipDate) ? 'Set the ship date first' : undefined}
+                    title={shipDateProblem(shipDate) ? `Ship date: ${shipDateProblem(shipDate)}` : undefined}
                     className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-md text-white disabled:bg-gray-300 ${
                       providerIsTest(confirmBuy.provider) ? 'bg-amber-600 hover:bg-amber-700' : 'bg-emerald-600 hover:bg-emerald-700'
                     }`}

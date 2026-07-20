@@ -16,5 +16,8 @@ export function shipDateProblem(value) {
   if (!value) return 'set the ship date';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return 'invalid ship date';
   if (value < localDateStr(0)) return 'ship date is in the past';
+  // Mirror the server's +30-day window so a typo'd year fails here, not as
+  // per-box 422s after the operator already confirmed a purchase.
+  if (value > localDateStr(30)) return 'ship date is too far out';
   return null;
 }

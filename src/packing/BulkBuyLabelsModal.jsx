@@ -199,6 +199,14 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
 
   const buyAll = async () => {
     if (!canBuy) return;
+    // Re-check at CLICK time — canBuy is a render-time closure, and the modal
+    // can sit open across midnight: a batch configured at 11pm with "Today"
+    // and bought at 9am would date every label yesterday (the server's one-day
+    // grace would accept it — the exact failure this feature prevents).
+    if (shipDateProblem(shipDate)) {
+      showToast?.(`Ship date: ${shipDateProblem(shipDate)} — fix it and try again`, 4500);
+      return;
+    }
     setPhase('buying');
     let ok = 0, failed = 0;
     const targets = knownBoxes.filter(b => rows[b.id].checked);
@@ -447,9 +455,7 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
               )}
               {phase === 'edit' && selected.length > 0 && shipDateProblem(shipDate) && (
                 <div className="text-xs text-amber-700">
-                  {shipDateProblem(shipDate) === 'set the ship date'
-                    ? 'Set the ship date above to enable buying.'
-                    : 'Fix the ship date above — it can’t be in the past.'}
+                  Ship date: {shipDateProblem(shipDate)} — see the field above.
                 </div>
               )}
             </>

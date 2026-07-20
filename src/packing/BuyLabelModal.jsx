@@ -50,7 +50,10 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
     ['name','street1','city','state','zip','country'].every(k => (settings.shipFrom[k] || '').trim());
 
   const handleBuy = async () => {
-    if (shipDateProblem(shipDate)) return; // button is disabled, but belt-and-braces
+    // Click-time re-check (the modal can sit open across midnight) — and say
+    // so, rather than a silent no-op on a button that still looks enabled.
+    const dateProblem = shipDateProblem(shipDate);
+    if (dateProblem) { setErr(`Ship date: ${dateProblem}`); return; }
     setErr('');
     setBuying(true);
     try {
@@ -157,7 +160,7 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
           <button
             onClick={handleBuy}
             disabled={buying || loading || !shipFromOk || !!shipDateProblem(shipDate)}
-            title={shipDateProblem(shipDate) ? 'Set the ship date first' : undefined}
+            title={shipDateProblem(shipDate) ? `Ship date: ${shipDateProblem(shipDate)}` : undefined}
             className={`px-5 py-2.5 text-sm font-medium text-white rounded-lg flex items-center gap-1.5 disabled:bg-gray-300 ${
               settings?.testMode === false ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-amber-600 hover:bg-amber-700'
             }`}
