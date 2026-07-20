@@ -5,6 +5,8 @@ import {
 import { api } from '../api.js';
 import { shortBoxCode } from '../labels/boxCode.js';
 import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
+import { ShipDateField } from './ShipDateField.jsx';
+import { shipDateProblem } from './shipDate.js';
 
 // One-week-hold boxes don't ship yet and local pickups never ship — both are
 // listed (so the operator sees why they're excluded) but never pre-checked,
@@ -56,6 +58,9 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
   const [settingsError, setSettingsError] = useState('');
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [provider, setProvider] = useState('shipstation');
+  // Deliberately empty: the operator must pick the ship date before the buy
+  // button arms (labels are often bought the evening before drop-off).
+  const [shipDate, setShipDate] = useState('');
   const [phase, setPhase] = useState('edit'); // edit → buying → done
   const [progress, setProgress] = useState(0);
   const [totalToBuy, setTotalToBuy] = useState(0);
@@ -152,7 +157,8 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
   });
   const allChecked = eligible.length > 0 && eligible.every(b => rows[b.id].checked);
   const canBuy = phase === 'edit' && !loadingSettings && shipFromOk
-    && selected.length > 0 && invalidSelected.length === 0;
+    && selected.length > 0 && invalidSelected.length === 0
+    && !shipDateProblem(shipDate);
 
   const toggleAll = () => {
     if (phase !== 'edit') return;
@@ -220,6 +226,7 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
           serviceKey: row.serviceKey,
           dims: { length: size.length, width: size.width, height: size.height },
           weightOz,
+          shipDate,
         });
         ok++;
         setStatuses(s => ({ ...s, [b.id]: { state: 'ok', cost: shipment?.labelCost, test: !!shipment?.isTestLabel } }));
@@ -280,6 +287,13 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
                   </div>
                 </div>
               )}
+
+              {/* Required first step: the date every label in this batch is
+                  bought for — sent to the carrier and printed on the label. */}
+              <div className="flex items-center justify-between gap-3 flex-wrap border border-gray-200 rounded-xl px-3 py-2 bg-gray-50">
+                <ShipDateField value={shipDate} onChange={setShipDate} disabled={phase !== 'edit'} />
+                <span className="text-[11px] text-gray-500">Applies to every label in this batch.</span>
+              </div>
 
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <label className="flex items-center gap-2 text-sm text-gray-700">
@@ -429,6 +443,13 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
               {invalidSelected.length > 0 && phase === 'edit' && (
                 <div className="text-xs text-amber-700">
                   {invalidSelected.length} selected box{invalidSelected.length === 1 ? ' is' : 'es are'} missing a size or weight — fix or untick to continue.
+                </div>
+              )}
+              {phase === 'edit' && selected.length > 0 && shipDateProblem(shipDate) && (
+                <div className="text-xs text-amber-700">
+                  {shipDateProblem(shipDate) === 'set the ship date'
+                    ? 'Set the ship date above to enable buying.'
+                    : 'Fix the ship date above — it can’t be in the past.'}
                 </div>
               )}
             </>
