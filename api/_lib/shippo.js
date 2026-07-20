@@ -101,11 +101,14 @@ export async function getRates({ addressFrom, addressTo, parcel }) {
 // finds the matching rate by servicelevel token, then purchases it via a
 // Transaction. Returns tracking + a Shippo-hosted PDF URL + the txn id
 // (needed for refunds). With a shippo_test_* token, no charge is made.
-export async function createLabel({ addressFrom, addressTo, parcel, serviceToken }) {
+export async function createLabel({ addressFrom, addressTo, parcel, serviceToken, shipmentDate }) {
   const shipment = await call('POST', '/shipments/', {
     address_from: toShippoAddress(addressFrom),
     address_to: toShippoAddress(addressTo),
     parcels: [toShippoParcel(parcel)],
+    // ISO datetime of the planned carrier hand-off (Shippo's shipment_date);
+    // omitted → Shippo assumes now.
+    ...(shipmentDate ? { shipment_date: shipmentDate } : {}),
     async: false,
   });
   const rates = Array.isArray(shipment?.rates) ? shipment.rates : [];

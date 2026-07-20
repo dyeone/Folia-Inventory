@@ -313,8 +313,8 @@ export const api = {
   // provider: 'shipstation' (default) | 'shippo'. serviceKey (one of the
   // three offered services) drives the carrier + per-provider codes; when
   // omitted the legacy item-carrier + saved defaults are used (ShipStation).
-  buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation, provider, serviceKey }) =>
-    request('/shipstation', { method: 'POST', body: { action: 'buy-label', shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation, provider, serviceKey } }).then(r => r.shipment),
+  buyLabel: ({ shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation, provider, serviceKey, shipDate }) =>
+    request('/shipstation', { method: 'POST', body: { action: 'buy-label', shipmentBoxId, weightOz, dims, serviceCode, packageCode, confirmation, provider, serviceKey, shipDate } }).then(r => r.shipment),
   voidLabel: (shipmentBoxId) =>
     request('/shipstation', { method: 'POST', body: { action: 'void-label', shipmentBoxId } }).then(r => r.shipment),
   // Live Shippo-vs-ShipStation rate comparison for one box. Returns

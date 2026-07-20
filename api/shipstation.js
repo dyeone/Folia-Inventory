@@ -156,6 +156,24 @@ async function buyLabel(req, res, userId, brandId) {
   const provider = req.body?.provider === 'shippo' ? 'shippo' : 'shipstation';
   const serviceKey = req.body?.serviceKey || null;
 
+  // Ship date (YYYY-MM-DD) — the date sent to the carrier and printed on the
+  // label. Required in the UI; defaults to today (server clock) for any
+  // legacy caller that doesn't send one. Allow one day in the past so the
+  // operator's evening straddling the server's midnight can't reject "today".
+  const todayStr = new Date().toISOString().slice(0, 10);
+  let shipDate = todayStr;
+  if (req.body?.shipDate != null && req.body.shipDate !== '') {
+    const raw = String(req.body.shipDate);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw) || Number.isNaN(Date.parse(`${raw}T00:00:00Z`))) {
+      const e = new Error('shipDate must be YYYY-MM-DD'); e.status = 422; throw e;
+    }
+    const days = (Date.parse(`${raw}T00:00:00Z`) - Date.parse(`${todayStr}T00:00:00Z`)) / 86400000;
+    if (days < -1 || days > 30) {
+      const e = new Error('shipDate must be between today and 30 days out'); e.status = 422; throw e;
+    }
+    shipDate = raw;
+  }
+
   // Already-purchased guard. The unique key prevents accidental double-buys.
   const { data: existing } = await supabase
     .from('shipments')
@@ -256,6 +274,8 @@ async function buyLabel(req, res, userId, brandId) {
       addressTo: shipToAddr,
       parcel: { length: Number(dims.length), width: Number(dims.width), height: Number(dims.height), weightOz },
       serviceToken: svc.shippoToken,
+      // Noon UTC keeps the calendar date stable across US timezones.
+      shipmentDate: `${shipDate}T12:00:00Z`,
     });
     if (!r.labelUrl) { const e = new Error('Shippo did not return a label PDF'); e.status = 502; throw e; }
     const pdfRes = await fetch(r.labelUrl);
@@ -286,7 +306,7 @@ async function buyLabel(req, res, userId, brandId) {
     try {
       result = await createLabel({
         carrierCode, serviceCode, packageCode, confirmation,
-        shipDate: new Date().toISOString().slice(0, 10),
+        shipDate,
         weight: { value: weightOz, units: 'ounces' },
         dimensions: dims?.length && dims?.width && dims?.height
           ? { units: 'inches', length: Number(dims.length), width: Number(dims.width), height: Number(dims.height) }
