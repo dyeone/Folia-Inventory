@@ -76,6 +76,11 @@ export const api = {
   // Items
   getItems: () => request('/items').then(r => r.items),
   upsertItems: (items) => request('/items', { method: 'POST', body: { items } }),
+  // Atomic server-side box merge: moves every still-sold item from the source
+  // boxes into the target box (identity re-stamped server-side). 409s when
+  // any involved box has an active label.
+  combineBoxes: ({ targetBoxId, sourceBoxIds }) =>
+    request('/items', { method: 'POST', body: { action: 'combine-boxes', targetBoxId, sourceBoxIds } }),
   // Bulk-rename item names by group: renames = [{ ids: [...], name }].
   // Each group is one atomic set-based UPDATE server-side.
   renameItemNames: (renames) =>

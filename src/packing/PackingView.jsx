@@ -3,13 +3,14 @@ import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
   Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin, Clock,
-  ShoppingCart,
+  ShoppingCart, Combine,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { BulkBuyLabelsModal } from './BulkBuyLabelsModal.jsx';
+import { CombineBoxesModal } from './CombineBoxesModal.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { PrintListButton } from './PrintListButton.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
@@ -218,6 +219,7 @@ export function PackingView({
   const [boxSizes, setBoxSizes] = useState([]);
   const [buyingFor, setBuyingFor] = useState(null);
   const [bulkBuyOpen, setBulkBuyOpen] = useState(false);
+  const [combineOpen, setCombineOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
   const showToast = (msg) => {
@@ -232,7 +234,7 @@ export function PackingView({
   // mirrors the overlay state so a click that opens a modal doesn't yank
   // focus back to the (now-hidden) scan box. preventScroll keeps the page
   // from jumping to the top when refocusing after a click further down.
-  const overlayOpen = !!(buyingFor || bulkBuyOpen || importOpen || editingBox || editingAddressBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
+  const overlayOpen = !!(buyingFor || bulkBuyOpen || combineOpen || importOpen || editingBox || editingAddressBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
   const overlayOpenRef = useRef(overlayOpen);
   useEffect(() => { overlayOpenRef.current = overlayOpen; }, [overlayOpen]);
   useEffect(() => {
@@ -485,6 +487,24 @@ export function PackingView({
     await api.upsertItems(updates);
     await onRefreshItems?.();
     showToast('Address updated');
+  };
+
+  // Combine orders: one atomic server-side move of every still-sold item
+  // from the source boxes into the target box (identity re-stamped
+  // server-side; the server re-checks for active labels since our shipments
+  // cache can be stale). The merged-away boxes disappear once no sold item
+  // references them; their box-level notes/holds/packaging are left behind
+  // (the modal warns about that). The target keeps its notes and size.
+  const handleCombineBoxes = async (targetBox, sourceBoxes) => {
+    const { moved } = await api.combineBoxes({
+      targetBoxId: targetBox.id,
+      sourceBoxIds: sourceBoxes.map(b => b.id),
+    });
+    // Merged-away box ids no longer exist — a stale selection would point at
+    // nothing (or worse, preselect wrong rows in the bulk-buy modal).
+    setSelectedBoxIds(new Set());
+    await onRefreshItems?.();
+    showToast(`Combined ${sourceBoxes.length + 1} boxes into ${shortBoxCode(targetBox.id)} — ${moved} item${moved === 1 ? '' : 's'} moved`);
   };
 
   // Confirm before unshipping — it's reversible, but it changes box state and
@@ -1094,6 +1114,38 @@ export function PackingView({
                     </button>
                   );
                 })()}
+                {/* Combine orders — one buyer's multiple boxes into a single
+                    shipment. Admin-only, like Edit items / Delete box: it
+                    bulk-rewrites item box pointers + buyer identity. The
+                    badge counts buyers with 2+ open unlabeled boxes. */}
+                {isAdmin && totalBoxes > 1 && (() => {
+                  const allBoxes = groups.flatMap(g => g.boxes);
+                  const combinable = allBoxes.filter(b => {
+                    const s = shipmentsByBox[b.id];
+                    return !(s && !s.voidedAt);
+                  });
+                  const byBuyer = new Map();
+                  for (const b of combinable) {
+                    const k = (b.buyerUsername || b.buyer || 'unknown').toLowerCase();
+                    byBuyer.set(k, (byBuyer.get(k) || 0) + 1);
+                  }
+                  const candidates = [...byBuyer.values()].filter(n => n > 1).length;
+                  return (
+                    <button
+                      type="button"
+                      disabled={combinable.length < 2}
+                      title={combinable.length < 2
+                        ? 'Need at least two open boxes without a label'
+                        : `${candidates} buyer${candidates === 1 ? '' : 's'} with multiple open boxes`}
+                      onClick={() => { refreshShipments(); setCombineOpen(true); }}
+                      className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Combine className="w-4 h-4" />
+                      Combine orders
+                      {candidates > 0 && <span className="text-xs text-emerald-600 ml-1">· {candidates}</span>}
+                    </button>
+                  );
+                })()}
                 {onPrintItemLabels && (() => {
                   // Every plant to label across the currently-visible open boxes:
                   // Anthurium items PLUS unmatched placeholders (which have no
@@ -1421,6 +1473,21 @@ export function PackingView({
           />
         );
       })()}
+
+      {combineOpen && isAdmin && (
+        <CombineBoxesModal
+          boxes={groups.flatMap(g => g.boxes)}
+          shipmentsByBox={shipmentsByBox}
+          boxNotesByBox={boxNotesByBox}
+          salesById={new Map((sales || []).map(s => [s.id, s]))}
+          onClose={() => setCombineOpen(false)}
+          onCombine={async (target, sources) => {
+            await handleCombineBoxes(target, sources);
+            setCombineOpen(false);
+          }}
+          showToast={showToast}
+        />
+      )}
 
       {importOpen && (
         <ImportLabelsModal
