@@ -1,29 +1,39 @@
 import { useEffect, useRef, useState } from 'react';
-import { Printer, X, Loader2, Tablet, Monitor, Check } from 'lucide-react';
+import { Printer, X, Loader2, Tablet, Monitor, Check, Tag } from 'lucide-react';
 import { useBridgePrint } from '../labels/useBridgePrint.js';
-import { printTestLabel } from './packerPrint.js';
+import { printTestLabel, printTestTag } from './packerPrint.js';
 
-// Bottom sheet where the packer picks where shipping labels print and fires a
-// test label. Two destinations:
-//   'ipad'   → the printer plugged into this iPad (USB) or on Wi-Fi (AirPrint).
-//              Printing opens the iPadOS print sheet; the actual printer is
-//              chosen there the first time and remembered by iPadOS.
-//   'bridge' → the shipping desk's 4×6 label printer via the Folia Bridge.
-// The choice is stored per device (localStorage) — see packerPrint.js.
-export function PrinterSettingsSheet({ dest, onDestChange, onClose, showToast }) {
+// Bottom sheet where the packer picks where each label type prints, with a
+// test print per type. Two independent destinations:
+//   Shipping labels (4×6)  — carrier labels
+//   Box tags (2×1)         — B-XXXXXX barcode tags
+// Each can go to:
+//   'ipad'   → the printer plugged into this iPad (USB) or on Wi-Fi
+//              (AirPrint). Printing opens the iPadOS print sheet; the actual
+//              printer is chosen there the first time and remembered.
+//   'bridge' → the shipping desk's printers via the Folia Bridge (the 4×6
+//              shipping printer or the 2×1 item-label printer, by type).
+// Choices are stored per device (localStorage) — see packerPrint.js.
+export function PrinterSettingsSheet({ dests, onDestChange, onClose, showToast }) {
   const { bridgeOnline } = useBridgePrint();
-  const [testing, setTesting] = useState(false);
+  const [testing, setTesting] = useState(null); // 'shipping' | 'boxtag' | null
   // Flipped on unmount so a bridge test print stops polling (and skips state
   // updates) once the sheet has closed.
   const unmountedRef = useRef(false);
   useEffect(() => () => { unmountedRef.current = true; }, []);
 
-  const runTest = async () => {
+  const runTest = async (kind) => {
     if (testing) return;
-    setTesting(true);
-    try { await printTestLabel(dest, showToast, () => unmountedRef.current); }
-    finally { if (!unmountedRef.current) setTesting(false); }
+    setTesting(kind);
+    try {
+      if (kind === 'shipping') await printTestLabel(dests.shipping, showToast, () => unmountedRef.current);
+      else await printTestTag(dests.boxtag, showToast, () => unmountedRef.current);
+    } finally {
+      if (!unmountedRef.current) setTesting(null);
+    }
   };
+
+  const anyIpad = dests.shipping === 'ipad' || dests.boxtag === 'ipad';
 
   return (
     <div
@@ -31,12 +41,12 @@ export function PrinterSettingsSheet({ dest, onDestChange, onClose, showToast })
       onClick={onClose}
     >
       <div
-        className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 pb-safe sm:pb-5"
+        className="bg-white w-full sm:max-w-md max-h-[92vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl p-5 pb-safe sm:pb-5"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2.5 mb-4">
           <Printer className="w-6 h-6 text-emerald-700" />
-          <h2 className="flex-1 text-lg font-bold text-gray-900">Label printer</h2>
+          <h2 className="flex-1 text-lg font-bold text-gray-900">Printers</h2>
           <button
             type="button"
             onClick={onClose}
@@ -47,40 +57,79 @@ export function PrinterSettingsSheet({ dest, onDestChange, onClose, showToast })
           </button>
         </div>
 
-        <div className="space-y-2.5">
-          <DestCard
-            active={dest === 'ipad'}
-            onSelect={() => onDestChange('ipad')}
-            icon={Tablet}
-            title="This iPad"
-            subtitle="Printer plugged into the iPad (USB) or on Wi-Fi (AirPrint)"
-          />
-          <DestCard
-            active={dest === 'bridge'}
-            onSelect={() => onDestChange('bridge')}
-            icon={Monitor}
-            title="Shipping desk (Mac)"
-            subtitle="4×6 label printer at the shipping desk"
-            status={bridgeOnline === null ? null : bridgeOnline ? 'online' : 'offline'}
-          />
-        </div>
+        <DestSection
+          icon={Printer}
+          title="Shipping labels · 4×6"
+          kind="shipping"
+          dest={dests.shipping}
+          bridgeSubtitle="4×6 label printer at the shipping desk"
+          bridgeOnline={bridgeOnline}
+          onDestChange={onDestChange}
+          onTest={() => runTest('shipping')}
+          testing={testing}
+          testLabel="Print test label"
+        />
 
-        <p className="text-sm text-gray-500 mt-3 leading-snug">
-          {dest === 'ipad'
-            ? 'Printing opens the iPad’s print screen — pick your printer there the first time; the iPad remembers it. A USB printer only shows up if it supports AirPrint / IPP.'
-            : 'Labels print on the shipping desk’s label printer through the Folia Bridge (the Mac app must be running).'}
+        <DestSection
+          icon={Tag}
+          title="Box tags · 2×1"
+          kind="boxtag"
+          dest={dests.boxtag}
+          bridgeSubtitle="2×1 tag printer at the shipping desk"
+          bridgeOnline={bridgeOnline}
+          onDestChange={onDestChange}
+          onTest={() => runTest('boxtag')}
+          testing={testing}
+          testLabel="Print test tag"
+        />
+
+        <p className="text-sm text-gray-500 mt-4 leading-snug">
+          {anyIpad
+            ? '“This iPad” opens the iPad’s print screen — pick your printer there the first time; the iPad remembers it. A USB printer only shows up if it supports AirPrint / IPP.'
+            : 'Everything prints at the shipping desk through the Folia Bridge (the Mac app must be running).'}
         </p>
-
-        <button
-          type="button"
-          onClick={runTest}
-          disabled={testing}
-          className="mt-4 w-full flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-emerald-600 text-white rounded-xl active:bg-emerald-800 disabled:opacity-60"
-        >
-          {testing ? <Loader2 className="w-5 h-5 animate-spin" /> : <Printer className="w-5 h-5" />}
-          Print test label
-        </button>
       </div>
+    </div>
+  );
+}
+
+function DestSection({
+  icon: sectionIcon, title, kind, dest, bridgeSubtitle, bridgeOnline,
+  onDestChange, onTest, testing, testLabel,
+}) {
+  const SectionIcon = sectionIcon;
+  const busy = testing === kind;
+  return (
+    <div className="mt-4 first:mt-0">
+      <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gray-500 mb-2">
+        <SectionIcon className="w-3.5 h-3.5" /> {title}
+      </div>
+      <div className="space-y-2">
+        <DestCard
+          active={dest === 'ipad'}
+          onSelect={() => onDestChange(kind, 'ipad')}
+          icon={Tablet}
+          title="This iPad"
+          subtitle="Printer plugged into the iPad (USB) or on Wi-Fi (AirPrint)"
+        />
+        <DestCard
+          active={dest === 'bridge'}
+          onSelect={() => onDestChange(kind, 'bridge')}
+          icon={Monitor}
+          title="Shipping desk (Mac)"
+          subtitle={bridgeSubtitle}
+          status={bridgeOnline === null ? null : bridgeOnline ? 'online' : 'offline'}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={onTest}
+        disabled={!!testing}
+        className="mt-2 w-full min-h-11 flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold bg-white border-2 border-emerald-300 text-emerald-700 rounded-xl active:bg-emerald-50 disabled:opacity-50"
+      >
+        {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
+        {testLabel}
+      </button>
     </div>
   );
 }

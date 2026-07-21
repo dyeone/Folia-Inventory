@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer,
+  Printer, Tag,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
@@ -10,10 +10,10 @@ import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
-import { derivedBoxCarrier } from './carrier.js';
+import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
-import { getPrintDest, savePrintDest, printBoxLabel } from './packerPrint.js';
+import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag } from './packerPrint.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
@@ -105,12 +105,19 @@ export function PackerView({ onLogout }) {
   // Seller note per box (shipmentBoxId → note), so the packer can detect a
   // "local pickup" note and flag the box not-to-ship.
   const [noteByBox, setNoteByBox] = useState({});
-  // Label printing at the packing table. Destination is a per-device choice
-  // (this iPad's USB/AirPrint printer vs the shipping desk's via the bridge);
-  // the sheet lets the packer switch it and fire a test label.
-  const [printDest, setPrintDest] = useState(getPrintDest);
+  // Label printing at the packing table. Per-device, per-label-type choices
+  // ({ shipping, boxtag } → 'ipad' | 'bridge'); the sheet lets the packer
+  // switch each and fire a test print per type.
+  const [printDests, setPrintDests] = useState(getPrintDests);
   const [printerSheetOpen, setPrinterSheetOpen] = useState(false);
-  const [printingLabel, setPrintingLabel] = useState(false);
+  // One busy flag for both print buttons ('label' | 'tag' | null): on the
+  // iPad path both flows share the in-page print root, so they must never
+  // run concurrently (the second purge would eat the first job's pages).
+  const [printing, setPrinting] = useState(null);
+  // Manual carrier override per box (shipmentBoxId → 'ups' | 'usps' | null),
+  // set at the shipping desk. The packer honors it like the desk does — the
+  // printed box tag's carrier header must match the desk's batch print.
+  const [carrierOverrideByBox, setCarrierOverrideByBox] = useState({});
   // Which boxes have a printable label PDF (shipmentBoxId → true). Distinct
   // from trackingByBox: a manually recorded tracking number has no PDF.
   const [labelByBox, setLabelByBox] = useState({});
@@ -168,6 +175,11 @@ export function PackerView({ onLogout }) {
       setNoteByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.note || '']),
+        ),
+      );
+      setCarrierOverrideByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, v?.carrierOverride || null]),
         ),
       );
       setTrackingByBox(
@@ -232,6 +244,9 @@ export function PackerView({ onLogout }) {
         setNoteByBox(
           Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.note || ''])),
         );
+        setCarrierOverrideByBox(
+          Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.carrierOverride || null])),
+        );
         setBoxSizeByBox(
           Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.boxSizeId || null])),
         );
@@ -273,14 +288,15 @@ export function PackerView({ onLogout }) {
     }
     const out = {};
     for (const box of map.values()) {
-      // Carrier follows the content rule (anthurium → UPS) so the packer's
-      // badge matches the office. A manual per-box override is set/honored in
-      // the main Shipping tab; the packer view shows the content default.
-      box.carrier = derivedBoxCarrier(box.items, box.stampedCarrier);
+      // Effective carrier, same rule as the Shipping tab: manual per-box
+      // override first, else content default (anthurium → UPS), else the
+      // stamped carrier. Must match the desk exactly — the packer PRINTS
+      // this on box tags now, not just displays it.
+      box.carrier = resolveBoxCarrier(box.items, carrierOverrideByBox[box.id], box.stampedCarrier);
       if (box.items.some(i => i.status === 'sold')) out[box.code] = box;
     }
     return out;
-  }, [items]);
+  }, [items, carrierOverrideByBox]);
 
   const openBoxes = useMemo(
     () => Object.values(boxesByCode).sort((a, b) => {
@@ -339,6 +355,11 @@ export function PackerView({ onLogout }) {
           Object.entries(notes || {}).map(([id, v]) => [id, v?.note || '']),
         ),
       );
+      setCarrierOverrideByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, v?.carrierOverride || null]),
+        ),
+      );
     } catch { /* keep whatever we have */ }
   };
 
@@ -350,12 +371,24 @@ export function PackerView({ onLogout }) {
 
   // Print the open box's shipping label on the packer's chosen printer.
   const printActiveLabel = async () => {
-    if (!activeBox || printingLabel) return;
-    setPrintingLabel(true);
+    if (!activeBox || printing) return;
+    setPrinting('label');
     try {
-      await printBoxLabel(activeBox.id, printDest, showToast);
+      await printBoxLabel(activeBox.id, printDests.shipping, showToast);
     } finally {
-      setPrintingLabel(false);
+      setPrinting(null);
+    }
+  };
+
+  // Print the open box's 2×1 box tag (B-XXXXXX barcode) — e.g. when a box
+  // was built without one or the tag got damaged mid-pack.
+  const printActiveTag = async () => {
+    if (!activeBox || printing) return;
+    setPrinting('tag');
+    try {
+      await printBoxTag(activeBox, printDests.boxtag, showToast);
+    } finally {
+      setPrinting(null);
     }
   };
 
@@ -727,7 +760,8 @@ export function PackerView({ onLogout }) {
             onScanLabel={() => setCameraMode('label')}
             onSendToPhone={isMobile ? null : () => sendToPhone(activeBox)}
             onPrintLabel={labelByBox[activeBox.id] ? printActiveLabel : null}
-            printingLabel={printingLabel}
+            onPrintTag={printActiveTag}
+            printing={printing}
             onDone={() => goToBox(null)}
           />
         : <LandingGrid
@@ -753,8 +787,8 @@ export function PackerView({ onLogout }) {
       )}
       {printerSheetOpen && (
         <PrinterSettingsSheet
-          dest={printDest}
-          onDestChange={(d) => { savePrintDest(d); setPrintDest(d); }}
+          dests={printDests}
+          onDestChange={(kind, d) => { savePrintDest(kind, d); setPrintDests(p => ({ ...p, [kind]: d })); }}
           onClose={() => setPrinterSheetOpen(false)}
           showToast={showToast}
         />
@@ -1037,7 +1071,7 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, printingLabel, onDone }) {
+function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -1074,7 +1108,8 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
               assignedTracking={assignedTracking}
               onScanLabel={onScanLabel}
               onPrintLabel={onPrintLabel}
-              printingLabel={printingLabel}
+              onPrintTag={onPrintTag}
+              printing={printing}
               onDone={onDone}
             />
           ) : (
@@ -1099,7 +1134,7 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
           is packed, the body shows the final label-scan step. */}
       {!allPacked && (
         <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3 pb-safe">
-          <div className="max-w-5xl mx-auto flex gap-3">
+          <div className="max-w-5xl mx-auto flex gap-3 flex-wrap">
             {/* iPad-only: push this box's item list to the packer's phone so
                 they can walk the racks and find items hands-free. */}
             {onSendToPhone && (
@@ -1111,16 +1146,29 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
                 <Smartphone className="w-5 h-5" /> Send to phone
               </button>
             )}
+            {/* Reprint this box's 2×1 tag (B-XXXXXX barcode) at the table.
+                Both print buttons disable while EITHER job runs — the iPad
+                path's print root must never host two jobs at once. */}
+            {onPrintTag && (
+              <button
+                type="button"
+                onClick={onPrintTag}
+                disabled={!!printing}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50 disabled:opacity-60"
+              >
+                {printing === 'tag' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Tag className="w-5 h-5" />} Print tag
+              </button>
+            )}
             {/* Print this box's shipping label at the packing table — only
                 offered once the label exists (imported at the shipping desk). */}
             {onPrintLabel && (
               <button
                 type="button"
                 onClick={onPrintLabel}
-                disabled={printingLabel}
+                disabled={!!printing}
                 className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50 disabled:opacity-60"
               >
-                {printingLabel ? <Loader2 className="w-5 h-5 animate-spin" /> : <Printer className="w-5 h-5" />} Print label
+                {printing === 'label' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Printer className="w-5 h-5" />} Print label
               </button>
             )}
             <button
@@ -1139,7 +1187,7 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
 
 // Shown once every item is packed: the final step is scanning the shipping
 // label. A correct scan triggers the "Good job" screen (see handleScanLabel).
-function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, printingLabel, onDone }) {
+function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, onPrintTag, printing, onDone }) {
   return (
     <div className="text-center max-w-md mx-auto pt-2">
       <div className="flex items-center justify-center gap-2.5 mb-1.5">
@@ -1157,10 +1205,10 @@ function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, printingLabel,
             <button
               type="button"
               onClick={onPrintLabel}
-              disabled={printingLabel}
+              disabled={!!printing}
               className="w-full flex items-center justify-center gap-2 px-4 py-4 mb-3 text-lg font-semibold bg-white border-2 border-emerald-300 text-emerald-700 rounded-xl active:bg-emerald-50 disabled:opacity-60"
             >
-              {printingLabel ? <Loader2 className="w-6 h-6 animate-spin" /> : <Printer className="w-6 h-6" />} Print shipping label
+              {printing === 'label' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Printer className="w-6 h-6" />} Print shipping label
             </button>
           )}
           <button
@@ -1186,6 +1234,18 @@ function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, printingLabel,
             Done — next box <ChevronRight className="w-6 h-6" />
           </button>
         </>
+      )}
+      {/* Reprint the 2×1 box tag — useful when the tag was never printed or
+          got damaged during packing. Available with or without a label. */}
+      {onPrintTag && (
+        <button
+          type="button"
+          onClick={onPrintTag}
+          disabled={!!printing}
+          className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-white border-2 border-gray-200 text-gray-700 rounded-xl active:bg-gray-50 disabled:opacity-60"
+        >
+          {printing === 'tag' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Tag className="w-5 h-5" />} Print box tag
+        </button>
       )}
     </div>
   );
