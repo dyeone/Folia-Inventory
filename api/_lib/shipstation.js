@@ -43,6 +43,37 @@ async function call(method, path, body) {
   return data;
 }
 
+// GET /warehouses — the account's "Ship From Locations" as configured in
+// ShipStation. Returns the DEFAULT location's origin address, shaped for
+// createlabel's shipFrom ({ ..., postalCode }), or null when no location is
+// marked default. Cached briefly: the default location changes ~never and
+// this lookup rides in front of every UPS quote + purchase.
+const DEFAULT_SHIP_FROM_TTL_MS = 10 * 60 * 1000;
+let defaultShipFromCache = { at: 0, addr: null };
+
+export async function getDefaultShipFrom() {
+  const now = Date.now();
+  if (defaultShipFromCache.at && now - defaultShipFromCache.at < DEFAULT_SHIP_FROM_TTL_MS) {
+    return defaultShipFromCache.addr;
+  }
+  const list = await call('GET', '/warehouses');
+  const def = (Array.isArray(list) ? list : []).find(w => w.isDefault) || null;
+  const a = def?.originAddress || null;
+  const addr = a && a.street1 && a.postalCode ? {
+    name: a.name || def.warehouseName || '',
+    company: a.company || undefined,
+    street1: a.street1,
+    street2: a.street2 || undefined,
+    city: a.city,
+    state: a.state,
+    postalCode: a.postalCode,
+    country: a.country || 'US',
+    phone: a.phone || undefined,
+  } : null;
+  defaultShipFromCache = { at: now, addr };
+  return addr;
+}
+
 // POST /shipments/createlabel — buys a label and returns base64 PDF + tracking.
 //
 // Request shape (subset we use):

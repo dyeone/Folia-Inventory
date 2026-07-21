@@ -7,7 +7,7 @@
 
 import { supabase, requireBrand, brandIdFromReq } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
-import { createLabel, voidLabel, getRates as ssGetRates } from './_lib/shipstation.js';
+import { createLabel, voidLabel, getRates as ssGetRates, getDefaultShipFrom } from './_lib/shipstation.js';
 import {
   getRates as shippoGetRates, createLabel as shippoCreateLabel,
   refund as shippoRefund, shippoConfigured, isTestToken as shippoIsTest,
@@ -83,10 +83,18 @@ async function getRatesHandler(req, res, brandId) {
   const ssJobs = neededCarriers.map(async (carrier) => {
     const carrierCode = carrierCodes[carrier];
     if (!carrierCode) return; // carrier not connected in settings — skip
+    // UPS quotes originate from ShipStation's default Ship From location —
+    // the same origin the purchase uses below — so quoted UPS prices match
+    // what's actually bought. Falls back to the settings zip on any failure.
+    let fromPostalCode = shipFrom.zip;
+    if (carrier === 'ups') {
+      try { fromPostalCode = (await getDefaultShipFrom())?.postalCode || shipFrom.zip; }
+      catch { /* settings zip */ }
+    }
     const rates = await ssGetRates({
       carrierCode,
       packageCode: settings.carriers?.[carrier]?.packageCode || 'package',
-      fromPostalCode: shipFrom.zip,
+      fromPostalCode,
       toState: to.state,
       toCountry: to.country || 'US',
       toPostalCode: to.zip,
@@ -270,6 +278,9 @@ async function buyLabel(req, res, userId, brandId) {
   //   { labelData(base64), trackingNumber, labelCost, serviceCode,
   //     carrierCode, isTestLabel, shipstation*Id, shippoTransactionId }
   let purchase;
+  // The origin actually sent to the carrier — recorded on the shipments row.
+  // ShipStation UPS buys swap in the account's default Ship From location.
+  let shipFromUsed = shipFromAddr;
   if (provider === 'shippo') {
     if (!svc) { const e = new Error('serviceKey required for a Shippo label'); e.status = 400; throw e; }
     if (!shippoConfigured()) { const e = new Error('Shippo not configured (SHIPPO_API_TOKEN)'); e.status = 412; throw e; }
@@ -310,6 +321,21 @@ async function buyLabel(req, res, userId, brandId) {
       e.status = 412; throw e;
     }
     const testLabel = settings.testMode !== false; // default to TRUE for safety
+    // UPS labels ship from ShipStation's DEFAULT Ship From location (the
+    // UPS-registered pickup address the operator maintains in ShipStation),
+    // not the app's Shipping Settings address. Best-effort: falls back to
+    // the settings address when the lookup fails or nothing is default.
+    let ssShipFrom = { ...shipFromAddr, postalCode: shipFrom.zip, zip: undefined };
+    if (carrier === 'ups') {
+      try {
+        const def = await getDefaultShipFrom();
+        if (def) ssShipFrom = def;
+        else console.warn('[shipstation] no default Ship From location — using settings address');
+      } catch (e) {
+        console.warn('[shipstation] default Ship From lookup failed — using settings address:', e?.message || e);
+      }
+    }
+    shipFromUsed = { ...ssShipFrom, zip: ssShipFrom.postalCode, postalCode: undefined };
     let result;
     try {
       result = await createLabel({
@@ -319,7 +345,7 @@ async function buyLabel(req, res, userId, brandId) {
         dimensions: dims?.length && dims?.width && dims?.height
           ? { units: 'inches', length: Number(dims.length), width: Number(dims.width), height: Number(dims.height) }
           : undefined,
-        shipFrom: { ...shipFromAddr, postalCode: shipFrom.zip, zip: undefined },
+        shipFrom: ssShipFrom,
         shipTo: { ...shipToAddr, postalCode: buyerAddr.zip, zip: undefined },
         testLabel,
       });
@@ -380,7 +406,7 @@ async function buyLabel(req, res, userId, brandId) {
     dimsLength: Number(dims?.length) || null,
     dimsWidth: Number(dims?.width) || null,
     dimsHeight: Number(dims?.height) || null,
-    shipFrom: shipFromAddr,
+    shipFrom: shipFromUsed,
     shipTo: shipToAddr,
     trackingNumber: purchase.trackingNumber,
     labelCost: purchase.labelCost,
