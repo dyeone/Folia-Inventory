@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
-import { nextSkuForCode } from '../constants.js';
+import { nextSkuForCode, nextSkuForSeller } from '../constants.js';
 import { SpeciesPicker } from './SpeciesPicker.jsx';
 
 export function ItemFormModal({
@@ -71,10 +71,10 @@ export function ItemFormModal({
   const sku = useMemo(() => {
     if (isEditing) return form.sku;
     const v = varieties.find(x => x.id === pick.varietyId);
-    const base = nextSkuForCode(v?.code, existingItems);
-    if (!base) return base;
     const sellerCode = sellers.find(s => s.id === sellerId)?.code;
-    return sellerCode ? `${sellerCode}-${base}` : base;
+    return sellerCode
+      ? nextSkuForSeller(sellerCode, v?.code, existingItems)
+      : nextSkuForCode(v?.code, existingItems);
   }, [isEditing, form.sku, pick.varietyId, varieties, existingItems, sellerId, sellers]);
 
   // Quantity > 1 (add only) expands into that many separate, sequentially
@@ -135,7 +135,13 @@ export function ItemFormModal({
       saleId: form.saleId || null,
       lotNumber: form.lotNumber || null,
       // Edit never touches sellerId (omitting it leaves the row unchanged).
-      ...(isEditing ? {} : { sellerId: sellerId || null }),
+      // Consignment adds also stamp the seller's current default commission —
+      // the agreed rate at intake time, so later default changes don't drift
+      // this plant's settlement (mirrors SellerIntakeModal).
+      ...(isEditing ? {} : {
+        sellerId: sellerId || null,
+        ...(sellerId ? { commissionPct: sellers.find(s => s.id === sellerId)?.defaultCommissionPct ?? null } : {}),
+      }),
     });
   };
 

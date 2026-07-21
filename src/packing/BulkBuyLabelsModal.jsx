@@ -94,11 +94,18 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
         // is the source of truth); a paid Next Day upgrade only sets the
         // DEFAULT when no explicit choice was saved. If the choice drifts
         // from a paid Next Day, the red "buyer paid Next Day" note on the
-        // row flags it before buying.
+        // row flags it before buying. Non-UPS boxes always seed USPS — a
+        // UPS serviceKey left over from before a carrier flip must not
+        // silently buy a UPS label on a USPS-badged box.
         serviceKey: b.carrier === 'ups'
           ? boxUpsServiceKey(b.items, b.serviceKey)
-          : (b.serviceKey || 'usps_priority'),
+          : 'usps_priority',
       };
+      // Remember what we seeded: only an IN-MODAL change persists back to the
+      // box as an explicit choice (see buyAll) — stamping the seeded default
+      // would fake an "operator choice" that permanently defeats the
+      // paid-Next-Day default for upgrades sold later.
+      init[b.id].seeded = init[b.id].serviceKey;
     }
     return init;
   });
@@ -225,9 +232,15 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
       // Keep the box's saved packaging in sync with what's being bought so
       // the per-box panel agrees afterwards. A failed save must not block
       // the purchase.
-      if (row.sizeId !== (b.boxSizeId || '') || weightOz !== b.weightOz || row.serviceKey !== (b.serviceKey || '')) {
+      const svcChanged = row.serviceKey !== row.seeded;
+      if (row.sizeId !== (b.boxSizeId || '') || weightOz !== b.weightOz || svcChanged) {
         try {
-          await api.setBoxPackaging({ shipmentBoxId: b.id, boxSizeId: row.sizeId, weightOz, serviceKey: row.serviceKey });
+          await api.setBoxPackaging({
+            shipmentBoxId: b.id, boxSizeId: row.sizeId, weightOz,
+            // serviceKey persists only when changed in this modal (see the
+            // seeding comment above).
+            ...(svcChanged ? { serviceKey: row.serviceKey } : {}),
+          });
         } catch { /* best-effort */ }
       }
       try {

@@ -1811,16 +1811,20 @@ function BuyerGroupCard({
         </div>
       </div>
       <div className="space-y-1.5">
-        {group.boxes.map(box => (
+        {group.boxes.map(box => {
+          // Merge the shipment_boxes metadata once — the modal opened by
+          // Buy label needs serviceKey/notes on the box too, not just BoxRow.
+          const merged = { ...box, ...(boxNotesByBox?.[box.id] || {}) };
+          return (
           <BoxRow
             key={box.id}
-            box={{ ...box, ...(boxNotesByBox?.[box.id] || {}) }}
+            box={merged}
             defaultExpanded={expandSet ? expandSet.has(box.id) : false}
             sale={salesById.get(box.saleId)}
             salesById={salesById}
             shipment={shipmentsByBox[box.id]}
             onOpen={() => onOpenBox(box.saleId)}
-            onBuyLabel={() => onBuyLabel(box)}
+            onBuyLabel={() => onBuyLabel(merged)}
             onSaveTracking={(num) => onSaveTracking(box, num)}
             onMarkShipped={() => onMarkShipped(box)}
             onUnship={onUnship ? () => onUnship(box) : null}
@@ -1841,7 +1845,8 @@ function BuyerGroupCard({
             isSelected={selectedBoxIds ? selectedBoxIds.has(box.id) : false}
             onToggleSelected={onToggleBoxSelected ? () => onToggleBoxSelected(box.id) : null}
           />
-        ))}
+        );
+        })}
       </div>
     </div>
   );
@@ -2368,6 +2373,10 @@ function BoxRow({
             <select
               value={upsServiceKey}
               onClick={(e) => e.stopPropagation()}
+              // Keyboard too: Enter/Space would bubble to the row's
+              // role="button" handler, toggling expansion instead of
+              // opening the dropdown.
+              onKeyDown={(e) => e.stopPropagation()}
               onChange={(e) => { e.stopPropagation(); saveUpsService(e.target.value); }}
               disabled={savingSvc}
               aria-label="UPS label kind"

@@ -1117,6 +1117,10 @@ function StaffOrAdminInventory() {
                 grossCost: sampleItem?.grossCost ?? sampleItem?.cost ?? '',
                 netCost: sampleItem?.netCost ?? '',
                 source: sampleItem?.source || '',
+                // A consignment sample seeds its seller too — otherwise the
+                // follow-up plant would carry the consignor's cost but mint
+                // an own-inventory SKU (silent misattribution).
+                sellerId: sampleItem?.sellerId ?? null,
               });
               setShowAddModal(true);
             }}
