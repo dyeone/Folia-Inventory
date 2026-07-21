@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { bridgeOnlineNow, printPdfViaBridge, bytesToBase64, pdfToBase64 } from '../labels/useBridgePrint.js';
+import { buildBoxLabelPdf } from '../labels/boxLabelPdf.js';
 import { urlToBytes } from './labelPdf.js';
 import { getPdfjs } from './pdfjsLoader.js';
 
@@ -15,21 +16,41 @@ import { getPdfjs } from './pdfjsLoader.js';
 // The alternative destination is the shipping desk's 4×6 label printer via the
 // Folia Bridge (Mac app) — the same durable print queue the Shipping tab uses.
 
-// ── destination preference (per device — it describes hardware plugged into
-//    THIS iPad, so localStorage, not app_settings) ──────────────────────────
+// ── destination preferences (per device — they describe hardware plugged
+//    into THIS iPad, so localStorage, not app_settings) ────────────────────
+//
+// Two independent destinations, because 4×6 shipping labels and 2×1 box tags
+// usually live on different printers (e.g. labels on the iPad's USB printer,
+// tags on the shipping desk's item-label printer via the bridge). The legacy
+// single setting seeds both so an already-configured iPad keeps its choice.
 
-const DEST_KEY = 'folia.packerPrintDest';
+const LEGACY_DEST_KEY = 'folia.packerPrintDest';
+const DEST_KEYS = {
+  shipping: 'folia.packerPrintDest.shipping', // 4×6 carrier labels
+  boxtag: 'folia.packerPrintDest.boxtag',     // 2×1 B-XXXXXX tags
+};
 
-export function getPrintDest() {
+function readDest(key, fallback) {
   try {
-    return localStorage.getItem(DEST_KEY) === 'bridge' ? 'bridge' : 'ipad';
+    const v = localStorage.getItem(key);
+    return v === 'bridge' || v === 'ipad' ? v : fallback;
   } catch {
-    return 'ipad';
+    return fallback;
   }
 }
 
-export function savePrintDest(dest) {
-  try { localStorage.setItem(DEST_KEY, dest === 'bridge' ? 'bridge' : 'ipad'); } catch { /* private mode */ }
+export function getPrintDests() {
+  const legacy = readDest(LEGACY_DEST_KEY, 'ipad');
+  return {
+    shipping: readDest(DEST_KEYS.shipping, legacy),
+    boxtag: readDest(DEST_KEYS.boxtag, legacy),
+  };
+}
+
+export function savePrintDest(kind, dest) {
+  const key = DEST_KEYS[kind];
+  if (!key) return;
+  try { localStorage.setItem(key, dest === 'bridge' ? 'bridge' : 'ipad'); } catch { /* private mode */ }
 }
 
 // ── iPad path: PDF → page images → in-page print via the OS sheet ──────────
@@ -73,7 +94,7 @@ async function pdfToPageImages(bytes) {
 // Drop the rendered pages into a print-only container and open the OS print
 // sheet. The container (and its @media print rules that hide the app) stays in
 // the DOM until afterprint so iPadOS can build its preview from it.
-async function printImagesViaOsSheet(dataUrls) {
+async function printImagesViaOsSheet(dataUrls, { pageSize = '4in 6in' } = {}) {
   // A dismissed print sheet can skip afterprint and leave the previous root
   // in the DOM; if it survived, the next job would print its pages too — the
   // packer could pull a stale label off the printer and stick it on the wrong
@@ -90,7 +111,7 @@ async function printImagesViaOsSheet(dataUrls) {
       .packer-print-root { display: block !important; }
       .packer-print-root img { display: block; width: 100%; break-after: page; page-break-after: always; }
       .packer-print-root img:last-of-type { break-after: auto; page-break-after: auto; }
-      @page { size: 4in 6in; margin: 0; }
+      @page { size: ${pageSize}; margin: 0; }
     }
   `;
   root.appendChild(style);
@@ -151,6 +172,37 @@ export async function printBoxLabel(boxId, dest, showToast) {
   }
 }
 
+// ── box tag (2×1 B-XXXXXX barcode label) ───────────────────────────────────
+
+// Print one box's 2"×1" tag — the same label the Shipping tab batch-prints
+// (brand · carrier header, B-XXXXXX code, CODE128 barcode). Bridge routes to
+// the desk's 2×1 item-label printer (role 'label'); the iPad path opens the
+// OS print sheet like shipping labels do.
+export async function printBoxTag(box, dest, showToast) {
+  try {
+    const pdf = buildBoxLabelPdf([box]);
+    if (dest === 'bridge') {
+      if (!(await bridgeOnlineNow())) {
+        showToast?.('Shipping desk printer is offline — is the Mac app running? (Or switch the printer to "This iPad".)', 5000);
+        return false;
+      }
+      const res = await printPdfViaBridge({
+        pdfBase64: pdfToBase64(pdf), role: 'label', media: 'Custom.2x1in',
+      });
+      showToast?.(`Sent box tag to ${res?.printer || 'the shipping desk printer'}`);
+      return true;
+    }
+    await printImagesViaOsSheet(
+      await pdfToPageImages(new Uint8Array(pdf.output('arraybuffer'))),
+      { pageSize: '2in 1in' },
+    );
+    return true;
+  } catch (e) {
+    showToast?.(e.message || 'Could not print the box tag', 4500);
+    return false;
+  }
+}
+
 // ── test label ─────────────────────────────────────────────────────────────
 
 // A 4×6 test page that goes through the exact same pipeline as a real label,
@@ -182,6 +234,50 @@ async function buildTestLabelPdf(destName) {
 
 // isCancelled lets the settings sheet stop the bridge status poll when it
 // closes mid-test, so no zombie polling or late toasts after dismissal.
+// A 2×1 test tag through the same pipeline as real box tags. The edge frame
+// makes clipping / wrong media size obvious; no barcode, so a stray test
+// print can never be mistaken for (or scanned as) a real box tag.
+async function buildTestTagPdf(destName) {
+  const { jsPDF } = await import('jspdf');
+  const pdf = new jsPDF({ unit: 'in', format: [2, 1], orientation: 'landscape' });
+  pdf.setLineWidth(0.015);
+  pdf.rect(0.05, 0.05, 1.9, 0.9);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(10);
+  pdf.text('BOX TAG TEST · 2 × 1 in', 1, 0.35, { align: 'center' });
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(7);
+  pdf.text(destName, 1, 0.55, { align: 'center' });
+  pdf.text('If the frame is cut off, check the label size.', 1, 0.75, { align: 'center' });
+  return pdf;
+}
+
+export async function printTestTag(dest, showToast, isCancelled) {
+  try {
+    const pdf = await buildTestTagPdf(dest === 'bridge' ? 'via the shipping desk (Mac)' : 'via this iPad');
+    if (dest === 'bridge') {
+      if (!(await bridgeOnlineNow())) {
+        showToast?.('Shipping desk printer is offline — is the Mac app running?', 4500);
+        return false;
+      }
+      const res = await printPdfViaBridge({
+        pdfBase64: pdfToBase64(pdf), role: 'label', media: 'Custom.2x1in',
+      }, isCancelled);
+      if (res?.cancelled) return true;
+      showToast?.(`Sent test tag to ${res?.printer || 'the shipping desk printer'}`);
+      return true;
+    }
+    await printImagesViaOsSheet(
+      await pdfToPageImages(new Uint8Array(pdf.output('arraybuffer'))),
+      { pageSize: '2in 1in' },
+    );
+    return true;
+  } catch (e) {
+    showToast?.(e.message || 'Could not print the test tag', 4500);
+    return false;
+  }
+}
+
 export async function printTestLabel(dest, showToast, isCancelled) {
   try {
     const destName = dest === 'bridge' ? 'Destination: shipping desk (Mac)' : 'Destination: this iPad';
