@@ -27,7 +27,7 @@ import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
+import { boxHoldState, boxIsLocalPickup, isLocalPickupText } from './holdInfo.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
@@ -308,6 +308,31 @@ export function PackingView({
         updatedBy: saved.updatedBy,
       },
     }));
+  };
+
+  // Mark / unmark a box as local pickup. Zero new storage: the flag IS a
+  // canonical "Local pickup" segment in the box note — exactly what
+  // boxIsLocalPickup (violet tint here, packer banner, bulk-buy exclusion)
+  // already keys on, so every consumer works unchanged. Unmarking strips
+  // only our canonical segment; free-text that still says "pickup" is the
+  // operator's words, so we surface it instead of editing their prose.
+  const onTogglePickup = async (shipmentBoxId, makePickup) => {
+    const current = (boxNotesByBox?.[shipmentBoxId]?.note || '').trim();
+    let next = current;
+    if (makePickup) {
+      if (!isLocalPickupText(current)) next = current ? `${current} · Local pickup` : 'Local pickup';
+    } else {
+      next = current
+        .split(' · ')
+        .filter(p => p.trim().toLowerCase() !== 'local pickup')
+        .join(' · ');
+    }
+    if (next !== current) await onSaveBoxNote(shipmentBoxId, next);
+    if (!makePickup && isLocalPickupText(next)) {
+      showToast('Note text still mentions pickup — edit the note to fully clear the flag', 5000);
+    } else {
+      showToast(makePickup ? 'Marked as local pickup — this box will not ship' : 'Local pickup cleared');
+    }
   };
 
   // Persist a per-box packaging change (box size / weight / service). The
@@ -1230,6 +1255,7 @@ export function PackingView({
                     onSaveBoxNote={onSaveBoxNote}
                     onSaveBoxPackaging={onSaveBoxPackaging}
                     onSetHold={onSetHold}
+                    onTogglePickup={onTogglePickup}
                     onBought={refreshShipments}
                     onCancelLabel={onCancelLabel}
                     onOpenBox={(saleId) => setActiveSaleId(saleId)}
@@ -1735,7 +1761,7 @@ function addressOneLine(addr) {
 }
 
 function BuyerGroupCard({
-  group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onSetHold, onBought, onCancelLabel,
+  group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onSetHold, onTogglePickup, onBought, onCancelLabel,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
   isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
@@ -1783,6 +1809,7 @@ function BuyerGroupCard({
             onUnship={onUnship ? () => onUnship(box) : null}
             onTogglePacked={onTogglePacked}
             onSetHold={onSetHold ? (hold) => onSetHold(box.id, hold) : null}
+            onTogglePickup={onTogglePickup ? (make) => onTogglePickup(box.id, make) : null}
             onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
             boxSizes={boxSizes}
             onSavePackaging={onSaveBoxPackaging ? (patch) => onSaveBoxPackaging(box.id, patch) : null}
@@ -2093,7 +2120,7 @@ function CarrierToggle({ box, onSave, showToast }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
-  onSaveNote, onSetHold, boxSizes, onSavePackaging, onBought, onCancelLabel,
+  onSaveNote, onSetHold, onTogglePickup, boxSizes, onSavePackaging, onBought, onCancelLabel,
   isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected, defaultExpanded,
 }) {
@@ -2434,6 +2461,38 @@ function BoxRow({
                   className="text-xs font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-amber-50 hover:text-amber-700 hover:border-amber-300 active:bg-amber-100 flex items-center gap-1"
                 >
                   <Clock className="w-3 h-3" /> Hold 1 week
+                </button>
+              )
+            )}
+            {/* Local-pickup toggle. Pickup boxes turn violet, never ship, and
+                are excluded from bulk buys; the flag lives in the box note
+                ("Local pickup"), which the packer's banner reads too. An
+                item-driven flag (a "local pickup" line the buyer bought)
+                can't be cleared from here — the item itself says pickup. */}
+            {action && onTogglePickup && (
+              isPickup ? (
+                (() => {
+                  const fromItems = boxIsLocalPickup(null, box.items);
+                  return (
+                    <button
+                      onClick={(e) => { stop(e); if (!fromItems) onTogglePickup(false); }}
+                      disabled={fromItems}
+                      title={fromItems
+                        ? 'Pickup is flagged by an item in this box — edit or remove that item to clear it'
+                        : 'Clear the local-pickup flag — the box ships normally again'}
+                      className="text-xs font-medium px-2 py-1 rounded-md border border-violet-300 text-violet-700 bg-violet-50 hover:bg-violet-100 active:bg-violet-200 flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      <Package className="w-3 h-3" /> Clear pickup
+                    </button>
+                  );
+                })()
+              ) : (
+                <button
+                  onClick={(e) => { stop(e); onTogglePickup(true); }}
+                  title="Mark for local pickup — the buyer collects this box; it must not ship"
+                  className="text-xs font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-violet-50 hover:text-violet-700 hover:border-violet-300 active:bg-violet-100 flex items-center gap-1"
+                >
+                  <Package className="w-3 h-3" /> Local pickup
                 </button>
               )
             )}
