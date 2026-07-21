@@ -7,7 +7,7 @@ import { SpeciesPicker } from './SpeciesPicker.jsx';
 
 export function ItemFormModal({
   title, item, sales, existingItems = [],
-  varieties = [], species = [],
+  varieties = [], species = [], sellers = [],
   onCreateVariety, onCreateSpecies,
   onSave, onClose,
 }) {
@@ -40,6 +40,11 @@ export function ItemFormModal({
   })();
 
   const [pick, setPick] = useState(initialPick);
+  // Consignment: adding on behalf of a seller stamps sellerId on the new
+  // items — the server then mints seller-prefixed SKUs (JADE-ANT-142) and
+  // consignment accounting follows. Add-mode only: changing the seller on an
+  // existing item wouldn't re-mint its SKU, so the prefix would lie.
+  const [sellerId, setSellerId] = useState(item?.sellerId || '');
   const [form, setForm] = useState({
     sku: item?.sku || '',
     type: item?.type || 'tc',
@@ -60,12 +65,17 @@ export function ItemFormModal({
   });
   const [err, setErr] = useState('');
 
-  // Auto-generate the SKU from the selected variety (new items only).
+  // Auto-generate the SKU from the selected variety (new items only). The
+  // server owns the real assignment (addItem strips this); a chosen seller's
+  // code is prefixed here so the preview matches what will be minted.
   const sku = useMemo(() => {
     if (isEditing) return form.sku;
     const v = varieties.find(x => x.id === pick.varietyId);
-    return nextSkuForCode(v?.code, existingItems);
-  }, [isEditing, form.sku, pick.varietyId, varieties, existingItems]);
+    const base = nextSkuForCode(v?.code, existingItems);
+    if (!base) return base;
+    const sellerCode = sellers.find(s => s.id === sellerId)?.code;
+    return sellerCode ? `${sellerCode}-${base}` : base;
+  }, [isEditing, form.sku, pick.varietyId, varieties, existingItems, sellerId, sellers]);
 
   // Quantity > 1 (add only) expands into that many separate, sequentially
   // numbered SKUs — each quantity 1. The server does the expansion (see
@@ -124,6 +134,8 @@ export function ItemFormModal({
       salePrice:    numOrNull(form.salePrice),
       saleId: form.saleId || null,
       lotNumber: form.lotNumber || null,
+      // Edit never touches sellerId (omitting it leaves the row unchanged).
+      ...(isEditing ? {} : { sellerId: sellerId || null }),
     });
   };
 
@@ -147,6 +159,24 @@ export function ItemFormModal({
             <input type="number" min="1" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} className="input" />
           </Field>
         </div>
+
+        {/* Consignment intake straight from the Add button — same effect as
+            the Pre Sale tab's seller intake, minus the sale staging. */}
+        {!isEditing && sellers.length > 0 && (
+          <Field label="Seller consignment">
+            <select value={sellerId} onChange={(e) => setSellerId(e.target.value)} className="input">
+              <option value="">None — own inventory</option>
+              {sellers.map(s => (
+                <option key={s.id} value={s.id}>{s.name}{s.code ? ` (${s.code})` : ''}</option>
+              ))}
+            </select>
+            {sellerId && (
+              <div className="text-[11px] text-amber-700 mt-1">
+                Consignment plant{addQty > 1 ? 's' : ''} — SKUs get the seller&apos;s code prefix and sales are tracked to this seller.
+              </div>
+            )}
+          </Field>
+        )}
 
         <SpeciesPicker
           varieties={varieties}

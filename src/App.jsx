@@ -1582,6 +1582,7 @@ function StaffOrAdminInventory() {
           title={addPrefill?.name ? `Add ${addPrefill.name}` : 'Add New SKU'}
           item={addPrefill}
           sales={sales}
+          sellers={sellers}
           existingItems={items}
           varieties={varieties}
           species={species}
@@ -1912,7 +1913,7 @@ function StaffOrAdminInventory() {
         <BoxLabelSheet boxes={boxLabelBoxes} onClose={() => setBoxLabelBoxes(null)} showToast={showToast} />
       )}
       {labelItems && labelItems.length > 0 && (
-        <LabelSheet items={labelItems} sellers={sellers} onClose={() => setLabelItems(null)} showToast={showToast} />
+        <LabelSheet items={labelItems} sellers={sellers} sales={sales} onClose={() => setLabelItems(null)} showToast={showToast} />
       )}
       </Suspense>
 
