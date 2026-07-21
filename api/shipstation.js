@@ -323,16 +323,26 @@ async function buyLabel(req, res, userId, brandId) {
     const testLabel = settings.testMode !== false; // default to TRUE for safety
     // UPS labels ship from ShipStation's DEFAULT Ship From location (the
     // UPS-registered pickup address the operator maintains in ShipStation),
-    // not the app's Shipping Settings address. Best-effort: falls back to
-    // the settings address when the lookup fails or nothing is default.
+    // not the app's Shipping Settings address. Real purchases FAIL CLOSED
+    // when that location can't be confirmed — silently buying with the
+    // settings origin is the wrong-origin label this feature exists to
+    // prevent. Test labels (no charge) fall back so test flows still work.
     let ssShipFrom = { ...shipFromAddr, postalCode: shipFrom.zip, zip: undefined };
     if (carrier === 'ups') {
+      let def = null, lookupErr = null;
       try {
-        const def = await getDefaultShipFrom();
-        if (def) ssShipFrom = def;
-        else console.warn('[shipstation] no default Ship From location — using settings address');
-      } catch (e) {
-        console.warn('[shipstation] default Ship From lookup failed — using settings address:', e?.message || e);
+        def = await getDefaultShipFrom({ fresh: true }); // money path — no cache
+      } catch (e) { lookupErr = e; }
+      if (def) {
+        ssShipFrom = def;
+      } else if (testLabel) {
+        console.warn('[shipstation] default Ship From unavailable — test label uses settings address:',
+          lookupErr?.message || 'none marked default');
+      } else {
+        const e = new Error(lookupErr
+          ? `Couldn't confirm the ShipStation default Ship From location (${lookupErr.message}) — try again`
+          : 'No default Ship From location in ShipStation — mark one as default (ShipStation → Settings → Shipping → Ship From Locations)');
+        e.status = 412; throw e;
       }
     }
     shipFromUsed = { ...ssShipFrom, zip: ssShipFrom.postalCode, postalCode: undefined };

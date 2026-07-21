@@ -46,20 +46,29 @@ async function call(method, path, body) {
 // GET /warehouses — the account's "Ship From Locations" as configured in
 // ShipStation. Returns the DEFAULT location's origin address, shaped for
 // createlabel's shipFrom ({ ..., postalCode }), or null when no location is
-// marked default. Cached briefly: the default location changes ~never and
-// this lookup rides in front of every UPS quote + purchase.
+// marked default or its address is unusable.
+//
+// Caching: only a USABLE address is cached (10 min) — a "no default" result
+// is never cached, so an operator fixing their Ship From Locations isn't
+// pinned to the old answer for the TTL. Quotes read the cache; purchases
+// pass { fresh: true } because money moves on that path and a warm
+// instance's cache must not buy a label with an origin the operator just
+// changed in ShipStation.
 const DEFAULT_SHIP_FROM_TTL_MS = 10 * 60 * 1000;
 let defaultShipFromCache = { at: 0, addr: null };
 
-export async function getDefaultShipFrom() {
+export async function getDefaultShipFrom({ fresh = false } = {}) {
   const now = Date.now();
-  if (defaultShipFromCache.at && now - defaultShipFromCache.at < DEFAULT_SHIP_FROM_TTL_MS) {
+  if (!fresh && defaultShipFromCache.addr && now - defaultShipFromCache.at < DEFAULT_SHIP_FROM_TTL_MS) {
     return defaultShipFromCache.addr;
   }
   const list = await call('GET', '/warehouses');
   const def = (Array.isArray(list) ? list : []).find(w => w.isDefault) || null;
   const a = def?.originAddress || null;
-  const addr = a && a.street1 && a.postalCode ? {
+  // Require the full shippable shape — a partial address must fall out as
+  // null (clear 412 upstream) rather than ride into createlabel and bounce
+  // off the carrier with an opaque error.
+  const addr = a && a.street1 && a.city && a.state && a.postalCode ? {
     name: a.name || def.warehouseName || '',
     company: a.company || undefined,
     street1: a.street1,
@@ -70,7 +79,7 @@ export async function getDefaultShipFrom() {
     country: a.country || 'US',
     phone: a.phone || undefined,
   } : null;
-  defaultShipFromCache = { at: now, addr };
+  if (addr) defaultShipFromCache = { at: now, addr };
   return addr;
 }
 
