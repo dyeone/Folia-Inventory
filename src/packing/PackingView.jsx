@@ -1063,7 +1063,7 @@ export function PackingView({
                     className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800"
                   >
                     <Plus className="w-4 h-4" />
-                    New box
+                    Add shipment
                   </button>
                 )}
                 {totalBoxes > 0 && onPrintBoxLabels && (
