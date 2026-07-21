@@ -2,8 +2,8 @@ import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Download } from 'lucide-react';
 import JsBarcode from 'jsbarcode';
-import { jsPDF } from 'jspdf';
 import { shortBoxCode } from './boxCode.js';
+import { buildBoxLabelPdf, displayHeader } from './boxLabelPdf.js';
 import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
 import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 
@@ -49,87 +49,8 @@ function Label({ box }) {
   );
 }
 
-// Top line of the label: carrier (UPS / USPS), match-status marker,
-// and a contents tag for plants that need special handling at pack-out.
-// Names and @ids are intentionally omitted — the label exists to
-// identify the box at the carrier-handoff station, not the buyer.
-//
-//   *    every item in the box is matched real inventory
-//   #    at least one item is an unmatched placeholder (purple in Shipping)
-//   ANT  at least one item is an Anthurium — flagged on the physical
-//        tag so the packer sees it before opening the box
-//
-// '#' tells the packer to double-check the manifest before sealing —
-// the placeholder row didn't tie to a known SKU, so something needs
-// attention before this box ships.
-function displayHeader(box) {
-  // Brand first — Folia and BAE share no inventory, species, or SKUs, so a box
-  // at the handoff station has to say which brand it belongs to. Always shown
-  // (FOLIA / BAE), unlike item labels which only flag the non-default brand.
-  // The active brand lives on <html data-brand> (set in App.jsx).
-  const brand = (document.documentElement.getAttribute('data-brand') || 'folia').toUpperCase();
-  const carrier = String(box.carrier || 'usps').toUpperCase();
-  const items = box.items || [];
-  const hasUnmatched = items.some(i => i.lotKind === 'unmatched');
-  const hasAnthurium = items.some(i => (i.variety || '').toLowerCase() === 'anthurium');
-  const marker = hasUnmatched ? '#' : '*';
-  const tag = hasAnthurium ? ' · ANT' : '';
-  return `${brand} · ${carrier} · ${marker}${tag}`;
-}
-
-const LABEL_W = 2;
-const LABEL_H = 1;
-
-function barcodeDataUrl(canvas, value) {
-  try {
-    JsBarcode(canvas, value, {
-      format: 'CODE128',
-      height: 50,
-      width: 2,
-      margin: 0,
-      displayValue: false,
-    });
-    return canvas.toDataURL('image/png');
-  } catch {
-    return null;
-  }
-}
-
-function buildPdf(boxes) {
-  const pdf = new jsPDF({
-    unit: 'in',
-    format: [LABEL_W, LABEL_H],
-    orientation: 'landscape',
-  });
-  const canvas = document.createElement('canvas');
-
-  boxes.forEach((box, idx) => {
-    if (idx > 0) pdf.addPage([LABEL_W, LABEL_H], 'landscape');
-    const code = shortBoxCode(box.id);
-    const header = displayHeader(box);
-
-    // Top: carrier · @username — 9pt, centered, truncated to fit.
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(9);
-    pdf.setTextColor(0);
-    pdf.text(header, LABEL_W / 2, 0.2, { align: 'center', maxWidth: LABEL_W - 0.15 });
-
-    // Middle: box code — 12pt bold mono.
-    pdf.setFont('courier', 'bold');
-    pdf.setFontSize(12);
-    pdf.setTextColor(0);
-    pdf.text(code, LABEL_W / 2, 0.5, { align: 'center' });
-
-    // Bottom: CODE128 barcode of the box code.
-    const dataUrl = barcodeDataUrl(canvas, code);
-    if (dataUrl) {
-      // 'FAST' = FlateDecode the embedded PNG so big batches stay small.
-      pdf.addImage(dataUrl, 'PNG', 0.1, 0.58, LABEL_W - 0.2, 0.36, undefined, 'FAST');
-    }
-  });
-
-  return pdf;
-}
+// PDF construction + the header rule live in boxLabelPdf.js (shared with
+// the packer's per-box "Print box tag" button).
 
 export function BoxLabelSheet({ boxes, onClose, showToast }) {
   // Print directly on open when the printer's ready — skip the preview grid;
@@ -137,11 +58,11 @@ export function BoxLabelSheet({ boxes, onClose, showToast }) {
   // Large batches are split into per-job chunks so they fit under the cap.
   // media: force 2"×1" so the printer doesn't fall back to its CUPS default (4×6).
   const printDirect = (printViaBridge) =>
-    printChunked({ items: boxes, buildPdf, role: 'label', media: 'Custom.2x1in', printViaBridge });
+    printChunked({ items: boxes, buildPdf: buildBoxLabelPdf, role: 'label', media: 'Custom.2x1in', printViaBridge });
   const auto = useAutoBridgePrint({ printDirect, onClose, showToast });
 
   const handleDownloadPdf = () => {
-    const pdf = buildPdf(boxes);
+    const pdf = buildBoxLabelPdf(boxes);
     const stamp = new Date().toISOString().slice(0, 10);
     pdf.save(`folia-box-labels-${stamp}.pdf`);
   };
@@ -177,7 +98,7 @@ export function BoxLabelSheet({ boxes, onClose, showToast }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm rounded-lg hover:bg-gray-200 text-gray-700">
             Close
           </button>
-          <PrintControls printDirect={printDirect} buildPdf={() => buildPdf(boxes)} onBrowserPrint={printInBrowser} />
+          <PrintControls printDirect={printDirect} buildPdf={() => buildBoxLabelPdf(boxes)} onBrowserPrint={printInBrowser} />
           <button
             onClick={handleDownloadPdf}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white"
