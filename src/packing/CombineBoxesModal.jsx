@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { X, Combine, AlertCircle, Check, Loader2, ScanLine } from 'lucide-react';
 import { shortBoxCode } from '../labels/boxCode.js';
+import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
 
 // Combine several open boxes into one: every item from the other boxes moves
 // into the kept box (shipmentBoxId + denormalized recipient re-stamped, same
@@ -24,7 +25,9 @@ function addressOneLine(a = {}) {
 export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesById, onClose, onCombine, showToast }) {
   const [selected, setSelected] = useState(() => new Set());
   const [keepId, setKeepId] = useState(null);
-  const [confirming, setConfirming] = useState(false);
+  // '' = not armed; otherwise the `${targetId}:${moveCount}` key it was
+  // armed for (see confirmArmed below).
+  const [confirming, setConfirming] = useState('');
   const [busy, setBusy] = useState(false);
 
   const hasLabel = (id) => {
@@ -56,21 +59,46 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
   const selectedBoxes = boxes.filter(b => selected.has(b.id));
   const target = selectedBoxes.find(b => b.id === keepId) || selectedBoxes[0] || null;
   const sources = target ? selectedBoxes.filter(b => b.id !== target.id) : [];
-  const moveCount = sources.reduce((n, b) => n + (b.items?.length || 0), 0);
-  const canCombine = !busy && selectedBoxes.length >= 2 && !!target;
+  // Only still-sold items move (the server enforces the same rule) —
+  // already-shipped items in a partially-shipped box stay behind as history.
+  const soldCount = (b) => (b.items || []).filter(i => i.status === 'sold').length;
+  const moveCount = sources.reduce((n, b) => n + soldCount(b), 0);
+  const sourcesWithShipped = sources.filter(b => (b.items || []).length > soldCount(b));
+
+  // A target with no usable address would stamp emptiness over every moved
+  // item's real address — block until the operator keeps an addressed box
+  // (or fixes the address first).
+  const targetAddressMissing = !!target && !(target.buyerAddress?.street1)
+    && sources.some(s => s.buyerAddress?.street1);
+
+  const canCombine = !busy && selectedBoxes.length >= 2 && !!target
+    && moveCount > 0 && !targetAddressMissing;
 
   // Cross-buyer combine is allowed (the operator may know it's the same
   // person) but loudly flagged — everything ships to the KEPT recipient.
   const mixedRecipients = target && sources.some(s => buyerKey(s) !== buyerKey(target));
-  // Box-level metadata on merged-away boxes doesn't carry over.
+  // Box-level metadata + item-driven flags on merged-away boxes don't carry
+  // over: notes, holds (button OR hold-item), local pickup, size/weight.
   const sourcesWithMeta = sources.filter(s => {
     const n = boxNotesByBox?.[s.id];
-    return !!(n && ((n.note || '').trim() || n.holdUntil));
+    return !!(
+      (n && ((n.note || '').trim() || n.holdUntil || n.boxSizeId || n.weightOz != null))
+      || boxHoldState(s.items, n?.holdUntil).state !== 'none'
+      || boxIsLocalPickup(n?.note, s.items)
+    );
   });
 
+  // The confirm step stays armed only for the exact target + move count it
+  // was armed for — if either shifts under the 8s background poll (kept box
+  // left the list, items moved), it disarms by derivation, no effect needed.
+  const armedKey = target ? `${target.id}:${moveCount}` : '';
+  const confirmArmed = confirming === armedKey;
+
   const toggle = (box) => {
-    if (busy || hasLabel(box.id)) return;
-    setConfirming(false);
+    // A selected box can ALWAYS be unchecked — even if a label appeared on
+    // it since selection (otherwise it's stuck checked and disabled).
+    if (busy || (hasLabel(box.id) && !selected.has(box.id))) return;
+    setConfirming('');
     const next = new Set(selected);
     if (next.has(box.id)) {
       next.delete(box.id);
@@ -160,7 +188,7 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
                             )}
                           </div>
                           <div className="text-[11px] text-gray-500 truncate">
-                            {(box.items || []).length} item{(box.items || []).length === 1 ? '' : 's'}
+                            {soldCount(box)} item{soldCount(box) === 1 ? '' : 's'}
                             {sale?.name ? ` · ${sale.name}` : ''}
                             {addressOneLine(box.buyerAddress) ? ` · ${addressOneLine(box.buyerAddress)}` : ''}
                           </div>
@@ -168,7 +196,7 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
                         {isSelected && (
                           <button
                             type="button"
-                            onClick={(e) => { e.preventDefault(); setKeepId(box.id); setConfirming(false); }}
+                            onClick={(e) => { e.preventDefault(); setKeepId(box.id); setConfirming(''); }}
                             disabled={busy}
                             className={`flex-shrink-0 text-[11px] font-semibold px-2 py-1 rounded-md border ${
                               isKeep
@@ -199,13 +227,27 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
               </span>
             </div>
           )}
+          {targetAddressMissing && (
+            <div className="flex items-start gap-2 text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-600" />
+              <span>
+                The kept box <strong>has no shipping address</strong> — combining would erase the other boxes&apos; addresses.
+                Keep a box that has one, or edit the address first.
+              </span>
+            </div>
+          )}
           {sourcesWithMeta.length > 0 && (
             <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600" />
               <span>
-                {sourcesWithMeta.map(s => shortBoxCode(s.id)).join(', ')} {sourcesWithMeta.length === 1 ? 'has' : 'have'} a note or hold —
-                box notes and holds <strong>don&apos;t carry over</strong>; re-apply them on the kept box if still needed.
+                {sourcesWithMeta.map(s => shortBoxCode(s.id)).join(', ')} {sourcesWithMeta.length === 1 ? 'carries' : 'carry'} a note, hold,
+                pickup flag or packaging — none of it <strong>carries over</strong>; re-apply on the kept box if still needed.
               </span>
+            </div>
+          )}
+          {sourcesWithShipped.length > 0 && (
+            <div className="text-[11px] text-gray-500 px-1">
+              Already-shipped items in {sourcesWithShipped.map(s => shortBoxCode(s.id)).join(', ')} stay in their original box.
             </div>
           )}
           <div className="flex items-center justify-between gap-2">
@@ -218,7 +260,7 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
               <button onClick={close} disabled={busy} className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-40">
                 Cancel
               </button>
-              {confirming ? (
+              {confirmArmed ? (
                 <button
                   onClick={doCombine}
                   disabled={!canCombine}
@@ -229,7 +271,7 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
                 </button>
               ) : (
                 <button
-                  onClick={() => setConfirming(true)}
+                  onClick={() => setConfirming(armedKey)}
                   disabled={!canCombine}
                   className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg flex items-center gap-1.5 disabled:bg-gray-300"
                 >

@@ -489,26 +489,22 @@ export function PackingView({
     showToast('Address updated');
   };
 
-  // Combine orders: move every item from the source boxes into the target
-  // box, re-stamping the target's recipient identity (box identity is
-  // denormalized on items — same write as the address editor, plus the
-  // shipmentBoxId). The merged-away boxes disappear once no item references
-  // them; their box-level notes/holds/packaging are left behind (the modal
-  // warns about that). The target keeps its label state, notes and size.
+  // Combine orders: one atomic server-side move of every still-sold item
+  // from the source boxes into the target box (identity re-stamped
+  // server-side; the server re-checks for active labels since our shipments
+  // cache can be stale). The merged-away boxes disappear once no sold item
+  // references them; their box-level notes/holds/packaging are left behind
+  // (the modal warns about that). The target keeps its notes and size.
   const handleCombineBoxes = async (targetBox, sourceBoxes) => {
-    const updates = sourceBoxes.flatMap(b => (b.items || []).map(i => ({
-      id: i.id,
-      shipmentBoxId: targetBox.id,
-      buyer: targetBox.buyer,
-      buyerUsername: targetBox.buyerUsername,
-      buyerAddress: targetBox.buyerAddress,
-    })));
-    await api.upsertItems(updates);
+    const { moved } = await api.combineBoxes({
+      targetBoxId: targetBox.id,
+      sourceBoxIds: sourceBoxes.map(b => b.id),
+    });
     // Merged-away box ids no longer exist — a stale selection would point at
     // nothing (or worse, preselect wrong rows in the bulk-buy modal).
     setSelectedBoxIds(new Set());
     await onRefreshItems?.();
-    showToast(`Combined ${sourceBoxes.length + 1} boxes into ${shortBoxCode(targetBox.id)} — ${updates.length} item${updates.length === 1 ? '' : 's'} moved`);
+    showToast(`Combined ${sourceBoxes.length + 1} boxes into ${shortBoxCode(targetBox.id)} — ${moved} item${moved === 1 ? '' : 's'} moved`);
   };
 
   // Confirm before unshipping — it's reversible, but it changes box state and
@@ -1119,9 +1115,10 @@ export function PackingView({
                   );
                 })()}
                 {/* Combine orders — one buyer's multiple boxes into a single
-                    shipment. The badge counts buyers with 2+ open unlabeled
-                    boxes (the natural candidates). */}
-                {totalBoxes > 1 && (() => {
+                    shipment. Admin-only, like Edit items / Delete box: it
+                    bulk-rewrites item box pointers + buyer identity. The
+                    badge counts buyers with 2+ open unlabeled boxes. */}
+                {isAdmin && totalBoxes > 1 && (() => {
                   const allBoxes = groups.flatMap(g => g.boxes);
                   const combinable = allBoxes.filter(b => {
                     const s = shipmentsByBox[b.id];
@@ -1140,7 +1137,7 @@ export function PackingView({
                       title={combinable.length < 2
                         ? 'Need at least two open boxes without a label'
                         : `${candidates} buyer${candidates === 1 ? '' : 's'} with multiple open boxes`}
-                      onClick={() => setCombineOpen(true)}
+                      onClick={() => { refreshShipments(); setCombineOpen(true); }}
                       className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <Combine className="w-4 h-4" />
@@ -1477,7 +1474,7 @@ export function PackingView({
         );
       })()}
 
-      {combineOpen && (
+      {combineOpen && isAdmin && (
         <CombineBoxesModal
           boxes={groups.flatMap(g => g.boxes)}
           shipmentsByBox={shipmentsByBox}

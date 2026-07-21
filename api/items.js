@@ -112,6 +112,71 @@ async function nextSkuForVariety(variety, brandId) {
   return `${code}-${next}`;
 }
 
+// POST { action: 'combine-boxes', targetBoxId, sourceBoxIds: [...] }
+// Move every still-sold item from the source boxes into the target box,
+// re-stamping the target's denormalized identity (buyer/username/address/
+// stamped carrier, derived server-side from the target's own items — never
+// client-supplied). ONE set-based UPDATE, so the merge is atomic: it can
+// never leave an order half-combined the way a per-item loop could.
+// Guards: none of the involved boxes may have an active (non-voided) label —
+// postage is priced for a box's contents, and the client's shipments cache
+// can be stale, so the check must live here.
+async function combineBoxes(req, res, user, brandId) {
+  const targetBoxId = typeof req.body?.targetBoxId === 'string' ? req.body.targetBoxId : '';
+  const sourceBoxIds = Array.isArray(req.body?.sourceBoxIds)
+    ? [...new Set(req.body.sourceBoxIds.filter(id => typeof id === 'string' && id && id !== targetBoxId))]
+    : [];
+  if (!targetBoxId || sourceBoxIds.length === 0) {
+    const e = new Error('targetBoxId and sourceBoxIds required'); e.status = 400; throw e;
+  }
+
+  const allIds = [targetBoxId, ...sourceBoxIds];
+  const { data: ships, error: shipErr } = await supabase
+    .from('shipments')
+    .select('id, "voidedAt"')
+    .eq('brandId', brandId)
+    .in('id', allIds);
+  if (shipErr) { const e = new Error(shipErr.message); e.status = 500; throw e; }
+  const labeled = (ships || []).filter(s => !s.voidedAt).map(s => s.id);
+  if (labeled.length > 0) {
+    const e = new Error(`Box${labeled.length === 1 ? ' has' : 'es have'} an active label — void it first to combine`);
+    e.status = 409; throw e;
+  }
+
+  const { data: tItems, error: tErr } = await supabase
+    .from('inventory_items')
+    .select('buyer, "buyerUsername", "buyerAddress", "shipmentCarrier"')
+    .eq('brandId', brandId)
+    .eq('shipmentBoxId', targetBoxId)
+    .limit(1);
+  if (tErr) { const e = new Error(tErr.message); e.status = 500; throw e; }
+  if (!tItems || tItems.length === 0) {
+    const e = new Error('Target box not found (it may have just shipped or been emptied)'); e.status = 404; throw e;
+  }
+  const t = tItems[0];
+
+  const now = new Date().toISOString();
+  const { data: moved, error: mvErr } = await supabase
+    .from('inventory_items')
+    .update({
+      shipmentBoxId: targetBoxId,
+      buyer: t.buyer,
+      buyerUsername: t.buyerUsername,
+      buyerAddress: t.buyerAddress,
+      shipmentCarrier: t.shipmentCarrier,
+      modifiedAt: now,
+      modifiedBy: user.displayName,
+    })
+    .eq('brandId', brandId)
+    .in('shipmentBoxId', sourceBoxIds)
+    .eq('status', 'sold')          // shipped/delivered history never moves
+    .is('deletedAt', null)
+    .select('id');
+  if (mvErr) { const e = new Error(mvErr.message); e.status = 500; throw e; }
+
+  return res.status(200).json({ ok: true, moved: moved?.length || 0 });
+}
+
 export default wrap(async (req, res) => {
   // All item operations require an authenticated user + an authorized brand.
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
@@ -123,6 +188,7 @@ export default wrap(async (req, res) => {
   const action = req.method === 'GET' ? req.query?.action : req.body?.action;
   if (action === 'convert') return convertItem(req, res, user, brandId);
   if (action === 'rename-names') return renameNames(req, res, user, brandId);
+  if (action === 'combine-boxes') return combineBoxes(req, res, user, brandId);
 
   switch (req.method) {
     case 'GET': {
