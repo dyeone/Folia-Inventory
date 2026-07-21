@@ -1191,7 +1191,10 @@ export function PackingView({
                     selectedBoxIds={selectedBoxIds}
                     onToggleBoxSelected={toggleBoxSelected}
                     onPrintSlip={(box) => setSlipBox(box)}
-                    onEditAddress={(box) => setEditingAddressBox(box)}
+                    onEditAddress={(box, note) =>
+                      // note: set when the click came from an address-change
+                      // note's shortcut — the modal shows it for reference.
+                      setEditingAddressBox(note ? { ...box, addressNote: note } : box)}
                     onEditItems={(box) => setEditingBox(box)}
                     onDeleteBox={(box) => {
                       // Confirm before nuking. Mirrors the existing
@@ -1493,6 +1496,7 @@ export function PackingView({
               .find(b => b.id === editingAddressBox.id);
             return fresh || editingAddressBox;
           })()}
+          note={editingAddressBox.addressNote || null}
           onSave={(data) => handleSaveAddress(editingAddressBox, data)}
           onClose={() => setEditingAddressBox(null)}
           showToast={showToast}
@@ -1720,7 +1724,7 @@ function BuyerGroupCard({
             showToast={showToast}
             isAdmin={isAdmin}
             onEditItems={onEditItems ? () => onEditItems(box) : null}
-            onEditAddress={onEditAddress ? () => onEditAddress(box) : null}
+            onEditAddress={onEditAddress ? (note) => onEditAddress(box, note) : null}
             onDeleteBox={onDeleteBox ? () => onDeleteBox(box) : null}
             onPrintSlip={onPrintSlip ? () => onPrintSlip(box) : null}
             isSelected={selectedBoxIds ? selectedBoxIds.has(box.id) : false}
@@ -1794,7 +1798,7 @@ function AddressCopyStrip({ box, showToast }) {
   );
 }
 
-function BoxItemsList({ box, salesById, onTogglePacked, onResolveReview }) {
+function BoxItemsList({ box, salesById, onTogglePacked, onResolveReview, onEditAddress }) {
   // Hide already-shipped items in open boxes — the operator only cares
   // about what's left to pack. Shipped boxes (every item is shipped)
   // skip the filter so the archive view still shows the full contents.
@@ -1963,7 +1967,7 @@ function BoxItemsList({ box, salesById, onTogglePacked, onResolveReview }) {
                   </>
                 )}
               </div>
-              <ItemNotes raw={item.notes} />
+              <ItemNotes raw={item.notes} onChangeAddress={onEditAddress || null} />
             </div>
             {priceStr && (
               <span className="text-sm text-gray-700 font-medium shrink-0 tabular-nums">
@@ -2468,7 +2472,7 @@ function BoxRow({
             )}
           </div>
           <AddressCopyStrip box={box} showToast={showToast} />
-          <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} />
+          <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} onEditAddress={onEditAddress} />
           <LabelInfoRow shipment={shipment} feeCollected={box.shippingFeeCollected} showToast={showToast} />
           {/* Carrier — defaults from contents (anthurium → UPS); operator can
               override here. Hidden once a label is bought (carrier is locked). */}

@@ -7,7 +7,7 @@
 
 import { supabase, requireBrand, brandIdFromReq } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
-import { createLabel, voidLabel, getRates as ssGetRates } from './_lib/shipstation.js';
+import { createLabel, voidLabel, getRates as ssGetRates, getDefaultShipFrom } from './_lib/shipstation.js';
 import {
   getRates as shippoGetRates, createLabel as shippoCreateLabel,
   refund as shippoRefund, shippoConfigured, isTestToken as shippoIsTest,
@@ -83,10 +83,18 @@ async function getRatesHandler(req, res, brandId) {
   const ssJobs = neededCarriers.map(async (carrier) => {
     const carrierCode = carrierCodes[carrier];
     if (!carrierCode) return; // carrier not connected in settings — skip
+    // UPS quotes originate from ShipStation's default Ship From location —
+    // the same origin the purchase uses below — so quoted UPS prices match
+    // what's actually bought. Falls back to the settings zip on any failure.
+    let fromPostalCode = shipFrom.zip;
+    if (carrier === 'ups') {
+      try { fromPostalCode = (await getDefaultShipFrom())?.postalCode || shipFrom.zip; }
+      catch { /* settings zip */ }
+    }
     const rates = await ssGetRates({
       carrierCode,
       packageCode: settings.carriers?.[carrier]?.packageCode || 'package',
-      fromPostalCode: shipFrom.zip,
+      fromPostalCode,
       toState: to.state,
       toCountry: to.country || 'US',
       toPostalCode: to.zip,
@@ -270,6 +278,9 @@ async function buyLabel(req, res, userId, brandId) {
   //   { labelData(base64), trackingNumber, labelCost, serviceCode,
   //     carrierCode, isTestLabel, shipstation*Id, shippoTransactionId }
   let purchase;
+  // The origin actually sent to the carrier — recorded on the shipments row.
+  // ShipStation UPS buys swap in the account's default Ship From location.
+  let shipFromUsed = shipFromAddr;
   if (provider === 'shippo') {
     if (!svc) { const e = new Error('serviceKey required for a Shippo label'); e.status = 400; throw e; }
     if (!shippoConfigured()) { const e = new Error('Shippo not configured (SHIPPO_API_TOKEN)'); e.status = 412; throw e; }
@@ -310,6 +321,31 @@ async function buyLabel(req, res, userId, brandId) {
       e.status = 412; throw e;
     }
     const testLabel = settings.testMode !== false; // default to TRUE for safety
+    // UPS labels ship from ShipStation's DEFAULT Ship From location (the
+    // UPS-registered pickup address the operator maintains in ShipStation),
+    // not the app's Shipping Settings address. Real purchases FAIL CLOSED
+    // when that location can't be confirmed — silently buying with the
+    // settings origin is the wrong-origin label this feature exists to
+    // prevent. Test labels (no charge) fall back so test flows still work.
+    let ssShipFrom = { ...shipFromAddr, postalCode: shipFrom.zip, zip: undefined };
+    if (carrier === 'ups') {
+      let def = null, lookupErr = null;
+      try {
+        def = await getDefaultShipFrom({ fresh: true }); // money path — no cache
+      } catch (e) { lookupErr = e; }
+      if (def) {
+        ssShipFrom = def;
+      } else if (testLabel) {
+        console.warn('[shipstation] default Ship From unavailable — test label uses settings address:',
+          lookupErr?.message || 'none marked default');
+      } else {
+        const e = new Error(lookupErr
+          ? `Couldn't confirm the ShipStation default Ship From location (${lookupErr.message}) — try again`
+          : 'No default Ship From location in ShipStation — mark one as default (ShipStation → Settings → Shipping → Ship From Locations)');
+        e.status = 412; throw e;
+      }
+    }
+    shipFromUsed = { ...ssShipFrom, zip: ssShipFrom.postalCode, postalCode: undefined };
     let result;
     try {
       result = await createLabel({
@@ -319,7 +355,7 @@ async function buyLabel(req, res, userId, brandId) {
         dimensions: dims?.length && dims?.width && dims?.height
           ? { units: 'inches', length: Number(dims.length), width: Number(dims.width), height: Number(dims.height) }
           : undefined,
-        shipFrom: { ...shipFromAddr, postalCode: shipFrom.zip, zip: undefined },
+        shipFrom: ssShipFrom,
         shipTo: { ...shipToAddr, postalCode: buyerAddr.zip, zip: undefined },
         testLabel,
       });
@@ -380,7 +416,7 @@ async function buyLabel(req, res, userId, brandId) {
     dimsLength: Number(dims?.length) || null,
     dimsWidth: Number(dims?.width) || null,
     dimsHeight: Number(dims?.height) || null,
-    shipFrom: shipFromAddr,
+    shipFrom: shipFromUsed,
     shipTo: shipToAddr,
     trackingNumber: purchase.trackingNumber,
     labelCost: purchase.labelCost,
