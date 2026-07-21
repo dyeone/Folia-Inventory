@@ -5,6 +5,7 @@ import {
 import { api } from '../api.js';
 import { shortBoxCode } from '../labels/boxCode.js';
 import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
+import { hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
 import { ShipDateField } from './ShipDateField.jsx';
 import { shipDateProblem } from './shipDate.js';
 
@@ -16,15 +17,15 @@ import { shipDateProblem } from './shipDate.js';
 // Buyers can also purchase an expedited-shipping upgrade in the live; it
 // lands in the box as a placeholder item named like "UPS Next Day". Such a
 // box defaults its service to UPS Next Day Air Saver (the buyer paid for
-// it) and gets a "Next Day" chip.
-const NEXT_DAY_RE = /\bnext\s*-?\s*day\b/i;
+// it) and gets a "Next Day" chip. The rule lives in carrier.js, shared with
+// the per-box service picker on the Shipping tab's box rows.
 function boxFlags(b) {
   const hold = boxHoldState(b.items, b.holdUntil);
   return {
     holding: hold.state === 'holding',
     daysLeft: hold.daysLeft,
     pickup: boxIsLocalPickup(b.note, b.items),
-    nextDay: (b.items || []).some(i => NEXT_DAY_RE.test(i?.name)),
+    nextDay: hasPaidNextDay(b.items),
   };
 }
 
@@ -82,20 +83,29 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
     const init = {};
     for (const b of boxes) {
       const size = boxSizes.find(s => s.id === b.boxSizeId) || null;
-      const { holding, pickup, nextDay } = boxFlags(b);
+      const { holding, pickup } = boxFlags(b);
       init[b.id] = {
         checked: (preselectedIds ? preselectedIds.has(b.id) : b.carrier === 'ups')
           && !holding && !pickup,
         sizeId: b.boxSizeId || '',
         weight: b.weightOz != null ? String(b.weightOz)
           : (size?.weightOz != null ? String(size.weightOz) : ''),
-        // A paid Next Day upgrade in the box wins the default — even over a
-        // previously saved serviceKey (likely stale from before the upgrade
-        // sold). The chip + preselected service make the override visible;
-        // the operator can still change it per-row.
-        serviceKey: nextDay ? 'ups_next_day_air_saver'
-          : (b.serviceKey || (b.carrier === 'ups' ? 'ups_2nd_day_air' : 'usps_priority')),
+        // The box's own choice wins (the per-box picker on the Shipping tab
+        // is the source of truth); a paid Next Day upgrade only sets the
+        // DEFAULT when no explicit choice was saved. If the choice drifts
+        // from a paid Next Day, the red "buyer paid Next Day" note on the
+        // row flags it before buying. Non-UPS boxes always seed USPS — a
+        // UPS serviceKey left over from before a carrier flip must not
+        // silently buy a UPS label on a USPS-badged box.
+        serviceKey: b.carrier === 'ups'
+          ? boxUpsServiceKey(b.items, b.serviceKey)
+          : 'usps_priority',
       };
+      // Remember what we seeded: only an IN-MODAL change persists back to the
+      // box as an explicit choice (see buyAll) — stamping the seeded default
+      // would fake an "operator choice" that permanently defeats the
+      // paid-Next-Day default for upgrades sold later.
+      init[b.id].seeded = init[b.id].serviceKey;
     }
     return init;
   });
@@ -222,9 +232,15 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
       // Keep the box's saved packaging in sync with what's being bought so
       // the per-box panel agrees afterwards. A failed save must not block
       // the purchase.
-      if (row.sizeId !== (b.boxSizeId || '') || weightOz !== b.weightOz || row.serviceKey !== (b.serviceKey || '')) {
+      const svcChanged = row.serviceKey !== row.seeded;
+      if (row.sizeId !== (b.boxSizeId || '') || weightOz !== b.weightOz || svcChanged) {
         try {
-          await api.setBoxPackaging({ shipmentBoxId: b.id, boxSizeId: row.sizeId, weightOz, serviceKey: row.serviceKey });
+          await api.setBoxPackaging({
+            shipmentBoxId: b.id, boxSizeId: row.sizeId, weightOz,
+            // serviceKey persists only when changed in this modal (see the
+            // seeding comment above).
+            ...(svcChanged ? { serviceKey: row.serviceKey } : {}),
+          });
         } catch { /* best-effort */ }
       }
       try {

@@ -28,7 +28,7 @@ import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup, isLocalPickupText } from './holdInfo.js';
-import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem } from './carrier.js';
+import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem, hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
@@ -1811,16 +1811,20 @@ function BuyerGroupCard({
         </div>
       </div>
       <div className="space-y-1.5">
-        {group.boxes.map(box => (
+        {group.boxes.map(box => {
+          // Merge the shipment_boxes metadata once — the modal opened by
+          // Buy label needs serviceKey/notes on the box too, not just BoxRow.
+          const merged = { ...box, ...(boxNotesByBox?.[box.id] || {}) };
+          return (
           <BoxRow
             key={box.id}
-            box={{ ...box, ...(boxNotesByBox?.[box.id] || {}) }}
+            box={merged}
             defaultExpanded={expandSet ? expandSet.has(box.id) : false}
             sale={salesById.get(box.saleId)}
             salesById={salesById}
             shipment={shipmentsByBox[box.id]}
             onOpen={() => onOpenBox(box.saleId)}
-            onBuyLabel={() => onBuyLabel(box)}
+            onBuyLabel={() => onBuyLabel(merged)}
             onSaveTracking={(num) => onSaveTracking(box, num)}
             onMarkShipped={() => onMarkShipped(box)}
             onUnship={onUnship ? () => onUnship(box) : null}
@@ -1841,7 +1845,8 @@ function BuyerGroupCard({
             isSelected={selectedBoxIds ? selectedBoxIds.has(box.id) : false}
             onToggleSelected={onToggleBoxSelected ? () => onToggleBoxSelected(box.id) : null}
           />
-        ))}
+        );
+        })}
       </div>
     </div>
   );
@@ -2183,6 +2188,24 @@ function BoxRow({
   const carrierKey = (box.carrier || 'usps').toLowerCase();
   const carrierLabel = carrierKey.toUpperCase();
 
+  // Which UPS label kind this box buys with (explicit choice wins; a paid
+  // Next Day upgrade sets the default). Shown as an inline picker on the
+  // header row so the operator can set it per box without expanding, then
+  // "Buy UPS labels" purchases each box accordingly.
+  const paidNextDay = hasPaidNextDay(box.items);
+  const upsServiceKey = boxUpsServiceKey(box.items, box.serviceKey);
+  // The buyer paid for Next Day but this box would buy something else —
+  // flag it in red, same drift warning the bulk modal shows.
+  const upsServiceDrift = paidNextDay && upsServiceKey !== 'ups_next_day_air_saver';
+  const [savingSvc, setSavingSvc] = useState(false);
+  const saveUpsService = async (serviceKey) => {
+    if (savingSvc || !onSavePackaging) return;
+    setSavingSvc(true);
+    try { await onSavePackaging({ serviceKey }); }
+    catch (e) { showToast?.(e?.message || 'Save failed'); }
+    finally { setSavingSvc(false); }
+  };
+
   // For shipped boxes there's nothing left to act on — hide the
   // primary action button and the inline tracking editor. Chevron
   // drill-in to the per-sale pane is still useful (label PDF download).
@@ -2344,6 +2367,34 @@ function BoxRow({
             <span className={`w-1.5 h-1.5 rounded-full ${carrierKey === 'ups' ? 'bg-amber-500' : 'bg-blue-500'}`} />
             {carrierLabel}
           </span>
+          {/* UPS label kind — settable right on the row; Buy UPS labels uses
+              it per box. Hidden once a label exists (service is locked). */}
+          {carrierKey === 'ups' && !allShipped && !hasLabel && onSavePackaging && (
+            <select
+              value={upsServiceKey}
+              onClick={(e) => e.stopPropagation()}
+              // Keyboard too: Enter/Space would bubble to the row's
+              // role="button" handler, toggling expansion instead of
+              // opening the dropdown.
+              onKeyDown={(e) => e.stopPropagation()}
+              onChange={(e) => { e.stopPropagation(); saveUpsService(e.target.value); }}
+              disabled={savingSvc}
+              aria-label="UPS label kind"
+              title={upsServiceDrift
+                ? 'Buyer paid for Next Day — this box is set to buy a different service'
+                : paidNextDay
+                ? 'Buyer paid for Next Day (preselected) — Buy UPS labels uses this'
+                : 'UPS label kind for this box — Buy UPS labels uses this'}
+              className={`text-[10px] font-medium rounded-md px-1 py-0.5 shrink-0 cursor-pointer border disabled:opacity-60 ${
+                upsServiceDrift
+                  ? 'border-red-300 bg-red-50 text-red-800'
+                  : 'border-amber-200 bg-amber-50 text-amber-900'
+              }`}
+            >
+              <option value="ups_2nd_day_air">2nd Day Air</option>
+              <option value="ups_next_day_air_saver">Next Day Saver</option>
+            </select>
+          )}
           <BoxContentBadges box={box} />
           <span className="font-mono text-[11px] text-gray-600 shrink-0">
             {shortBoxCode(box.id)}

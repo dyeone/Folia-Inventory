@@ -1117,6 +1117,10 @@ function StaffOrAdminInventory() {
                 grossCost: sampleItem?.grossCost ?? sampleItem?.cost ?? '',
                 netCost: sampleItem?.netCost ?? '',
                 source: sampleItem?.source || '',
+                // A consignment sample seeds its seller too — otherwise the
+                // follow-up plant would carry the consignor's cost but mint
+                // an own-inventory SKU (silent misattribution).
+                sellerId: sampleItem?.sellerId ?? null,
               });
               setShowAddModal(true);
             }}
@@ -1582,6 +1586,7 @@ function StaffOrAdminInventory() {
           title={addPrefill?.name ? `Add ${addPrefill.name}` : 'Add New SKU'}
           item={addPrefill}
           sales={sales}
+          sellers={sellers}
           existingItems={items}
           varieties={varieties}
           species={species}
@@ -1912,7 +1917,7 @@ function StaffOrAdminInventory() {
         <BoxLabelSheet boxes={boxLabelBoxes} onClose={() => setBoxLabelBoxes(null)} showToast={showToast} />
       )}
       {labelItems && labelItems.length > 0 && (
-        <LabelSheet items={labelItems} sellers={sellers} onClose={() => setLabelItems(null)} showToast={showToast} />
+        <LabelSheet items={labelItems} sellers={sellers} sales={sales} onClose={() => setLabelItems(null)} showToast={showToast} />
       )}
       </Suspense>
 

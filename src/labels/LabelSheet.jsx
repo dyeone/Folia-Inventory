@@ -24,6 +24,38 @@ function lotStr(item) {
   return Number.isFinite(n) && n > 0 ? String(n) : '';
 }
 
+// ISO-8601 week number (Monday-based, 1–53) of a date. Date-only strings
+// ("2026-07-17") are parsed as LOCAL calendar dates — new Date() would read
+// them as UTC midnight, which in US timezones lands on the previous local
+// day and can cross a week boundary on Mondays.
+function isoWeek(raw) {
+  let d;
+  if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, day] = raw.split('-').map(Number);
+    d = new Date(y, m - 1, day);
+  } else {
+    d = new Date(raw);
+  }
+  if (isNaN(d.getTime())) return null;
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dow = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - dow);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  return Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
+}
+
+// Small "wk N" tag printed under the big lineup number. The running index
+// keeps numbers unique WITHIN a week (Tue continues into Fri) but restarts
+// for a new week, so two weeks' plants on the bench can share a number —
+// the week tag is what tells this week's #12 from last week's. Week comes
+// from the plant's sale date, else its sold date, else the print date
+// (labels are printed in the lineup's own week).
+function weekTag(item, saleById) {
+  const sale = item?.saleId && saleById ? saleById.get(item.saleId) : null;
+  const week = isoWeek(sale?.date || item?.soldAt || new Date());
+  return week ? `wk ${week}` : '';
+}
+
 // Big-number font size (pt) picked by digit count so it fills the (wide) left
 // column of a 2"×1" label and stays readable across the room during a live.
 function lotFontPt(lot) {
@@ -53,7 +85,7 @@ function realSku(item) {
   return /^(UNMATCHED|DBL)-/i.test(s) ? '' : s;
 }
 
-function Label({ item, tag, sellerName }) {
+function Label({ item, tag, sellerName, week }) {
   const svgRef = useRef(null);
   const sku = realSku(item);
   // Consignment plants print the seller's name alongside the brand tag so the
@@ -86,9 +118,14 @@ function Label({ item, tag, sellerName }) {
          style={{ width: '2in', height: '1in', padding: '0.06in', boxSizing: 'border-box' }}>
       {lot ? (
         <div className="flex items-stretch h-full w-full">
-          <div className="flex items-center justify-center pr-1 border-r border-gray-300" style={{ width: '0.78in' }}>
+          <div className="flex flex-col items-center justify-center pr-1 border-r border-gray-300" style={{ width: '0.78in' }}>
             <span className="font-extrabold text-black leading-none"
-                  style={{ fontSize: lot.length >= 4 ? '30pt' : lot.length === 3 ? '38pt' : '52pt' }}>{lot}</span>
+                  style={{ fontSize: lot.length >= 4 ? '30pt' : lot.length === 3 ? '38pt' : '46pt' }}>{lot}</span>
+            {week && (
+              <span className="text-gray-600 font-semibold leading-none" style={{ fontSize: '5.5pt', marginTop: '0.03in' }}>
+                {week}
+              </span>
+            )}
           </div>
           <div className="flex-1 min-w-0 flex flex-col items-center justify-between text-center pl-1">
             {top && <div className="text-[6pt] font-bold text-black leading-none truncate w-full">{top}</div>}
@@ -130,7 +167,7 @@ function barcodeDataUrl(canvas, value) {
   }
 }
 
-function buildPdf(items, sellerNameById) {
+function buildPdf(items, sellerNameById, saleById) {
   const pdf = new jsPDF({
     unit: 'in',
     format: [LABEL_W, LABEL_H],
@@ -155,12 +192,20 @@ function buildPdf(items, sellerNameById) {
     if (lot) {
       // Combined layout: the big lineup number fills the wide left column (easy
       // to read across the room during a live), with name / SKU / barcode stacked
-      // in the right column. A thin divider separates the two.
+      // in the right column. A thin divider separates the two. A small "wk N"
+      // under the number says which week's lineup this is — the running index
+      // restarts each week, so numbers repeat across weeks on the bench.
+      const week = weekTag(item, saleById);
       const DIV = 0.82;                 // left column width / divider x
       pdf.setFont('helvetica', 'bold');
       pdf.setTextColor(0);
       pdf.setFontSize(lotFontPt(lot));
-      pdf.text(lot, DIV / 2, 0.74, { align: 'center' });
+      pdf.text(lot, DIV / 2, week ? 0.68 : 0.74, { align: 'center' });
+      if (week) {
+        pdf.setFontSize(5.5);
+        pdf.setTextColor(110);
+        pdf.text(week, DIV / 2, 0.88, { align: 'center' });
+      }
       pdf.setDrawColor(170);
       pdf.setLineWidth(0.008);
       pdf.line(DIV, 0.1, DIV, 0.9);
@@ -216,14 +261,21 @@ function buildPdf(items, sellerNameById) {
   return pdf;
 }
 
-export function LabelSheet({ items, sellers, onClose, showToast }) {
+export function LabelSheet({ items, sellers, sales, onClose, showToast }) {
   // Resolve sellerId → name once so both the preview and the PDF can print the
   // seller on consignment labels. Empty for Folia / any non-consignment batch.
   const sellerNameById = useMemo(
     () => new Map((sellers || []).map(s => [s.id, s.name])),
     [sellers],
   );
-  const buildLabelPdf = (its) => buildPdf(its, sellerNameById);
+  // saleId → sale, for the "wk N" tag under lineup numbers (week comes from
+  // the sale's date). Optional — without it the tag falls back to soldAt /
+  // the print date.
+  const saleById = useMemo(
+    () => new Map((sales || []).map(s => [s.id, s])),
+    [sales],
+  );
+  const buildLabelPdf = (its) => buildPdf(its, sellerNameById, saleById);
 
   // Print directly on open when the printer's ready — skip the preview grid.
   // Only when the bridge is offline (or the direct print fails) do we fall back
@@ -300,6 +352,7 @@ export function LabelSheet({ items, sellers, onClose, showToast }) {
             item={item}
             tag={brandTag()}
             sellerName={item.sellerId ? sellerNameById.get(item.sellerId) : null}
+            week={weekTag(item, saleById)}
           />
         ))}
       </div>

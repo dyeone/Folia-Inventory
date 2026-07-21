@@ -3,6 +3,7 @@ import { X, Truck, MapPin, Package, AlertCircle, Check, FlaskConical, ShoppingCa
 import { api } from '../api.js';
 import { ShipDateField } from './ShipDateField.jsx';
 import { shipDateProblem } from './shipDate.js';
+import { hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
 
 // Confirmation modal for buying a single shipping label. Pre-fills weight
 // and dims from the saved settings; the user can override before
@@ -38,7 +39,12 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
         setLength(String(pkg.length ?? 12));
         setWidth(String(pkg.width ?? 9));
         setHeight(String(pkg.height ?? 6));
-        setServiceCode(s.carriers?.[box.carrier]?.serviceCode || '');
+        // UPS boxes seed from the box's own service choice (the row picker /
+        // paid-Next-Day default) — the UPS serviceKeys double as ShipStation
+        // serviceCodes (api/_lib/services.js). USPS keeps the settings default.
+        setServiceCode(box.carrier === 'ups'
+          ? boxUpsServiceKey(box.items, box.serviceKey)
+          : (s.carriers?.[box.carrier]?.serviceCode || ''));
       } catch (e) {
         setErr(e.message || 'Failed to load settings');
       }
@@ -135,6 +141,12 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
               {/* Service code (overridable) */}
               <Field label="Service code" value={serviceCode} onChange={setServiceCode}
                 hint={`Default for ${box.carrier?.toUpperCase()}: ${settings.carriers?.[box.carrier]?.serviceCode || '—'}`} />
+              {hasPaidNextDay(box.items) && serviceCode !== 'ups_next_day_air_saver' && (
+                <div className="flex items-start gap-1.5 text-[11px] text-red-700 -mt-2">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
+                  Buyer paid for Next Day — this would buy a different service.
+                </div>
+              )}
 
               {/* Weight */}
               <Field label="Weight (oz)" type="number" value={weightOz} onChange={setWeightOz} />
