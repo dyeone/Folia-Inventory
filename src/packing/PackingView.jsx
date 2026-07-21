@@ -317,21 +317,38 @@ export function PackingView({
   // only our canonical segment; free-text that still says "pickup" is the
   // operator's words, so we surface it instead of editing their prose.
   const onTogglePickup = async (shipmentBoxId, makePickup) => {
-    const current = (boxNotesByBox?.[shipmentBoxId]?.note || '').trim();
-    let next = current;
-    if (makePickup) {
-      if (!isLocalPickupText(current)) next = current ? `${current} · Local pickup` : 'Local pickup';
-    } else {
-      next = current
-        .split(' · ')
-        .filter(p => p.trim().toLowerCase() !== 'local pickup')
-        .join(' · ');
-    }
-    if (next !== current) await onSaveBoxNote(shipmentBoxId, next);
-    if (!makePickup && isLocalPickupText(next)) {
-      showToast('Note text still mentions pickup — edit the note to fully clear the flag', 5000);
-    } else {
-      showToast(makePickup ? 'Marked as local pickup — this box will not ship' : 'Local pickup cleared');
+    try {
+      // Fresh read before the read-modify-write: this cache has no poll, and
+      // rebuilding from a stale note would silently discard an edit another
+      // operator made since page load (setBoxNote overwrites the whole note).
+      let current = boxNotesByBox?.[shipmentBoxId]?.note || '';
+      try {
+        const fresh = await api.getBoxNotes();
+        if (fresh) {
+          setBoxNotesByBox(fresh);
+          current = fresh[shipmentBoxId]?.note || '';
+        }
+      } catch { /* transient — fall back to the cached note */ }
+      current = current.trim();
+      let next = current;
+      if (makePickup) {
+        if (!isLocalPickupText(current)) next = current ? `${current} · Local pickup` : 'Local pickup';
+      } else {
+        next = current
+          .split(' · ')
+          .filter(p => p.trim().toLowerCase() !== 'local pickup')
+          .join(' · ');
+      }
+      if (next !== current) await onSaveBoxNote(shipmentBoxId, next);
+      if (!makePickup && isLocalPickupText(next)) {
+        showToast('Note text still mentions pickup — edit the note to fully clear the flag', 5000);
+      } else {
+        showToast(makePickup ? 'Marked as local pickup — this box will not ship' : 'Local pickup cleared');
+      }
+    } catch (e) {
+      // A silent failure here means a do-not-ship flag the operator believes
+      // is set — always say it out loud.
+      showToast(e?.message || 'Could not update the pickup flag — try again', 5000);
     }
   };
 
@@ -2473,12 +2490,15 @@ function BoxRow({
               isPickup ? (
                 (() => {
                   const fromItems = boxIsLocalPickup(null, box.items);
+                  const fromNote = isLocalPickupText(box.note);
                   return (
                     <button
                       onClick={(e) => { stop(e); if (!fromItems) onTogglePickup(false); }}
                       disabled={fromItems}
                       title={fromItems
-                        ? 'Pickup is flagged by an item in this box — edit or remove that item to clear it'
+                        ? (fromNote
+                          ? 'Pickup is flagged by an item AND the note — remove the item, then clear again'
+                          : 'Pickup is flagged by an item in this box — edit or remove that item to clear it')
                         : 'Clear the local-pickup flag — the box ships normally again'}
                       className="text-xs font-medium px-2 py-1 rounded-md border border-violet-300 text-violet-700 bg-violet-50 hover:bg-violet-100 active:bg-violet-200 flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
