@@ -1,6 +1,5 @@
 import { api } from '../api.js';
 import { bridgeOnlineNow, printPdfViaBridge, bytesToBase64, pdfToBase64 } from '../labels/useBridgePrint.js';
-import { buildBoxLabelPdf } from '../labels/boxLabelPdf.js';
 import { urlToBytes } from './labelPdf.js';
 import { getPdfjs } from './pdfjsLoader.js';
 
@@ -40,10 +39,13 @@ function readDest(key, fallback) {
 }
 
 export function getPrintDests() {
-  const legacy = readDest(LEGACY_DEST_KEY, 'ipad');
   return {
-    shipping: readDest(DEST_KEYS.shipping, legacy),
-    boxtag: readDest(DEST_KEYS.boxtag, legacy),
+    // The legacy single setting governed 4×6 shipping labels in practice, so
+    // it seeds only `shipping`. Box tags default to the bridge — the desk's
+    // item-label printer is the only known 2×1 device; defaulting an iPad
+    // configured for 4×6 labels would print tags on the wrong stock.
+    shipping: readDest(DEST_KEYS.shipping, readDest(LEGACY_DEST_KEY, 'ipad')),
+    boxtag: readDest(DEST_KEYS.boxtag, 'bridge'),
   };
 }
 
@@ -94,7 +96,19 @@ async function pdfToPageImages(bytes) {
 // Drop the rendered pages into a print-only container and open the OS print
 // sheet. The container (and its @media print rules that hide the app) stays in
 // the DOM until afterprint so iPadOS can build its preview from it.
-async function printImagesViaOsSheet(dataUrls, { pageSize = '4in 6in' } = {}) {
+//
+// Serialized: two concurrent jobs would purge each other's root and print the
+// wrong document at the wrong page size (label vs tag). The chain resolves
+// when window.print() returns, so queued jobs wait seconds, not the 120s
+// cleanup window. A failed job must not poison the queue.
+let osPrintQueue = Promise.resolve();
+function printImagesViaOsSheet(dataUrls, opts) {
+  const run = osPrintQueue.then(() => osPrintNow(dataUrls, opts));
+  osPrintQueue = run.catch(() => {});
+  return run;
+}
+
+async function osPrintNow(dataUrls, { pageSize = '4in 6in' } = {}) {
   // A dismissed print sheet can skip afterprint and leave the previous root
   // in the DOM; if it survived, the next job would print its pages too — the
   // packer could pull a stale label off the printer and stick it on the wrong
@@ -180,6 +194,8 @@ export async function printBoxLabel(boxId, dest, showToast) {
 // OS print sheet like shipping labels do.
 export async function printBoxTag(box, dest, showToast) {
   try {
+    // Lazy: keeps jspdf/jsbarcode out of the packer's initial chunk.
+    const { buildBoxLabelPdf } = await import('../labels/boxLabelPdf.js');
     const pdf = buildBoxLabelPdf([box]);
     if (dest === 'bridge') {
       if (!(await bridgeOnlineNow())) {

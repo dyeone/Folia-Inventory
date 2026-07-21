@@ -125,7 +125,7 @@ function DestSection({
         type="button"
         onClick={onTest}
         disabled={!!testing}
-        className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold bg-white border-2 border-emerald-300 text-emerald-700 rounded-xl active:bg-emerald-50 disabled:opacity-50"
+        className="mt-2 w-full min-h-11 flex items-center justify-center gap-2 px-4 py-3 text-sm font-semibold bg-white border-2 border-emerald-300 text-emerald-700 rounded-xl active:bg-emerald-50 disabled:opacity-50"
       >
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Printer className="w-4 h-4" />}
         {testLabel}
