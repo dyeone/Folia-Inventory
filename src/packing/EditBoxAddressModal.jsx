@@ -8,7 +8,12 @@ import { shortBoxCode } from '../labels/boxCode.js';
 // saving writes the new values to all of them. The box's identity key
 // (shipmentBoxId) is left untouched, so its label / tracking / notes stay
 // linked — only the address used for the slip + future labels changes.
-export function EditBoxAddressModal({ box, onClose, onSave, showToast }) {
+//
+// note — optional free text (an "Address changed to: …" order note) shown
+// above the fields for reference. Deliberately NOT parsed into the fields:
+// a mis-parsed shipping address is a lost package, so the operator types it
+// while reading the note.
+export function EditBoxAddressModal({ box, note, onClose, onSave, showToast }) {
   const a = box.buyerAddress || {};
   const [name, setName] = useState(box.buyer || '');
   const [street1, setStreet1] = useState(a.street1 || '');
@@ -77,6 +82,14 @@ export function EditBoxAddressModal({ box, onClose, onSave, showToast }) {
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {note && (
+            <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-amber-700 mb-0.5">
+                From the order note
+              </div>
+              <div className="text-sm text-amber-950 font-medium leading-snug break-words">{note}</div>
+            </div>
+          )}
           {field('Recipient name', name, setName, { placeholder: 'Full name' })}
           {field('Street line 1', street1, setStreet1, { placeholder: '123 Main St' })}
           {field('Street line 2', street2, setStreet2, { placeholder: 'Apt / Unit (optional)' })}
