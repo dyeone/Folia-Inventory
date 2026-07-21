@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import {
-  X, PackageOpen, ChevronRight, Camera, Trash2, ScanLine, Check,
+  X, PackageOpen, ChevronRight, Camera, Trash2, ScanLine, Check, Search, Plus, History,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { CameraScanner } from './CameraScanner.jsx';
@@ -60,6 +60,41 @@ export function NewBoxModal({ inventoryItems, onClose, onRefreshItems, showToast
 
   const updateField = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
 
+  // Every past recipient this brand has shipped to, deduped (username first,
+  // else name+zip), newest first — so a repeat buyer's box needs zero
+  // retyping. Derived from item history; no new storage.
+  const buyerHistory = useMemo(() => {
+    const byKey = new Map();
+    for (const i of inventoryItems || []) {
+      if (i.deletedAt) continue;
+      const name = (i.buyer || '').trim();
+      const a = i.buyerAddress || {};
+      if (!name || !a.street1) continue;
+      const username = (i.buyerUsername || '').trim();
+      const key = username.toLowerCase() || `${name.toLowerCase()}|${a.zip || ''}`;
+      const at = i.soldAt || i.createdAt || '';
+      const prev = byKey.get(key);
+      if (!prev || at > prev.at) byKey.set(key, { key, at, name, username, address: a });
+    }
+    return [...byKey.values()].sort((x, y) => (y.at || '').localeCompare(x.at || ''));
+  }, [inventoryItems]);
+
+  const fillFromHistory = (h) => {
+    const a = h.address || {};
+    setForm(prev => ({
+      ...prev,
+      recipientName: h.name,
+      username: h.username || '',
+      street1: a.street1 || '',
+      street2: a.street2 || '',
+      city: a.city || '',
+      state: a.state || '',
+      zip: a.zip || '',
+      country: a.country || 'US',
+      shipmentMethod: a.shipmentMethod || '',
+    }));
+  };
+
   const openBoxForScanning = () => {
     setErr('');
     if (!form.recipientName.trim()) {
@@ -70,28 +105,18 @@ export function NewBoxModal({ inventoryItems, onClose, onRefreshItems, showToast
     setPhase('scan');
   };
 
-  // Lookup an inventory item by SKU and stamp it with the new box
-  // metadata. Matches the post-upload apply step's column set so the
-  // resulting item is indistinguishable from an upload-created one in
-  // every downstream view (Shipping tab, Packer view, labels, etc.).
-  const handleScan = async (rawText) => {
-    setErr('');
-    const sku = normalizeSku(rawText);
-    if (!sku) return;
-
-    const item = inventoryItems.find(i =>
-      !i.deletedAt && normalizeSku(i.sku) === sku
-    );
-    if (!item) {
-      showToast?.(`No inventory item with SKU ${sku}`, 'error');
-      return;
-    }
+  // Stamp an inventory item with the new box metadata. Matches the
+  // post-upload apply step's column set so the resulting item is
+  // indistinguishable from an upload-created one in every downstream view
+  // (Shipping tab, Packer view, labels, etc.). Shared by the barcode scan,
+  // the typed-SKU field, and the inventory browser.
+  const addItemToBox = async (item) => {
     if (addedItems.some(a => a.id === item.id)) {
-      showToast?.(`${sku} is already in this box`);
+      showToast?.(`${item.sku} is already in this box`);
       return;
     }
     if (['sold', 'shipped', 'delivered'].includes(item.status) && item.shipmentBoxId && item.shipmentBoxId !== boxId) {
-      showToast?.(`${sku} is already in another box — find it via Scan box`, 'error');
+      showToast?.(`${item.sku} is already in another box — find it via Scan box`, 'error');
       return;
     }
 
@@ -125,8 +150,22 @@ export function NewBoxModal({ inventoryItems, onClose, onRefreshItems, showToast
       await api.upsertItems([patch]);
     } catch (e) {
       setAddedItems(prev => prev.filter(a => a.id !== item.id));
-      showToast?.(`Failed to add ${sku}: ${e.message || 'unknown'}`, 'error');
+      showToast?.(`Failed to add ${item.sku}: ${e.message || 'unknown'}`, 'error');
     }
+  };
+
+  const handleScan = async (rawText) => {
+    setErr('');
+    const sku = normalizeSku(rawText);
+    if (!sku) return;
+    const item = inventoryItems.find(i =>
+      !i.deletedAt && normalizeSku(i.sku) === sku
+    );
+    if (!item) {
+      showToast?.(`No inventory item with SKU ${sku}`, 'error');
+      return;
+    }
+    await addItemToBox(item);
   };
 
   const handleManualSubmit = async (e) => {
@@ -155,8 +194,8 @@ export function NewBoxModal({ inventoryItems, onClose, onRefreshItems, showToast
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
               {phase === 'form'
-                ? 'Enter the buyer info, then scan inventory SKUs to add them.'
-                : `${addedItems.length} item${addedItems.length === 1 ? '' : 's'} added · scan more or hit Done.`}
+                ? 'Pick a recipient from history (or type one), then add plants from inventory.'
+                : `${addedItems.length} item${addedItems.length === 1 ? '' : 's'} added · search, scan or type SKUs, then hit Done.`}
             </p>
           </div>
           <button onClick={onClose} aria-label="Close" className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2">
@@ -168,6 +207,8 @@ export function NewBoxModal({ inventoryItems, onClose, onRefreshItems, showToast
           <BuyerForm
             form={form}
             err={err}
+            history={buyerHistory}
+            onPickHistory={fillFromHistory}
             updateField={updateField}
             onSubmit={openBoxForScanning}
             onCancel={onClose}
@@ -179,6 +220,8 @@ export function NewBoxModal({ inventoryItems, onClose, onRefreshItems, showToast
             boxId={boxId}
             form={form}
             addedItems={addedItems}
+            inventoryItems={inventoryItems}
+            onAddItem={addItemToBox}
             manualSku={manualSku}
             setManualSku={setManualSku}
             onManualSubmit={handleManualSubmit}
@@ -201,16 +244,68 @@ export function NewBoxModal({ inventoryItems, onClose, onRefreshItems, showToast
   );
 }
 
-function BuyerForm({ form, err, updateField, onSubmit, onCancel }) {
+function BuyerForm({ form, err, history = [], onPickHistory, updateField, onSubmit, onCancel }) {
   // First-field autofocus is intentional: this modal opens from a
   // button click on the Shipping tab, so the operator is already
   // committed to typing.
   const nameRef = useRef(null);
   useEffect(() => { nameRef.current?.focus(); }, []);
 
+  // Past-recipient search. Picking one fills every field below (still
+  // editable — a moved buyer just needs the changed lines retyped).
+  const [hq, setHq] = useState('');
+  const hql = hq.trim().toLowerCase();
+  const hMatches = hql
+    ? history.filter(h =>
+        [h.name, h.username, h.address?.city].filter(Boolean).join(' ').toLowerCase().includes(hql))
+      .slice(0, 8)
+    : [];
+
   return (
     <>
       <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-4 space-y-3">
+        {history.length > 0 && (
+          <Field label="Recipient from history">
+            <div className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-lg bg-white focus-within:ring-2 focus-within:ring-emerald-500">
+              <History className="w-4 h-4 text-gray-400 shrink-0" />
+              <input
+                type="text"
+                value={hq}
+                onChange={(e) => setHq(e.target.value)}
+                placeholder="Search past buyers — name or @username…"
+                className="flex-1 min-w-0 text-sm outline-none"
+              />
+              {hq && (
+                <button type="button" onClick={() => setHq('')} aria-label="Clear search" className="text-gray-400 hover:text-gray-600">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            {hql && (
+              <div className="mt-1 border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-48 overflow-y-auto">
+                {hMatches.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-gray-400">No past buyer matches — fill the fields below instead.</div>
+                ) : hMatches.map(h => (
+                  <button
+                    type="button"
+                    key={h.key}
+                    onClick={() => { onPickHistory(h); setHq(''); }}
+                    className="w-full text-left px-3 py-2 hover:bg-emerald-50 active:bg-emerald-100"
+                  >
+                    <div className="text-sm font-medium text-gray-900">
+                      {h.name}
+                      {h.username && <span className="text-gray-500 font-normal"> @{h.username}</span>}
+                    </div>
+                    <div className="text-xs text-gray-500 truncate">
+                      {[h.address?.street1, h.address?.city, h.address?.state, h.address?.zip].filter(Boolean).join(', ')}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </Field>
+        )}
+
         <Field label="Recipient name" required>
           <input
             ref={nameRef}
@@ -324,14 +419,27 @@ function BuyerForm({ form, err, updateField, onSubmit, onCancel }) {
           onClick={onSubmit}
           className="px-4 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-lg inline-flex items-center gap-1.5"
         >
-          Open box & scan <ChevronRight className="w-4 h-4" />
+          Open box & add plants <ChevronRight className="w-4 h-4" />
         </button>
       </div>
     </>
   );
 }
 
-function ScanPanel({ boxId, form, addedItems, manualSku, setManualSku, onManualSubmit, onOpenScanner, onDone }) {
+function ScanPanel({ boxId, form, addedItems, inventoryItems = [], onAddItem, manualSku, setManualSku, onManualSubmit, onOpenScanner, onDone }) {
+  // Inventory browser — pick plants by search instead of scanning. Same
+  // eligibility rule as the scan path (addItemToBox re-checks anyway).
+  const [q, setQ] = useState('');
+  const ql = q.trim().toLowerCase();
+  const addedIds = new Set(addedItems.map(a => a.id));
+  const matches = ql
+    ? inventoryItems.filter(i =>
+        !i.deletedAt && !addedIds.has(i.id)
+        && !(['sold', 'shipped', 'delivered'].includes(i.status) && i.shipmentBoxId)
+        && [i.sku, i.name, i.variety].filter(Boolean).join(' ').toLowerCase().includes(ql))
+      .slice(0, 30)
+    : [];
+
   return (
     <>
       <div className="px-4 sm:px-5 py-3 bg-gray-50 border-b border-gray-200 flex-shrink-0">
@@ -349,11 +457,61 @@ function ScanPanel({ boxId, form, addedItems, manualSku, setManualSku, onManualS
         <div className="text-xs text-gray-500 mt-1 font-mono">{shortBoxCode(boxId)}</div>
       </div>
 
+      {/* Search inventory to add plants without a scanner. */}
+      <div className="px-4 sm:px-5 py-2 border-b border-gray-200 bg-white flex-shrink-0">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-300 bg-white focus-within:ring-2 focus-within:ring-emerald-500">
+          <Search className="w-4 h-4 text-gray-400 shrink-0" />
+          <input
+            type="text"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search inventory — SKU, name, variety…"
+            className="flex-1 min-w-0 text-sm outline-none"
+          />
+          {q && (
+            <button type="button" onClick={() => setQ('')} aria-label="Clear search" className="text-gray-400 hover:text-gray-600">
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="flex-1 overflow-y-auto px-4 sm:px-5 py-3 space-y-1.5">
-        {addedItems.length === 0 ? (
+        {ql ? (
+          matches.length === 0 ? (
+            <div className="text-center py-12 text-sm text-gray-400">
+              No available inventory matches “{q}”.
+            </div>
+          ) : (
+            <>
+              {matches.map(i => (
+                <div key={i.id} className="flex items-center gap-2 px-3 py-2 bg-white border border-gray-200 rounded-lg">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono text-gray-800">{i.sku}</div>
+                    <div className="text-xs text-gray-500 truncate">
+                      {[i.name, i.variety].filter(Boolean).join(' · ')}
+                      {i.status ? ` · ${i.status}` : ''}
+                      {i.listingPrice ? ` · $${i.listingPrice}` : ''}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onAddItem(i)}
+                    className="shrink-0 inline-flex items-center gap-1 text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Add
+                  </button>
+                </div>
+              ))}
+              {matches.length === 30 && (
+                <div className="text-center text-[11px] text-gray-400 pt-1">Showing the first 30 — narrow the search for more.</div>
+              )}
+            </>
+          )
+        ) : addedItems.length === 0 ? (
           <div className="text-center py-12 text-sm text-gray-400">
             <ScanLine className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-            Scan or type a SKU to add the first item.
+            Search above, or scan / type a SKU to add the first item.
           </div>
         ) : (
           addedItems.map(item => (
