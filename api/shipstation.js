@@ -119,7 +119,7 @@ async function getRatesHandler(req, res, brandId) {
     if (!shippoIsConfigured) return;
     try {
       const rates = await shippoGetRates({
-        addressFrom: shipFrom,
+        addressFrom: { ...shipFrom, state: normalizeUsState(shipFrom.state) },
         addressTo: { ...to, name: sample?.buyer || sample?.buyerUsername || 'Buyer' },
         parcel: { length, width, height, weightOz: weight },
       });
