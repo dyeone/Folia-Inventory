@@ -34,11 +34,15 @@ export function boxHasHoldItem(items) {
 // Monday purchase into the prior week.
 export function weekHoldUntil(raw) {
   let d;
+  // Date-only strings — INCLUDING ones an import already converted to a
+  // UTC-midnight instant ("2026-07-20T00:00:00.000Z") — are calendar dates,
+  // not instants: read them as LOCAL, or a Monday purchase reads as the
+  // prior Sunday in US timezones and the hold releases a full week early.
+  const dateOnly = typeof raw === 'string'
+    && /^(\d{4})-(\d{2})-(\d{2})(?:T00:00:00(?:\.0+)?(?:Z|\+00:00)?)?$/.exec(raw);
   if (raw instanceof Date) d = raw;
-  else if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    const [y, m, day] = raw.split('-').map(Number);
-    d = new Date(y, m - 1, day);
-  } else d = new Date(raw);
+  else if (dateOnly) d = new Date(+dateOnly[1], +dateOnly[2] - 1, +dateOnly[3]);
+  else d = new Date(raw);
   if (isNaN(d.getTime())) return null;
   const dow = (d.getDay() + 6) % 7; // Mon=0 … Sun=6
   const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - dow);

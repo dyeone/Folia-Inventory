@@ -391,7 +391,9 @@ export function PackingView({
         updatedBy: saved.updatedBy,
       },
     }));
-    showToast(hold ? 'Box held for 1 week' : 'Hold cleared');
+    showToast(hold
+      ? `Held — ships ${weekHoldUntil(new Date()).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
+      : 'Hold cleared');
   };
 
   useEffect(() => {
