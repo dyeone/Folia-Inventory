@@ -415,10 +415,12 @@ async function setBoxPackaging(req, res, userId, brandId) {
 }
 
 // POST /api/shipments  body: { action:'set-box-hold', shipmentBoxId,
-//   hold: boolean, days?: number }
-// Puts a box on hold (holdUntil = now + days, default 7) or clears it
-// (hold:false → null). The deadline is computed server-side so it doesn't
-// depend on the operator's clock. Lazy-creates the shipment_boxes row.
+//   hold: boolean, holdUntil?: ISO, days?: number }
+// Puts a box on hold or clears it (hold:false → null). Holds are WEEK-scoped
+// (pressed in week 30 → ships when week 32 begins), and only the client knows
+// the operator's local week boundary — so the client sends holdUntil (bounded
+// here to now..+31d); the legacy now+days fallback covers stale clients.
+// Lazy-creates the shipment_boxes row.
 async function setBoxHold(req, res, userId, brandId) {
   const { shipmentBoxId, hold, days } = req.body || {};
   if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
@@ -426,9 +428,19 @@ async function setBoxHold(req, res, userId, brandId) {
   }
   let holdUntil = null;
   if (hold) {
-    const n = parseFloat(days);
-    const d = Number.isFinite(n) && n > 0 ? n : 7;
-    holdUntil = new Date(Date.now() + d * 86400000).toISOString();
+    // Preferred: a client-computed holdUntil — holds are WEEK-scoped
+    // (pressed in week 30 → ships when week 32 begins) and only the client
+    // knows the operator's local week boundary. Sanity-bounded to the next
+    // 31 days; anything else falls back to the legacy day-count.
+    const raw = req.body?.holdUntil ? new Date(req.body.holdUntil) : null;
+    if (raw && !isNaN(raw.getTime())
+      && raw.getTime() > Date.now() && raw.getTime() < Date.now() + 31 * 86400000) {
+      holdUntil = raw.toISOString();
+    } else {
+      const n = parseFloat(days);
+      const d = Number.isFinite(n) && n > 0 ? n : 7;
+      holdUntil = new Date(Date.now() + d * 86400000).toISOString();
+    }
   }
   const { data, error } = await supabase
     .from('shipment_boxes')

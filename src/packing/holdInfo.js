@@ -25,18 +25,44 @@ export function boxHasHoldItem(items) {
   return (items || []).some(i => isHoldItem(i?.name));
 }
 
+// One-week holds are WEEK-scoped, not day-counted: a hold bought in week 30
+// skips ALL of week 31 and ships when week 32 begins — regardless of which
+// day of week 30 it was bought. weekHoldUntil(d) = Monday 00:00 (local) of
+// the week after next relative to d. Date-only strings ("2026-07-17") parse
+// as LOCAL calendar dates — new Date() would read them as UTC midnight,
+// which in US timezones lands on the previous local day and can shift a
+// Monday purchase into the prior week.
+export function weekHoldUntil(raw) {
+  let d;
+  // Date-only strings — INCLUDING ones an import already converted to a
+  // UTC-midnight instant ("2026-07-20T00:00:00.000Z") — are calendar dates,
+  // not instants: read them as LOCAL, or a Monday purchase reads as the
+  // prior Sunday in US timezones and the hold releases a full week early.
+  const dateOnly = typeof raw === 'string'
+    && /^(\d{4})-(\d{2})-(\d{2})(?:T00:00:00(?:\.0+)?(?:Z|\+00:00)?)?$/.exec(raw);
+  if (raw instanceof Date) d = raw;
+  else if (dateOnly) d = new Date(+dateOnly[1], +dateOnly[2] - 1, +dateOnly[3]);
+  else d = new Date(raw);
+  if (isNaN(d.getTime())) return null;
+  const dow = (d.getDay() + 6) % 7; // Mon=0 … Sun=6
+  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - dow);
+  monday.setDate(monday.getDate() + 14);
+  return monday;
+}
+
 // Effective hold state of a box, with a real countdown:
-//   • Item-based hold ("1-week hold" line) → counts one week from that item's
-//     purchase (order) date, then becomes shippable ('ready').
-//   • Otherwise the manual button hold (holdUntil timestamp).
+//   • Item-based hold ("1-week hold" line) → week-scoped from that item's
+//     purchase (order) date: ready when the week after next begins.
+//   • Otherwise the manual button hold (holdUntil timestamp — new holds are
+//     stamped with the same week rule at press time; see setBoxHold).
 // Returns the holdInfo shape: { state:'none'|'holding'|'ready', daysLeft?, until? }.
 export function boxHoldState(items, holdUntil) {
   const holdItem = (items || []).find(i => isHoldItem(i?.name));
   if (holdItem) {
     const purchased = holdItem.orderDate || holdItem.soldAt || holdItem.createdAt || null;
     if (purchased) {
-      const until = new Date(new Date(purchased).getTime() + 7 * 86400000);
-      if (!isNaN(until.getTime())) return holdInfo(until.toISOString());
+      const until = weekHoldUntil(purchased);
+      if (until) return holdInfo(until.toISOString());
     }
     return { state: 'holding' }; // hold item present but no date to count from
   }

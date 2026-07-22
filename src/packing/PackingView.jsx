@@ -27,7 +27,7 @@ import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { boxHoldState, boxIsLocalPickup, isLocalPickupText } from './holdInfo.js';
+import { boxHoldState, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem, hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
@@ -371,11 +371,17 @@ export function PackingView({
     }));
   };
 
-  // Put a box on a one-week hold or clear it. The server returns the full
-  // shipment_boxes row, so mirror it into the cache (which re-tints the card
-  // and shows the countdown / "Time to ship" badge).
+  // Put a box on a one-week hold or clear it. Holds are WEEK-scoped: pressed
+  // in week 30 → ships when week 32 begins (computed client-side so the
+  // operator's local timezone owns the week boundary, not the server's UTC
+  // clock). The server returns the full shipment_boxes row, so mirror it
+  // into the cache (which re-tints the card and shows the countdown).
   const onSetHold = async (shipmentBoxId, hold) => {
-    const saved = await api.setBoxHold({ shipmentBoxId, hold });
+    const saved = await api.setBoxHold({
+      shipmentBoxId,
+      hold,
+      ...(hold ? { holdUntil: weekHoldUntil(new Date()).toISOString() } : {}),
+    });
     setBoxNotesByBox(prev => ({
       ...prev,
       [shipmentBoxId]: {
@@ -385,7 +391,9 @@ export function PackingView({
         updatedBy: saved.updatedBy,
       },
     }));
-    showToast(hold ? 'Box held for 1 week' : 'Hold cleared');
+    showToast(hold
+      ? `Held — ships ${weekHoldUntil(new Date()).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
+      : 'Hold cleared');
   };
 
   useEffect(() => {
@@ -2525,7 +2533,7 @@ function BoxRow({
               ) : (
                 <button
                   onClick={(e) => { stop(e); onSetHold(true); }}
-                  title="Hold this box for one week before shipping"
+                  title="Hold this box — it skips all of next week and ships when the week after next begins"
                   className="text-xs font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-amber-50 hover:text-amber-700 hover:border-amber-300 active:bg-amber-100 flex items-center gap-1"
                 >
                   <Clock className="w-3 h-3" /> Hold 1 week
