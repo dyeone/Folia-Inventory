@@ -13,6 +13,7 @@ import {
   refund as shippoRefund, shippoConfigured, isTestToken as shippoIsTest,
 } from './_lib/shippo.js';
 import { SHIPPING_SERVICES } from './_lib/services.js';
+import { normalizeUsState } from './_lib/usState.js';
 
 export default wrap(async (req, res) => {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
@@ -76,6 +77,9 @@ async function getRatesHandler(req, res, brandId) {
   if (!to.zip || !to.state) {
     const e = new Error('Buyer address incomplete on this box'); e.status = 422; throw e;
   }
+  // "Florida" → "FL": a spelled-out state 500s ShipStation's whole getrates
+  // call and drops Shippo's UPS rates.
+  to.state = normalizeUsState(to.state);
 
   // ── ShipStation: one getrates call per distinct carrier needed ──────────
   const neededCarriers = [...new Set(wanted.map(s => s.provider))];
@@ -115,7 +119,7 @@ async function getRatesHandler(req, res, brandId) {
     if (!shippoIsConfigured) return;
     try {
       const rates = await shippoGetRates({
-        addressFrom: shipFrom,
+        addressFrom: { ...shipFrom, state: normalizeUsState(shipFrom.state) },
         addressTo: { ...to, name: sample?.buyer || sample?.buyerUsername || 'Buyer' },
         parcel: { length, width, height, weightOz: weight },
       });
@@ -258,7 +262,7 @@ async function buyLabel(req, res, userId, brandId) {
     street1: shipFrom.street1,
     street2: shipFrom.street2 || undefined,
     city: shipFrom.city,
-    state: shipFrom.state,
+    state: normalizeUsState(shipFrom.state),
     zip: shipFrom.zip,
     country: shipFrom.country,
     phone: shipFrom.phone || undefined,
@@ -268,7 +272,8 @@ async function buyLabel(req, res, userId, brandId) {
     street1: buyerAddr.street1,
     street2: buyerAddr.street2 || undefined,
     city: buyerAddr.city,
-    state: buyerAddr.state,
+    // "Florida" → "FL": carriers reject spelled-out states at purchase time.
+    state: normalizeUsState(buyerAddr.state),
     zip: buyerAddr.zip,
     country: buyerAddr.country || 'US',
     phone: buyerAddr.phone || undefined,
