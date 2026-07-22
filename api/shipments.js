@@ -426,9 +426,19 @@ async function setBoxHold(req, res, userId, brandId) {
   }
   let holdUntil = null;
   if (hold) {
-    const n = parseFloat(days);
-    const d = Number.isFinite(n) && n > 0 ? n : 7;
-    holdUntil = new Date(Date.now() + d * 86400000).toISOString();
+    // Preferred: a client-computed holdUntil — holds are WEEK-scoped
+    // (pressed in week 30 → ships when week 32 begins) and only the client
+    // knows the operator's local week boundary. Sanity-bounded to the next
+    // 31 days; anything else falls back to the legacy day-count.
+    const raw = req.body?.holdUntil ? new Date(req.body.holdUntil) : null;
+    if (raw && !isNaN(raw.getTime())
+      && raw.getTime() > Date.now() && raw.getTime() < Date.now() + 31 * 86400000) {
+      holdUntil = raw.toISOString();
+    } else {
+      const n = parseFloat(days);
+      const d = Number.isFinite(n) && n > 0 ? n : 7;
+      holdUntil = new Date(Date.now() + d * 86400000).toISOString();
+    }
   }
   const { data, error } = await supabase
     .from('shipment_boxes')
