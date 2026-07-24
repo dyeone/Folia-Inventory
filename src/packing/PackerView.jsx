@@ -348,14 +348,27 @@ export function PackerView({ onLogout }) {
     return it && it.status === 'sold' && !it.packedAt ? wrap : null;
   }, [wrap, activeBox]);
 
-  // Start wrapping: remember the plant and fire its label print. The state
-  // update races the print round-trip, so the print status is patched only
-  // if this wrap is still the active one when the print resolves.
+  // Start wrapping: remember the plant and fire its label print. The nonce
+  // ties the async print result to THIS wrap — a cancel + rescan of the same
+  // plant mints a new wrap, and the old print's late result must not stamp
+  // it. Takes the shared print mutex: on the iPad path two concurrent jobs
+  // purge each other's in-page print root.
   const startWrap = async (candidate, sku) => {
-    setWrap({ itemId: candidate.id, sku, print: 'sending' });
+    const nonce = `${Date.now()}-${Math.random()}`;
     if (navigator.vibrate) navigator.vibrate(30);
-    const ok = await printItemLabel(candidate, printDests.itemlabel, showToast);
-    setWrap(w => (w && w.itemId === candidate.id ? { ...w, print: ok ? 'sent' : 'failed' } : w));
+    if (printing) {
+      setWrap({ itemId: candidate.id, sku, nonce, print: 'failed' });
+      showToast('Printer is busy — tap Reprint on the wrap card in a moment.', 3500);
+      return;
+    }
+    setWrap({ itemId: candidate.id, sku, nonce, print: 'sending' });
+    setPrinting('itemlabel');
+    try {
+      const ok = await printItemLabel(candidate, printDests.itemlabel, showToast);
+      setWrap(w => (w && w.nonce === nonce ? { ...w, print: ok ? 'sent' : 'failed' } : w));
+    } finally {
+      setPrinting(null);
+    }
   };
 
   // Re-pull tracking numbers + holds. Both are set at the shipping desk while
@@ -458,7 +471,9 @@ export function PackerView({ onLogout }) {
   }, []);
 
   // Optimistic pack-by-id: flip the local item to packed before the network
-  // call lands; roll back just that item on failure.
+  // call lands; roll back just that item on failure. Returns whether the pack
+  // stuck — the burrito wrap flow restores its wrap on failure so a retry
+  // scan doesn't print a duplicate label.
   const packById = async (itemId, displayLabel) => {
     const now = new Date().toISOString();
     setItems(prev => prev.map(i => (i.id === itemId ? { ...i, packedAt: now } : i)));
@@ -466,9 +481,11 @@ export function PackerView({ onLogout }) {
     showToast(`Packed ${displayLabel}`, 1500);
     try {
       await api.upsertItems([{ id: itemId, packedAt: now }]);
+      return true;
     } catch (e) {
       setItems(prev => prev.map(i => (i.id === itemId ? { ...i, packedAt: null } : i)));
       showToast(`Pack failed for ${displayLabel}: ${e.message || 'unknown'}`, 4000);
+      return false;
     }
   };
 
@@ -511,6 +528,15 @@ export function PackerView({ onLogout }) {
   // really belongs to. A box still on its one-week hold can't be shipped yet.
   const handleScanLabel = async (rawText) => {
     if (!activeBox) return;
+    // A wrap in progress means an unverified plant: shipping the box now
+    // would backfill its packedAt and skip the exact wrong-label check the
+    // wrap exists for. (Mid-wrap the box is never all-packed, so a label
+    // scan is never the legitimate finishing move.)
+    if (activeWrap) {
+      if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+      showToast('⚠ Finish the wrap first — scan the fresh label on the burrito (or Cancel the wrap).', 5000);
+      return;
+    }
     const assigned = trackingByBox[activeBox.id];
     if (!assigned) {
       showToast('No label assigned to this box yet — import it on the shipping desk first', 4500);
@@ -588,8 +614,12 @@ export function PackerView({ onLogout }) {
     if (activeWrap) {
       const wrapItem = activeBox.items.find(i => i.id === activeWrap.itemId);
       if (sku === activeWrap.sku) {
+        const saved = activeWrap;
         setWrap(null);
-        await packById(wrapItem.id, `${sku} — 🌯 done`);
+        // Restore the wrap if the pack didn't stick — otherwise the retry
+        // scan would start a fresh wrap and print a duplicate label.
+        const ok = await packById(wrapItem.id, `${sku} — 🌯 done`);
+        if (!ok) setWrap(saved);
         return;
       }
       if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
@@ -1215,7 +1245,7 @@ function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapRe
             <button
               type="button"
               onClick={onWrapReprint}
-              disabled={wrap.print === 'sending'}
+              disabled={wrap.print === 'sending' || !!printing}
               className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg bg-white border-2 border-amber-400 text-amber-800 active:bg-amber-100 disabled:opacity-50 flex items-center gap-1"
             >
               <Printer className="w-4 h-4" /> Reprint

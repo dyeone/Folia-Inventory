@@ -255,10 +255,12 @@ export async function printItemLabel(item, dest, showToast) {
         showToast?.('Label printer is offline — is the Mac app running? (Or switch plant labels to "This iPad".)', 5000);
         return false;
       }
-      const res = await printPdfViaBridge({
+      // No success toast: the wrap card is the feedback channel, and the
+      // bridge poll can resolve tens of seconds later — stomping whatever
+      // warning the (single-slot) toast is showing by then.
+      await printPdfViaBridge({
         pdfBase64: pdfToBase64(pdf), role: 'label', media: 'Custom.2x1in',
       });
-      showToast?.(`Label sent to ${res?.printer || 'the label printer'}`, 1800);
       return true;
     }
     await printImagesViaOsSheet(
