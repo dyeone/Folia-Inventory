@@ -701,7 +701,9 @@ export function PackingView({
       if (i.name && i.name.toLowerCase().includes(searchLower)) return true;
       if (i.variety && i.variety.toLowerCase().includes(searchLower)) return true;
       // Lineup number — exact match only (substring would flood short #s).
-      if (i.lotNumber && String(i.lotNumber).trim() === searchLower) return true;
+      // Lowercased to match the query normalization (manual lots can carry
+      // letters).
+      if (i.lotNumber && String(i.lotNumber).trim().toLowerCase() === searchLower) return true;
     }
     return false;
   };

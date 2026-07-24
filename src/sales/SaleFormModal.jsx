@@ -22,9 +22,15 @@ export function SaleFormModal({ initial, onSave, onClose, isBae }) {
         { v: 'plant', label: 'Plants only' },
         { v: 'both', label: 'TC + Plants' },
       ];
+  // LOCAL calendar day, never toISOString: a 7pm PT sale is the NEXT day in
+  // UTC, so the ISO slice advanced the date one day on every edit. sale.date
+  // now decides the week's lot block (src/sales/lotBlock.js), so that drift
+  // would shift a sale into the wrong 200-number range.
+  const localYmd = (d) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const initialDate = initial?.startTime
-    ? new Date(initial.startTime).toISOString().slice(0, 10)
-    : (initial?.date || new Date().toISOString().slice(0, 10));
+    ? localYmd(new Date(initial.startTime))
+    : (initial?.date || localYmd(new Date()));
   const initialTime = initial?.startTime
     ? new Date(initial.startTime).toTimeString().slice(0, 5)
     : '19:00';

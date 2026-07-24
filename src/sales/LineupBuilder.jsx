@@ -145,6 +145,8 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
   };
 
   const setLot = (id, lot) => {
+    // A re-typed lot invalidates any earlier out-of-block acknowledgement.
+    setBlockWarning('');
     setSelected(prev => ({ ...prev, [id]: { ...prev[id], lotNumber: lot } }));
   };
 
@@ -153,18 +155,25 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
   // where this sale's numbering already starts (re-numbering keeps its range,
   // like Pre Sale's Start #), else at the shared weekly counter — another
   // same-week sale may already occupy the front of the block, and a bare 1
-  // would collide with another week's held labels (lotBlock.js). Falls back
-  // to the block start if the counter can't be reached.
+  // would collide with another week's held labels (lotBlock.js). If the
+  // counter can't be reached it ABORTS: falling back to the block start
+  // could silently re-mint a same-week sale's numbers.
   const autoNumber = async () => {
     const saleEntries = Object.entries(selected)
       .filter(([, v]) => v.kind !== 'giveaway');
     const existing = saleEntries
       .map(([, v]) => parseInt(v.lotNumber, 10))
       .filter(n => Number.isFinite(n) && n > 0);
-    const start = existing.length
-      ? Math.min(...existing)
-      : await api.getLineupNext?.(week, blockStart(week), blockEnd(week)).catch(() => null)
-        ?? blockStart(week);
+    let start;
+    if (existing.length) {
+      start = Math.min(...existing);
+    } else {
+      start = await api.getLineupNext?.(week, blockStart(week), blockEnd(week)).catch(() => null);
+      if (start == null) {
+        setSaveError('Couldn’t reach the weekly lot counter — try Auto-number again.');
+        return;
+      }
+    }
     const sorted = saleEntries.map(([id]) => id).sort((a, b) => {
       const ia = eligible.find(i => i.id === a);
       const ib = eligible.find(i => i.id === b);
@@ -212,8 +221,14 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
       .filter(s => s.kind !== 'giveaway')
       .map(s => parseInt(s.lotNumber, 10))
       .filter(n => Number.isFinite(n) && n > 0 && (n < blockStart(week) || n > blockEnd(week)));
-    if (outside.length && !blockWarning) {
-      setBlockWarning(`Lot ${outside.join(', ')} outside this week's block ${blockStart(week)}–${blockEnd(week)} — can duplicate another week's held labels. Save again to keep them.`);
+    // Compare against the exact warned message, not a boolean — an
+    // acknowledgement only covers the numbers it named, so a DIFFERENT
+    // out-of-block set typed afterwards warns again.
+    const outsideMsg = outside.length
+      ? `Lot ${outside.join(', ')} outside this week's block ${blockStart(week)}–${blockEnd(week)} — can duplicate another week's held labels. Save again to keep them.`
+      : '';
+    if (outsideMsg && blockWarning !== outsideMsg) {
+      setBlockWarning(outsideMsg);
       return;
     }
 

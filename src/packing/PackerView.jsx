@@ -564,7 +564,11 @@ export function PackerView({ onLogout }) {
           : null;
         if (needed) {
           if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
-          showToast(`⚠ Wrong plant — that's #${lot} for box ${other.code}. This box needs #${lot} with SKU ${needed.sku || '(no SKU)'}. Put it back and check the wk tag on the label.`, 7000);
+          // Synthetic UNMATCHED-/DBL- SKUs exist on no label (LabelSheet
+          // suppresses them) — pointing the packer at one is a dead end.
+          const neededSku = needed.sku && !/^(UNMATCHED|DBL)-/i.test(needed.sku)
+            ? `SKU ${needed.sku}` : 'no barcode — an unmatched item';
+          showToast(`⚠ Wrong plant — that's #${lot} for box ${other.code}. This box needs #${lot} (${neededSku}). Put it back and check the wk tag on the label.`, 7000);
           return;
         }
         showToast(`${sku} → box ${other.code}`, 2500);

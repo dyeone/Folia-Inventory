@@ -141,10 +141,21 @@ export function PreSaleTab({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setLineupLoaded(false);
     api.getLineupNext?.(week, blockStart(week), blockEnd(week))
-      .then(n => { if (alive) setLineupNext(Math.max(1, parseInt(n, 10) || 1)); })
-      .catch(() => {})
-      .finally(() => { if (alive) setLineupLoaded(true); });
+      .then(n => {
+        if (!alive) return;
+        setLineupNext(Math.max(1, parseInt(n, 10) || 1));
+        // Enable numbering ONLY on success — enabling on error would number
+        // from a stale or default value, the exact collision this gate exists
+        // to prevent.
+        setLineupLoaded(true);
+      })
+      .catch(() => {
+        if (alive) showToast?.('Couldn’t load this week’s lot counter — numbering stays disabled. Switch sales or reload to retry.', 'error');
+      });
     return () => { alive = false; };
+    // showToast is a stable-enough prop used only in the error path — keying
+    // the fetch on it would refetch the counter on unrelated parent renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [week]);
   // A manual start override belongs to one sale; drop it when switching sales.
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -428,7 +439,11 @@ export function PreSaleTab({
       const end = startNum + orderedIds.length; // next number after this lineup
       if (end > lineupNext) {
         setLineupNext(end);
-        api.bumpLineupNext?.(end, week).catch(() => {});
+        // A silently failed bump means the next numbering session re-mints
+        // this range — say so instead of swallowing it.
+        api.bumpLineupNext?.(end, week).catch(() => {
+          showToast?.('Numbers saved, but the weekly counter didn’t update — the next sale may suggest overlapping numbers', 'error');
+        });
       }
     } catch (e) { showToast?.(e.message || 'Could not save order', 'error'); }
   };

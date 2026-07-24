@@ -44,8 +44,10 @@ export function lotWeek(input) {
   return Math.round((mondayOf(d) - EPOCH) / WEEK_MS);
 }
 
-// Which block a week owns, and the lot-number range that comes with it.
-export function blockIndex(week) { return (week + WEEK_OFFSET) % CYCLE; }
+// Which block a week owns, and the lot-number range that comes with it. The
+// double modulo keeps pre-2024 (negative) weeks from a typo'd sale date in
+// 0..CYCLE-1 instead of yielding a negative block range.
+export function blockIndex(week) { return (((week + WEEK_OFFSET) % CYCLE) + CYCLE) % CYCLE; }
 export function blockStart(week) { return blockIndex(week) * BLOCK + 1; }
 export function blockEnd(week) { return blockStart(week) + BLOCK - 1; }
 
