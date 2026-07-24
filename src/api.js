@@ -193,11 +193,15 @@ export const api = {
     request('/settings', { method: 'PUT', body: { id, data } }).then(r => r.settings),
 
   // Lineup running index (brand-scoped) — the next lineup number to hand out,
-  // so weekly sales number continuously. Non-admin: numbering is routine.
-  // bump advances the counter (never regresses); returns the stored next.
-  getLineupNext: () => request('/settings?action=lineup-get').then(r => r.next ?? 1),
-  bumpLineupNext: (next) =>
-    request('/settings', { method: 'POST', body: { action: 'lineup-bump', next } }).then(r => r.next),
+  // so sales within a week number continuously. Pass the lot week + its block
+  // range (src/sales/lotBlock.js): a week's first read starts at its block
+  // start (or above another week's spill into it); omitted, legacy behavior
+  // (the raw stored counter). Non-admin: numbering is routine. bump advances
+  // that week's counter (advance-only, per week); returns the stored next.
+  getLineupNext: (week, blockStart, blockEnd) =>
+    request(`/settings?action=lineup-get${week != null && blockStart != null ? `&week=${week}&blockStart=${blockStart}${blockEnd != null ? `&blockEnd=${blockEnd}` : ''}` : ''}`).then(r => r.next ?? 1),
+  bumpLineupNext: (next, week) =>
+    request('/settings', { method: 'POST', body: { action: 'lineup-bump', next, ...(week != null ? { week } : {}) } }).then(r => r.next),
 
   // Personal GTD tasks — private per user. Stored as a JSON blob in
   // app_settings keyed `tasks:<userId>` and served by /settings (Hobby's
