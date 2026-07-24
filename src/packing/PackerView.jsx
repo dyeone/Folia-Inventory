@@ -14,7 +14,7 @@ import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
-import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag } from './packerPrint.js';
+import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
@@ -111,6 +111,15 @@ export function PackerView({ onLogout }) {
   // switch each and fire a test print per type.
   const [printDests, setPrintDests] = useState(getPrintDests);
   const [printerSheetOpen, setPrinterSheetOpen] = useState(false);
+  // Burrito wrap flow (per device): scanning a plant starts a wrap — the app
+  // prints that plant's own label, the packer wraps it in paper and applies
+  // the fresh label, and scanning THAT label completes the pack. The second
+  // scan is the point: it must match the plant that was scanned in, so a
+  // wrong label can't ship. Wrap-pending is transient client state keyed by
+  // item id (the 8s poll replaces item objects wholesale); the terminal
+  // state is plain packedAt, so nothing new is persisted.
+  const [wrapFlow, setWrapFlow] = useState(getWrapFlow);
+  const [wrap, setWrap] = useState(null); // { itemId, sku, print: 'sending'|'sent'|'failed' }
   // One busy flag for both print buttons ('label' | 'tag' | null): on the
   // iPad path both flows share the in-page print root, so they must never
   // run concurrently (the second purge would eat the first job's pages).
@@ -328,6 +337,26 @@ export function PackerView({ onLogout }) {
   const activeBox = activeBoxId
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
+
+  // The wrap is honored only while its plant is still an unpacked sold item
+  // of the ACTIVE box — derived, not synchronized, so switching boxes or a
+  // desk-side pack neutralizes it without an effect. Returning to the box
+  // with the plant still unpacked resumes the wrap.
+  const activeWrap = useMemo(() => {
+    if (!wrap || !activeBox) return null;
+    const it = activeBox.items.find(i => i.id === wrap.itemId);
+    return it && it.status === 'sold' && !it.packedAt ? wrap : null;
+  }, [wrap, activeBox]);
+
+  // Start wrapping: remember the plant and fire its label print. The state
+  // update races the print round-trip, so the print status is patched only
+  // if this wrap is still the active one when the print resolves.
+  const startWrap = async (candidate, sku) => {
+    setWrap({ itemId: candidate.id, sku, print: 'sending' });
+    if (navigator.vibrate) navigator.vibrate(30);
+    const ok = await printItemLabel(candidate, printDests.itemlabel, showToast);
+    setWrap(w => (w && w.itemId === candidate.id ? { ...w, print: ok ? 'sent' : 'failed' } : w));
+  };
 
   // Re-pull tracking numbers + holds. Both are set at the shipping desk while
   // the packer's app is already open, so refresh on each box open to pick up a
@@ -551,6 +580,23 @@ export function PackerView({ onLogout }) {
     if (!activeBox) return;
     const sku = normalizeSku(rawText);
     if (!sku) return;
+    // Mid-wrap, every scan is the verification scan: the fresh label on the
+    // burrito either matches the plant being wrapped, or something is wrong.
+    // Nothing else (box jumps, starting another wrap) is allowed until the
+    // packer finishes or cancels — a mismatch here is exactly the
+    // wrong-label-on-the-burrito mistake this flow exists to catch.
+    if (activeWrap) {
+      const wrapItem = activeBox.items.find(i => i.id === activeWrap.itemId);
+      if (sku === activeWrap.sku) {
+        setWrap(null);
+        await packById(wrapItem.id, `${sku} — 🌯 done`);
+        return;
+      }
+      if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+      const lot = wrapItem?.lotNumber ? `#${wrapItem.lotNumber} · ` : '';
+      showToast(`⚠ Wrong label — you're wrapping ${lot}${activeWrap.sku}, but this label reads ${sku}. Fix the label, or Cancel on the wrap card.`, 6000);
+      return;
+    }
     const candidate = activeBox.items.find(i => normalizeSku(i.sku) === sku);
     if (!candidate) {
       const other = Object.values(boxesByCode).find(
@@ -580,6 +626,7 @@ export function PackerView({ onLogout }) {
     }
     if (candidate.status !== 'sold') { showToast(`SKU ${sku} is already ${candidate.status}`, 3500); return; }
     if (candidate.packedAt) { showToast(`SKU ${sku} already packed`, 2500); return; }
+    if (wrapFlow) { await startWrap(candidate, sku); return; }
     await packById(candidate.id, sku);
   };
 
@@ -790,6 +837,12 @@ export function PackerView({ onLogout }) {
             box={activeBox}
             assignedTracking={trackingByBox[activeBox.id] || null}
             dupeLots={dupeLots}
+            wrap={activeWrap}
+            onWrapCancel={() => setWrap(null)}
+            onWrapReprint={() => {
+              const it = activeBox.items.find(i => i.id === activeWrap?.itemId);
+              if (it) startWrap(it, activeWrap.sku);
+            }}
             onMarkPacked={handleMarkPacked}
             onCamera={() => setCameraMode('item')}
             onScanLabel={() => setCameraMode('label')}
@@ -824,6 +877,8 @@ export function PackerView({ onLogout }) {
         <PrinterSettingsSheet
           dests={printDests}
           onDestChange={(kind, d) => { savePrintDest(kind, d); setPrintDests(p => ({ ...p, [kind]: d })); }}
+          wrapFlow={wrapFlow}
+          onWrapFlowChange={(on) => { saveWrapFlow(on); setWrapFlow(on); }}
           onClose={() => setPrinterSheetOpen(false)}
           showToast={showToast}
         />
@@ -1106,12 +1161,13 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
+function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapReprint, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
   const allPacked = total > 0 && unpacked.length === 0;
   const pct = total > 0 ? (packed.length / total) * 100 : 0;
+  const wrapItem = wrap ? box.items.find(i => i.id === wrap.itemId) : null;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -1135,6 +1191,46 @@ function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onCamera, onSc
         </div>
       </div>
 
+      {/* Active burrito wrap — pinned above the item grid so the packer
+          always sees which plant the printed label belongs to. */}
+      {wrap && (
+        <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
+          <div className="max-w-5xl mx-auto rounded-xl border-2 border-amber-400 bg-amber-50 px-3.5 py-3 flex items-center gap-3">
+            <span className="text-2xl shrink-0" aria-hidden>🌯</span>
+            {wrapItem?.lotNumber && (
+              <span className="shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-xl font-extrabold text-center tabular-nums bg-amber-500 text-white">
+                {wrapItem.lotNumber}
+              </span>
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-bold text-amber-900 truncate">
+                Wrapping {wrap.sku}{wrapItem?.name ? ` · ${wrapItem.name}` : ''}
+              </div>
+              <div className="text-xs text-amber-800">
+                {wrap.print === 'sending' ? 'Printing the label…'
+                  : wrap.print === 'failed' ? 'Label didn’t print — tap Reprint.'
+                    : 'Stick the fresh label on the burrito, then scan it to finish.'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onWrapReprint}
+              disabled={wrap.print === 'sending'}
+              className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg bg-white border-2 border-amber-400 text-amber-800 active:bg-amber-100 disabled:opacity-50 flex items-center gap-1"
+            >
+              <Printer className="w-4 h-4" /> Reprint
+            </button>
+            <button
+              type="button"
+              onClick={onWrapCancel}
+              className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg text-amber-800 active:bg-amber-100"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
         <div className="max-w-5xl mx-auto">
@@ -1155,7 +1251,7 @@ function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onCamera, onSc
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} dupeLots={dupeLots} />)}
+                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} dupeLots={dupeLots} wrapping={wrap?.itemId === item.id} />)}
                   {packed.map(item => <ItemCard key={item.id} item={item} />)}
                 </div>
               )}
@@ -1331,7 +1427,7 @@ function CarrierBadge({ carrier, size = 'md' }) {
   );
 }
 
-function ItemCard({ item, onMarkPacked, dupeLots }) {
+function ItemCard({ item, onMarkPacked, dupeLots, wrapping }) {
   const isPacked = !!item.packedAt;
   const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
@@ -1346,7 +1442,7 @@ function ItemCard({ item, onMarkPacked, dupeLots }) {
     : { bg: isPacked ? 'bg-emerald-100' : 'bg-emerald-50', border: 'border-emerald-200', accent: 'text-emerald-700', icon: 'text-emerald-600', ring: 'border-emerald-300' };
 
   return (
-    <div className={`px-3 py-3 rounded-xl border-2 ${family.bg} ${family.border}`}>
+    <div className={`px-3 py-3 rounded-xl border-2 ${family.bg} ${wrapping ? 'border-amber-400 ring-2 ring-amber-300' : family.border}`}>
       <div className="flex items-center gap-2.5">
         {isPacked
           ? <Check className={`w-6 h-6 ${family.icon} shrink-0`} />

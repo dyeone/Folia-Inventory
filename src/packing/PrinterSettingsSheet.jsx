@@ -4,19 +4,21 @@ import { useBridgePrint } from '../labels/useBridgePrint.js';
 import { printTestLabel, printTestTag } from './packerPrint.js';
 
 // Bottom sheet where the packer picks where each label type prints, with a
-// test print per type. Two independent destinations:
+// test print per type. Three independent destinations:
 //   Shipping labels (4×6)  — carrier labels
 //   Box tags (2×1)         — B-XXXXXX barcode tags
+//   Plant labels (2×1)     — burrito-wrap reprints of a plant's own label
 // Each can go to:
 //   'ipad'   → the printer plugged into this iPad (USB) or on Wi-Fi
 //              (AirPrint). Printing opens the iPadOS print sheet; the actual
 //              printer is chosen there the first time and remembered.
 //   'bridge' → the shipping desk's printers via the Folia Bridge (the 4×6
 //              shipping printer or the 2×1 item-label printer, by type).
-// Choices are stored per device (localStorage) — see packerPrint.js.
-export function PrinterSettingsSheet({ dests, onDestChange, onClose, showToast }) {
+// Also hosts the burrito wrap flow toggle. Everything is stored per device
+// (localStorage) — see packerPrint.js.
+export function PrinterSettingsSheet({ dests, onDestChange, wrapFlow, onWrapFlowChange, onClose, showToast }) {
   const { bridgeOnline } = useBridgePrint();
-  const [testing, setTesting] = useState(null); // 'shipping' | 'boxtag' | null
+  const [testing, setTesting] = useState(null); // 'shipping' | 'boxtag' | 'itemlabel' | null
   // Flipped on unmount so a bridge test print stops polling (and skips state
   // updates) once the sheet has closed.
   const unmountedRef = useRef(false);
@@ -27,13 +29,15 @@ export function PrinterSettingsSheet({ dests, onDestChange, onClose, showToast }
     setTesting(kind);
     try {
       if (kind === 'shipping') await printTestLabel(dests.shipping, showToast, () => unmountedRef.current);
-      else await printTestTag(dests.boxtag, showToast, () => unmountedRef.current);
+      // Plant labels share the box tags' 2×1 pipeline (same role + media), so
+      // the tag test print exercises exactly what a wrap reprint will do.
+      else await printTestTag(dests[kind] || dests.boxtag, showToast, () => unmountedRef.current);
     } finally {
       if (!unmountedRef.current) setTesting(null);
     }
   };
 
-  const anyIpad = dests.shipping === 'ipad' || dests.boxtag === 'ipad';
+  const anyIpad = dests.shipping === 'ipad' || dests.boxtag === 'ipad' || dests.itemlabel === 'ipad';
 
   return (
     <div
@@ -82,6 +86,45 @@ export function PrinterSettingsSheet({ dests, onDestChange, onClose, showToast }
           testing={testing}
           testLabel="Print test tag"
         />
+
+        <DestSection
+          icon={Tag}
+          title="Plant labels · 2×1 (burrito wrap)"
+          kind="itemlabel"
+          dest={dests.itemlabel}
+          bridgeSubtitle="2×1 item-label printer at the shipping desk"
+          bridgeOnline={bridgeOnline}
+          onDestChange={onDestChange}
+          onTest={() => runTest('itemlabel')}
+          testing={testing}
+          testLabel="Print test label (2×1)"
+        />
+
+        <div className="mt-5">
+          <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gray-500 mb-2">
+            🌯 Burrito wrap flow
+          </div>
+          <button
+            type="button"
+            onClick={() => onWrapFlowChange?.(!wrapFlow)}
+            aria-pressed={!!wrapFlow}
+            className={`w-full text-left rounded-xl border-2 px-3.5 py-3 flex items-center gap-3 transition active:scale-[0.99] ${
+              wrapFlow ? 'border-amber-400 bg-amber-50' : 'border-gray-200 bg-white hover:border-gray-300'
+            }`}
+          >
+            <span className="flex-1 min-w-0">
+              <span className="text-base font-semibold text-gray-900">
+                {wrapFlow ? 'On — two-scan verified pack' : 'Off — single-scan pack'}
+              </span>
+              <span className="block text-sm text-gray-500 leading-snug">
+                Scan a plant → its label prints → wrap it → stick the fresh label on → scan it again to pack. Catches wrong labels before they ship.
+              </span>
+            </span>
+            <span className={`shrink-0 w-12 h-7 rounded-full p-0.5 transition ${wrapFlow ? 'bg-amber-500' : 'bg-gray-300'}`}>
+              <span className={`block w-6 h-6 rounded-full bg-white shadow transition-transform ${wrapFlow ? 'translate-x-5' : ''}`} />
+            </span>
+          </button>
+        </div>
 
         <p className="text-sm text-gray-500 mt-4 leading-snug">
           {anyIpad
