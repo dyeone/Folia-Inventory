@@ -28,6 +28,7 @@ import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
+import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem, hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
@@ -442,6 +443,24 @@ export function PackingView({
     [inventoryItems, sales, boxNotesByBox]
   );
 
+  // Lineup numbers carried by 2+ unpacked items across the open boxes (last
+  // week's hold labels beside this week's, block spills, manual dupes). The
+  // per-item Pack buttons and Pack all confirm before packing on a bare #;
+  // the finder names the OTHER open box so the confirm can point at it.
+  const dupeLots = useMemo(
+    () => findDupeLots(groups.flatMap(g => g.boxes)),
+    [groups],
+  );
+  const findDupeLotBox = (lot, excludeBoxId) => {
+    for (const g of groups) {
+      for (const b of g.boxes) {
+        if (b.id === excludeBoxId) continue;
+        if (b.items.some(i => i.status === 'sold' && !i.packedAt && parseInt(i.lotNumber, 10) === lot)) return b;
+      }
+    }
+    return null;
+  };
+
   // Sales in 'packing' status that haven't had their orders uploaded yet —
   // they don't have boxes to list (no shipmentBoxId assigned), so they need
   // a separate "awaiting upload" surface to route the operator back to the
@@ -681,6 +700,10 @@ export function PackingView({
       if (i.sku && i.sku.toLowerCase().includes(searchLower)) return true;
       if (i.name && i.name.toLowerCase().includes(searchLower)) return true;
       if (i.variety && i.variety.toLowerCase().includes(searchLower)) return true;
+      // Lineup number — exact match only (substring would flood short #s).
+      // Lowercased to match the query normalization (manual lots can carry
+      // letters).
+      if (i.lotNumber && String(i.lotNumber).trim().toLowerCase() === searchLower) return true;
     }
     return false;
   };
@@ -1289,6 +1312,8 @@ export function PackingView({
                     onMarkShipped={handleMarkShipped}
                     onUnship={confirmUnship}
                     onTogglePacked={onTogglePacked}
+                    dupeLots={dupeLots}
+                    findDupeLotBox={findDupeLotBox}
                     showToast={showToast}
                     isAdmin={isAdmin}
                     selectedBoxIds={selectedBoxIds}
@@ -1787,7 +1812,7 @@ function addressOneLine(addr) {
 
 function BuyerGroupCard({
   group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onSetHold, onTogglePickup, onBought, onCancelLabel,
-  onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
+  onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, dupeLots, findDupeLotBox, showToast,
   isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
 }) {
@@ -1837,6 +1862,8 @@ function BuyerGroupCard({
             onMarkShipped={() => onMarkShipped(box)}
             onUnship={onUnship ? () => onUnship(box) : null}
             onTogglePacked={onTogglePacked}
+            dupeLots={dupeLots}
+            findDupeLotBox={findDupeLotBox}
             onSetHold={onSetHold ? (hold) => onSetHold(box.id, hold) : null}
             onTogglePickup={onTogglePickup ? (make) => onTogglePickup(box.id, make) : null}
             onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
@@ -1922,7 +1949,7 @@ function AddressCopyStrip({ box, showToast }) {
   );
 }
 
-function BoxItemsList({ box, salesById, onTogglePacked, onResolveReview, onEditAddress }) {
+function BoxItemsList({ box, salesById, onTogglePacked, dupeLots, findDupeLotBox, onResolveReview, onEditAddress }) {
   // Hide already-shipped items in open boxes — the operator only cares
   // about what's left to pack. Shipped boxes (every item is shipped)
   // skip the filter so the archive view still shows the full contents.
@@ -1989,7 +2016,21 @@ function BoxItemsList({ box, salesById, onTogglePacked, onResolveReview, onEditA
               ) : (
                 <button
                   type="button"
-                  onClick={() => onTogglePacked(item.id, true)}
+                  onClick={() => {
+                    // Collided lineup number — confirm with the # and the
+                    // other open box carrying it before packing on a bare #.
+                    const lot = parseInt(item.lotNumber, 10);
+                    if (dupeLots?.has(lot)) {
+                      const other = findDupeLotBox?.(lot, box.id);
+                      const where = other
+                        ? `box ${shortBoxCode(other.id)}${other.buyer ? ` (${other.buyer})` : ''}`
+                        : 'this box';
+                      if (!window.confirm(
+                        `#${lot} is also on an unpacked plant in ${where}. Check the wk tag on the label — pack ${item.sku || 'this item'} anyway?`,
+                      )) return;
+                    }
+                    onTogglePacked(item.id, true);
+                  }}
                   title="Mark as packed"
                   className="shrink-0 text-[11px] font-medium px-2 py-1 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 flex items-center gap-1"
                 >
@@ -2149,7 +2190,7 @@ function CarrierToggle({ box, onSave, showToast }) {
 
 function BoxRow({
   box, sale, shipment, salesById,
-  onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, showToast,
+  onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, dupeLots, findDupeLotBox, showToast,
   onSaveNote, onSetHold, onTogglePickup, boxSizes, onSavePackaging, onBought, onCancelLabel,
   isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected, defaultExpanded,
@@ -2278,9 +2319,17 @@ function BoxRow({
   const handlePackAll = async (e) => {
     e?.stopPropagation();
     if (!onTogglePacked) return;
+    const targets = box.items.filter(i => i.status === 'sold' && !i.packedAt);
+    // ONE confirm for the whole batch when any target's lineup number is
+    // also open elsewhere — those #s need a wk-tag check before bulk-packing.
+    const collided = [...new Set(
+      targets.map(i => parseInt(i.lotNumber, 10)).filter(lot => dupeLots?.has(lot)),
+    )];
+    if (collided.length > 0 && !window.confirm(
+      `#${collided.join(', #')} ${collided.length === 1 ? 'is' : 'are'} also on other unpacked plants. Check the wk tag on those labels — pack all anyway?`,
+    )) return;
     setBusy(true);
     try {
-      const targets = box.items.filter(i => i.status === 'sold' && !i.packedAt);
       for (const it of targets) {
         await onTogglePacked(it.id, true);
       }
@@ -2677,7 +2726,7 @@ function BoxRow({
             )}
           </div>
           <AddressCopyStrip box={box} showToast={showToast} />
-          <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} onEditAddress={onEditAddress} />
+          <BoxItemsList box={box} salesById={salesById} onTogglePacked={onTogglePacked} dupeLots={dupeLots} findDupeLotBox={findDupeLotBox} onEditAddress={onEditAddress} />
           <LabelInfoRow shipment={shipment} feeCollected={box.shippingFeeCollected} showToast={showToast} />
           {/* Carrier — defaults from contents (anthurium → UPS); operator can
               override here. Hidden once a label is bought (carrier is locked). */}

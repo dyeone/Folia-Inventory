@@ -4,6 +4,7 @@ import {
   Download, ChevronRight, Users, Sprout, Printer, GripVertical, Images, ListOrdered,
 } from 'lucide-react';
 import { api } from '../api.js';
+import { saleWeek, blockStart, blockEnd, isoWeekNum } from './lotBlock.js';
 import { ImageDropZone } from '../purchasing/ImageDropZone.jsx';
 import { exportPalmstreetCsv } from './palmstreetExport.js';
 import { SellerIntakeModal } from './SellerIntakeModal.jsx';
@@ -118,27 +119,44 @@ export function PreSaleTab({
   // A scanned item that's staged on another sale — offer to move it here.
   // { item, otherName } or null.
   const [conflict, setConflict] = useState(null);
-  // Weekly running index: the brand's next lineup number to hand out (Tue ends
-  // at 58 → Fri starts at 59). Fetched once; advanced whenever a lineup is
-  // numbered. `startEdited` is the operator's manual override of the start for
-  // THIS sale ('' = use the auto-suggested value), cleared when the sale changes.
+  // Weekly running index: the brand's next lineup number to hand out inside
+  // the sale week's 200-number block (Tue ends 258 → Fri starts at 259; see
+  // lotBlock.js). Re-fetched when the active sale's lot week changes; advanced
+  // whenever a lineup is numbered. `startEdited` is the operator's manual
+  // override of the start for THIS sale ('' = use the auto-suggested value),
+  // cleared when the sale changes.
+  const week = saleWeek(sale);
   const [lineupNext, setLineupNext] = useState(1);
   const [lineupLoaded, setLineupLoaded] = useState(false);
   const [startEdited, setStartEdited] = useState('');
 
   useEffect(() => { scanRef.current?.focus(); }, [saleId]);
-  // Load the brand's running index once (brand is fixed for the session).
-  // Numbering stays disabled until this resolves — otherwise a click inside the
-  // fetch window would number a fresh sale from the default 1, colliding with
-  // last week's lineup.
+  // Load the brand's running index for the sale week — a new week answers with
+  // its block start (automating the weekly reset the operator used to type in
+  // as Start #=1). Numbering stays disabled until this resolves — otherwise a
+  // click inside the fetch window would number a fresh sale from a stale
+  // value, colliding with another week's lineup.
   useEffect(() => {
     let alive = true;
-    api.getLineupNext?.()
-      .then(n => { if (alive) setLineupNext(Math.max(1, parseInt(n, 10) || 1)); })
-      .catch(() => {})
-      .finally(() => { if (alive) setLineupLoaded(true); });
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLineupLoaded(false);
+    api.getLineupNext?.(week, blockStart(week), blockEnd(week))
+      .then(n => {
+        if (!alive) return;
+        setLineupNext(Math.max(1, parseInt(n, 10) || 1));
+        // Enable numbering ONLY on success — enabling on error would number
+        // from a stale or default value, the exact collision this gate exists
+        // to prevent.
+        setLineupLoaded(true);
+      })
+      .catch(() => {
+        if (alive) showToast?.('Couldn’t load this week’s lot counter — numbering stays disabled. Switch sales or reload to retry.', 'error');
+      });
     return () => { alive = false; };
-  }, []);
+    // showToast is a stable-enough prop used only in the error path — keying
+    // the fetch on it would refetch the counter on unrelated parent renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [week]);
   // A manual start override belongs to one sale; drop it when switching sales.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setStartEdited(''); }, [saleId]);
@@ -407,26 +425,41 @@ export function PreSaleTab({
   // path. After a successful save, advance the brand's running index past this
   // lineup so the next sale continues where this one ended.
   const persistOrder = async (orderedIds) => {
+    // A never-numbered sale takes its start from the weekly counter; until
+    // that loads, startNum may be another week's stale value. The Number and
+    // Print buttons are disabled on !lineupLoaded, but drag-reorder also lands
+    // here — refuse rather than commit a colliding range.
+    if (numberedMin == null && !lineupLoaded) {
+      showToast?.('Loading this week’s lot numbers — try again in a second', 'error');
+      return;
+    }
     const patches = orderedIds.map((id, idx) => ({ id, lotNumber: String(startNum + idx) }));
     try {
       await onStageItems?.(patches);
       const end = startNum + orderedIds.length; // next number after this lineup
       if (end > lineupNext) {
         setLineupNext(end);
-        api.bumpLineupNext?.(end).catch(() => {});
+        // A silently failed bump means the next numbering session re-mints
+        // this range — say so instead of swallowing it.
+        api.bumpLineupNext?.(end, week).catch(() => {
+          showToast?.('Numbers saved, but the weekly counter didn’t update — the next sale may suggest overlapping numbers', 'error');
+        });
       }
     } catch (e) { showToast?.(e.message || 'Could not save order', 'error'); }
   };
-  // The brand's running index only moves forward and there's no in-app walk-
-  // back, so a fat-fingered Start # (590 for 59) would strand every future
-  // sale. A large forward jump from the suggestion is almost always a typo —
-  // confirm it before committing.
-  const confirmStartJump = () =>
-    startNum <= suggestedStart + 200 ||
-    window.confirm(`Start this lineup at ${startNum}? That's well above the expected ${suggestedStart}, and the weekly count only moves forward — a wrong number here is hard to undo.`);
+  // The rolling blocks (lotBlock.js) keep two weeks' bench labels from ever
+  // sharing a number — but only while a lineup stays inside its week's block.
+  // Confirm before committing a range that leaves it.
+  const confirmStartJump = () => {
+    const endNum = startNum + staged.length - 1;
+    return (startNum >= blockStart(week) && endNum <= blockEnd(week)) ||
+      window.confirm(`Number this lineup ${startNum}–${endNum}? Week ${isoWeekNum(week)}'s lots are ${blockStart(week)}–${blockEnd(week)} — numbers outside that block can duplicate a held plant's label from another week, and packers pick by number.`);
+  };
   // "Number {start}–{end}" — lock the current display order in as the lineup.
   const numberAll = () => { if (confirmStartJump()) persistOrder(staged.map(i => i.id)); };
   // Drop `sourceId` at `targetId`'s position and renumber the whole lineup.
+  // Same out-of-block confirm as the Number button — a drag commits numbers
+  // just the same.
   const handleReorder = (sourceId, targetId) => {
     if (!sourceId || sourceId === targetId) return;
     const ids = staged.map(i => i.id);
@@ -434,6 +467,7 @@ export function PreSaleTab({
     const to = ids.indexOf(targetId);
     if (from < 0 || to < 0) return;
     ids.splice(to, 0, ids.splice(from, 1)[0]);
+    if (!confirmStartJump()) return;
     persistOrder(ids);
   };
   // Print labels for the selected plants. Each label carries the big lineup
@@ -728,7 +762,7 @@ export function PreSaleTab({
               <div className="px-3 pb-2.5 flex flex-wrap items-center gap-1.5">
                 <label
                   className="flex items-center gap-1 px-1 text-xs font-medium text-gray-500 select-none"
-                  title="Where this sale's lineup numbering starts. Auto-continues from last week's sale; edit to override."
+                  title="Where this sale's lineup numbering starts. Auto-continues within this week's lot block; edit to override."
                 >
                   Start #
                   <input
@@ -748,6 +782,12 @@ export function PreSaleTab({
                 >
                   <ListOrdered className="w-3.5 h-3.5" /> Number {startNum}–{startNum + staged.length - 1}
                 </button>
+                <span
+                  className="text-[11px] text-gray-400"
+                  title="Each week owns a fixed 200-number lot block, so held plants from another week never share a number"
+                >
+                  wk {isoWeekNum(week)} · this week&apos;s lots: {blockStart(week)}–{blockEnd(week)}
+                </span>
                 <button
                   onClick={printLabels}
                   disabled={busy || !onPrintLabels || !someSelected || !lineupLoaded}

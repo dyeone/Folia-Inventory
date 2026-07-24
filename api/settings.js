@@ -57,9 +57,10 @@ export default wrap(async (req, res) => {
   if (typeof action === 'string' && action.startsWith('loyalty-')) {
     return handleLoyalty(action, req, res, user, brandId);
   }
-  // Lineup running index — one brand-scoped counter so weekly sales number
-  // continuously (Tue 1–58 → Fri starts at 59). Any active user in the brand
-  // may read + advance it; same no-new-function rationale as the groups above.
+  // Lineup running index — one brand-scoped counter so sales within a week
+  // number continuously inside the week's lot block (src/sales/lotBlock.js).
+  // Any active user in the brand may read + advance it; same no-new-function
+  // rationale as the groups above.
   if (typeof action === 'string' && action.startsWith('lineup-')) {
     return handleLineup(action, req, res, user, brandId);
   }
@@ -101,14 +102,39 @@ export default wrap(async (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
-// Lineup running index — one brand-scoped counter (id `lineup-counter:<brand>`)
-// holding the next lineup number to hand out, so weekly sales number
-// continuously (Tue 1–58 → Fri starts at 59) instead of each restarting at 1.
+// Lineup running index — one brand-scoped row (id `lineup-counter:<brand>`)
+// holding per-week counters: { weeks: { "<lotWeek>": next, ... }, next }.
+// Each week's counter is advance-only (Tue ends 258 → Fri starts at 259) and
+// independent of the others, so renumbering an old week's sale or pre-numbering
+// next week's can never walk another week's count back. A week's first read
+// starts at its own 200-number block (src/sales/lotBlock.js) — or continues a
+// counter another week left INSIDE this block (a >200-lot spill, or the
+// pre-week-scoping legacy `next`), so spilled numbers are never re-minted.
+// Weekless calls from stale clients keep legacy single-counter behavior.
 // Any active user in the brand may read + advance it (numbering is a routine
 // operator action, not admin-gated). No new function, no migration.
 // ----------------------------------------------------------------------------
 
 const LINEUP_NS = 'lineup-counter:';
+
+// Every positive counter value in the row: per-week entries plus the legacy
+// weekless `next` (still maintained for stale clients).
+function lineupValues(d) {
+  return [...Object.values(d?.weeks || {}), d?.next]
+    .map(Number).filter(v => Number.isFinite(v) && v > 0);
+}
+
+// Server-side lot week — mirrors src/sales/lotBlock.js lotWeek but UTC-based
+// (it only bounds client-sent weeks, where ±1 doesn't matter). Weeks are
+// client data: without a plausibility window, one typo'd 2027 sale date would
+// prune every real week's entry and then keep pruning each new bump forever.
+const LOT_WEEK_EPOCH = Date.UTC(2024, 0, 1); // Monday
+function currentLotWeek() {
+  const now = new Date();
+  const monday = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(),
+    now.getUTCDate() - ((now.getUTCDay() + 6) % 7));
+  return Math.round((monday - LOT_WEEK_EPOCH) / (7 * 24 * 60 * 60 * 1000));
+}
 
 async function handleLineup(action, req, res, user, brandId) {
   const id = LINEUP_NS + brandId;
@@ -117,8 +143,32 @@ async function handleLineup(action, req, res, user, brandId) {
       const { data, error } = await supabase
         .from('app_settings').select('data').eq('id', id).maybeSingle();
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-      const next = Number(data?.data?.next);
-      return res.status(200).json({ next: Number.isFinite(next) && next > 0 ? next : 1 });
+      const d = data?.data || {};
+      const week = Math.floor(Number(req.query?.week));
+      const blockStart = Math.floor(Number(req.query?.blockStart));
+      const blockEnd = Math.floor(Number(req.query?.blockEnd));
+      if (Number.isFinite(week) && Number.isFinite(blockStart)) {
+        // The week continues its own counter, never below its block start.
+        // Any OTHER counter value sitting inside this block means those
+        // numbers are already on printed labels (a spilled week, or the legacy
+        // counter at deploy time) — continue above them, don't re-mint. The
+        // bound is end+1 because a stored next of exactly end+1 means the
+        // whole block is consumed — answering blockStart there would make
+        // every number in the block a duplicate of a printed label.
+        const end = Number.isFinite(blockEnd) ? blockEnd : blockStart + 199;
+        const own = Number(d.weeks?.[week]);
+        const inBlock = lineupValues(d).filter(v => v > blockStart && v <= end + 1);
+        const next = Math.max(
+          blockStart,
+          Number.isFinite(own) && own > 0 ? own : 1,
+          ...inBlock,
+        );
+        return res.status(200).json({ next });
+      }
+      // Weekless (stale client): the old single running counter — the max of
+      // everything ever handed out, so it can only over-shoot, never collide.
+      const all = lineupValues(d);
+      return res.status(200).json({ next: all.length ? Math.max(...all) : 1 });
     }
     case 'lineup-bump': {
       if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
@@ -126,21 +176,69 @@ async function handleLineup(action, req, res, user, brandId) {
       if (!Number.isFinite(incoming) || incoming < 1) {
         const e = new Error('next (positive integer) required'); e.status = 400; throw e;
       }
-      // Advance-only: the shared counter only ever moves forward, so a fresh
-      // sale never gets a start below one already handed out. This is a
-      // read-then-write (not atomic); under two simultaneous bumps one update
-      // can be lost, but the workflow is effectively single-writer and the
-      // Start # is editable, so any drift self-corrects on the next sale. Note
-      // this guards the COUNTER only — it does not stop an operator manually
-      // re-numbering an already-numbered older sale into a colliding range.
+      // Lot numbers above 4 digits break the Palmstreet title parser and the
+      // label font ladder — a runaway value would also poison the advance-only
+      // counter with no in-app walk-back.
+      if (incoming > 9999) {
+        const e = new Error('next out of range (max 9999)'); e.status = 400; throw e;
+      }
+      // Advance-only per week, and a bump never touches any OTHER week's
+      // entry. This is a read-then-write (not atomic); under two simultaneous
+      // bumps one update can be lost, but the workflow is effectively
+      // single-writer and the Start # is editable, so any drift self-corrects
+      // on the next sale. Note this guards the COUNTER only — it does not
+      // stop an operator manually re-numbering an already-numbered older sale
+      // into a colliding range.
+      const week = Math.floor(Number(req.body?.week));
+      // Plausibility window: the week is client data derived from an editable
+      // sale date. Legit uses reach a few weeks back (renumbering a held
+      // sale) and a little forward (pre-numbering next week) — anything
+      // further is a typo'd date or a bad clock, and accepting it would both
+      // store a garbage key and mint numbers nobody can trace.
+      const cur = currentLotWeek();
+      if (Number.isFinite(week) && (week < cur - 12 || week > cur + 4)) {
+        const e = new Error(`week ${week} implausible (server week ${cur}) — check the sale's date`);
+        e.status = 400; throw e;
+      }
       const { data: existingRow, error: rErr } = await supabase
         .from('app_settings').select('data').eq('id', id).maybeSingle();
       if (rErr) { const e = new Error(rErr.message); e.status = 500; throw e; }
-      const current = Number(existingRow?.data?.next);
-      const next = Math.max(Number.isFinite(current) && current > 0 ? current : 1, incoming);
+      const d = existingRow?.data || {};
+      const payload = { ...d };
+      let next;
+      if (Number.isFinite(week)) {
+        const weeks = { ...(d.weeks || {}) };
+        const own = Number(weeks[week]);
+        next = Math.max(Number.isFinite(own) && own > 0 ? own : 1, incoming);
+        weeks[week] = next;
+        // Prune against the SERVER's clock, never against the stored keys —
+        // the rotation only needs the recent past (holds span ≤5 weeks), and
+        // a client-supplied anchor would let one bad key eat the whole map.
+        for (const k of Object.keys(weeks)) {
+          if (Number(k) < cur - 8 || Number(k) > cur + 8) delete weeks[k];
+        }
+        payload.weeks = weeks;
+        // The pre-week-scoping counter (`next`) only matters through the
+        // cutover window — kept forever it would re-seed its block on every
+        // 5th rotation (block 0 permanently starts ~161 and spills). Stamp
+        // the week it was first seen and retire it once the bench horizon is
+        // long past.
+        if (payload.next != null) {
+          if (payload.nextWeek == null) payload.nextWeek = week;
+          else if (week - payload.nextWeek > 8) { delete payload.next; delete payload.nextWeek; }
+        }
+      } else {
+        // Stale weekless client: legacy advance-only single counter. Its
+        // activity refreshes the retirement stamp — the counter is clearly
+        // still in use.
+        const current = Number(d.next);
+        next = Math.max(Number.isFinite(current) && current > 0 ? current : 1, incoming);
+        payload.next = next;
+        payload.nextWeek = cur;
+      }
       const { error } = await supabase
         .from('app_settings')
-        .upsert({ id, data: { next }, updatedAt: new Date().toISOString(), updatedBy: user.id });
+        .upsert({ id, data: payload, updatedAt: new Date().toISOString(), updatedBy: user.id });
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ next });
     }

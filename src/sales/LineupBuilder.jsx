@@ -3,9 +3,13 @@ import {
   X, Layers, Search, DollarSign, Tag, Sprout, ListOrdered, Check,
   ScanLine, Gift,
 } from 'lucide-react';
+import { api } from '../api.js';
+import { saleWeek, blockStart, blockEnd } from './lotBlock.js';
 import { PRICE_BUCKETS } from '../constants.js';
 
 export function LineupBuilder({ sale, items, onSave, onClose }) {
+  // The lot week whose 200-number block this sale's numbers belong in.
+  const week = saleWeek(sale);
   // Per-selected-item state: { lotNumber, kind: 'sale'|'giveaway' }.
   const initialSelected = useMemo(() => {
     const m = {};
@@ -51,6 +55,10 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
   const [scanFlash, setScanFlash] = useState({ id: null, kind: null });
   // Validation error surfaced in the save bar, replaces the old `alert()`.
   const [saveError, setSaveError] = useState('');
+  // Out-of-block lot # warning, also in the save bar. A caution, not a
+  // validation failure: it shows once, and the next Save keeps the numbers
+  // as typed.
+  const [blockWarning, setBlockWarning] = useState('');
   const [scanMessage, setScanMessage] = useState(null);
 
   useEffect(() => {
@@ -137,16 +145,36 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
   };
 
   const setLot = (id, lot) => {
+    // A re-typed lot invalidates any earlier out-of-block acknowledgement.
+    setBlockWarning('');
     setSelected(prev => ({ ...prev, [id]: { ...prev[id], lotNumber: lot } }));
   };
 
   // Auto-number assigns sequential lot #s to *sale* items, sorted by price
-  // ascending. Giveaways are skipped (they don't take a lot number).
-  const autoNumber = () => {
-    const saleIds = Object.entries(selected)
-      .filter(([, v]) => v.kind !== 'giveaway')
-      .map(([id]) => id);
-    const sorted = saleIds.sort((a, b) => {
+  // ascending. Giveaways are skipped (they don't take a lot number). Starts
+  // where this sale's numbering already starts (re-numbering keeps its range,
+  // like Pre Sale's Start #), else at the shared weekly counter — another
+  // same-week sale may already occupy the front of the block, and a bare 1
+  // would collide with another week's held labels (lotBlock.js). If the
+  // counter can't be reached it ABORTS: falling back to the block start
+  // could silently re-mint a same-week sale's numbers.
+  const autoNumber = async () => {
+    const saleEntries = Object.entries(selected)
+      .filter(([, v]) => v.kind !== 'giveaway');
+    const existing = saleEntries
+      .map(([, v]) => parseInt(v.lotNumber, 10))
+      .filter(n => Number.isFinite(n) && n > 0);
+    let start;
+    if (existing.length) {
+      start = Math.min(...existing);
+    } else {
+      start = await api.getLineupNext?.(week, blockStart(week), blockEnd(week)).catch(() => null);
+      if (start == null) {
+        setSaveError('Couldn’t reach the weekly lot counter — try Auto-number again.');
+        return;
+      }
+    }
+    const sorted = saleEntries.map(([id]) => id).sort((a, b) => {
       const ia = eligible.find(i => i.id === a);
       const ib = eligible.find(i => i.id === b);
       const pa = parseFloat(ia?.listingPrice) || 0;
@@ -156,7 +184,7 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
     setSelected(prev => {
       const next = { ...prev };
       sorted.forEach((id, idx) => {
-        next[id] = { ...next[id], lotNumber: String(idx + 1) };
+        next[id] = { ...next[id], lotNumber: String(start + idx) };
       });
       return next;
     });
@@ -185,6 +213,25 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
     }
     setSaveError('');
 
+    // Lot #s typed outside the sale week's block can duplicate a held plant's
+    // label from another week (lotBlock.js). Warning, not a blocker — but the
+    // parent closes the modal on save, so surface it here once and let a
+    // second Save keep the numbers as typed.
+    const outside = Object.values(selected)
+      .filter(s => s.kind !== 'giveaway')
+      .map(s => parseInt(s.lotNumber, 10))
+      .filter(n => Number.isFinite(n) && n > 0 && (n < blockStart(week) || n > blockEnd(week)));
+    // Compare against the exact warned message, not a boolean — an
+    // acknowledgement only covers the numbers it named, so a DIFFERENT
+    // out-of-block set typed afterwards warns again.
+    const outsideMsg = outside.length
+      ? `Lot ${outside.join(', ')} outside this week's block ${blockStart(week)}–${blockEnd(week)} — can duplicate another week's held labels. Save again to keep them.`
+      : '';
+    if (outsideMsg && blockWarning !== outsideMsg) {
+      setBlockWarning(outsideMsg);
+      return;
+    }
+
     const updates = [];
     Object.entries(selected).forEach(([id, meta]) => {
       updates.push({
@@ -198,6 +245,14 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
       updates.push({ id: i.id, saleId: null, lotNumber: null, lotKind: 'sale' });
     });
     onSave(updates);
+    // Advance the shared weekly counter past this lineup's in-block numbers so
+    // Pre Sale numbering can't re-mint the same range (the server is advance-
+    // only within a week, so a low value can't walk it back).
+    const inBlock = Object.values(selected)
+      .filter(s => s.kind !== 'giveaway')
+      .map(s => parseInt(s.lotNumber, 10))
+      .filter(n => Number.isFinite(n) && n >= blockStart(week) && n <= blockEnd(week));
+    if (inBlock.length) api.bumpLineupNext?.(Math.max(...inBlock) + 1, week).catch(() => {});
   };
 
   const filtered = useMemo(() => {
@@ -497,6 +552,9 @@ export function LineupBuilder({ sale, items, onSave, onClose }) {
             <span className="font-semibold text-emerald-700">${selectedValue.toFixed(0)}</span>
             {saveError && (
               <div className="text-xs text-red-700 mt-1 truncate" role="alert">{saveError}</div>
+            )}
+            {!saveError && blockWarning && (
+              <div className="text-xs text-amber-700 mt-1 truncate" role="alert">{blockWarning}</div>
             )}
           </div>
           <div className="flex gap-2 flex-shrink-0">
