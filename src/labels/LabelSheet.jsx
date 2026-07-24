@@ -44,16 +44,17 @@ function isoWeek(raw) {
   return Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
 }
 
-// Small "wk N" tag printed under the big lineup number. The running index
+// Bold "WK N" chip printed under the big lineup number. The running index
 // keeps numbers unique WITHIN a week (Tue continues into Fri) but restarts
 // for a new week, so two weeks' plants on the bench can share a number —
-// the week tag is what tells this week's #12 from last week's. Week comes
-// from the plant's sale date, else its sold date, else the print date
-// (labels are printed in the lineup's own week).
+// the week chip is what tells this week's #12 from last week's, so it must
+// be readable at arm's length (a tiny gray tag wasn't, and packers pulled
+// the wrong week's plants). Week comes from the plant's sale date, else its
+// sold date, else the print date (labels are printed in the lineup's own week).
 function weekTag(item, saleById) {
   const sale = item?.saleId && saleById ? saleById.get(item.saleId) : null;
   const week = isoWeek(sale?.date || item?.soldAt || new Date());
-  return week ? `wk ${week}` : '';
+  return week ? `WK ${week}` : '';
 }
 
 // Big-number font size (pt) picked by digit count so it fills the (wide) left
@@ -122,7 +123,8 @@ function Label({ item, tag, sellerName, week }) {
             <span className="font-extrabold text-black leading-none"
                   style={{ fontSize: lot.length >= 4 ? '30pt' : lot.length === 3 ? '38pt' : '46pt' }}>{lot}</span>
             {week && (
-              <span className="text-gray-600 font-semibold leading-none" style={{ fontSize: '5.5pt', marginTop: '0.03in' }}>
+              <span className="font-bold text-black leading-none"
+                    style={{ fontSize: '8pt', marginTop: '0.02in', padding: '0.02in 0.05in', border: '0.012in solid #000', borderRadius: '0.03in' }}>
                 {week}
               </span>
             )}
@@ -192,9 +194,10 @@ function buildPdf(items, sellerNameById, saleById) {
     if (lot) {
       // Combined layout: the big lineup number fills the wide left column (easy
       // to read across the room during a live), with name / SKU / barcode stacked
-      // in the right column. A thin divider separates the two. A small "wk N"
-      // under the number says which week's lineup this is — the running index
-      // restarts each week, so numbers repeat across weeks on the bench.
+      // in the right column. A thin divider separates the two. A bold "WK N"
+      // chip under the number says which week's lineup this is — numbers can
+      // repeat across weeks on the bench, and the chip has to read at arm's
+      // length (its tiny gray predecessor didn't).
       const week = weekTag(item, saleById);
       const DIV = 0.82;                 // left column width / divider x
       pdf.setFont('helvetica', 'bold');
@@ -202,9 +205,12 @@ function buildPdf(items, sellerNameById, saleById) {
       pdf.setFontSize(lotFontPt(lot));
       pdf.text(lot, DIV / 2, week ? 0.68 : 0.74, { align: 'center' });
       if (week) {
-        pdf.setFontSize(5.5);
-        pdf.setTextColor(110);
-        pdf.text(week, DIV / 2, 0.88, { align: 'center' });
+        pdf.setFontSize(8);
+        const chipW = pdf.getTextWidth(week) + 0.1;
+        pdf.setDrawColor(0);
+        pdf.setLineWidth(0.012);
+        pdf.roundedRect(DIV / 2 - chipW / 2, 0.73, chipW, 0.16, 0.03, 0.03);
+        pdf.text(week, DIV / 2, 0.85, { align: 'center' });
       }
       pdf.setDrawColor(170);
       pdf.setLineWidth(0.008);
@@ -268,8 +274,8 @@ export function LabelSheet({ items, sellers, sales, onClose, showToast }) {
     () => new Map((sellers || []).map(s => [s.id, s.name])),
     [sellers],
   );
-  // saleId → sale, for the "wk N" tag under lineup numbers (week comes from
-  // the sale's date). Optional — without it the tag falls back to soldAt /
+  // saleId → sale, for the "WK N" chip under lineup numbers (week comes from
+  // the sale's date). Optional — without it the chip falls back to soldAt /
   // the print date.
   const saleById = useMemo(
     () => new Map((sales || []).map(s => [s.id, s])),
