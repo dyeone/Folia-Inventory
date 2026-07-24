@@ -10,6 +10,7 @@ import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
+import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
@@ -309,6 +310,12 @@ export function PackerView({ onLogout }) {
     [boxesByCode],
   );
 
+  // Lineup numbers carried by 2+ unpacked items across the open boxes (last
+  // week's hold labels beside this week's, block spills, manual dupes). Every
+  // pack path checks this set before trusting a bare # — the label's wk tag
+  // is what disambiguates.
+  const dupeLots = useMemo(() => findDupeLots(Object.values(boxesByCode)), [boxesByCode]);
+
   const toastTimerRef = useRef(null);
   const showToast = (msg, durationMs = 2200) => {
     // Clear the previous timer so a short-lived toast (e.g. "Packed X",
@@ -536,7 +543,10 @@ export function PackerView({ onLogout }) {
 
   // In-box scan: flip the matching item to packed. If the scanned plant
   // belongs to a DIFFERENT open box, jump to that box instead of erroring —
-  // so scanning any plant always takes the packer to its box.
+  // so scanning any plant always takes the packer to its box. EXCEPT when
+  // the active box still needs the same lineup number: that's the wrong-grab
+  // signature (last week's #N pulled instead of this week's), and the silent
+  // jump is exactly what converted wrong grabs into wrong shipments.
   const handleScanItem = async (rawText) => {
     if (!activeBox) return;
     const sku = normalizeSku(rawText);
@@ -546,7 +556,21 @@ export function PackerView({ onLogout }) {
       const other = Object.values(boxesByCode).find(
         b => b.id !== activeBox.id && b.items.some(i => normalizeSku(i.sku) === sku),
       );
-      if (other) { showToast(`${sku} → box ${other.code}`, 2500); goToBox(other.id); return; }
+      if (other) {
+        const scanned = other.items.find(i => normalizeSku(i.sku) === sku);
+        const lot = parseInt(scanned?.lotNumber, 10);
+        const needed = Number.isFinite(lot)
+          ? activeBox.items.find(i => i.status === 'sold' && !i.packedAt && parseInt(i.lotNumber, 10) === lot)
+          : null;
+        if (needed) {
+          if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+          showToast(`⚠ Wrong plant — that's #${lot} for box ${other.code}. This box needs #${lot} with SKU ${needed.sku || '(no SKU)'}. Put it back and check the wk tag on the label.`, 7000);
+          return;
+        }
+        showToast(`${sku} → box ${other.code}`, 2500);
+        goToBox(other.id);
+        return;
+      }
       showToast(`SKU ${sku} isn't in any open box`, 3500);
       return;
     }
@@ -556,8 +580,14 @@ export function PackerView({ onLogout }) {
   };
 
   // Per-row manual pack for unmatched placeholders (synthetic SKU, no barcode).
+  // No barcode means no scan verification, so a collided lineup number must
+  // be acknowledged before packing on the bare #.
   const handleMarkPacked = async (item) => {
     if (item.packedAt || item.status !== 'sold') return;
+    const lot = parseInt(item.lotNumber, 10);
+    if (dupeLots.has(lot) && !window.confirm(
+      `#${lot} is also on another unpacked plant. Check the wk tag on the label — pack this one anyway?`,
+    )) return;
     const label = item.name?.trim() || item.sku || 'item';
     await packById(item.id, label.slice(0, 30));
   };
@@ -755,6 +785,7 @@ export function PackerView({ onLogout }) {
         ? <BoxPane
             box={activeBox}
             assignedTracking={trackingByBox[activeBox.id] || null}
+            dupeLots={dupeLots}
             onMarkPacked={handleMarkPacked}
             onCamera={() => setCameraMode('item')}
             onScanLabel={() => setCameraMode('label')}
@@ -1071,7 +1102,7 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
+function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -1120,7 +1151,7 @@ function BoxPane({ box, assignedTracking, onMarkPacked, onCamera, onScanLabel, o
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} />)}
+                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} dupeLots={dupeLots} />)}
                   {packed.map(item => <ItemCard key={item.id} item={item} />)}
                 </div>
               )}
@@ -1296,12 +1327,15 @@ function CarrierBadge({ carrier, size = 'md' }) {
   );
 }
 
-function ItemCard({ item, onMarkPacked }) {
+function ItemCard({ item, onMarkPacked, dupeLots }) {
   const isPacked = !!item.packedAt;
   const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
   const variety = (item.variety || '').trim();
   const showManualPack = isUnmatched && !isPacked && !!onMarkPacked;
+  // Same lineup number open on another unpacked item — the bare # can't be
+  // trusted, only the label's wk tag can.
+  const isDupe = !isPacked && !!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10));
 
   const family = isUnmatched
     ? { bg: isPacked ? 'bg-purple-100' : 'bg-purple-50', border: 'border-purple-200', accent: 'text-purple-700', icon: 'text-purple-600', ring: 'border-purple-300' }
@@ -1317,7 +1351,7 @@ function ItemCard({ item, onMarkPacked }) {
           <span
             className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-xl font-extrabold text-center tabular-nums ${
               isPacked ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 text-white'
-            }`}
+            } ${isDupe ? 'ring-2 ring-red-500' : ''}`}
             title="Lineup number — find the plant labelled with this #"
           >
             {item.lotNumber}
@@ -1345,6 +1379,12 @@ function ItemCard({ item, onMarkPacked }) {
           </button>
         )}
       </div>
+      {isDupe && (
+        <div className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-red-700">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+          Same # on another unpacked plant — check the wk tag on the label.
+        </div>
+      )}
       <ItemNotes raw={item.notes} />
     </div>
   );
