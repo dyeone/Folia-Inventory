@@ -358,15 +358,18 @@ export function PackerView({ onLogout }) {
   const sweepFound = sweepBoxes.reduce((s, h) => s + h.plants.filter(p => sweepMarks[p.id]).length, 0);
 
   // Step 2 of the session: wrap THIS week's plants into burritos. Scope is
-  // every open box that isn't in the sweep (not holding, not pickup — i.e.
-  // shipping this week). Progress is packedAt, the wrap flow's terminal
-  // state; nextId is the first box with work left, in the landing grid's
-  // own work-first order.
+  // every open box that is actually shipping this week — tested by hold and
+  // pickup STATE directly, not by sweep membership: a holding/pickup box
+  // with zero unpacked plants drops out of the sweep but still isn't
+  // shipping, and counting it would steer the CTA into an ON HOLD box (or
+  // let its unwrappable hold line keep Step 2 amber all week). Progress is
+  // packedAt, the wrap flow's terminal state; nextId is the first box with
+  // work left, in the landing grid's own work-first order.
   const shipPlan = useMemo(() => {
-    const sweepIds = new Set(sweepBoxes.map(sb => sb.box.id));
     let total = 0, packed = 0, boxesLeft = 0, nextId = null;
     for (const box of openBoxes) {
-      if (sweepIds.has(box.id)) continue;
+      const hs = boxHoldState(box.items, holdByBox[box.id]);
+      if (hs.state === 'holding' || boxIsLocalPickup(noteByBox[box.id], box.items)) continue;
       const sold = box.items.filter(i => i.status === 'sold');
       if (!sold.length) continue;
       const p = sold.filter(i => i.packedAt).length;
@@ -375,7 +378,7 @@ export function PackerView({ onLogout }) {
       if (p < sold.length) { boxesLeft += 1; if (!nextId) nextId = box.id; }
     }
     return { total, packed, boxesLeft, nextId };
-  }, [openBoxes, sweepBoxes]);
+  }, [openBoxes, holdByBox, noteByBox]);
 
   const toastTimerRef = useRef(null);
   const showToast = (msg, durationMs = 2200) => {
@@ -740,14 +743,21 @@ export function PackerView({ onLogout }) {
   // scan, but unmatched placeholders have no barcode to start a wrap,
   // reprints happen, and a station with the wrap flow off still wraps
   // burritos. Same mutex rule as startWrap: only the iPad path needs it.
+  const plantPrintBusyRef = useRef(new Set());
   const handlePrintPlantLabel = async (item) => {
+    // Per-item in-flight guard: the bridge path has no busy state or
+    // success toast, and its job can take tens of seconds — an impatient
+    // re-tap would queue a duplicate label.
+    if (plantPrintBusyRef.current.has(item.id)) { showToast('Already printing that label…', 2000); return; }
     const needMutex = printDests.itemlabel === 'ipad';
     if (needMutex && printing) { showToast('Printer is busy — try again in a moment', 2500); return; }
     showToast(`Printing label${item.lotNumber ? ` #${item.lotNumber}` : ''}…`, 1800);
+    plantPrintBusyRef.current.add(item.id);
     if (needMutex) setPrinting('itemlabel');
     try {
       await printItemLabel(item, printDests.itemlabel, showToast);
     } finally {
+      plantPrintBusyRef.current.delete(item.id);
       if (needMutex) setPrinting(null);
     }
   };
@@ -1971,7 +1981,10 @@ function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots, wrapping })
           )}
         </div>
         {item.quantity > 1 && <span className={`text-sm font-medium ${family.accent} shrink-0`}>×{item.quantity}</span>}
-        {onPrintPlantLabel && !isPacked && (
+        {/* Hidden while THIS item is being wrapped — the wrap card's Reprint
+            owns that print (and its status); a side-door print here would
+            leave the card claiming the label never printed. */}
+        {onPrintPlantLabel && !isPacked && !wrapping && (
           <button
             type="button"
             onClick={() => onPrintPlantLabel(item)}
