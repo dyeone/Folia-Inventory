@@ -121,9 +121,10 @@ export function PackerView({ onLogout }) {
   // state is plain packedAt, so nothing new is persisted.
   const [wrapFlow, setWrapFlow] = useState(getWrapFlow);
   const [wrap, setWrap] = useState(null); // { itemId, sku, print: 'sending'|'sent'|'failed' }
-  // Held-plants sweep (holdSweep.js): scan every plant of every still-holding
-  // box off the bench BEFORE regular packing, so last week's plants can't be
-  // mixed into this week's boxes. Found-marks persist per device.
+  // Bench sweep (holdSweep.js): scan every plant of every held or pickup box
+  // off the bench BEFORE regular packing, so plants that aren't shipping
+  // this week can't be mixed into this week's boxes. Found-marks persist per
+  // device.
   const [sweepOpen, setSweepOpen] = useState(false);
   const [sweepMarks, setSweepMarks] = useState(loadSweepMarks);
   // Write-through on change, and adopt OTHER tabs' writes (storage events
@@ -340,20 +341,20 @@ export function PackerView({ onLogout }) {
   // is what disambiguates.
   const dupeLots = useMemo(() => findDupeLots(Object.values(boxesByCode)), [boxesByCode]);
 
-  // The sweep's scope: boxes still ON HOLD ('holding' — 'ready' boxes ship
-  // this week and are packed normally) that have unpacked sold plants.
-  // Operator "1-week hold" placeholder lines aren't physical plants and are
-  // excluded from the checklist.
-  const heldBoxes = useMemo(() => openBoxes.flatMap(box => {
+  // The sweep's scope: boxes whose plants must come OFF the bench before
+  // packing — still-holding boxes ('ready' ones ship this week and are packed
+  // normally) and local-pickup boxes (never ship; the buyer collects, so
+  // pickup plants leave the bench regardless of hold state). Operator
+  // "1-week hold" placeholder lines aren't physical plants and are excluded.
+  const sweepBoxes = useMemo(() => openBoxes.flatMap(box => {
     const hold = boxHoldState(box.items, holdByBox[box.id]);
-    if (hold.state !== 'holding') return [];
+    const pickup = boxIsLocalPickup(noteByBox[box.id], box.items);
+    if (hold.state !== 'holding' && !pickup) return [];
     const plants = box.items.filter(i => i.status === 'sold' && !i.packedAt && !isHoldItem(i.name));
-    if (!plants.length) return [];
-    // Pickup boxes hold too, but must never read "ships" anywhere.
-    return [{ box, plants, hold, pickup: boxIsLocalPickup(noteByBox[box.id], box.items) }];
+    return plants.length ? [{ box, plants, hold, pickup }] : [];
   }), [openBoxes, holdByBox, noteByBox]);
-  const sweepTotal = heldBoxes.reduce((s, h) => s + h.plants.length, 0);
-  const sweepFound = heldBoxes.reduce((s, h) => s + h.plants.filter(p => sweepMarks[p.id]).length, 0);
+  const sweepTotal = sweepBoxes.reduce((s, h) => s + h.plants.length, 0);
+  const sweepFound = sweepBoxes.reduce((s, h) => s + h.plants.filter(p => sweepMarks[p.id]).length, 0);
 
   const toastTimerRef = useRef(null);
   const showToast = (msg, durationMs = 2200) => {
@@ -580,6 +581,12 @@ export function PackerView({ onLogout }) {
         showToast(`⚠ On hold — do not ship yet${hs.daysLeft ? ` · ${hs.daysLeft} day${hs.daysLeft === 1 ? '' : 's'} left` : ''}`, 5000);
         return;
       }
+      // A pickup box never ships, matching label or not — the buyer collects.
+      if (boxIsLocalPickup(noteByBox[activeBox.id], activeBox.items)) {
+        if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+        showToast('⚠ LOCAL PICKUP — this box must not ship. The buyer collects it.', 5000);
+        return;
+      }
       if (navigator.vibrate) navigator.vibrate([40, 50, 90]);
       const ok = await shipBox(activeBox);
       if (!ok) return; // ship failed — toast shown, stay on the box
@@ -703,17 +710,37 @@ export function PackerView({ onLogout }) {
     await packById(item.id, label.slice(0, 30));
   };
 
-  // Sweep scan: a FIND-scan, not a pack-scan — it only ticks the held
-  // plant off the checklist. A plant that isn't held is the packer's cue to
-  // leave it on the bench for this week's packing.
+  // Sweep scan: a FIND-scan, not a pack-scan — it only ticks a held or
+  // pickup plant off the checklist. A plant that isn't in the sweep is the
+  // packer's cue to leave it on the bench for this week's packing. Guards
+  // live HERE (not in submitScan) so the camera path gets them too.
   const handleScanSweep = (rawText) => {
-    const sku = normalizeSku(rawText);
+    const raw = String(rawText || '').trim();
+    // The two most common non-plant barcodes in the room deserve honest
+    // answers, not "unknown SKU". A box tag exits to that box (landing
+    // muscle memory) — unless the box is IN the sweep, whose pane just said
+    // nothing in it gets packed today.
+    if (/^B[-_]/i.test(raw)) {
+      const code = normalizeBoxCode(raw);
+      if (sweepBoxes.some(sb => sb.box.code === code)) {
+        showToast(`Box ${code} is in this sweep — scan its plants (or tap Boxes to leave)`, 3500);
+        return;
+      }
+      setSweepOpen(false);
+      handleScanBox(raw);
+      return;
+    }
+    if (looksLikeTracking(raw)) {
+      showToast('That’s a shipping label — scan plant barcodes during the sweep', 3500);
+      return;
+    }
+    const sku = normalizeSku(raw);
     if (!sku) return;
     // Prefer an UNMARKED match: double-sold duplicates can put the same SKU
-    // in two held boxes, and the second physical plant must still be
+    // in two swept boxes, and the second physical plant must still be
     // scannable to found — "already found" only when every match is marked.
     let already = false;
-    for (const { box, plants } of heldBoxes) {
+    for (const { box, plants, pickup } of sweepBoxes) {
       const hit = plants.find(i => normalizeSku(i.sku) === sku && !sweepMarks[i.id]);
       if (!hit) {
         already = already || plants.some(i => normalizeSku(i.sku) === sku);
@@ -722,21 +749,21 @@ export function PackerView({ onLogout }) {
       setSweepMarks(m => ({ ...m, [hit.id]: Date.now() }));
       if (sweepFound + 1 === sweepTotal) {
         if (navigator.vibrate) navigator.vibrate([60, 40, 60, 40, 140]);
-        showToast(`All ${sweepTotal} held plants found 🎉 — move them to the hold shelf`, 5000);
+        showToast(`All ${sweepTotal} plants found 🎉 — bench is clear for this week's packing`, 5000);
       } else {
         if (navigator.vibrate) navigator.vibrate(30);
         const take = hit.quantity > 1 ? ` — take all ${hit.quantity}` : '';
-        showToast(`Found ${hit.lotNumber ? `#${hit.lotNumber} · ` : ''}${sku}${take} → hold shelf (box ${box.code})`, 2600);
+        showToast(`Found ${hit.lotNumber ? `#${hit.lotNumber} · ` : ''}${sku}${take} → ${pickup ? 'pickup' : 'hold'} shelf (box ${box.code})`, 2600);
       }
       return;
     }
     if (already) { showToast(`${sku} already found ✓`, 2000); return; }
     const elsewhere = Object.values(boxesByCode).find(b => b.items.some(i => normalizeSku(i.sku) === sku));
-    if (elsewhere) { showToast(`${sku} isn't held — leave it on the bench (ships in box ${elsewhere.code})`, 3500); return; }
+    if (elsewhere) { showToast(`${sku} isn't in the sweep — leave it on the bench (box ${elsewhere.code})`, 3500); return; }
     showToast(`SKU ${sku} isn't in any open box`, 3500);
   };
 
-  // Manual found-toggle, only for held plants with no scannable barcode
+  // Manual found-toggle, only for swept plants with no scannable barcode
   // (synthetic UNMATCHED-/DBL- SKUs) — everything else must be scanned.
   // Fires the same completion signal as the scan path: the last unfound item
   // is often a barcode-less placeholder, exactly what this toggle is for.
@@ -750,7 +777,7 @@ export function PackerView({ onLogout }) {
     });
     if (marking && sweepFound + 1 === sweepTotal) {
       if (navigator.vibrate) navigator.vibrate([60, 40, 60, 40, 140]);
-      showToast(`All ${sweepTotal} held plants found 🎉 — move them to the hold shelf`, 5000);
+      showToast(`All ${sweepTotal} plants found 🎉 — bench is clear for this week's packing`, 5000);
     }
   };
 
@@ -764,12 +791,7 @@ export function PackerView({ onLogout }) {
         if (looksLikeTracking(v)) handleScanLabel(v);
         else handleScanItem(v);
       } else if (sweepOpen) {
-        // The two most common non-plant barcodes in the room deserve honest
-        // answers, not "unknown SKU": a box tag exits the sweep and opens
-        // the box (landing-screen muscle memory), a shipping label is named.
-        if (/^B[-_]/i.test(v)) { setSweepOpen(false); handleScanBox(v); }
-        else if (looksLikeTracking(v)) showToast('That’s a shipping label — scan plant barcodes during the sweep', 3500);
-        else handleScanSweep(v);
+        handleScanSweep(v);
       } else {
         handleScanBox(v);
       }
@@ -946,7 +968,7 @@ export function PackerView({ onLogout }) {
         onSubmit={submitScan}
         placeholder={activeBox
           ? (trackingByBox[activeBox.id] ? 'Scan a plant or the shipping label…' : 'Scan a plant barcode…')
-          : sweepOpen ? 'Scan a held plant…' : 'Scan a box or plant…'}
+          : sweepOpen ? 'Scan a plant for the sweep…' : 'Scan a box or plant…'}
         onCamera={() => setCameraMode(activeBox ? 'item' : sweepOpen ? 'sweep' : 'box')}
       />
 
@@ -972,7 +994,7 @@ export function PackerView({ onLogout }) {
           />
         : sweepOpen
         ? <SweepPane
-            heldBoxes={heldBoxes}
+            sweepBoxes={sweepBoxes}
             marks={sweepMarks}
             found={sweepFound}
             total={sweepTotal}
@@ -985,9 +1007,10 @@ export function PackerView({ onLogout }) {
             onClose={() => setSweepOpen(false)}
           />
         : <>
-            {/* Held plants come off the bench FIRST — last week's stock mixed
-                into this week's packing is how wrong plants ship. */}
-            {heldBoxes.length > 0 && (
+            {/* Held + pickup plants come off the bench FIRST — stock that
+                isn't shipping this week mixed into this week's packing is
+                how wrong plants ship. */}
+            {sweepBoxes.length > 0 && (
               <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
                 <button
                   type="button"
@@ -1004,11 +1027,11 @@ export function PackerView({ onLogout }) {
                   <span className="flex-1 min-w-0">
                     <span className={`block text-base font-bold ${sweepFound === sweepTotal ? 'text-emerald-800' : 'text-amber-900'}`}>
                       {sweepFound === sweepTotal
-                        ? 'All held plants on the hold shelf ✓'
-                        : 'Step 1 — pull held plants off the bench'}
+                        ? 'All held & pickup plants off the bench ✓'
+                        : 'Step 1 — pull held & pickup plants off the bench'}
                     </span>
                     <span className={`block text-sm ${sweepFound === sweepTotal ? 'text-emerald-700' : 'text-amber-800'}`}>
-                      {sweepFound}/{sweepTotal} found · {heldBoxes.length} {heldBoxes.length === 1 ? 'box' : 'boxes'} held for next week
+                      {sweepFound}/{sweepTotal} found · {sweepBoxes.length} {sweepBoxes.length === 1 ? 'box isn’t' : 'boxes aren’t'} shipping this week
                     </span>
                   </span>
                 </button>
@@ -1194,18 +1217,20 @@ function ScanField({ inputRef, value, onChange, onSubmit, placeholder, onCamera 
 // Landing — a responsive grid of every open box. Tap a card to open it (or
 // just scan). Cards show packing progress + the chosen box size so the
 // packer can see what's left at a glance across the iPad.
-// Held-plants sweep checklist: every unpacked plant of every still-holding
-// box, grouped by box, scanned off as the packer pulls them from the bench.
-// Scanning is the verification — a manual Found toggle exists only for
-// placeholder items with no scannable barcode.
-function SweepPane({ heldBoxes, marks, found, total, dupeLots, onToggleFound, onReset, onCamera, onClose }) {
+// Bench sweep checklist: every unpacked plant of every box that ISN'T
+// shipping this week — still-holding boxes and local-pickup boxes — grouped
+// by box, scanned off as the packer pulls them from the bench. Scanning is
+// the verification — a manual Found toggle exists only for placeholder items
+// with no scannable barcode.
+function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, onReset, onCamera, onClose }) {
   const allFound = total > 0 && found === total;
-  // Pickup boxes hold too but never ship — their date line must not say so.
+  // Pickup boxes never ship — their date line must not say so. A pickup box
+  // that's ALSO on hold shows when the buyer can collect.
   const holdLabel = (hold, pickup) => {
-    const when = hold?.until
+    const when = hold?.state === 'holding' && hold.until
       ? hold.until.toLocaleDateString(undefined, { weekday: 'short', month: 'numeric', day: 'numeric' })
       : null;
-    if (pickup) return when ? `pickup after ${when}` : 'pickup · on hold';
+    if (pickup) return when ? `pickup after ${when}` : 'pickup — do not ship';
     return when ? `ships ${when}` : 'on hold';
   };
   return (
@@ -1214,7 +1239,7 @@ function SweepPane({ heldBoxes, marks, found, total, dupeLots, onToggleFound, on
         <div className="max-w-5xl mx-auto">
           <div className="flex items-center gap-2 flex-wrap">
             <Clock className="w-5 h-5 text-amber-700 shrink-0" />
-            <h2 className="flex-1 text-base font-bold text-amber-900">Held plants — pull these off the bench first</h2>
+            <h2 className="flex-1 text-base font-bold text-amber-900">Held & pickup plants — pull these off the bench first</h2>
             <div className="text-base">
               <span className="font-bold text-gray-900">{found}/{total}</span>
               <span className="text-gray-500 ml-1">found</span>
@@ -1227,7 +1252,7 @@ function SweepPane({ heldBoxes, marks, found, total, dupeLots, onToggleFound, on
             <div className="h-full bg-amber-500 transition-all" style={{ width: total ? `${(found / total) * 100}%` : 0 }} />
           </div>
           <p className="text-xs text-amber-800 mt-1.5">
-            Scan each plant's barcode as you pull it, then move it to the hold shelf. These boxes go out next week — nothing here gets packed today.
+            Scan each plant's barcode as you pull it: held plants go to the hold shelf, pickup plants to the pickup shelf. Nothing here gets packed today.
           </p>
         </div>
       </div>
@@ -1235,31 +1260,36 @@ function SweepPane({ heldBoxes, marks, found, total, dupeLots, onToggleFound, on
       {allFound && (
         <div className="flex-shrink-0 bg-emerald-500 text-white px-4 py-2.5 flex items-center justify-center gap-2 text-center">
           <Check className="w-5 h-5 shrink-0" />
-          <span className="text-base font-bold">All held plants found — the bench is clear for this week's packing</span>
+          <span className="text-base font-bold">All held & pickup plants found — the bench is clear for this week's packing</span>
         </div>
       )}
 
       <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
         <div className="max-w-5xl mx-auto space-y-4">
-          {heldBoxes.length === 0 && (
+          {sweepBoxes.length === 0 && (
             <div className="text-center text-sm text-gray-500 py-12">
               <PackageCheck className="w-8 h-8 text-gray-300 mx-auto mb-2" />
-              No held plants right now — you&apos;re clear to pack.
+              No held or pickup plants right now — you&apos;re clear to pack.
             </div>
           )}
-          {heldBoxes.map(({ box, plants, hold, pickup }) => {
+          {sweepBoxes.map(({ box, plants, hold, pickup }) => {
             const boxFound = plants.filter(p => marks[p.id]).length;
             return (
-              <div key={box.id} className="rounded-2xl border-2 border-amber-300 bg-amber-50 overflow-hidden">
-                <div className="px-3.5 py-2.5 bg-amber-100 flex items-center gap-2 flex-wrap">
-                  <span className="font-mono font-bold text-amber-950">{box.code}</span>
-                  {box.buyer && <span className="text-sm text-amber-900 truncate">{box.buyer}</span>}
+              <div
+                key={box.id}
+                className={`rounded-2xl border-2 overflow-hidden ${
+                  pickup ? 'border-violet-300 bg-violet-50' : 'border-amber-300 bg-amber-50'
+                }`}
+              >
+                <div className={`px-3.5 py-2.5 flex items-center gap-2 flex-wrap ${pickup ? 'bg-violet-100' : 'bg-amber-100'}`}>
+                  <span className={`font-mono font-bold ${pickup ? 'text-violet-950' : 'text-amber-950'}`}>{box.code}</span>
+                  {box.buyer && <span className={`text-sm truncate ${pickup ? 'text-violet-900' : 'text-amber-900'}`}>{box.buyer}</span>}
                   {pickup && (
                     <span className="text-[11px] font-bold uppercase tracking-wide text-violet-800 bg-violet-200 px-1.5 py-0.5 rounded">
                       Pickup
                     </span>
                   )}
-                  <span className="text-xs font-semibold text-amber-800 ml-auto">
+                  <span className={`text-xs font-semibold ml-auto ${pickup ? 'text-violet-800' : 'text-amber-800'}`}>
                     {holdLabel(hold, pickup)} · {boxFound}/{plants.length}
                   </span>
                 </div>
@@ -1273,12 +1303,12 @@ function SweepPane({ heldBoxes, marks, found, total, dupeLots, onToggleFound, on
                       <div
                         key={item.id}
                         className={`px-3 py-2.5 rounded-xl border-2 flex items-center gap-2.5 ${
-                          isFound ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-amber-200'
+                          isFound ? 'bg-emerald-50 border-emerald-200' : `bg-white ${pickup ? 'border-violet-200' : 'border-amber-200'}`
                         }`}
                       >
                         {isFound
                           ? <Check className="w-5 h-5 text-emerald-600 shrink-0" />
-                          : <div className="w-5 h-5 rounded-full border-2 border-amber-300 shrink-0" />}
+                          : <div className={`w-5 h-5 rounded-full border-2 shrink-0 ${pickup ? 'border-violet-300' : 'border-amber-300'}`} />}
                         {item.lotNumber && (
                           <span
                             className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums ${

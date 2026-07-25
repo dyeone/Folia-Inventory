@@ -1,12 +1,14 @@
-// The held-plants sweep: before this week's packing starts, the packer walks
-// the bench, finds every plant belonging to a box that's still ON HOLD, and
-// scans each barcode off a checklist — so held plants leave the bench (to the
-// hold shelf) before they can be mixed up with current-week stock.
+// The bench sweep: before this week's packing starts, the packer walks the
+// bench, finds every plant belonging to a box that ISN'T shipping this week —
+// still ON HOLD, or local pickup — and scans each barcode off a checklist, so
+// those plants leave the bench (to the hold or pickup shelf) before they can
+// be mixed up with current-week stock.
 //
 // Found-marks are per device (localStorage): the sweep is one packer with one
 // scanner walking one bench, and the durable truth stays physical — the plant
-// sitting on the hold shelf. Marks expire after 9 days so a plant held again
-// weeks later starts unchecked; the sweep's Reset button clears them early.
+// sitting on its shelf. Marks expire after 16 days (longer than the longest
+// hold) so a plant held again weeks later starts unchecked; the sweep's Reset
+// button clears them early.
 
 // Exported so PackerView can listen for other tabs' writes (storage events)
 // and converge instead of clobbering them with its own stale snapshot.
