@@ -357,6 +357,26 @@ export function PackerView({ onLogout }) {
   const sweepTotal = sweepBoxes.reduce((s, h) => s + h.plants.length, 0);
   const sweepFound = sweepBoxes.reduce((s, h) => s + h.plants.filter(p => sweepMarks[p.id]).length, 0);
 
+  // Step 2 of the session: wrap THIS week's plants into burritos. Scope is
+  // every open box that isn't in the sweep (not holding, not pickup — i.e.
+  // shipping this week). Progress is packedAt, the wrap flow's terminal
+  // state; nextId is the first box with work left, in the landing grid's
+  // own work-first order.
+  const shipPlan = useMemo(() => {
+    const sweepIds = new Set(sweepBoxes.map(sb => sb.box.id));
+    let total = 0, packed = 0, boxesLeft = 0, nextId = null;
+    for (const box of openBoxes) {
+      if (sweepIds.has(box.id)) continue;
+      const sold = box.items.filter(i => i.status === 'sold');
+      if (!sold.length) continue;
+      const p = sold.filter(i => i.packedAt).length;
+      total += sold.length;
+      packed += p;
+      if (p < sold.length) { boxesLeft += 1; if (!nextId) nextId = box.id; }
+    }
+    return { total, packed, boxesLeft, nextId };
+  }, [openBoxes, sweepBoxes]);
+
   const toastTimerRef = useRef(null);
   const showToast = (msg, durationMs = 2200) => {
     // Clear the previous timer so a short-lived toast (e.g. "Packed X",
@@ -1059,6 +1079,37 @@ export function PackerView({ onLogout }) {
                     </span>
                     <span className={`block text-sm ${sweepFound === sweepTotal ? 'text-emerald-700' : 'text-amber-800'}`}>
                       {sweepFound}/{sweepTotal} found · {sweepBoxes.length} {sweepBoxes.length === 1 ? 'box isn’t' : 'boxes aren’t'} shipping this week
+                    </span>
+                  </span>
+                </button>
+              </div>
+            )}
+            {/* Step 2 — wrap this week's plants into burritos. Progress is
+                the pack count (the wrap flow's terminal state IS packed);
+                tapping continues into the first box with work left. */}
+            {shipPlan.total > 0 && (
+              <div className="flex-shrink-0 px-3 sm:px-5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { if (shipPlan.nextId) goToBox(shipPlan.nextId); }}
+                  disabled={!shipPlan.nextId}
+                  className={`max-w-5xl mx-auto w-full text-left rounded-2xl border-2 px-4 py-3 flex items-center gap-3 transition active:scale-[0.99] ${
+                    shipPlan.packed === shipPlan.total
+                      ? 'border-emerald-300 bg-emerald-50'
+                      : 'border-blue-400 bg-blue-50 hover:border-blue-500'
+                  }`}
+                >
+                  {shipPlan.packed === shipPlan.total
+                    ? <Check className="w-6 h-6 text-emerald-600 shrink-0" />
+                    : <span className="text-2xl shrink-0" aria-hidden>🌯</span>}
+                  <span className="flex-1 min-w-0">
+                    <span className={`block text-base font-bold ${shipPlan.packed === shipPlan.total ? 'text-emerald-800' : 'text-blue-900'}`}>
+                      {shipPlan.packed === shipPlan.total
+                        ? 'All of this week’s plants are wrapped & packed ✓'
+                        : 'Step 2 — wrap this week’s plants into burritos'}
+                    </span>
+                    <span className={`block text-sm ${shipPlan.packed === shipPlan.total ? 'text-emerald-700' : 'text-blue-800'}`}>
+                      {shipPlan.packed}/{shipPlan.total} packed{shipPlan.boxesLeft > 0 ? ` · ${shipPlan.boxesLeft} ${shipPlan.boxesLeft === 1 ? 'box' : 'boxes'} to go — tap to continue` : ''}
                     </span>
                   </span>
                 </button>
