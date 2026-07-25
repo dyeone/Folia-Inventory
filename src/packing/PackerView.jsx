@@ -1227,13 +1227,88 @@ function ScanField({ inputRef, value, onChange, onSubmit, placeholder, onCamera 
 // Landing — a responsive grid of every open box. Tap a card to open it (or
 // just scan). Cards show packing progress + the chosen box size so the
 // packer can see what's left at a glance across the iPad.
+// One sweep checklist row, shared by the lot-ordered and by-box views. The
+// box code chip renders only in the flat view, where rows from many boxes
+// interleave.
+function SweepPlantRow({ item, pickup, boxCode, isFound, isDupe, onToggleFound }) {
+  // Synthetic placeholder SKUs have no barcode to scan.
+  const noBarcode = !item.sku || /^(UNMATCHED|DBL)-/i.test(item.sku);
+  return (
+    <div
+      className={`px-3 py-2.5 rounded-xl border-2 flex items-center gap-2.5 ${
+        isFound ? 'bg-emerald-50 border-emerald-200' : `bg-white ${pickup ? 'border-violet-200' : 'border-amber-200'}`
+      }`}
+    >
+      {isFound
+        ? <Check className="w-5 h-5 text-emerald-600 shrink-0" />
+        : <div className={`w-5 h-5 rounded-full border-2 shrink-0 ${pickup ? 'border-violet-300' : 'border-amber-300'}`} />}
+      {item.lotNumber && (
+        <span
+          className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums ${
+            isFound ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 text-white'
+          } ${isDupe && !isFound ? 'ring-2 ring-red-500' : ''}`}
+          title="Lineup number — find the plant labelled with this #"
+        >
+          {item.lotNumber}
+        </span>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className={`text-sm font-mono ${isFound ? 'text-gray-400' : 'text-gray-800 font-semibold'}`}>
+          {noBarcode ? '(no barcode)' : item.sku}
+        </div>
+        {(item.name || item.variety) && (
+          <div className={`text-xs break-words ${isFound ? 'text-gray-400 line-through' : 'text-gray-500'}`}>
+            {[(item.name || '').trim(), (item.variety || '').trim()].filter(Boolean).join(' · ')}
+          </div>
+        )}
+      </div>
+      {boxCode && (
+        <span className={`shrink-0 text-[11px] font-mono font-bold px-1.5 py-0.5 rounded ${
+          pickup ? 'bg-violet-100 text-violet-800' : 'bg-amber-100 text-amber-900'
+        }`}
+        >
+          {boxCode}
+        </span>
+      )}
+      {item.quantity > 1 && (
+        <span className={`text-sm font-bold shrink-0 ${isFound ? 'text-gray-400' : 'text-amber-800'}`}>
+          ×{item.quantity}
+        </span>
+      )}
+      {noBarcode && (
+        <button
+          type="button"
+          onClick={() => onToggleFound(item)}
+          aria-pressed={isFound}
+          aria-label={`Mark ${(item.name || 'item').trim()} ${isFound ? 'not found' : 'found'}`}
+          className={`shrink-0 text-sm font-semibold px-3 py-2 rounded-lg ${
+            isFound
+              ? 'bg-gray-200 text-gray-600 active:bg-gray-300'
+              : 'bg-purple-600 text-white active:bg-purple-800'
+          }`}
+          title="No scannable barcode — mark found manually"
+        >
+          {isFound ? 'Undo' : 'Found'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Bench sweep checklist: every unpacked plant of every box that ISN'T
-// shipping this week — still-holding boxes and local-pickup boxes — grouped
-// by box, scanned off as the packer pulls them from the bench. Scanning is
-// the verification — a manual Found toggle exists only for placeholder items
-// with no scannable barcode.
+// shipping this week — still-holding boxes and local-pickup boxes — scanned
+// off as the packer pulls them from the bench. Two views: a flat list in
+// lot-number order (the locate view — benches are walked by lineup number)
+// and grouped by box. Scanning is the verification — a manual Found toggle
+// exists only for placeholder items with no scannable barcode.
 function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, onReset, onCamera, onClose }) {
   const allFound = total > 0 && found === total;
+  const [byBox, setByBox] = useState(false);
+  // Flat locate view: every swept plant in lot-number order; un-numbered
+  // rows sink to the bottom.
+  const flatPlants = sweepBoxes
+    .flatMap(({ box, plants, pickup }) => plants.map(item => ({ item, box, pickup })))
+    .sort((a, b) => (parseInt(a.item.lotNumber, 10) || 999999) - (parseInt(b.item.lotNumber, 10) || 999999));
   // Pickup boxes never ship — their date line must not say so. A pickup box
   // that's ALSO on hold shows when the buyer can collect.
   const holdLabel = (hold, pickup) => {
@@ -1264,6 +1339,28 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
           <p className="text-xs text-amber-800 mt-1.5">
             Scan each plant's barcode as you pull it: held plants go to the hold shelf, pickup plants to the pickup shelf. Nothing here gets packed today.
           </p>
+          <div className="mt-2 flex gap-1.5">
+            <button
+              type="button"
+              aria-pressed={!byBox}
+              onClick={() => setByBox(false)}
+              className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border-2 ${
+                !byBox ? 'border-amber-500 bg-amber-500 text-white' : 'border-amber-300 bg-white text-amber-800'
+              }`}
+            >
+              By lot #
+            </button>
+            <button
+              type="button"
+              aria-pressed={byBox}
+              onClick={() => setByBox(true)}
+              className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border-2 ${
+                byBox ? 'border-amber-500 bg-amber-500 text-white' : 'border-amber-300 bg-white text-amber-800'
+              }`}
+            >
+              By box
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1282,7 +1379,22 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
               No held or pickup plants right now — you&apos;re clear to pack.
             </div>
           )}
-          {sweepBoxes.map(({ box, plants, hold, pickup }) => {
+          {!byBox && sweepBoxes.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {flatPlants.map(({ item, box, pickup }) => (
+                <SweepPlantRow
+                  key={item.id}
+                  item={item}
+                  pickup={pickup}
+                  boxCode={box.code}
+                  isFound={!!marks[item.id]}
+                  isDupe={!!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10))}
+                  onToggleFound={onToggleFound}
+                />
+              ))}
+            </div>
+          )}
+          {byBox && sweepBoxes.map(({ box, plants, hold, pickup }) => {
             const boxFound = plants.filter(p => marks[p.id]).length;
             return (
               <div
@@ -1304,65 +1416,16 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
                   </span>
                 </div>
                 <div className="p-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {plants.map(item => {
-                    const isFound = !!marks[item.id];
-                    // Synthetic placeholder SKUs have no barcode to scan.
-                    const noBarcode = !item.sku || /^(UNMATCHED|DBL)-/i.test(item.sku);
-                    const isDupe = !!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10));
-                    return (
-                      <div
-                        key={item.id}
-                        className={`px-3 py-2.5 rounded-xl border-2 flex items-center gap-2.5 ${
-                          isFound ? 'bg-emerald-50 border-emerald-200' : `bg-white ${pickup ? 'border-violet-200' : 'border-amber-200'}`
-                        }`}
-                      >
-                        {isFound
-                          ? <Check className="w-5 h-5 text-emerald-600 shrink-0" />
-                          : <div className={`w-5 h-5 rounded-full border-2 shrink-0 ${pickup ? 'border-violet-300' : 'border-amber-300'}`} />}
-                        {item.lotNumber && (
-                          <span
-                            className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums ${
-                              isFound ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 text-white'
-                            } ${isDupe && !isFound ? 'ring-2 ring-red-500' : ''}`}
-                            title="Lineup number — find the plant labelled with this #"
-                          >
-                            {item.lotNumber}
-                          </span>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className={`text-sm font-mono ${isFound ? 'text-gray-400' : 'text-gray-800 font-semibold'}`}>
-                            {noBarcode ? '(no barcode)' : item.sku}
-                          </div>
-                          {(item.name || item.variety) && (
-                            <div className={`text-xs break-words ${isFound ? 'text-gray-400 line-through' : 'text-gray-500'}`}>
-                              {[(item.name || '').trim(), (item.variety || '').trim()].filter(Boolean).join(' · ')}
-                            </div>
-                          )}
-                        </div>
-                        {item.quantity > 1 && (
-                          <span className={`text-sm font-bold shrink-0 ${isFound ? 'text-gray-400' : 'text-amber-800'}`}>
-                            ×{item.quantity}
-                          </span>
-                        )}
-                        {noBarcode && (
-                          <button
-                            type="button"
-                            onClick={() => onToggleFound(item)}
-                            aria-pressed={isFound}
-                            aria-label={`Mark ${(item.name || 'item').trim()} ${isFound ? 'not found' : 'found'}`}
-                            className={`shrink-0 text-sm font-semibold px-3 py-2 rounded-lg ${
-                              isFound
-                                ? 'bg-gray-200 text-gray-600 active:bg-gray-300'
-                                : 'bg-purple-600 text-white active:bg-purple-800'
-                            }`}
-                            title="No scannable barcode — mark found manually"
-                          >
-                            {isFound ? 'Undo' : 'Found'}
-                          </button>
-                        )}
-                      </div>
-                    );
-                  })}
+                  {plants.map(item => (
+                    <SweepPlantRow
+                      key={item.id}
+                      item={item}
+                      pickup={pickup}
+                      isFound={!!marks[item.id]}
+                      isDupe={!!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10))}
+                      onToggleFound={onToggleFound}
+                    />
+                  ))}
                 </div>
               </div>
             );
