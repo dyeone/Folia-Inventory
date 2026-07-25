@@ -563,6 +563,19 @@ export function PackingView({
     showToast('Address updated');
   };
 
+  // Remote reset of the packers' bench-sweep checklist. Their found-marks
+  // are per-device (localStorage); the server stamp reaches every device
+  // via the box-notes poll within ~8s.
+  const handleResetPackerSweep = async () => {
+    if (!window.confirm('Reset the packers’ hold-sweep checklist? Every found checkmark clears on all packer devices and they’ll go through the held & pickup list again.')) return;
+    try {
+      await api.resetHoldSweep();
+      showToast('Packer sweep reset — every device gets a fresh checklist within a few seconds');
+    } catch (e) {
+      showToast(`Couldn’t reset the sweep: ${e.message || 'unknown error'}`);
+    }
+  };
+
   // Combine orders: one atomic server-side move of every still-sold item
   // from the source boxes into the target box (identity re-stamped
   // server-side; the server re-checks for active labels since our shipments
@@ -985,6 +998,16 @@ export function PackingView({
             </button>
           );
         })}
+        {/* Remote reset of the packers' Step-1 sweep checklist — lives here
+            (not per box) because the sweep spans all held/pickup boxes. */}
+        <button
+          type="button"
+          onClick={handleResetPackerSweep}
+          title="Clear every packer device's hold-sweep checkmarks so they go through the held & pickup list again"
+          className="ml-auto mb-1 text-xs font-medium px-2.5 py-1.5 rounded-md border border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100 active:bg-amber-200 flex items-center gap-1"
+        >
+          <Clock className="w-3.5 h-3.5" /> Reset packer sweep
+        </button>
       </div>
 
       {/* Filters — sort + carrier + contents in one quiet row. Active
