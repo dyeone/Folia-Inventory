@@ -27,7 +27,7 @@ import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { boxHoldState, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
+import { boxHoldState, boxHasHoldItem, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
 import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem, hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
@@ -377,10 +377,15 @@ export function PackingView({
   // operator's local timezone owns the week boundary, not the server's UTC
   // clock). The server returns the full shipment_boxes row, so mirror it
   // into the cache (which re-tints the card and shows the countdown).
-  const onSetHold = async (shipmentBoxId, hold) => {
+  const onSetHold = async (shipmentBoxId, hold, release = false) => {
+    // release: the box's hold comes from a "1-week hold" line the buyer
+    // bought — it can't be deleted, so the server stamps the HOLD_RELEASED
+    // sentinel, the only thing that outranks the item (holdInfo.js), and
+    // the box reads "hold done".
     const saved = await api.setBoxHold({
       shipmentBoxId,
       hold,
+      release,
       ...(hold ? { holdUntil: weekHoldUntil(new Date()).toISOString() } : {}),
     });
     setBoxNotesByBox(prev => ({
@@ -394,7 +399,7 @@ export function PackingView({
     }));
     showToast(hold
       ? `Held — ships ${weekHoldUntil(new Date()).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
-      : 'Hold cleared');
+      : release ? 'Hold released — OK to ship' : 'Hold cleared');
   };
 
   useEffect(() => {
@@ -1864,7 +1869,7 @@ function BuyerGroupCard({
             onTogglePacked={onTogglePacked}
             dupeLots={dupeLots}
             findDupeLotBox={findDupeLotBox}
-            onSetHold={onSetHold ? (hold) => onSetHold(box.id, hold) : null}
+            onSetHold={onSetHold ? (hold, release) => onSetHold(box.id, hold, release) : null}
             onTogglePickup={onTogglePickup ? (make) => onTogglePickup(box.id, make) : null}
             onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
             boxSizes={boxSizes}
@@ -2569,12 +2574,21 @@ function BoxRow({
               </button>
             )}
             {/* One-week hold toggle. Held boxes turn amber with a countdown;
-                after a week they flip to "Time to ship". */}
+                after a week they flip to "Time to ship". Keyed on the
+                EFFECTIVE hold state, not just holdUntil — an item-based hold
+                (the "1-week hold" line the buyer bought) is cleared via
+                release (a past holdUntil that outranks the item), since the
+                line itself is sale data and stays. */}
             {action && onSetHold && (
-              box.holdUntil ? (
+              onHold ? (
                 <button
-                  onClick={(e) => { stop(e); onSetHold(false); }}
-                  title="Clear the one-week hold"
+                  onClick={(e) => {
+                    stop(e);
+                    // release whenever a hold ITEM exists — clearing to null
+                    // would just let it resurface, holdUntil or not.
+                    onSetHold(false, boxHasHoldItem(box.items));
+                  }}
+                  title="Clear the one-week hold — the box becomes OK to ship now"
                   className="text-xs font-medium px-2 py-1 rounded-md border border-amber-300 text-amber-700 bg-amber-50 hover:bg-amber-100 active:bg-amber-200 flex items-center gap-1"
                 >
                   <Clock className="w-3 h-3" /> Clear hold

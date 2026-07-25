@@ -50,23 +50,54 @@ export function weekHoldUntil(raw) {
   return monday;
 }
 
+// Explicit release marker for holdUntil. A real timestamp can't distinguish
+// "the operator released this hold" from a stale pre-release-era button
+// stamp — operators pressed "Hold 1 week" on item-held boxes for years as a
+// harmless no-op, so elapsed stamps exist in prod, and any rule where a past
+// stamp outranks a live item hold would flip buyer-paid holds to "OK to
+// ship" at deploy. The epoch sentinel is unambiguous. Mirrored in
+// api/shipments.js setBoxHold (the server can't import client modules).
+export const HOLD_RELEASED = '1970-01-01T00:00:00.000Z';
+
+// Compare as an INSTANT, never as a string: holdUntil is a timestamptz
+// column and PostgREST re-serializes it on every read (offset form,
+// '1970-01-01T00:00:00+00:00'), so string equality would silently miss in
+// production and Clear hold would no-op. Epoch 0 can never be a legitimate
+// stamp — real ones are server-bounded to now..+31d and the column was born
+// in 2026. The !!holdUntil guard is load-bearing: new Date(null) is also
+// epoch 0.
+export function isHoldReleased(holdUntil) {
+  return !!holdUntil && new Date(holdUntil).getTime() === 0;
+}
+
 // Effective hold state of a box, with a real countdown:
-//   • Item-based hold ("1-week hold" line) → week-scoped from that item's
-//     purchase (order) date: ready when the week after next begins.
-//   • Otherwise the manual button hold (holdUntil timestamp — new holds are
-//     stamped with the same week rule at press time; see setBoxHold).
+//   • isHoldReleased(holdUntil) → the desk explicitly released the hold
+//     (the "1-week hold" line a buyer bought is sale data and can't be
+//     deleted, so release is a sentinel that outranks it) → 'ready'.
+//   • Otherwise the box holds while ANY un-released source says so — the
+//     button stamp (week-scoped at press time) or the item-based week from
+//     the hold line's purchase date — and the LATER window wins, so a stale
+//     or short button stamp can never cut a buyer-paid item hold short.
 // Returns the holdInfo shape: { state:'none'|'holding'|'ready', daysLeft?, until? }.
 export function boxHoldState(items, holdUntil) {
+  if (isHoldReleased(holdUntil)) return { state: 'ready' };
+  const stamp = holdInfo(holdUntil);
   const holdItem = (items || []).find(i => isHoldItem(i?.name));
+  let item = { state: 'none' };
   if (holdItem) {
     const purchased = holdItem.orderDate || holdItem.soldAt || holdItem.createdAt || null;
-    if (purchased) {
-      const until = weekHoldUntil(purchased);
-      if (until) return holdInfo(until.toISOString());
-    }
-    return { state: 'holding' }; // hold item present but no date to count from
+    const until = purchased ? weekHoldUntil(purchased) : null;
+    item = until ? holdInfo(until.toISOString()) : { state: 'holding' }; // no date to count from
   }
-  return holdInfo(holdUntil);
+  if (stamp.state === 'holding' && item.state === 'holding') {
+    return (item.until && stamp.until && item.until > stamp.until) ? item : stamp;
+  }
+  if (item.state === 'holding') return item;
+  if (stamp.state === 'holding') return stamp;
+  if (stamp.state === 'ready' || item.state === 'ready') {
+    return { state: 'ready', until: item.until || stamp.until };
+  }
+  return { state: 'none' };
 }
 
 // Local pickup: the buyer collects the box in person, so it must NOT ship.
