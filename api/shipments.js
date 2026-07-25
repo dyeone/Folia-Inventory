@@ -52,6 +52,7 @@ export default wrap(async (req, res) => {
       if (action === 'set-box-note') return setBoxNote(req, res, userId, brandId);
       if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId, brandId);
       if (action === 'set-box-hold') return setBoxHold(req, res, userId, brandId);
+      if (action === 'reset-hold-sweep') return resetHoldSweep(req, res, userId, brandId);
       if (action === 'send-to-phone') return sendToPhone(req, res, userId);
       if (action === 'loyalty-code') return loyaltyCode(req, res, userId, brandId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
@@ -562,7 +563,29 @@ async function boxNotes(req, res, brandId) {
     updatedAt: r.updatedAt,
     updatedBy: r.updatedBy,
   }]));
-  return res.status(200).json({ boxNotes: map });
+  // The packers' sweep-reset stamp rides this response — box-notes is what
+  // the packer app already polls every 8s, so a desk reset reaches every
+  // device without a new endpoint or extra polling. Non-fatal on error:
+  // notes must load even if the stamp can't.
+  const { data: resetRow, error: resetErr } = await supabase
+    .from('app_settings').select('data').eq('id', `sweep-reset:${brandId}`).maybeSingle();
+  const sweepResetAt = !resetErr && resetRow?.data?.resetAt ? resetRow.data.resetAt : null;
+  return res.status(200).json({ boxNotes: map, sweepResetAt });
+}
+
+// POST /api/shipments  body: { action:'reset-hold-sweep' }
+// Desk-side reset of the packers' bench-sweep checklist. Found-marks live in
+// each packer device's localStorage, so the desk can't clear them directly —
+// it stamps a reset time here, box-notes serves the stamp to the packer's
+// poll, and every device drops marks older than it (marks made after, the
+// new pass, survive).
+async function resetHoldSweep(req, res, userId, brandId) {
+  const resetAt = new Date().toISOString();
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ id: `sweep-reset:${brandId}`, data: { resetAt }, updatedAt: resetAt, updatedBy: userId });
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ resetAt });
 }
 
 // POST /api/shipments  body: { action: 'loyalty-code', shipmentBoxId }

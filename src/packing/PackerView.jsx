@@ -136,6 +136,20 @@ export function PackerView({ onLogout }) {
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, []);
+  // Desk-side sweep reset (Shipping tab): drop found-marks older than the
+  // server stamp so every packer device starts the checklist over; marks
+  // made after it (the new pass) survive. Called from the mount/poll
+  // handlers — event-driven, no effect. Returns prev unchanged when nothing
+  // drops, so the localStorage write-through doesn't fire every 8s.
+  const applySweepReset = (resetAt) => {
+    if (!resetAt) return;
+    const cut = new Date(resetAt).getTime();
+    if (!Number.isFinite(cut)) return;
+    setSweepMarks(prev => {
+      const next = Object.fromEntries(Object.entries(prev).filter(([, ts]) => ts >= cut));
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  };
   // One busy flag across print jobs ('label' | 'tag' | 'itemlabel' | null):
   // on the iPad path all flows share the in-page print root, so they must
   // never run concurrently (the second purge would eat the first job's
@@ -182,12 +196,14 @@ export function PackerView({ onLogout }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
-      const [, settings, notes, shipments] = await Promise.all([
+      const [, settings, notesMeta, shipments] = await Promise.all([
         refresh(),
         api.getSettings('shipping').catch(() => null),
-        api.getBoxNotes().catch(() => ({})),
+        api.getBoxNotesWithMeta().catch(() => ({ boxNotes: {}, sweepResetAt: null })),
         api.getShipments().catch(() => []),
       ]);
+      const notes = notesMeta.boxNotes;
+      applySweepReset(notesMeta.sweepResetAt);
       setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
       setBoxSizeByBox(
         Object.fromEntries(
@@ -244,12 +260,14 @@ export function PackerView({ onLogout }) {
       if (cancelled || inFlight || document.visibilityState === 'hidden') return;
       inFlight = true;
       try {
-        const [fresh, shipments, notes] = await Promise.all([
+        const [fresh, shipments, notesMeta] = await Promise.all([
           api.getItems(),
           api.getShipments().catch(() => []),
-          api.getBoxNotes().catch(() => ({})),
+          api.getBoxNotesWithMeta().catch(() => ({ boxNotes: {}, sweepResetAt: null })),
         ]);
         if (cancelled) return;
+        const notes = notesMeta.boxNotes;
+        applySweepReset(notesMeta.sweepResetAt);
         setItems(prev => mergeItems(prev, (fresh || []).filter(i => !i.deletedAt)));
         setTrackingByBox(
           Object.fromEntries(

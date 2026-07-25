@@ -296,6 +296,14 @@ export const api = {
   // memos shown only in the ShipBoxCard drill-down.
   getBoxNotes: (saleId) =>
     request(`/shipments?action=box-notes${saleId ? `&saleId=${encodeURIComponent(saleId)}` : ''}`).then(r => r.boxNotes || {}),
+  // Packer-poll variant: the box-notes map PLUS the desk's sweep-reset stamp
+  // (rides the same response, so the 8s poll costs nothing extra).
+  getBoxNotesWithMeta: () =>
+    request('/shipments?action=box-notes').then(r => ({ boxNotes: r.boxNotes || {}, sweepResetAt: r.sweepResetAt ?? null })),
+  // Desk-side: stamp a sweep reset — every packer device drops found-marks
+  // older than the stamp on its next poll and starts the checklist over.
+  resetHoldSweep: () =>
+    request('/shipments', { method: 'POST', body: { action: 'reset-hold-sweep' } }).then(r => r.resetAt),
   setBoxNote: ({ shipmentBoxId, note }) =>
     request('/shipments', { method: 'POST', body: { action: 'set-box-note', shipmentBoxId, note } }).then(r => r.box),
   // Per-box packaging selection (box size + weight + service). Only the
