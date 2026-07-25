@@ -716,6 +716,22 @@ export function PackerView({ onLogout }) {
     await packById(item.id, label.slice(0, 30));
   };
 
+  // Manual burrito-label print, per plant. The wrap flow auto-prints on
+  // scan, but unmatched placeholders have no barcode to start a wrap,
+  // reprints happen, and a station with the wrap flow off still wraps
+  // burritos. Same mutex rule as startWrap: only the iPad path needs it.
+  const handlePrintPlantLabel = async (item) => {
+    const needMutex = printDests.itemlabel === 'ipad';
+    if (needMutex && printing) { showToast('Printer is busy — try again in a moment', 2500); return; }
+    showToast(`Printing label${item.lotNumber ? ` #${item.lotNumber}` : ''}…`, 1800);
+    if (needMutex) setPrinting('itemlabel');
+    try {
+      await printItemLabel(item, printDests.itemlabel, showToast);
+    } finally {
+      if (needMutex) setPrinting(null);
+    }
+  };
+
   // Sweep scan: a FIND-scan, not a pack-scan — it only ticks a held or
   // pickup plant off the checklist. A plant that isn't in the sweep is the
   // packer's cue to leave it on the bench for this week's packing. Guards
@@ -994,6 +1010,7 @@ export function PackerView({ onLogout }) {
               if (it) startWrap(it, activeWrap.sku);
             }}
             onMarkPacked={handleMarkPacked}
+            onPrintPlantLabel={handlePrintPlantLabel}
             onCamera={() => setCameraMode('item')}
             onScanLabel={() => setCameraMode('label')}
             onSendToPhone={isMobile ? null : () => sendToPhone(activeBox)}
@@ -1596,7 +1613,7 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapReprint, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
+function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapReprint, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -1686,7 +1703,7 @@ function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapRe
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} dupeLots={dupeLots} wrapping={wrap?.itemId === item.id} />)}
+                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} onPrintPlantLabel={onPrintPlantLabel} dupeLots={dupeLots} wrapping={wrap?.itemId === item.id} />)}
                   {packed.map(item => <ItemCard key={item.id} item={item} />)}
                 </div>
               )}
@@ -1862,7 +1879,7 @@ function CarrierBadge({ carrier, size = 'md' }) {
   );
 }
 
-function ItemCard({ item, onMarkPacked, dupeLots, wrapping }) {
+function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots, wrapping }) {
   const isPacked = !!item.packedAt;
   const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
@@ -1903,6 +1920,17 @@ function ItemCard({ item, onMarkPacked, dupeLots, wrapping }) {
           )}
         </div>
         {item.quantity > 1 && <span className={`text-sm font-medium ${family.accent} shrink-0`}>×{item.quantity}</span>}
+        {onPrintPlantLabel && !isPacked && (
+          <button
+            type="button"
+            onClick={() => onPrintPlantLabel(item)}
+            className={`shrink-0 w-10 h-10 rounded-lg border-2 bg-white flex items-center justify-center ${family.ring} ${family.accent} active:bg-gray-100`}
+            title="Print this plant's burrito label"
+            aria-label={`Print label for ${(item.name || item.sku || 'item').trim()}`}
+          >
+            <Printer className="w-4 h-4" />
+          </button>
+        )}
         {showManualPack && (
           <button
             type="button"
