@@ -25,8 +25,9 @@ import { getPdfjs } from './pdfjsLoader.js';
 
 const LEGACY_DEST_KEY = 'folia.packerPrintDest';
 const DEST_KEYS = {
-  shipping: 'folia.packerPrintDest.shipping', // 4×6 carrier labels
-  boxtag: 'folia.packerPrintDest.boxtag',     // 2×1 B-XXXXXX tags
+  shipping: 'folia.packerPrintDest.shipping',   // 4×6 carrier labels
+  boxtag: 'folia.packerPrintDest.boxtag',       // 2×1 B-XXXXXX tags
+  itemlabel: 'folia.packerPrintDest.itemlabel', // 2×1 plant labels (burrito wrap)
 };
 
 function readDest(key, fallback) {
@@ -46,6 +47,9 @@ export function getPrintDests() {
     // configured for 4×6 labels would print tags on the wrong stock.
     shipping: readDest(DEST_KEYS.shipping, readDest(LEGACY_DEST_KEY, 'ipad')),
     boxtag: readDest(DEST_KEYS.boxtag, 'bridge'),
+    // Plant labels default to the bridge for the same reason as box tags —
+    // the desk's item-label printer is the only known 2×1 device.
+    itemlabel: readDest(DEST_KEYS.itemlabel, 'bridge'),
   };
 }
 
@@ -53,6 +57,23 @@ export function savePrintDest(kind, dest) {
   const key = DEST_KEYS[kind];
   if (!key) return;
   try { localStorage.setItem(key, dest === 'bridge' ? 'bridge' : 'ipad'); } catch { /* private mode */ }
+}
+
+// ── burrito wrap flow preference (per device, like the destinations) ───────
+//
+// On: scanning a plant starts a wrap — the app prints that plant's label,
+// the packer wraps + applies it, and scanning the fresh label completes the
+// pack. Off: today's single-scan pack. Default ON — the wrap verify exists
+// because wrong labels went onto burritos.
+
+const WRAP_FLOW_KEY = 'folia.packerWrapFlow';
+
+export function getWrapFlow() {
+  try { return localStorage.getItem(WRAP_FLOW_KEY) !== 'off'; } catch { return true; }
+}
+
+export function saveWrapFlow(on) {
+  try { localStorage.setItem(WRAP_FLOW_KEY, on ? 'on' : 'off'); } catch { /* private mode */ }
 }
 
 // ── iPad path: PDF → page images → in-page print via the OS sheet ──────────
@@ -215,6 +236,40 @@ export async function printBoxTag(box, dest, showToast) {
     return true;
   } catch (e) {
     showToast?.(e.message || 'Could not print the box tag', 4500);
+    return false;
+  }
+}
+
+// Print ONE plant's 2"×1" label — the same label the live-sale flow prints
+// (big lineup # + WK chip, name, SKU barcode) — for the burrito wrap step:
+// the packer wraps the plant in paper, applies this fresh label, and
+// scan-verifies it against the plant. Printed without seller/sale context
+// (see buildPdf's export note): seller line omitted, WK chip from soldAt.
+export async function printItemLabel(item, dest, showToast) {
+  try {
+    // Lazy: keeps jspdf/jsbarcode out of the packer's initial chunk.
+    const { buildItemLabelPdf } = await import('../labels/itemLabelPdf.js');
+    const pdf = buildItemLabelPdf([item]);
+    if (dest === 'bridge') {
+      if (!(await bridgeOnlineNow())) {
+        showToast?.('Label printer is offline — is the Mac app running? (Or switch plant labels to "This iPad".)', 5000);
+        return false;
+      }
+      // No success toast: the wrap card is the feedback channel, and the
+      // bridge poll can resolve tens of seconds later — stomping whatever
+      // warning the (single-slot) toast is showing by then.
+      await printPdfViaBridge({
+        pdfBase64: pdfToBase64(pdf), role: 'label', media: 'Custom.2x1in',
+      });
+      return true;
+    }
+    await printImagesViaOsSheet(
+      await pdfToPageImages(new Uint8Array(pdf.output('arraybuffer'))),
+      { pageSize: '2in 1in' },
+    );
+    return true;
+  } catch (e) {
+    showToast?.(e.message || 'Could not print the plant label', 4500);
     return false;
   }
 }

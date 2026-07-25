@@ -9,12 +9,13 @@ import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
-import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
+import { boxHoldState, boxIsLocalPickup, isHoldItem } from './holdInfo.js';
+import { loadSweepMarks, saveSweepMarks, SWEEP_KEY } from './holdSweep.js';
 import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
-import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag } from './packerPrint.js';
+import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
@@ -111,9 +112,34 @@ export function PackerView({ onLogout }) {
   // switch each and fire a test print per type.
   const [printDests, setPrintDests] = useState(getPrintDests);
   const [printerSheetOpen, setPrinterSheetOpen] = useState(false);
-  // One busy flag for both print buttons ('label' | 'tag' | null): on the
-  // iPad path both flows share the in-page print root, so they must never
-  // run concurrently (the second purge would eat the first job's pages).
+  // Burrito wrap flow (per device): scanning a plant starts a wrap — the app
+  // prints that plant's own label, the packer wraps it in paper and applies
+  // the fresh label, and scanning THAT label completes the pack. The second
+  // scan is the point: it must match the plant that was scanned in, so a
+  // wrong label can't ship. Wrap-pending is transient client state keyed by
+  // item id (the 8s poll replaces item objects wholesale); the terminal
+  // state is plain packedAt, so nothing new is persisted.
+  const [wrapFlow, setWrapFlow] = useState(getWrapFlow);
+  const [wrap, setWrap] = useState(null); // { itemId, sku, nonce, print: 'sending'|'sent'|'failed' }
+  // Bench sweep (holdSweep.js): scan every plant of every held or pickup box
+  // off the bench BEFORE regular packing, so plants that aren't shipping
+  // this week can't be mixed into this week's boxes. Found-marks persist per
+  // device.
+  const [sweepOpen, setSweepOpen] = useState(false);
+  const [sweepMarks, setSweepMarks] = useState(loadSweepMarks);
+  // Write-through on change, and adopt OTHER tabs' writes (storage events
+  // never fire in the writing tab) — a second Safari tab must not clobber
+  // the first tab's sweep progress with its stale mount snapshot.
+  useEffect(() => { saveSweepMarks(sweepMarks); }, [sweepMarks]);
+  useEffect(() => {
+    const onStorage = (e) => { if (e.key === SWEEP_KEY) setSweepMarks(loadSweepMarks()); };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+  // One busy flag across print jobs ('label' | 'tag' | 'itemlabel' | null):
+  // on the iPad path all flows share the in-page print root, so they must
+  // never run concurrently (the second purge would eat the first job's
+  // pages). Bridge-destined wrap prints skip it — see startWrap.
   const [printing, setPrinting] = useState(null);
   // Manual carrier override per box (shipmentBoxId → 'ups' | 'usps' | null),
   // set at the shipping desk. The packer honors it like the desk does — the
@@ -316,6 +342,21 @@ export function PackerView({ onLogout }) {
   // is what disambiguates.
   const dupeLots = useMemo(() => findDupeLots(Object.values(boxesByCode)), [boxesByCode]);
 
+  // The sweep's scope: boxes whose plants must come OFF the bench before
+  // packing — still-holding boxes ('ready' ones ship this week and are packed
+  // normally) and local-pickup boxes (never ship; the buyer collects, so
+  // pickup plants leave the bench regardless of hold state). Operator
+  // "1-week hold" placeholder lines aren't physical plants and are excluded.
+  const sweepBoxes = useMemo(() => openBoxes.flatMap(box => {
+    const hold = boxHoldState(box.items, holdByBox[box.id]);
+    const pickup = boxIsLocalPickup(noteByBox[box.id], box.items);
+    if (hold.state !== 'holding' && !pickup) return [];
+    const plants = box.items.filter(i => i.status === 'sold' && !i.packedAt && !isHoldItem(i.name));
+    return plants.length ? [{ box, plants, hold, pickup }] : [];
+  }), [openBoxes, holdByBox, noteByBox]);
+  const sweepTotal = sweepBoxes.reduce((s, h) => s + h.plants.length, 0);
+  const sweepFound = sweepBoxes.reduce((s, h) => s + h.plants.filter(p => sweepMarks[p.id]).length, 0);
+
   const toastTimerRef = useRef(null);
   const showToast = (msg, durationMs = 2200) => {
     // Clear the previous timer so a short-lived toast (e.g. "Packed X",
@@ -328,6 +369,44 @@ export function PackerView({ onLogout }) {
   const activeBox = activeBoxId
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
+
+  // The wrap is honored only while its plant is still an unpacked sold item
+  // of the ACTIVE box — derived, not synchronized, so switching boxes or a
+  // desk-side pack neutralizes it without an effect. Returning to the box
+  // with the plant still unpacked resumes the wrap.
+  const activeWrap = useMemo(() => {
+    if (!wrap || !activeBox) return null;
+    const it = activeBox.items.find(i => i.id === wrap.itemId);
+    return it && it.status === 'sold' && !it.packedAt ? wrap : null;
+  }, [wrap, activeBox]);
+
+  // Start wrapping: remember the plant and fire its label print. The nonce
+  // ties the async print result to THIS wrap — a cancel + rescan of the same
+  // plant mints a new wrap, and the old print's late result must not stamp
+  // it. Takes the shared print mutex: on the iPad path two concurrent jobs
+  // purge each other's in-page print root.
+  const startWrap = async (candidate, sku) => {
+    const nonce = `${Date.now()}-${Math.random()}`;
+    if (navigator.vibrate) navigator.vibrate(30);
+    // The mutex protects the iPad's in-page print root; bridge jobs queue
+    // server-side and don't need it — holding it across the bridge poll
+    // (up to 35s on a wedged bridge) would dead-disable the next wrap's
+    // Reprint button.
+    const needMutex = printDests.itemlabel === 'ipad';
+    if (needMutex && printing) {
+      setWrap({ itemId: candidate.id, sku, nonce, print: 'failed' });
+      showToast('Printer is busy — tap Reprint on the wrap card in a moment.', 3500);
+      return;
+    }
+    setWrap({ itemId: candidate.id, sku, nonce, print: 'sending' });
+    if (needMutex) setPrinting('itemlabel');
+    try {
+      const ok = await printItemLabel(candidate, printDests.itemlabel, showToast);
+      setWrap(w => (w && w.nonce === nonce ? { ...w, print: ok ? 'sent' : 'failed' } : w));
+    } finally {
+      if (needMutex) setPrinting(null);
+    }
+  };
 
   // Re-pull tracking numbers + holds. Both are set at the shipping desk while
   // the packer's app is already open, so refresh on each box open to pick up a
@@ -429,7 +508,9 @@ export function PackerView({ onLogout }) {
   }, []);
 
   // Optimistic pack-by-id: flip the local item to packed before the network
-  // call lands; roll back just that item on failure.
+  // call lands; roll back just that item on failure. Returns whether the pack
+  // stuck — the burrito wrap flow restores its wrap on failure so a retry
+  // scan doesn't print a duplicate label.
   const packById = async (itemId, displayLabel) => {
     const now = new Date().toISOString();
     setItems(prev => prev.map(i => (i.id === itemId ? { ...i, packedAt: now } : i)));
@@ -437,9 +518,11 @@ export function PackerView({ onLogout }) {
     showToast(`Packed ${displayLabel}`, 1500);
     try {
       await api.upsertItems([{ id: itemId, packedAt: now }]);
+      return true;
     } catch (e) {
       setItems(prev => prev.map(i => (i.id === itemId ? { ...i, packedAt: null } : i)));
       showToast(`Pack failed for ${displayLabel}: ${e.message || 'unknown'}`, 4000);
+      return false;
     }
   };
 
@@ -482,6 +565,15 @@ export function PackerView({ onLogout }) {
   // really belongs to. A box still on its one-week hold can't be shipped yet.
   const handleScanLabel = async (rawText) => {
     if (!activeBox) return;
+    // A wrap in progress means an unverified plant: shipping the box now
+    // would backfill its packedAt and skip the exact wrong-label check the
+    // wrap exists for. (Mid-wrap the box is never all-packed, so a label
+    // scan is never the legitimate finishing move.)
+    if (activeWrap) {
+      if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+      showToast('⚠ Finish the wrap first — scan the fresh label on the burrito (or Cancel the wrap).', 5000);
+      return;
+    }
     const assigned = trackingByBox[activeBox.id];
     if (!assigned) {
       showToast('No label assigned to this box yet — import it on the shipping desk first', 4500);
@@ -493,6 +585,12 @@ export function PackerView({ onLogout }) {
       if (hs.state === 'holding') {
         if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
         showToast(`⚠ On hold — do not ship yet${hs.daysLeft ? ` · ${hs.daysLeft} day${hs.daysLeft === 1 ? '' : 's'} left` : ''}`, 5000);
+        return;
+      }
+      // A pickup box never ships, matching label or not — the buyer collects.
+      if (boxIsLocalPickup(noteByBox[activeBox.id], activeBox.items)) {
+        if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+        showToast('⚠ LOCAL PICKUP — this box must not ship. The buyer collects it.', 5000);
         return;
       }
       if (navigator.vibrate) navigator.vibrate([40, 50, 90]);
@@ -551,6 +649,27 @@ export function PackerView({ onLogout }) {
     if (!activeBox) return;
     const sku = normalizeSku(rawText);
     if (!sku) return;
+    // Mid-wrap, every scan is the verification scan: the fresh label on the
+    // burrito either matches the plant being wrapped, or something is wrong.
+    // Nothing else (box jumps, starting another wrap) is allowed until the
+    // packer finishes or cancels — a mismatch here is exactly the
+    // wrong-label-on-the-burrito mistake this flow exists to catch.
+    if (activeWrap) {
+      const wrapItem = activeBox.items.find(i => i.id === activeWrap.itemId);
+      if (sku === activeWrap.sku) {
+        const saved = activeWrap;
+        setWrap(null);
+        // Restore the wrap if the pack didn't stick — otherwise the retry
+        // scan would start a fresh wrap and print a duplicate label.
+        const ok = await packById(wrapItem.id, `${sku} — 🌯 done`);
+        if (!ok) setWrap(saved);
+        return;
+      }
+      if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+      const lot = wrapItem?.lotNumber ? `#${wrapItem.lotNumber} · ` : '';
+      showToast(`⚠ Wrong label — you're wrapping ${lot}${activeWrap.sku}, but this label reads ${sku}. Fix the label, or Cancel on the wrap card.`, 6000);
+      return;
+    }
     const candidate = activeBox.items.find(i => normalizeSku(i.sku) === sku);
     if (!candidate) {
       const other = Object.values(boxesByCode).find(
@@ -580,6 +699,7 @@ export function PackerView({ onLogout }) {
     }
     if (candidate.status !== 'sold') { showToast(`SKU ${sku} is already ${candidate.status}`, 3500); return; }
     if (candidate.packedAt) { showToast(`SKU ${sku} already packed`, 2500); return; }
+    if (wrapFlow) { await startWrap(candidate, sku); return; }
     await packById(candidate.id, sku);
   };
 
@@ -596,6 +716,81 @@ export function PackerView({ onLogout }) {
     await packById(item.id, label.slice(0, 30));
   };
 
+  // Sweep scan: a FIND-scan, not a pack-scan — it only ticks a held or
+  // pickup plant off the checklist. A plant that isn't in the sweep is the
+  // packer's cue to leave it on the bench for this week's packing. Guards
+  // live HERE (not in submitScan) so the camera path gets them too.
+  const handleScanSweep = (rawText) => {
+    const raw = String(rawText || '').trim();
+    // The two most common non-plant barcodes in the room deserve honest
+    // answers, not "unknown SKU". A box tag exits to that box (landing
+    // muscle memory) — unless the box is IN the sweep, whose pane just said
+    // nothing in it gets packed today.
+    if (/^B[-_]/i.test(raw)) {
+      const code = normalizeBoxCode(raw);
+      if (sweepBoxes.some(sb => sb.box.code === code)) {
+        showToast(`Box ${code} is in this sweep — scan its plants (or tap Boxes to leave)`, 3500);
+        return;
+      }
+      // Resolve BEFORE exiting: a stale tag (yesterday's shipped box, one
+      // from the trash) must not eject the packer from a half-done sweep.
+      const match = boxesByCode[code];
+      if (!match) { showToast(`No open box with code ${code}`, 3500); return; }
+      setSweepOpen(false);
+      goToBox(match.id);
+      return;
+    }
+    if (looksLikeTracking(raw)) {
+      showToast('That’s a shipping label — scan plant barcodes during the sweep', 3500);
+      return;
+    }
+    const sku = normalizeSku(raw);
+    if (!sku) return;
+    // Prefer an UNMARKED match: double-sold duplicates can put the same SKU
+    // in two swept boxes, and the second physical plant must still be
+    // scannable to found — "already found" only when every match is marked.
+    let already = false;
+    for (const { box, plants, pickup } of sweepBoxes) {
+      const hit = plants.find(i => normalizeSku(i.sku) === sku && !sweepMarks[i.id]);
+      if (!hit) {
+        already = already || plants.some(i => normalizeSku(i.sku) === sku);
+        continue;
+      }
+      setSweepMarks(m => ({ ...m, [hit.id]: Date.now() }));
+      if (sweepFound + 1 === sweepTotal) {
+        if (navigator.vibrate) navigator.vibrate([60, 40, 60, 40, 140]);
+        showToast(`All ${sweepTotal} plants found 🎉 — bench is clear for this week's packing`, 5000);
+      } else {
+        if (navigator.vibrate) navigator.vibrate(30);
+        const take = hit.quantity > 1 ? ` — take all ${hit.quantity}` : '';
+        showToast(`Found ${hit.lotNumber ? `#${hit.lotNumber} · ` : ''}${sku}${take} → ${pickup ? 'pickup' : 'hold'} shelf (box ${box.code})`, 2600);
+      }
+      return;
+    }
+    if (already) { showToast(`${sku} already found ✓`, 2000); return; }
+    const elsewhere = Object.values(boxesByCode).find(b => b.items.some(i => normalizeSku(i.sku) === sku));
+    if (elsewhere) { showToast(`${sku} isn't in the sweep — leave it on the bench (box ${elsewhere.code})`, 3500); return; }
+    showToast(`SKU ${sku} isn't in any open box`, 3500);
+  };
+
+  // Manual found-toggle, only for swept plants with no scannable barcode
+  // (synthetic UNMATCHED-/DBL- SKUs) — everything else must be scanned.
+  // Fires the same completion signal as the scan path: the last unfound item
+  // is often a barcode-less placeholder, exactly what this toggle is for.
+  const handleToggleFound = (item) => {
+    const marking = !sweepMarks[item.id];
+    setSweepMarks(m => {
+      const next = { ...m };
+      if (next[item.id]) delete next[item.id];
+      else next[item.id] = Date.now();
+      return next;
+    });
+    if (marking && sweepFound + 1 === sweepTotal) {
+      if (navigator.vibrate) navigator.vibrate([60, 40, 60, 40, 140]);
+      showToast(`All ${sweepTotal} plants found 🎉 — bench is clear for this week's packing`, 5000);
+    }
+  };
+
   const submitScan = () => {
     const v = scanValue.trim();
     setScanValue('');
@@ -605,6 +800,8 @@ export function PackerView({ onLogout }) {
         // anything else is treated as a plant SKU to pack.
         if (looksLikeTracking(v)) handleScanLabel(v);
         else handleScanItem(v);
+      } else if (sweepOpen) {
+        handleScanSweep(v);
       } else {
         handleScanBox(v);
       }
@@ -781,8 +978,8 @@ export function PackerView({ onLogout }) {
         onSubmit={submitScan}
         placeholder={activeBox
           ? (trackingByBox[activeBox.id] ? 'Scan a plant or the shipping label…' : 'Scan a plant barcode…')
-          : 'Scan a box or plant…'}
-        onCamera={() => setCameraMode(activeBox ? 'item' : 'box')}
+          : sweepOpen ? 'Scan a plant for the sweep…' : 'Scan a box or plant…'}
+        onCamera={() => setCameraMode(activeBox ? 'item' : sweepOpen ? 'sweep' : 'box')}
       />
 
       {activeBox
@@ -790,6 +987,12 @@ export function PackerView({ onLogout }) {
             box={activeBox}
             assignedTracking={trackingByBox[activeBox.id] || null}
             dupeLots={dupeLots}
+            wrap={activeWrap}
+            onWrapCancel={() => setWrap(null)}
+            onWrapReprint={() => {
+              const it = activeBox.items.find(i => i.id === activeWrap?.itemId);
+              if (it) startWrap(it, activeWrap.sku);
+            }}
             onMarkPacked={handleMarkPacked}
             onCamera={() => setCameraMode('item')}
             onScanLabel={() => setCameraMode('label')}
@@ -799,21 +1002,68 @@ export function PackerView({ onLogout }) {
             printing={printing}
             onDone={() => goToBox(null)}
           />
-        : <LandingGrid
-            boxes={openBoxes}
-            boxSizes={boxSizes}
-            boxSizeByBox={boxSizeByBox}
-            trackingByBox={trackingByBox}
-            holdByBox={holdByBox}
-            noteByBox={noteByBox}
-            onOpen={goToBox}
+        : sweepOpen
+        ? <SweepPane
+            sweepBoxes={sweepBoxes}
+            marks={sweepMarks}
+            found={sweepFound}
+            total={sweepTotal}
+            dupeLots={dupeLots}
+            onToggleFound={handleToggleFound}
+            onReset={() => {
+              if (window.confirm('Restart the sweep? All found checkmarks clear.')) setSweepMarks({});
+            }}
+            onCamera={() => setCameraMode('sweep')}
+            onClose={() => setSweepOpen(false)}
           />
+        : <>
+            {/* Held + pickup plants come off the bench FIRST — stock that
+                isn't shipping this week mixed into this week's packing is
+                how wrong plants ship. */}
+            {sweepBoxes.length > 0 && (
+              <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setSweepOpen(true)}
+                  className={`max-w-5xl mx-auto w-full text-left rounded-2xl border-2 px-4 py-3 flex items-center gap-3 transition active:scale-[0.99] ${
+                    sweepFound === sweepTotal
+                      ? 'border-emerald-300 bg-emerald-50'
+                      : 'border-amber-400 bg-amber-100 hover:border-amber-500'
+                  }`}
+                >
+                  {sweepFound === sweepTotal
+                    ? <Check className="w-6 h-6 text-emerald-600 shrink-0" />
+                    : <Clock className="w-6 h-6 text-amber-700 shrink-0" />}
+                  <span className="flex-1 min-w-0">
+                    <span className={`block text-base font-bold ${sweepFound === sweepTotal ? 'text-emerald-800' : 'text-amber-900'}`}>
+                      {sweepFound === sweepTotal
+                        ? 'All held & pickup plants off the bench ✓'
+                        : 'Step 1 — pull held & pickup plants off the bench'}
+                    </span>
+                    <span className={`block text-sm ${sweepFound === sweepTotal ? 'text-emerald-700' : 'text-amber-800'}`}>
+                      {sweepFound}/{sweepTotal} found · {sweepBoxes.length} {sweepBoxes.length === 1 ? 'box isn’t' : 'boxes aren’t'} shipping this week
+                    </span>
+                  </span>
+                </button>
+              </div>
+            )}
+            <LandingGrid
+              boxes={openBoxes}
+              boxSizes={boxSizes}
+              boxSizeByBox={boxSizeByBox}
+              trackingByBox={trackingByBox}
+              holdByBox={holdByBox}
+              noteByBox={noteByBox}
+              onOpen={goToBox}
+            />
+          </>
       }
 
-      {cameraMode && (cameraMode === 'box' || activeBox) && (
+      {cameraMode && (cameraMode === 'box' || cameraMode === 'sweep' || activeBox) && (
         <CameraScanner
           onScan={
             cameraMode === 'box' ? handleScanBox
+              : cameraMode === 'sweep' ? handleScanSweep
               : cameraMode === 'label' ? handleScanLabel
                 : handleScanItem
           }
@@ -824,6 +1074,8 @@ export function PackerView({ onLogout }) {
         <PrinterSettingsSheet
           dests={printDests}
           onDestChange={(kind, d) => { savePrintDest(kind, d); setPrintDests(p => ({ ...p, [kind]: d })); }}
+          wrapFlow={wrapFlow}
+          onWrapFlowChange={(on) => { saveWrapFlow(on); setWrapFlow(on); }}
           onClose={() => setPrinterSheetOpen(false)}
           showToast={showToast}
         />
@@ -975,6 +1227,181 @@ function ScanField({ inputRef, value, onChange, onSubmit, placeholder, onCamera 
 // Landing — a responsive grid of every open box. Tap a card to open it (or
 // just scan). Cards show packing progress + the chosen box size so the
 // packer can see what's left at a glance across the iPad.
+// Bench sweep checklist: every unpacked plant of every box that ISN'T
+// shipping this week — still-holding boxes and local-pickup boxes — grouped
+// by box, scanned off as the packer pulls them from the bench. Scanning is
+// the verification — a manual Found toggle exists only for placeholder items
+// with no scannable barcode.
+function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, onReset, onCamera, onClose }) {
+  const allFound = total > 0 && found === total;
+  // Pickup boxes never ship — their date line must not say so. A pickup box
+  // that's ALSO on hold shows when the buyer can collect.
+  const holdLabel = (hold, pickup) => {
+    const when = hold?.state === 'holding' && hold.until
+      ? hold.until.toLocaleDateString(undefined, { weekday: 'short', month: 'numeric', day: 'numeric' })
+      : null;
+    if (pickup) return when ? `pickup after ${when}` : 'pickup — do not ship';
+    return when ? `ships ${when}` : 'on hold';
+  };
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-shrink-0 px-4 sm:px-5 py-3 border-b border-amber-200 bg-amber-50">
+        <div className="max-w-5xl mx-auto">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Clock className="w-5 h-5 text-amber-700 shrink-0" />
+            <h2 className="flex-1 text-base font-bold text-amber-900">Held & pickup plants — pull these off the bench first</h2>
+            <div className="text-base">
+              <span className="font-bold text-gray-900">{found}/{total}</span>
+              <span className="text-gray-500 ml-1">found</span>
+            </div>
+          </div>
+          <div
+            className="mt-2 w-full bg-amber-200 rounded-full h-2.5 overflow-hidden"
+            role="progressbar" aria-valuenow={found} aria-valuemin={0} aria-valuemax={total}
+          >
+            <div className="h-full bg-amber-500 transition-all" style={{ width: total ? `${(found / total) * 100}%` : 0 }} />
+          </div>
+          <p className="text-xs text-amber-800 mt-1.5">
+            Scan each plant's barcode as you pull it: held plants go to the hold shelf, pickup plants to the pickup shelf. Nothing here gets packed today.
+          </p>
+        </div>
+      </div>
+
+      {allFound && (
+        <div className="flex-shrink-0 bg-emerald-500 text-white px-4 py-2.5 flex items-center justify-center gap-2 text-center">
+          <Check className="w-5 h-5 shrink-0" />
+          <span className="text-base font-bold">All held & pickup plants found — the bench is clear for this week's packing</span>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
+        <div className="max-w-5xl mx-auto space-y-4">
+          {sweepBoxes.length === 0 && (
+            <div className="text-center text-sm text-gray-500 py-12">
+              <PackageCheck className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+              No held or pickup plants right now — you&apos;re clear to pack.
+            </div>
+          )}
+          {sweepBoxes.map(({ box, plants, hold, pickup }) => {
+            const boxFound = plants.filter(p => marks[p.id]).length;
+            return (
+              <div
+                key={box.id}
+                className={`rounded-2xl border-2 overflow-hidden ${
+                  pickup ? 'border-violet-300 bg-violet-50' : 'border-amber-300 bg-amber-50'
+                }`}
+              >
+                <div className={`px-3.5 py-2.5 flex items-center gap-2 flex-wrap ${pickup ? 'bg-violet-100' : 'bg-amber-100'}`}>
+                  <span className={`font-mono font-bold ${pickup ? 'text-violet-950' : 'text-amber-950'}`}>{box.code}</span>
+                  {box.buyer && <span className={`text-sm truncate ${pickup ? 'text-violet-900' : 'text-amber-900'}`}>{box.buyer}</span>}
+                  {pickup && (
+                    <span className="text-[11px] font-bold uppercase tracking-wide text-violet-800 bg-violet-200 px-1.5 py-0.5 rounded">
+                      Pickup
+                    </span>
+                  )}
+                  <span className={`text-xs font-semibold ml-auto ${pickup ? 'text-violet-800' : 'text-amber-800'}`}>
+                    {holdLabel(hold, pickup)} · {boxFound}/{plants.length}
+                  </span>
+                </div>
+                <div className="p-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {plants.map(item => {
+                    const isFound = !!marks[item.id];
+                    // Synthetic placeholder SKUs have no barcode to scan.
+                    const noBarcode = !item.sku || /^(UNMATCHED|DBL)-/i.test(item.sku);
+                    const isDupe = !!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10));
+                    return (
+                      <div
+                        key={item.id}
+                        className={`px-3 py-2.5 rounded-xl border-2 flex items-center gap-2.5 ${
+                          isFound ? 'bg-emerald-50 border-emerald-200' : `bg-white ${pickup ? 'border-violet-200' : 'border-amber-200'}`
+                        }`}
+                      >
+                        {isFound
+                          ? <Check className="w-5 h-5 text-emerald-600 shrink-0" />
+                          : <div className={`w-5 h-5 rounded-full border-2 shrink-0 ${pickup ? 'border-violet-300' : 'border-amber-300'}`} />}
+                        {item.lotNumber && (
+                          <span
+                            className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums ${
+                              isFound ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 text-white'
+                            } ${isDupe && !isFound ? 'ring-2 ring-red-500' : ''}`}
+                            title="Lineup number — find the plant labelled with this #"
+                          >
+                            {item.lotNumber}
+                          </span>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          <div className={`text-sm font-mono ${isFound ? 'text-gray-400' : 'text-gray-800 font-semibold'}`}>
+                            {noBarcode ? '(no barcode)' : item.sku}
+                          </div>
+                          {(item.name || item.variety) && (
+                            <div className={`text-xs break-words ${isFound ? 'text-gray-400 line-through' : 'text-gray-500'}`}>
+                              {[(item.name || '').trim(), (item.variety || '').trim()].filter(Boolean).join(' · ')}
+                            </div>
+                          )}
+                        </div>
+                        {item.quantity > 1 && (
+                          <span className={`text-sm font-bold shrink-0 ${isFound ? 'text-gray-400' : 'text-amber-800'}`}>
+                            ×{item.quantity}
+                          </span>
+                        )}
+                        {noBarcode && (
+                          <button
+                            type="button"
+                            onClick={() => onToggleFound(item)}
+                            aria-pressed={isFound}
+                            aria-label={`Mark ${(item.name || 'item').trim()} ${isFound ? 'not found' : 'found'}`}
+                            className={`shrink-0 text-sm font-semibold px-3 py-2 rounded-lg ${
+                              isFound
+                                ? 'bg-gray-200 text-gray-600 active:bg-gray-300'
+                                : 'bg-purple-600 text-white active:bg-purple-800'
+                            }`}
+                            title="No scannable barcode — mark found manually"
+                          >
+                            {isFound ? 'Undo' : 'Found'}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {found > 0 && (
+            <button
+              type="button"
+              onClick={onReset}
+              className="w-full text-sm font-semibold text-gray-500 py-2 rounded-lg hover:bg-gray-100 active:bg-gray-200"
+            >
+              Reset the sweep
+            </button>
+          )}
+          <div className="h-6 pb-safe" />
+        </div>
+      </div>
+
+      <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3 pb-safe">
+        <div className="max-w-5xl mx-auto flex gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-gray-100 text-gray-800 rounded-xl active:bg-gray-200"
+          >
+            <ArrowLeft className="w-5 h-5" /> Boxes
+          </button>
+          <button
+            type="button"
+            onClick={onCamera}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-blue-600 text-white rounded-xl active:bg-blue-800"
+          >
+            <Camera className="w-5 h-5" /> Scan a plant
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, noteByBox, onOpen }) {
   if (boxes.length === 0) {
     return (
@@ -1106,12 +1533,13 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
+function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapReprint, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
   const allPacked = total > 0 && unpacked.length === 0;
   const pct = total > 0 ? (packed.length / total) * 100 : 0;
+  const wrapItem = wrap ? box.items.find(i => i.id === wrap.itemId) : null;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -1135,6 +1563,46 @@ function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onCamera, onSc
         </div>
       </div>
 
+      {/* Active burrito wrap — pinned above the item grid so the packer
+          always sees which plant the printed label belongs to. */}
+      {wrap && (
+        <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
+          <div className="max-w-5xl mx-auto rounded-xl border-2 border-amber-400 bg-amber-50 px-3.5 py-3 flex items-center gap-3">
+            <span className="text-2xl shrink-0" aria-hidden>🌯</span>
+            {wrapItem?.lotNumber && (
+              <span className="shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-xl font-extrabold text-center tabular-nums bg-amber-500 text-white">
+                {wrapItem.lotNumber}
+              </span>
+            )}
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-bold text-amber-900 truncate">
+                Wrapping {wrap.sku}{wrapItem?.name ? ` · ${wrapItem.name}` : ''}
+              </div>
+              <div className="text-xs text-amber-800">
+                {wrap.print === 'sending' ? 'Printing the label…'
+                  : wrap.print === 'failed' ? 'Label didn’t print — tap Reprint.'
+                    : 'Stick the fresh label on the burrito, then scan it to finish.'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onWrapReprint}
+              disabled={wrap.print === 'sending' || !!printing}
+              className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg bg-white border-2 border-amber-400 text-amber-800 active:bg-amber-100 disabled:opacity-50 flex items-center gap-1"
+            >
+              <Printer className="w-4 h-4" /> Reprint
+            </button>
+            <button
+              type="button"
+              onClick={onWrapCancel}
+              className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg text-amber-800 active:bg-amber-100"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
         <div className="max-w-5xl mx-auto">
@@ -1155,7 +1623,7 @@ function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onCamera, onSc
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} dupeLots={dupeLots} />)}
+                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} dupeLots={dupeLots} wrapping={wrap?.itemId === item.id} />)}
                   {packed.map(item => <ItemCard key={item.id} item={item} />)}
                 </div>
               )}
@@ -1331,7 +1799,7 @@ function CarrierBadge({ carrier, size = 'md' }) {
   );
 }
 
-function ItemCard({ item, onMarkPacked, dupeLots }) {
+function ItemCard({ item, onMarkPacked, dupeLots, wrapping }) {
   const isPacked = !!item.packedAt;
   const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
@@ -1346,7 +1814,7 @@ function ItemCard({ item, onMarkPacked, dupeLots }) {
     : { bg: isPacked ? 'bg-emerald-100' : 'bg-emerald-50', border: 'border-emerald-200', accent: 'text-emerald-700', icon: 'text-emerald-600', ring: 'border-emerald-300' };
 
   return (
-    <div className={`px-3 py-3 rounded-xl border-2 ${family.bg} ${family.border}`}>
+    <div className={`px-3 py-3 rounded-xl border-2 ${family.bg} ${wrapping ? 'border-amber-400 ring-2 ring-amber-300' : family.border}`}>
       <div className="flex items-center gap-2.5">
         {isPacked
           ? <Check className={`w-6 h-6 ${family.icon} shrink-0`} />
