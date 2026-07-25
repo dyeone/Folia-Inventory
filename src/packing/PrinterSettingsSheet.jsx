@@ -31,7 +31,7 @@ export function PrinterSettingsSheet({ dests, onDestChange, wrapFlow, onWrapFlow
       if (kind === 'shipping') await printTestLabel(dests.shipping, showToast, () => unmountedRef.current);
       // Plant labels share the box tags' 2×1 pipeline (same role + media), so
       // the tag test print exercises exactly what a wrap reprint will do.
-      else await printTestTag(dests[kind] || dests.boxtag, showToast, () => unmountedRef.current);
+      else await printTestTag(dests[kind], showToast, () => unmountedRef.current);
     } finally {
       if (!unmountedRef.current) setTesting(null);
     }

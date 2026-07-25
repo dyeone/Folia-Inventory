@@ -120,7 +120,7 @@ export function PackerView({ onLogout }) {
   // item id (the 8s poll replaces item objects wholesale); the terminal
   // state is plain packedAt, so nothing new is persisted.
   const [wrapFlow, setWrapFlow] = useState(getWrapFlow);
-  const [wrap, setWrap] = useState(null); // { itemId, sku, print: 'sending'|'sent'|'failed' }
+  const [wrap, setWrap] = useState(null); // { itemId, sku, nonce, print: 'sending'|'sent'|'failed' }
   // Bench sweep (holdSweep.js): scan every plant of every held or pickup box
   // off the bench BEFORE regular packing, so plants that aren't shipping
   // this week can't be mixed into this week's boxes. Found-marks persist per
@@ -136,9 +136,10 @@ export function PackerView({ onLogout }) {
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, []);
-  // One busy flag for both print buttons ('label' | 'tag' | null): on the
-  // iPad path both flows share the in-page print root, so they must never
-  // run concurrently (the second purge would eat the first job's pages).
+  // One busy flag across print jobs ('label' | 'tag' | 'itemlabel' | null):
+  // on the iPad path all flows share the in-page print root, so they must
+  // never run concurrently (the second purge would eat the first job's
+  // pages). Bridge-destined wrap prints skip it — see startWrap.
   const [printing, setPrinting] = useState(null);
   // Manual carrier override per box (shipmentBoxId → 'ups' | 'usps' | null),
   // set at the shipping desk. The packer honors it like the desk does — the
@@ -387,18 +388,23 @@ export function PackerView({ onLogout }) {
   const startWrap = async (candidate, sku) => {
     const nonce = `${Date.now()}-${Math.random()}`;
     if (navigator.vibrate) navigator.vibrate(30);
-    if (printing) {
+    // The mutex protects the iPad's in-page print root; bridge jobs queue
+    // server-side and don't need it — holding it across the bridge poll
+    // (up to 35s on a wedged bridge) would dead-disable the next wrap's
+    // Reprint button.
+    const needMutex = printDests.itemlabel === 'ipad';
+    if (needMutex && printing) {
       setWrap({ itemId: candidate.id, sku, nonce, print: 'failed' });
       showToast('Printer is busy — tap Reprint on the wrap card in a moment.', 3500);
       return;
     }
     setWrap({ itemId: candidate.id, sku, nonce, print: 'sending' });
-    setPrinting('itemlabel');
+    if (needMutex) setPrinting('itemlabel');
     try {
       const ok = await printItemLabel(candidate, printDests.itemlabel, showToast);
       setWrap(w => (w && w.nonce === nonce ? { ...w, print: ok ? 'sent' : 'failed' } : w));
     } finally {
-      setPrinting(null);
+      if (needMutex) setPrinting(null);
     }
   };
 
@@ -726,8 +732,12 @@ export function PackerView({ onLogout }) {
         showToast(`Box ${code} is in this sweep — scan its plants (or tap Boxes to leave)`, 3500);
         return;
       }
+      // Resolve BEFORE exiting: a stale tag (yesterday's shipped box, one
+      // from the trash) must not eject the packer from a half-done sweep.
+      const match = boxesByCode[code];
+      if (!match) { showToast(`No open box with code ${code}`, 3500); return; }
       setSweepOpen(false);
-      handleScanBox(raw);
+      goToBox(match.id);
       return;
     }
     if (looksLikeTracking(raw)) {
