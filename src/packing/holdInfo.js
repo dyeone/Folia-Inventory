@@ -59,8 +59,19 @@ export function weekHoldUntil(raw) {
 // api/shipments.js setBoxHold (the server can't import client modules).
 export const HOLD_RELEASED = '1970-01-01T00:00:00.000Z';
 
+// Compare as an INSTANT, never as a string: holdUntil is a timestamptz
+// column and PostgREST re-serializes it on every read (offset form,
+// '1970-01-01T00:00:00+00:00'), so string equality would silently miss in
+// production and Clear hold would no-op. Epoch 0 can never be a legitimate
+// stamp — real ones are server-bounded to now..+31d and the column was born
+// in 2026. The !!holdUntil guard is load-bearing: new Date(null) is also
+// epoch 0.
+export function isHoldReleased(holdUntil) {
+  return !!holdUntil && new Date(holdUntil).getTime() === 0;
+}
+
 // Effective hold state of a box, with a real countdown:
-//   • holdUntil === HOLD_RELEASED → the desk explicitly released the hold
+//   • isHoldReleased(holdUntil) → the desk explicitly released the hold
 //     (the "1-week hold" line a buyer bought is sale data and can't be
 //     deleted, so release is a sentinel that outranks it) → 'ready'.
 //   • Otherwise the box holds while ANY un-released source says so — the
@@ -69,7 +80,7 @@ export const HOLD_RELEASED = '1970-01-01T00:00:00.000Z';
 //     or short button stamp can never cut a buyer-paid item hold short.
 // Returns the holdInfo shape: { state:'none'|'holding'|'ready', daysLeft?, until? }.
 export function boxHoldState(items, holdUntil) {
-  if (holdUntil === HOLD_RELEASED) return { state: 'ready' };
+  if (isHoldReleased(holdUntil)) return { state: 'ready' };
   const stamp = holdInfo(holdUntil);
   const holdItem = (items || []).find(i => isHoldItem(i?.name));
   let item = { state: 'none' };

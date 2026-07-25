@@ -379,8 +379,9 @@ export function PackingView({
   // into the cache (which re-tints the card and shows the countdown).
   const onSetHold = async (shipmentBoxId, hold, release = false) => {
     // release: the box's hold comes from a "1-week hold" line the buyer
-    // bought — it can't be deleted, so the server stamps a PAST holdUntil,
-    // which outranks the item (holdInfo.js) and reads as "hold done".
+    // bought — it can't be deleted, so the server stamps the HOLD_RELEASED
+    // sentinel, the only thing that outranks the item (holdInfo.js), and
+    // the box reads "hold done".
     const saved = await api.setBoxHold({
       shipmentBoxId,
       hold,
