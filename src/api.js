@@ -304,10 +304,13 @@ export const api = {
     request('/shipments', { method: 'POST', body: { action: 'set-box-packaging', shipmentBoxId, boxSizeId, weightOz, serviceKey, carrierOverride } }).then(r => r.box),
   // Put a box on a one-week hold (hold:true — pass the client-computed
   // week-scoped holdUntil; see holdInfo.weekHoldUntil) or clear it
-  // (hold:false). Server bounds holdUntil to now..+31d, else falls back to
-  // now + days (default 7) for stale callers.
-  setBoxHold: ({ shipmentBoxId, hold, days, holdUntil }) =>
-    request('/shipments', { method: 'POST', body: { action: 'set-box-hold', shipmentBoxId, hold, days, holdUntil } }).then(r => r.box),
+  // (hold:false). release:true with hold:false stamps holdUntil = now
+  // instead of null — that's how an ITEM-based hold (the "1-week hold" line
+  // the buyer bought) is released, since a past holdUntil outranks the item
+  // (holdInfo.js) while null would let it resurface. Server bounds holdUntil
+  // to now..+31d, else falls back to now + days (default 7) for stale callers.
+  setBoxHold: ({ shipmentBoxId, hold, days, holdUntil, release }) =>
+    request('/shipments', { method: 'POST', body: { action: 'set-box-hold', shipmentBoxId, hold, days, holdUntil, release } }).then(r => r.box),
   // Get-or-create the BAE loyalty redemption code for a box (printed on the
   // shipping slip as QR + short code — see migration 0034). Returns
   // { code, qrPayload, badgeCount, status }. BAE boxes only.

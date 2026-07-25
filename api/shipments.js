@@ -415,11 +415,17 @@ async function setBoxPackaging(req, res, userId, brandId) {
 }
 
 // POST /api/shipments  body: { action:'set-box-hold', shipmentBoxId,
-//   hold: boolean, holdUntil?: ISO, days?: number }
+//   hold: boolean, holdUntil?: ISO, days?: number, release?: boolean }
 // Puts a box on hold or clears it (hold:false → null). Holds are WEEK-scoped
 // (pressed in week 30 → ships when week 32 begins), and only the client knows
 // the operator's local week boundary — so the client sends holdUntil (bounded
 // here to now..+31d); the legacy now+days fallback covers stale clients.
+// release:true (with hold:false) stamps the HOLD_RELEASED sentinel instead
+// of null: an ITEM-based hold (the "1-week hold" line the buyer bought)
+// can't be deleted, and only the sentinel outranks it (src/packing/
+// holdInfo.js — a real past timestamp deliberately does NOT, because stale
+// pre-release-era button stamps exist in prod). null would just let the
+// item hold resurface.
 // Lazy-creates the shipment_boxes row.
 async function setBoxHold(req, res, userId, brandId) {
   const { shipmentBoxId, hold, days } = req.body || {};
@@ -427,6 +433,9 @@ async function setBoxHold(req, res, userId, brandId) {
     const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
   }
   let holdUntil = null;
+  if (!hold && req.body?.release) {
+    holdUntil = '1970-01-01T00:00:00.000Z'; // HOLD_RELEASED — mirrors holdInfo.js
+  }
   if (hold) {
     // Preferred: a client-computed holdUntil — holds are WEEK-scoped
     // (pressed in week 30 → ships when week 32 begins) and only the client
