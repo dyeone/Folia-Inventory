@@ -357,6 +357,29 @@ export function PackerView({ onLogout }) {
   const sweepTotal = sweepBoxes.reduce((s, h) => s + h.plants.length, 0);
   const sweepFound = sweepBoxes.reduce((s, h) => s + h.plants.filter(p => sweepMarks[p.id]).length, 0);
 
+  // Step 2 of the session: wrap THIS week's plants into burritos. Scope is
+  // every open box that is actually shipping this week — tested by hold and
+  // pickup STATE directly, not by sweep membership: a holding/pickup box
+  // with zero unpacked plants drops out of the sweep but still isn't
+  // shipping, and counting it would steer the CTA into an ON HOLD box (or
+  // let its unwrappable hold line keep Step 2 amber all week). Progress is
+  // packedAt, the wrap flow's terminal state; nextId is the first box with
+  // work left, in the landing grid's own work-first order.
+  const shipPlan = useMemo(() => {
+    let total = 0, packed = 0, boxesLeft = 0, nextId = null;
+    for (const box of openBoxes) {
+      const hs = boxHoldState(box.items, holdByBox[box.id]);
+      if (hs.state === 'holding' || boxIsLocalPickup(noteByBox[box.id], box.items)) continue;
+      const sold = box.items.filter(i => i.status === 'sold');
+      if (!sold.length) continue;
+      const p = sold.filter(i => i.packedAt).length;
+      total += sold.length;
+      packed += p;
+      if (p < sold.length) { boxesLeft += 1; if (!nextId) nextId = box.id; }
+    }
+    return { total, packed, boxesLeft, nextId };
+  }, [openBoxes, holdByBox, noteByBox]);
+
   const toastTimerRef = useRef(null);
   const showToast = (msg, durationMs = 2200) => {
     // Clear the previous timer so a short-lived toast (e.g. "Packed X",
@@ -716,6 +739,29 @@ export function PackerView({ onLogout }) {
     await packById(item.id, label.slice(0, 30));
   };
 
+  // Manual burrito-label print, per plant. The wrap flow auto-prints on
+  // scan, but unmatched placeholders have no barcode to start a wrap,
+  // reprints happen, and a station with the wrap flow off still wraps
+  // burritos. Same mutex rule as startWrap: only the iPad path needs it.
+  const plantPrintBusyRef = useRef(new Set());
+  const handlePrintPlantLabel = async (item) => {
+    // Per-item in-flight guard: the bridge path has no busy state or
+    // success toast, and its job can take tens of seconds — an impatient
+    // re-tap would queue a duplicate label.
+    if (plantPrintBusyRef.current.has(item.id)) { showToast('Already printing that label…', 2000); return; }
+    const needMutex = printDests.itemlabel === 'ipad';
+    if (needMutex && printing) { showToast('Printer is busy — try again in a moment', 2500); return; }
+    showToast(`Printing label${item.lotNumber ? ` #${item.lotNumber}` : ''}…`, 1800);
+    plantPrintBusyRef.current.add(item.id);
+    if (needMutex) setPrinting('itemlabel');
+    try {
+      await printItemLabel(item, printDests.itemlabel, showToast);
+    } finally {
+      plantPrintBusyRef.current.delete(item.id);
+      if (needMutex) setPrinting(null);
+    }
+  };
+
   // Sweep scan: a FIND-scan, not a pack-scan — it only ticks a held or
   // pickup plant off the checklist. A plant that isn't in the sweep is the
   // packer's cue to leave it on the bench for this week's packing. Guards
@@ -994,6 +1040,7 @@ export function PackerView({ onLogout }) {
               if (it) startWrap(it, activeWrap.sku);
             }}
             onMarkPacked={handleMarkPacked}
+            onPrintPlantLabel={handlePrintPlantLabel}
             onCamera={() => setCameraMode('item')}
             onScanLabel={() => setCameraMode('label')}
             onSendToPhone={isMobile ? null : () => sendToPhone(activeBox)}
@@ -1042,6 +1089,37 @@ export function PackerView({ onLogout }) {
                     </span>
                     <span className={`block text-sm ${sweepFound === sweepTotal ? 'text-emerald-700' : 'text-amber-800'}`}>
                       {sweepFound}/{sweepTotal} found · {sweepBoxes.length} {sweepBoxes.length === 1 ? 'box isn’t' : 'boxes aren’t'} shipping this week
+                    </span>
+                  </span>
+                </button>
+              </div>
+            )}
+            {/* Step 2 — wrap this week's plants into burritos. Progress is
+                the pack count (the wrap flow's terminal state IS packed);
+                tapping continues into the first box with work left. */}
+            {shipPlan.total > 0 && (
+              <div className="flex-shrink-0 px-3 sm:px-5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { if (shipPlan.nextId) goToBox(shipPlan.nextId); }}
+                  disabled={!shipPlan.nextId}
+                  className={`max-w-5xl mx-auto w-full text-left rounded-2xl border-2 px-4 py-3 flex items-center gap-3 transition active:scale-[0.99] ${
+                    shipPlan.packed === shipPlan.total
+                      ? 'border-emerald-300 bg-emerald-50'
+                      : 'border-blue-400 bg-blue-50 hover:border-blue-500'
+                  }`}
+                >
+                  {shipPlan.packed === shipPlan.total
+                    ? <Check className="w-6 h-6 text-emerald-600 shrink-0" />
+                    : <span className="text-2xl shrink-0" aria-hidden>🌯</span>}
+                  <span className="flex-1 min-w-0">
+                    <span className={`block text-base font-bold ${shipPlan.packed === shipPlan.total ? 'text-emerald-800' : 'text-blue-900'}`}>
+                      {shipPlan.packed === shipPlan.total
+                        ? 'All of this week’s plants are wrapped & packed ✓'
+                        : 'Step 2 — wrap this week’s plants into burritos'}
+                    </span>
+                    <span className={`block text-sm ${shipPlan.packed === shipPlan.total ? 'text-emerald-700' : 'text-blue-800'}`}>
+                      {shipPlan.packed}/{shipPlan.total} packed{shipPlan.boxesLeft > 0 ? ` · ${shipPlan.boxesLeft} ${shipPlan.boxesLeft === 1 ? 'box' : 'boxes'} to go — tap to continue` : ''}
                     </span>
                   </span>
                 </button>
@@ -1596,7 +1674,7 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapReprint, onMarkPacked, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
+function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapReprint, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -1686,7 +1764,7 @@ function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapRe
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} dupeLots={dupeLots} wrapping={wrap?.itemId === item.id} />)}
+                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} onPrintPlantLabel={onPrintPlantLabel} dupeLots={dupeLots} wrapping={wrap?.itemId === item.id} />)}
                   {packed.map(item => <ItemCard key={item.id} item={item} />)}
                 </div>
               )}
@@ -1862,7 +1940,7 @@ function CarrierBadge({ carrier, size = 'md' }) {
   );
 }
 
-function ItemCard({ item, onMarkPacked, dupeLots, wrapping }) {
+function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots, wrapping }) {
   const isPacked = !!item.packedAt;
   const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
@@ -1903,6 +1981,20 @@ function ItemCard({ item, onMarkPacked, dupeLots, wrapping }) {
           )}
         </div>
         {item.quantity > 1 && <span className={`text-sm font-medium ${family.accent} shrink-0`}>×{item.quantity}</span>}
+        {/* Hidden while THIS item is being wrapped — the wrap card's Reprint
+            owns that print (and its status); a side-door print here would
+            leave the card claiming the label never printed. */}
+        {onPrintPlantLabel && !isPacked && !wrapping && (
+          <button
+            type="button"
+            onClick={() => onPrintPlantLabel(item)}
+            className={`shrink-0 w-10 h-10 rounded-lg border-2 bg-white flex items-center justify-center ${family.ring} ${family.accent} active:bg-gray-100`}
+            title="Print this plant's burrito label"
+            aria-label={`Print label for ${(item.name || item.sku || 'item').trim()}`}
+          >
+            <Printer className="w-4 h-4" />
+          </button>
+        )}
         {showManualPack && (
           <button
             type="button"
