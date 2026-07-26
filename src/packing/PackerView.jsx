@@ -816,6 +816,30 @@ export function PackerView({ onLogout }) {
   // Guards live here so the camera path gets them too.
   const handleScanStation = async (rawText) => {
     const raw = String(rawText || '').trim();
+    const sku = normalizeSku(raw);
+    // Mid-wrap, EVERY scan is the verification scan — checked before the
+    // B-tag/tracking branches, or a stray box-tag scan would silently
+    // suspend the wrap and the next plant scan would clobber it (printing a
+    // duplicate label). One exception passes through: the wrapped plant's
+    // OWN box tag, because the wrap survives into that box's pane.
+    if (activeWrap) {
+      const wrapRow = shipPlan.rows.find(r => r.item.id === activeWrap.itemId);
+      if (/^B[-_]/i.test(raw) && wrapRow && boxesByCode[normalizeBoxCode(raw)]?.id === wrapRow.box.id) {
+        goToBox(wrapRow.box.id);
+        return;
+      }
+      if (sku && sku === activeWrap.sku && wrapRow) {
+        const saved = activeWrap;
+        setWrap(null);
+        const ok = await packById(wrapRow.item.id, `${sku} — 🌯 done`);
+        if (!ok) setWrap(saved);
+        return;
+      }
+      if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+      const lot = wrapRow?.item.lotNumber ? `#${wrapRow.item.lotNumber} · ` : '';
+      showToast(`⚠ Wrong label — you're wrapping ${lot}${activeWrap.sku}, but this scan reads ${raw.slice(0, 24)}. Fix the label, or Cancel on the wrap card.`, 6000);
+      return;
+    }
     if (/^B[-_]/i.test(raw)) {
       // Box-tag muscle memory: open that box — the station is just another
       // way through the same work.
@@ -829,24 +853,7 @@ export function PackerView({ onLogout }) {
       showToast('That’s a shipping label — open its box to ship. Scan plant barcodes here.', 3500);
       return;
     }
-    const sku = normalizeSku(raw);
     if (!sku) return;
-    // Mid-wrap, every scan is the verification scan — a mismatch is the
-    // wrong-label-on-the-burrito mistake this flow exists to catch.
-    if (activeWrap) {
-      const wrapItem = shipPlan.rows.find(r => r.item.id === activeWrap.itemId)?.item;
-      if (sku === activeWrap.sku && wrapItem) {
-        const saved = activeWrap;
-        setWrap(null);
-        const ok = await packById(wrapItem.id, `${sku} — 🌯 done`);
-        if (!ok) setWrap(saved);
-        return;
-      }
-      if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
-      const lot = wrapItem?.lotNumber ? `#${wrapItem.lotNumber} · ` : '';
-      showToast(`⚠ Wrong label — you're wrapping ${lot}${activeWrap.sku}, but this label reads ${sku}. Fix the label, or Cancel on the wrap card.`, 6000);
-      return;
-    }
     const row = shipPlan.rows.find(r => normalizeSku(r.item.sku) === sku);
     if (row) {
       if (wrapFlow) { await startWrap(row.item, sku); return; }
@@ -859,6 +866,13 @@ export function PackerView({ onLogout }) {
       const it = holder.items.find(i => normalizeSku(i.sku) === sku);
       if (it?.packedAt) { showToast(`${sku} is already wrapped & packed ✓`, 2500); return; }
       if (!shipPlan.boxIds.has(holder.id)) {
+        // A wrap legitimately started inside a held/pickup box suspends at
+        // the station (its item isn't in rows) — point at where it finishes
+        // instead of contradicting the wrap card the packer just followed.
+        if (wrap && wrap.itemId === it?.id && sku === wrap.sku) {
+          showToast(`That wrap belongs to box ${holder.code} (held/pickup) — scan its box tag or open it to finish there`, 5000);
+          return;
+        }
         showToast(`${sku} isn't shipping this week (box ${holder.code}) — it belongs on the hold/pickup shelf, not in a burrito`, 4500);
         return;
       }
