@@ -593,7 +593,10 @@ async function setHeatFlags(req, res, userId, brandId) {
   const byBox = {};
   for (const [id, t] of Object.entries(raw).slice(0, 500)) {
     const temp = Math.round(Number(t));
-    if (typeof id === 'string' && id.length <= 64 && Number.isFinite(temp)) byBox[id] = temp;
+    // shipmentBoxIds are verbose recipient+address composites (~90-150
+    // chars is NORMAL — see parsePalmstreetOrders) — the cap only guards
+    // against garbage, it must never trim real ids.
+    if (typeof id === 'string' && id.length <= 300 && Number.isFinite(temp)) byBox[id] = temp;
   }
   const checkedAt = new Date().toISOString();
   const { error } = await supabase

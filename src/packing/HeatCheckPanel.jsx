@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Thermometer, Loader2, Copy, RotateCcw } from 'lucide-react';
 import { api } from '../api.js';
-import { scanRecipientHeat } from './heatCheck.js';
+import { scanRecipientHeat, heatFlagsFresh } from './heatCheck.js';
 import { copyText } from './labelPdf.js';
 
 const THRESHOLD_F = 90;
@@ -29,6 +29,7 @@ export function HeatCheckPanel({ boxes, showToast }) {
   const run = async () => {
     if (phase === 'running') return;
     setPhase('running');
+    setFlagged(null);
     try {
       const r = await scanRecipientHeat(boxes, THRESHOLD_F);
       setResult(r);
@@ -39,6 +40,20 @@ export function HeatCheckPanel({ boxes, showToast }) {
       // too — a re-check that found nothing hot must clear stale flags.
       const byBox = {};
       for (const h of r.hot) for (const id of h.boxIds || []) byBox[id] = h.maxTemp;
+      // A recipient that merely FAILED to check (rate-limited zip, failed
+      // forecast chunk) must not lose a still-fresh flag from the previous
+      // scan — the wholesale replace would silently unflag a hot box.
+      try {
+        const failedIds = new Set(r.failed.flatMap(f => f.boxIds || []));
+        if (failedIds.size) {
+          const prev = await api.getBoxNotesWithMeta();
+          if (prev.heat && heatFlagsFresh(prev.heat.checkedAt)) {
+            for (const [id, t] of Object.entries(prev.heat.byBox || {})) {
+              if (failedIds.has(id) && byBox[id] == null) byBox[id] = t;
+            }
+          }
+        }
+      } catch { /* carry-over is best-effort */ }
       try {
         await api.setHeatFlags(byBox);
         setFlagged(true);
