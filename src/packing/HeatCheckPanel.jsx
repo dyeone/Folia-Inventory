@@ -13,7 +13,7 @@ function dayLabel(ymd) {
   return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, { weekday: 'short' });
 }
 
-// Shipping-tab heat check: scan every Ready recipient's 3-day forecast and
+// Shipping-tab heat check: scan every Ready recipient's 5-day forecast and
 // list the ones peaking at or above 90°F, names/usernames copyable so the
 // desk can message them about delaying or accepting the heat risk. Weather
 // comes from key-less client-side APIs (see heatCheck.js); nothing here
@@ -50,8 +50,8 @@ export function HeatCheckPanel({ boxes, showToast }) {
         <span className="text-sm font-semibold text-gray-800">Heat check</span>
         <span className="text-xs text-gray-500">
           {phase === 'done' && result
-            ? `${result.hot.length} of ${result.checked} recipients peak ≥ ${THRESHOLD_F}°F in the next 3 days${result.failed.length ? ` · ${result.failed.length} unchecked` : ''} · ${checkedAt?.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
-            : `forecast the next 3 days for every Ready recipient (${boxes.length} ${boxes.length === 1 ? 'box' : 'boxes'})`}
+            ? `${result.hot.length} of ${result.checked} recipients peak ≥ ${THRESHOLD_F}°F in the next 5 days${result.failed.length ? ` · ${result.failed.length} unchecked` : ''} · ${checkedAt?.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+            : `forecast the next 5 days for every Ready recipient (${boxes.length} ${boxes.length === 1 ? 'box' : 'boxes'})`}
         </span>
         <button
           type="button"
@@ -70,7 +70,7 @@ export function HeatCheckPanel({ boxes, showToast }) {
       {phase === 'done' && result && (
         result.hot.length === 0 ? (
           <div className="mt-2 text-sm text-emerald-700 font-medium">
-            No recipients above {THRESHOLD_F}°F in the next 3 days — clear to ship. 🌤
+            No recipients above {THRESHOLD_F}°F in the next 5 days — clear to ship. 🌤
           </div>
         ) : (
           <div className="mt-2.5">
@@ -93,14 +93,14 @@ export function HeatCheckPanel({ boxes, showToast }) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
               {result.hot.map(h => (
                 <div
-                  key={`${h.buyer}|${h.zip}`}
+                  key={`${h.buyerUsername || h.buyer}|${h.zip}`}
                   className="bg-white rounded-lg border border-orange-200 px-2.5 py-2 flex items-center gap-2 text-sm"
                 >
                   <span
                     className={`shrink-0 min-w-[3.2rem] text-center font-extrabold tabular-nums px-1.5 py-0.5 rounded-md text-white ${
                       h.maxTemp >= 100 ? 'bg-red-700' : h.maxTemp >= 95 ? 'bg-red-500' : 'bg-orange-500'
                     }`}
-                    title={`3-day peak${h.peakDay ? ` on ${h.peakDay}` : ''}`}
+                    title={`5-day peak${h.peakDay ? ` on ${h.peakDay}` : ''}`}
                   >
                     {h.maxTemp}°F
                   </span>

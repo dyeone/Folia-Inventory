@@ -449,10 +449,15 @@ export function PackingView({
     [inventoryItems, sales, boxNotesByBox]
   );
   // Heat-check scope: every Ready box that actually ships — local pickups
-  // are collected in person, so transit heat doesn't apply.
+  // are collected in person, so transit heat doesn't apply. Grouped boxes
+  // carry no `note` (it merges in at render time), so the pickup flag must
+  // be read from boxNotesByBox; and `code` isn't attached either, so derive
+  // it here for the panel's box chips.
   const heatCheckBoxes = useMemo(
-    () => groups.flatMap(g => g.boxes).filter(b => !boxIsLocalPickup(b.note, b.items)),
-    [groups],
+    () => groups.flatMap(g => g.boxes)
+      .filter(b => !boxIsLocalPickup(boxNotesByBox?.[b.id]?.note, b.items))
+      .map(b => ({ ...b, code: shortBoxCode(b.id) })),
+    [groups, boxNotesByBox],
   );
 
   // Lineup numbers carried by 2+ unpacked items across the open boxes (last
