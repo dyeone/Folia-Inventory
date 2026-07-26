@@ -126,6 +126,11 @@ export function PackerView({ onLogout }) {
   // this week can't be mixed into this week's boxes. Found-marks persist per
   // device.
   const [sweepOpen, setSweepOpen] = useState(false);
+  // Step-2 wrap station: one flat lot-ordered list of every plant shipping
+  // this week — scan to locate + start a wrap, print, scan the fresh label,
+  // burrito done. Mutually exclusive with the sweep pane (both replace the
+  // landing grid); opening one closes the other.
+  const [stationOpen, setStationOpen] = useState(false);
   const [sweepMarks, setSweepMarks] = useState(loadSweepMarks);
   // Write-through on change, and adopt OTHER tabs' writes (storage events
   // never fire in the writing tab) — a second Safari tab must not clobber
@@ -396,17 +401,25 @@ export function PackerView({ onLogout }) {
   // work left, in the landing grid's own work-first order.
   const shipPlan = useMemo(() => {
     let total = 0, packed = 0, boxesLeft = 0, nextId = null;
+    const rows = [];
+    const boxIds = new Set();
     for (const box of openBoxes) {
       const hs = boxHoldState(box.items, holdByBox[box.id]);
       if (hs.state === 'holding' || boxIsLocalPickup(noteByBox[box.id], box.items)) continue;
       const sold = box.items.filter(i => i.status === 'sold');
       if (!sold.length) continue;
+      boxIds.add(box.id);
       const p = sold.filter(i => i.packedAt).length;
       total += sold.length;
       packed += p;
       if (p < sold.length) { boxesLeft += 1; if (!nextId) nextId = box.id; }
+      for (const it of sold) if (!it.packedAt) rows.push({ item: it, box });
     }
-    return { total, packed, boxesLeft, nextId };
+    // The wrap station's locate list: every unwrapped plant of the week in
+    // lot-number order (benches are walked by lineup number); un-numbered
+    // rows sink to the bottom.
+    rows.sort((a, b) => (parseInt(a.item.lotNumber, 10) || 999999) - (parseInt(b.item.lotNumber, 10) || 999999));
+    return { total, packed, boxesLeft, nextId, rows, boxIds };
   }, [openBoxes, holdByBox, noteByBox]);
 
   const toastTimerRef = useRef(null);
@@ -423,14 +436,20 @@ export function PackerView({ onLogout }) {
     : null;
 
   // The wrap is honored only while its plant is still an unpacked sold item
-  // of the ACTIVE box — derived, not synchronized, so switching boxes or a
-  // desk-side pack neutralizes it without an effect. Returning to the box
-  // with the plant still unpacked resumes the wrap.
+  // of the CURRENT scope — the active box, or (at the wrap station) any box
+  // shipping this week. Derived, not synchronized, so switching context or
+  // a desk-side pack neutralizes it without an effect; returning to the
+  // scope with the plant still unpacked resumes the wrap.
   const activeWrap = useMemo(() => {
-    if (!wrap || !activeBox) return null;
-    const it = activeBox.items.find(i => i.id === wrap.itemId);
+    if (!wrap) return null;
+    let it = null;
+    if (activeBox) {
+      it = activeBox.items.find(i => i.id === wrap.itemId);
+    } else if (stationOpen) {
+      it = shipPlan.rows.find(r => r.item.id === wrap.itemId)?.item || null;
+    }
     return it && it.status === 'sold' && !it.packedAt ? wrap : null;
-  }, [wrap, activeBox]);
+  }, [wrap, activeBox, stationOpen, shipPlan]);
 
   // Start wrapping: remember the plant and fire its label print. The nonce
   // ties the async print result to THIS wrap — a cancel + rescan of the same
@@ -791,6 +810,78 @@ export function PackerView({ onLogout }) {
     }
   };
 
+  // Wrap-station scan (Step 2's flat list). Scan #1 of a plant locates it
+  // and starts its wrap (label prints); scan #2 — the fresh label — finishes
+  // the burrito. Same two-scan machinery as the box flow, cross-box scope.
+  // Guards live here so the camera path gets them too.
+  const handleScanStation = async (rawText) => {
+    const raw = String(rawText || '').trim();
+    const sku = normalizeSku(raw);
+    // Mid-wrap, EVERY scan is the verification scan — checked before the
+    // B-tag/tracking branches, or a stray box-tag scan would silently
+    // suspend the wrap and the next plant scan would clobber it (printing a
+    // duplicate label). One exception passes through: the wrapped plant's
+    // OWN box tag, because the wrap survives into that box's pane.
+    if (activeWrap) {
+      const wrapRow = shipPlan.rows.find(r => r.item.id === activeWrap.itemId);
+      if (/^B[-_]/i.test(raw) && wrapRow && boxesByCode[normalizeBoxCode(raw)]?.id === wrapRow.box.id) {
+        goToBox(wrapRow.box.id);
+        return;
+      }
+      if (sku && sku === activeWrap.sku && wrapRow) {
+        const saved = activeWrap;
+        setWrap(null);
+        const ok = await packById(wrapRow.item.id, `${sku} — 🌯 done`);
+        if (!ok) setWrap(saved);
+        return;
+      }
+      if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+      const lot = wrapRow?.item.lotNumber ? `#${wrapRow.item.lotNumber} · ` : '';
+      showToast(`⚠ Wrong label — you're wrapping ${lot}${activeWrap.sku}, but this scan reads ${raw.slice(0, 24)}. Fix the label, or Cancel on the wrap card.`, 6000);
+      return;
+    }
+    if (/^B[-_]/i.test(raw)) {
+      // Box-tag muscle memory: open that box — the station is just another
+      // way through the same work.
+      const code = normalizeBoxCode(raw);
+      const match = boxesByCode[code];
+      if (!match) { showToast(`No open box with code ${code}`, 3500); return; }
+      goToBox(match.id);
+      return;
+    }
+    if (looksLikeTracking(raw)) {
+      showToast('That’s a shipping label — open its box to ship. Scan plant barcodes here.', 3500);
+      return;
+    }
+    if (!sku) return;
+    const row = shipPlan.rows.find(r => normalizeSku(r.item.sku) === sku);
+    if (row) {
+      if (wrapFlow) { await startWrap(row.item, sku); return; }
+      await packById(row.item.id, sku);
+      return;
+    }
+    // Not in this week's unwrapped work — say where it actually is.
+    const holder = Object.values(boxesByCode).find(b => b.items.some(i => normalizeSku(i.sku) === sku));
+    if (holder) {
+      const it = holder.items.find(i => normalizeSku(i.sku) === sku);
+      if (it?.packedAt) { showToast(`${sku} is already wrapped & packed ✓`, 2500); return; }
+      if (!shipPlan.boxIds.has(holder.id)) {
+        // A wrap legitimately started inside a held/pickup box suspends at
+        // the station (its item isn't in rows) — point at where it finishes
+        // instead of contradicting the wrap card the packer just followed.
+        if (wrap && wrap.itemId === it?.id && sku === wrap.sku) {
+          showToast(`That wrap belongs to box ${holder.code} (held/pickup) — scan its box tag or open it to finish there`, 5000);
+          return;
+        }
+        showToast(`${sku} isn't shipping this week (box ${holder.code}) — it belongs on the hold/pickup shelf, not in a burrito`, 4500);
+        return;
+      }
+      showToast(`SKU ${sku} is already ${it?.status || 'gone'}`, 3000);
+      return;
+    }
+    showToast(`SKU ${sku} isn't in any open box`, 3500);
+  };
+
   // Sweep scan: a FIND-scan, not a pack-scan — it only ticks a held or
   // pickup plant off the checklist. A plant that isn't in the sweep is the
   // packer's cue to leave it on the bench for this week's packing. Guards
@@ -877,6 +968,8 @@ export function PackerView({ onLogout }) {
         else handleScanItem(v);
       } else if (sweepOpen) {
         handleScanSweep(v);
+      } else if (stationOpen) {
+        handleScanStation(v);
       } else {
         handleScanBox(v);
       }
@@ -1053,8 +1146,9 @@ export function PackerView({ onLogout }) {
         onSubmit={submitScan}
         placeholder={activeBox
           ? (trackingByBox[activeBox.id] ? 'Scan a plant or the shipping label…' : 'Scan a plant barcode…')
-          : sweepOpen ? 'Scan a plant for the sweep…' : 'Scan a box or plant…'}
-        onCamera={() => setCameraMode(activeBox ? 'item' : sweepOpen ? 'sweep' : 'box')}
+          : sweepOpen ? 'Scan a plant for the sweep…'
+          : stationOpen ? 'Scan a plant to wrap…' : 'Scan a box or plant…'}
+        onCamera={() => setCameraMode(activeBox ? 'item' : sweepOpen ? 'sweep' : stationOpen ? 'station' : 'box')}
       />
 
       {activeBox
@@ -1092,6 +1186,24 @@ export function PackerView({ onLogout }) {
             onCamera={() => setCameraMode('sweep')}
             onClose={() => setSweepOpen(false)}
           />
+        : stationOpen
+        ? <WrapStationPane
+            rows={shipPlan.rows}
+            packed={shipPlan.packed}
+            total={shipPlan.total}
+            wrap={activeWrap}
+            wrapItem={activeWrap ? (shipPlan.rows.find(r => r.item.id === activeWrap.itemId)?.item || null) : null}
+            dupeLots={dupeLots}
+            printing={printing}
+            onWrapReprint={() => {
+              const it = shipPlan.rows.find(r => r.item.id === activeWrap?.itemId)?.item;
+              if (it) startWrap(it, activeWrap.sku);
+            }}
+            onWrapCancel={() => setWrap(null)}
+            onPrintPlantLabel={handlePrintPlantLabel}
+            onCamera={() => setCameraMode('station')}
+            onClose={() => setStationOpen(false)}
+          />
         : <>
             {/* Held + pickup plants come off the bench FIRST — stock that
                 isn't shipping this week mixed into this week's packing is
@@ -1100,7 +1212,7 @@ export function PackerView({ onLogout }) {
               <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
                 <button
                   type="button"
-                  onClick={() => setSweepOpen(true)}
+                  onClick={() => { setStationOpen(false); setSweepOpen(true); }}
                   className={`max-w-5xl mx-auto w-full text-left rounded-2xl border-2 px-4 py-3 flex items-center gap-3 transition active:scale-[0.99] ${
                     sweepFound === sweepTotal
                       ? 'border-emerald-300 bg-emerald-50'
@@ -1130,8 +1242,7 @@ export function PackerView({ onLogout }) {
               <div className="flex-shrink-0 px-3 sm:px-5 pt-2">
                 <button
                   type="button"
-                  onClick={() => { if (shipPlan.nextId) goToBox(shipPlan.nextId); }}
-                  disabled={!shipPlan.nextId}
+                  onClick={() => { setSweepOpen(false); setStationOpen(true); }}
                   className={`max-w-5xl mx-auto w-full text-left rounded-2xl border-2 px-4 py-3 flex items-center gap-3 transition active:scale-[0.99] ${
                     shipPlan.packed === shipPlan.total
                       ? 'border-emerald-300 bg-emerald-50'
@@ -1148,7 +1259,7 @@ export function PackerView({ onLogout }) {
                         : 'Step 2 — wrap this week’s plants into burritos'}
                     </span>
                     <span className={`block text-sm ${shipPlan.packed === shipPlan.total ? 'text-emerald-700' : 'text-blue-800'}`}>
-                      {shipPlan.packed}/{shipPlan.total} packed{shipPlan.boxesLeft > 0 ? ` · ${shipPlan.boxesLeft} ${shipPlan.boxesLeft === 1 ? 'box' : 'boxes'} to go — tap to continue` : ''}
+                      {shipPlan.packed}/{shipPlan.total} packed{shipPlan.boxesLeft > 0 ? ` · ${shipPlan.boxesLeft} ${shipPlan.boxesLeft === 1 ? 'box' : 'boxes'} to go — tap for the wrap station` : ''}
                     </span>
                   </span>
                 </button>
@@ -1166,11 +1277,12 @@ export function PackerView({ onLogout }) {
           </>
       }
 
-      {cameraMode && (cameraMode === 'box' || cameraMode === 'sweep' || activeBox) && (
+      {cameraMode && (cameraMode === 'box' || cameraMode === 'sweep' || cameraMode === 'station' || activeBox) && (
         <CameraScanner
           onScan={
             cameraMode === 'box' ? handleScanBox
               : cameraMode === 'sweep' ? handleScanSweep
+              : cameraMode === 'station' ? handleScanStation
               : cameraMode === 'label' ? handleScanLabel
                 : handleScanItem
           }
@@ -1334,6 +1446,183 @@ function ScanField({ inputRef, value, onChange, onSubmit, placeholder, onCamera 
 // Landing — a responsive grid of every open box. Tap a card to open it (or
 // just scan). Cards show packing progress + the chosen box size so the
 // packer can see what's left at a glance across the iPad.
+// The active-wrap banner, shared by the box pane and the wrap station: which
+// plant the printed label belongs to, print status, Reprint + Cancel.
+function WrapCard({ wrap, wrapItem, printing, onReprint, onCancel }) {
+  return (
+    <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
+      <div className="max-w-5xl mx-auto rounded-xl border-2 border-amber-400 bg-amber-50 px-3.5 py-3 flex items-center gap-3">
+        <span className="text-2xl shrink-0" aria-hidden>🌯</span>
+        {wrapItem?.lotNumber && (
+          <span className="shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-xl font-extrabold text-center tabular-nums bg-amber-500 text-white">
+            {wrapItem.lotNumber}
+          </span>
+        )}
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-bold text-amber-900 truncate">
+            Wrapping {wrap.sku}{wrapItem?.name ? ` · ${wrapItem.name}` : ''}
+          </div>
+          <div className="text-xs text-amber-800">
+            {wrap.print === 'sending' ? 'Printing the label…'
+              : wrap.print === 'failed' ? 'Label didn’t print — tap Reprint.'
+                : 'Stick the fresh label on the burrito, then scan it to finish.'}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onReprint}
+          disabled={wrap.print === 'sending' || !!printing}
+          className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg bg-white border-2 border-amber-400 text-amber-800 active:bg-amber-100 disabled:opacity-50 flex items-center gap-1"
+        >
+          <Printer className="w-4 h-4" /> Reprint
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg text-amber-800 active:bg-amber-100"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Step-2 wrap station: every unwrapped plant of the week in one lot-ordered
+// list. Scan a plant to locate it (row highlights + scrolls into view) and
+// start its wrap; scan the fresh label to finish. Rows carry the box code so
+// the finished burrito goes straight to its box.
+function WrapStationPane({ rows, packed, total, wrap, wrapItem, dupeLots, printing, onWrapReprint, onWrapCancel, onPrintPlantLabel, onCamera, onClose }) {
+  const allDone = total > 0 && packed === total;
+  // Locate: bring the just-scanned plant's row into view.
+  const wrapRowRef = useRef(null);
+  const wrapItemId = wrap?.itemId || null;
+  useEffect(() => {
+    if (wrapItemId) wrapRowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }, [wrapItemId]);
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-shrink-0 px-4 sm:px-5 py-3 border-b border-blue-200 bg-blue-50">
+        <div className="max-w-5xl mx-auto">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xl shrink-0" aria-hidden>🌯</span>
+            <h2 className="flex-1 text-base font-bold text-blue-900">Wrap station — this week's plants</h2>
+            <div className="text-base">
+              <span className="font-bold text-gray-900">{packed}/{total}</span>
+              <span className="text-gray-500 ml-1">done</span>
+            </div>
+          </div>
+          <div
+            className="mt-2 w-full bg-blue-200 rounded-full h-2.5 overflow-hidden"
+            role="progressbar" aria-valuenow={packed} aria-valuemin={0} aria-valuemax={total}
+          >
+            <div className="h-full bg-blue-500 transition-all" style={{ width: total ? `${(packed / total) * 100}%` : 0 }} />
+          </div>
+          <p className="text-xs text-blue-800 mt-1.5">
+            Scan a plant to start its burrito — the label prints, wrap it, stick the label on, scan it again to finish. The box code on each row says where the burrito goes.
+          </p>
+        </div>
+      </div>
+
+      {wrap && (
+        <WrapCard wrap={wrap} wrapItem={wrapItem} printing={printing} onReprint={onWrapReprint} onCancel={onWrapCancel} />
+      )}
+
+      {allDone && (
+        <div className="flex-shrink-0 bg-emerald-500 text-white px-4 py-2.5 flex items-center justify-center gap-2 text-center">
+          <Check className="w-5 h-5 shrink-0" />
+          <span className="text-base font-bold">All of this week's plants are wrapped — ship the boxes</span>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
+        <div className="max-w-5xl mx-auto">
+          {rows.length === 0 && !allDone && (
+            <div className="text-center text-sm text-gray-500 py-12">
+              <PackageCheck className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+              Nothing to wrap right now.
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {rows.map(({ item, box }) => {
+              const wrapping = wrap?.itemId === item.id;
+              const noBarcode = !item.sku || /^(UNMATCHED|DBL)-/i.test(item.sku);
+              const isDupe = !!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10));
+              return (
+                <div
+                  key={item.id}
+                  ref={wrapping ? wrapRowRef : null}
+                  className={`px-3 py-2.5 rounded-xl border-2 flex items-center gap-2.5 bg-white ${
+                    wrapping ? 'border-amber-400 ring-2 ring-amber-300' : 'border-blue-200'
+                  }`}
+                >
+                  {item.lotNumber && (
+                    <span
+                      className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums bg-blue-600 text-white ${
+                        isDupe ? 'ring-2 ring-red-500' : ''
+                      }`}
+                      title="Lineup number — find the plant labelled with this #"
+                    >
+                      {item.lotNumber}
+                    </span>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono font-semibold text-gray-800">
+                      {noBarcode ? '(no barcode — use the print button)' : item.sku}
+                    </div>
+                    {(item.name || item.variety) && (
+                      <div className="text-xs break-words text-gray-500">
+                        {[(item.name || '').trim(), (item.variety || '').trim()].filter(Boolean).join(' · ')}
+                      </div>
+                    )}
+                  </div>
+                  <span className="shrink-0 text-[11px] font-mono font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
+                    {box.code}
+                  </span>
+                  {item.quantity > 1 && (
+                    <span className="text-sm font-bold shrink-0 text-blue-800">×{item.quantity}</span>
+                  )}
+                  {onPrintPlantLabel && !wrapping && (
+                    <button
+                      type="button"
+                      onClick={() => onPrintPlantLabel(item)}
+                      className="shrink-0 w-10 h-10 rounded-lg border-2 border-blue-300 text-blue-700 bg-white flex items-center justify-center active:bg-blue-50"
+                      title="Print this plant's burrito label"
+                      aria-label={`Print label for ${(item.name || item.sku || 'item').trim()}`}
+                    >
+                      <Printer className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="h-6 pb-safe" />
+        </div>
+      </div>
+
+      <div className="flex-shrink-0 border-t border-gray-200 bg-white p-3 pb-safe">
+        <div className="max-w-5xl mx-auto flex gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-gray-100 text-gray-800 rounded-xl active:bg-gray-200"
+          >
+            <ArrowLeft className="w-5 h-5" /> Boxes
+          </button>
+          <button
+            type="button"
+            onClick={onCamera}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-blue-600 text-white rounded-xl active:bg-blue-800"
+          >
+            <Camera className="w-5 h-5" /> Scan a plant
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // One sweep checklist row, shared by the lot-ordered and by-box views. The
 // box code chip renders only in the flat view, where rows from many boxes
 // interleave.
@@ -1736,41 +2025,7 @@ function BoxPane({ box, assignedTracking, dupeLots, wrap, onWrapCancel, onWrapRe
       {/* Active burrito wrap — pinned above the item grid so the packer
           always sees which plant the printed label belongs to. */}
       {wrap && (
-        <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
-          <div className="max-w-5xl mx-auto rounded-xl border-2 border-amber-400 bg-amber-50 px-3.5 py-3 flex items-center gap-3">
-            <span className="text-2xl shrink-0" aria-hidden>🌯</span>
-            {wrapItem?.lotNumber && (
-              <span className="shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-xl font-extrabold text-center tabular-nums bg-amber-500 text-white">
-                {wrapItem.lotNumber}
-              </span>
-            )}
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-bold text-amber-900 truncate">
-                Wrapping {wrap.sku}{wrapItem?.name ? ` · ${wrapItem.name}` : ''}
-              </div>
-              <div className="text-xs text-amber-800">
-                {wrap.print === 'sending' ? 'Printing the label…'
-                  : wrap.print === 'failed' ? 'Label didn’t print — tap Reprint.'
-                    : 'Stick the fresh label on the burrito, then scan it to finish.'}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={onWrapReprint}
-              disabled={wrap.print === 'sending' || !!printing}
-              className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg bg-white border-2 border-amber-400 text-amber-800 active:bg-amber-100 disabled:opacity-50 flex items-center gap-1"
-            >
-              <Printer className="w-4 h-4" /> Reprint
-            </button>
-            <button
-              type="button"
-              onClick={onWrapCancel}
-              className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg text-amber-800 active:bg-amber-100"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
+        <WrapCard wrap={wrap} wrapItem={wrapItem} printing={printing} onReprint={onWrapReprint} onCancel={onWrapCancel} />
       )}
 
       {/* Body */}
