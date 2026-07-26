@@ -11,6 +11,7 @@ import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { BulkBuyLabelsModal } from './BulkBuyLabelsModal.jsx';
 import { CombineBoxesModal } from './CombineBoxesModal.jsx';
+import { HeatCheckPanel } from './HeatCheckPanel.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { PrintListButton } from './PrintListButton.jsx';
 import { BoxNotePanel } from './BoxNotePanel.jsx';
@@ -446,6 +447,17 @@ export function PackingView({
   const shipped = useMemo(
     () => groupBoxesByBuyer(inventoryItems, sales, SHIPPED_PREDICATE, boxNotesByBox),
     [inventoryItems, sales, boxNotesByBox]
+  );
+  // Heat-check scope: every Ready box that actually ships — local pickups
+  // are collected in person, so transit heat doesn't apply. Grouped boxes
+  // carry no `note` (it merges in at render time), so the pickup flag must
+  // be read from boxNotesByBox; and `code` isn't attached either, so derive
+  // it here for the panel's box chips.
+  const heatCheckBoxes = useMemo(
+    () => groups.flatMap(g => g.boxes)
+      .filter(b => !boxIsLocalPickup(boxNotesByBox?.[b.id]?.note, b.items))
+      .map(b => ({ ...b, code: shortBoxCode(b.id) })),
+    [groups, boxNotesByBox],
   );
 
   // Lineup numbers carried by 2+ unpacked items across the open boxes (last
@@ -1009,6 +1021,12 @@ export function PackingView({
           <Clock className="w-3.5 h-3.5" /> Reset packer sweep
         </button>
       </div>
+
+      {/* Heat check — flag recipients whose 3-day forecast peaks ≥ 90°F so
+          the desk can contact them before their plants cook in transit. */}
+      {subTab === 'ready' && (
+        <HeatCheckPanel boxes={heatCheckBoxes} showToast={showToast} />
+      )}
 
       {/* Filters — sort + carrier + contents in one quiet row. Active
           chips share the single emerald accent (instead of per-option
