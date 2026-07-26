@@ -53,6 +53,7 @@ export default wrap(async (req, res) => {
       if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId, brandId);
       if (action === 'set-box-hold') return setBoxHold(req, res, userId, brandId);
       if (action === 'reset-hold-sweep') return resetHoldSweep(req, res, userId, brandId);
+      if (action === 'set-heat-flags') return setHeatFlags(req, res, userId, brandId);
       if (action === 'send-to-phone') return sendToPhone(req, res, userId);
       if (action === 'loyalty-code') return loyaltyCode(req, res, userId, brandId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
@@ -563,14 +564,46 @@ async function boxNotes(req, res, brandId) {
     updatedAt: r.updatedAt,
     updatedBy: r.updatedBy,
   }]));
-  // The packers' sweep-reset stamp rides this response — box-notes is what
-  // the packer app already polls every 8s, so a desk reset reaches every
-  // device without a new endpoint or extra polling. Non-fatal on error:
-  // notes must load even if the stamp can't.
-  const { data: resetRow, error: resetErr } = await supabase
-    .from('app_settings').select('data').eq('id', `sweep-reset:${brandId}`).maybeSingle();
-  const sweepResetAt = !resetErr && resetRow?.data?.resetAt ? resetRow.data.resetAt : null;
-  return res.status(200).json({ boxNotes: map, sweepResetAt });
+  // The packers' cross-device stashes ride this response — box-notes is
+  // what the packer app already polls every 8s, so desk actions (sweep
+  // reset, heat flags) reach every device without new endpoints or extra
+  // polling. One query for both rows; non-fatal on error: notes must load
+  // even if the stashes can't.
+  const { data: stashRows, error: stashErr } = await supabase
+    .from('app_settings').select('id, data')
+    .in('id', [`sweep-reset:${brandId}`, `heat-check:${brandId}`]);
+  const stash = stashErr ? {} : Object.fromEntries((stashRows || []).map(r => [r.id, r.data]));
+  const sweepResetAt = stash[`sweep-reset:${brandId}`]?.resetAt ?? null;
+  const heat = stash[`heat-check:${brandId}`] ?? null; // { checkedAt, byBox }
+  return res.status(200).json({ boxNotes: map, sweepResetAt, heat });
+}
+
+// POST /api/shipments  body: { action:'set-heat-flags', byBox: {boxId: maxTempF} }
+// Stash of the desk's latest heat-check verdict, so packer devices can badge
+// hot-destination boxes ("extra insulation") via the box-notes poll. Each
+// scan REPLACES the whole map — a re-check that finds fewer hot boxes clears
+// the rest — and the packer ignores stashes older than the client TTL
+// (src/packing/heatCheck.js HEAT_FLAG_TTL_MS), so stale flags age out even
+// if no one re-checks.
+async function setHeatFlags(req, res, userId, brandId) {
+  const raw = req.body?.byBox;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    const e = new Error('byBox (object of boxId → maxTempF) required'); e.status = 400; throw e;
+  }
+  const byBox = {};
+  for (const [id, t] of Object.entries(raw).slice(0, 500)) {
+    const temp = Math.round(Number(t));
+    // shipmentBoxIds are verbose recipient+address composites (~90-150
+    // chars is NORMAL — see parsePalmstreetOrders) — the cap only guards
+    // against garbage, it must never trim real ids.
+    if (typeof id === 'string' && id.length <= 300 && Number.isFinite(temp)) byBox[id] = temp;
+  }
+  const checkedAt = new Date().toISOString();
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ id: `heat-check:${brandId}`, data: { checkedAt, byBox }, updatedAt: checkedAt, updatedBy: userId });
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return res.status(200).json({ checkedAt, count: Object.keys(byBox).length });
 }
 
 // POST /api/shipments  body: { action:'reset-hold-sweep' }

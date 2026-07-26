@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag,
+  Printer, Tag, Thermometer,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
@@ -11,6 +11,7 @@ import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup, isHoldItem } from './holdInfo.js';
 import { loadSweepMarks, saveSweepMarks, SWEEP_KEY } from './holdSweep.js';
+import { heatFlagsFresh } from './heatCheck.js';
 import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
@@ -131,6 +132,11 @@ export function PackerView({ onLogout }) {
   // burrito done. Mutually exclusive with the sweep pane (both replace the
   // landing grid); opening one closes the other.
   const [stationOpen, setStationOpen] = useState(false);
+  // Desk heat-check verdict ({ checkedAt, byBox: {boxId: maxTempF} }) — hot
+  // destinations need EXTRA INSULATION. Rides the box-notes poll; ignored
+  // once stale (heatFlagsFresh) so a cold snap doesn't inherit last week's
+  // flags.
+  const [heatFlags, setHeatFlags] = useState(null);
   const [sweepMarks, setSweepMarks] = useState(loadSweepMarks);
   // Write-through on change, and adopt OTHER tabs' writes (storage events
   // never fire in the writing tab) — a second Safari tab must not clobber
@@ -220,6 +226,7 @@ export function PackerView({ onLogout }) {
       ]);
       const notes = notesMeta.boxNotes;
       applySweepReset(notesMeta.sweepResetAt, new Set((loaded || []).map(i => i.id)));
+      setHeatFlags(notesMeta.heat ?? null);
       setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
       setBoxSizeByBox(
         Object.fromEntries(
@@ -284,6 +291,7 @@ export function PackerView({ onLogout }) {
         if (cancelled) return;
         const notes = notesMeta.boxNotes;
         applySweepReset(notesMeta.sweepResetAt, new Set((fresh || []).map(i => i.id)));
+        setHeatFlags(notesMeta.heat ?? null);
         setItems(prev => mergeItems(prev, (fresh || []).filter(i => !i.deletedAt)));
         setTrackingByBox(
           Object.fromEntries(
@@ -434,6 +442,10 @@ export function PackerView({ onLogout }) {
   const activeBox = activeBoxId
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
+
+  // Fresh heat flags only — stale verdicts (desk hasn't re-checked within
+  // the TTL) badge nothing.
+  const heatByBox = heatFlags && heatFlagsFresh(heatFlags.checkedAt) ? (heatFlags.byBox || {}) : {};
 
   // The wrap is honored only while its plant is still an unpacked sold item
   // of the CURRENT scope — the active box, or (at the wrap station) any box
@@ -1131,6 +1143,16 @@ export function PackerView({ onLogout }) {
           </span>
         </div>
       )}
+      {/* Hot destination (desk heat check): the packer must add insulation
+          before sealing — loud red, same register as the hold banner. */}
+      {activeBox && heatByBox[activeBox.id] != null && (
+        <div className="flex-shrink-0 bg-red-600 text-white px-4 py-3 flex items-center justify-center gap-2 text-center">
+          <Thermometer className="w-6 h-6 flex-shrink-0" />
+          <span className="text-lg font-extrabold tracking-wide">
+            EXTRA INSULATION — destination peaks {heatByBox[activeBox.id]}°F
+          </span>
+        </div>
+      )}
       {activeBox && activeHoldReady && (
         <div className="flex-shrink-0 bg-emerald-500 text-white px-4 py-2.5 flex items-center justify-center gap-2 text-center">
           <Check className="w-5 h-5 flex-shrink-0" />
@@ -1272,6 +1294,7 @@ export function PackerView({ onLogout }) {
               trackingByBox={trackingByBox}
               holdByBox={holdByBox}
               noteByBox={noteByBox}
+              heatByBox={heatByBox}
               onOpen={goToBox}
             />
           </>
@@ -1861,7 +1884,7 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
   );
 }
 
-function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, noteByBox, onOpen }) {
+function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, noteByBox, heatByBox, onOpen }) {
   if (boxes.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center px-6 text-center pb-safe">
@@ -1882,6 +1905,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
             hasLabel={!!trackingByBox?.[box.id]}
             holdState={boxHoldState(box.items, holdByBox?.[box.id])}
             isPickup={boxIsLocalPickup(noteByBox?.[box.id], box.items)}
+            heatTemp={heatByBox?.[box.id]}
             onOpen={() => onOpen(box.id)}
           />
         ))}
@@ -1891,7 +1915,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
   );
 }
 
-function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, onOpen }) {
+function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, heatTemp, onOpen }) {
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
@@ -1949,6 +1973,11 @@ function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, onOpen }) {
         {isPickup && (
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-violet-900 bg-violet-200 ring-1 ring-violet-400 px-1.5 py-0.5 rounded" title="Local pickup — do not ship">
             <Package className="w-3 h-3" /> Pickup
+          </span>
+        )}
+        {heatTemp != null && (
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-red-600 px-1.5 py-0.5 rounded" title={`Destination peaks ${heatTemp}°F — add extra insulation`}>
+            <Thermometer className="w-3 h-3" /> {heatTemp}°F · insulate
           </span>
         )}
         {sizeName && (
