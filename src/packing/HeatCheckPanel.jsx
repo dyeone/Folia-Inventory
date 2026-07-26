@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Thermometer, Loader2, Copy, RotateCcw } from 'lucide-react';
+import { api } from '../api.js';
 import { scanRecipientHeat } from './heatCheck.js';
 import { copyText } from './labelPdf.js';
 
@@ -23,6 +24,8 @@ export function HeatCheckPanel({ boxes, showToast }) {
   const [result, setResult] = useState(null);
   const [checkedAt, setCheckedAt] = useState(null);
 
+  const [flagged, setFlagged] = useState(null); // packer flags published? true | false | null
+
   const run = async () => {
     if (phase === 'running') return;
     setPhase('running');
@@ -31,6 +34,18 @@ export function HeatCheckPanel({ boxes, showToast }) {
       setResult(r);
       setCheckedAt(new Date());
       setPhase('done');
+      // Publish the verdict for the packer devices (they badge hot boxes
+      // "extra insulation" via the box-notes poll). An EMPTY map publishes
+      // too — a re-check that found nothing hot must clear stale flags.
+      const byBox = {};
+      for (const h of r.hot) for (const id of h.boxIds || []) byBox[id] = h.maxTemp;
+      try {
+        await api.setHeatFlags(byBox);
+        setFlagged(true);
+      } catch {
+        setFlagged(false);
+        showToast?.('Checked, but couldn’t send the flags to the packers — re-check to retry');
+      }
     } catch (e) {
       showToast?.(`Heat check failed: ${e.message || 'network error'}`);
       setPhase(result ? 'done' : 'idle');
@@ -50,7 +65,7 @@ export function HeatCheckPanel({ boxes, showToast }) {
         <span className="text-sm font-semibold text-gray-800">Heat check</span>
         <span className="text-xs text-gray-500">
           {phase === 'done' && result
-            ? `${result.hot.length} of ${result.checked} recipients peak ≥ ${THRESHOLD_F}°F in the next 5 days${result.failed.length ? ` · ${result.failed.length} unchecked` : ''} · ${checkedAt?.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
+            ? `${result.hot.length} of ${result.checked} recipients peak ≥ ${THRESHOLD_F}°F in the next 5 days${result.failed.length ? ` · ${result.failed.length} unchecked` : ''}${flagged === true ? ' · packer flags sent ✓' : flagged === false ? ' · packer flags NOT sent' : ''} · ${checkedAt?.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`
             : `forecast the next 5 days for every Ready recipient (${boxes.length} ${boxes.length === 1 ? 'box' : 'boxes'})`}
         </span>
         <button

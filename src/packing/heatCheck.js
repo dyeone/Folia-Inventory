@@ -5,6 +5,16 @@
 // highs) — so the Vercel 12-function cap is untouched and no secrets are
 // needed.
 
+// Heat flags stashed for the packer (app_settings heat-check:<brandId>) are
+// honored this long after the desk's scan — forecasts drift, and a flag
+// from last week must not demand insulation in a cold snap. Matches the
+// transit window the 5-day forecast covers.
+export const HEAT_FLAG_TTL_MS = 4 * 24 * 60 * 60 * 1000;
+export function heatFlagsFresh(checkedAt) {
+  const t = new Date(checkedAt || 0).getTime();
+  return Number.isFinite(t) && t > 0 && Date.now() - t < HEAT_FLAG_TTL_MS;
+}
+
 // zip5 → {lat, lon, place} | null (null = zip is unresolvable, cached so a
 // bad zip isn't re-fetched every run; transient network errors are NOT
 // cached).
@@ -95,10 +105,11 @@ export async function scanRecipientHeat(boxes, thresholdF = 90) {
     const key = zip ? `${who}|${zip}` : who;
     let r = bucket.get(key);
     if (!r) {
-      r = { buyer: box.buyer || '(no name)', buyerUsername: box.buyerUsername || '', zip, boxCodes: [] };
+      r = { buyer: box.buyer || '(no name)', buyerUsername: box.buyerUsername || '', zip, boxCodes: [], boxIds: [] };
       bucket.set(key, r);
     }
     r.boxCodes.push(box.code);
+    r.boxIds.push(box.id);
   }
   const recips = [...byRecipient.values()];
   const failed = [...noZip.values()];

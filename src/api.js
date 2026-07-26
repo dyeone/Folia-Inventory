@@ -299,7 +299,15 @@ export const api = {
   // Packer-poll variant: the box-notes map PLUS the desk's sweep-reset stamp
   // (rides the same response, so the 8s poll costs nothing extra).
   getBoxNotesWithMeta: () =>
-    request('/shipments?action=box-notes').then(r => ({ boxNotes: r.boxNotes || {}, sweepResetAt: r.sweepResetAt ?? null })),
+    request('/shipments?action=box-notes').then(r => ({
+      boxNotes: r.boxNotes || {},
+      sweepResetAt: r.sweepResetAt ?? null,
+      heat: r.heat ?? null, // { checkedAt, byBox: {boxId: maxTempF} }
+    })),
+  // Desk-side: stash the heat-check verdict so packer devices badge hot
+  // boxes ("extra insulation"). Replaces the previous stash wholesale.
+  setHeatFlags: (byBox) =>
+    request('/shipments', { method: 'POST', body: { action: 'set-heat-flags', byBox } }).then(r => r),
   // Desk-side: stamp a sweep reset — every packer device drops found-marks
   // older than the stamp on its next poll and starts the checklist over.
   resetHoldSweep: () =>
