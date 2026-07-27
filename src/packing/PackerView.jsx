@@ -588,9 +588,17 @@ export function PackerView({ onLogout }) {
   // plant mints a new wrap, and the old print's late result must not stamp
   // it. Takes the shared print mutex: on the iPad path two concurrent jobs
   // purge each other's in-page print root.
-  const startWrap = async (candidate, sku) => {
+  const startWrap = async (candidate, sku, autoPrint = true) => {
     const nonce = `${Date.now()}-${Math.random()}`;
     if (navigator.vibrate) navigator.vibrate(30);
+    // In-box scans start the wrap WITHOUT printing — plants there usually
+    // still wear a good label, and an unwanted print per scan wastes stock.
+    // The wrap card's "Print label" (and the station flow, which IS the
+    // label line) print on demand.
+    if (!autoPrint) {
+      setWrap({ itemId: candidate.id, sku, nonce, print: 'none' });
+      return;
+    }
     // The mutex protects the iPad's in-page print root; bridge jobs queue
     // server-side and don't need it — holding it across the bridge poll
     // (up to 35s on a wedged bridge) would dead-disable the next wrap's
@@ -902,7 +910,7 @@ export function PackerView({ onLogout }) {
     }
     if (candidate.status !== 'sold') { showToast(`SKU ${sku} is already ${candidate.status}`, 3500); return; }
     if (candidate.packedAt) { showToast(`SKU ${sku} already packed`, 2500); return; }
-    if (wrapFlow) { await startWrap(candidate, sku); return; }
+    if (wrapFlow) { await startWrap(candidate, sku, false); return; }
     await packById(candidate.id, sku);
   };
 
@@ -1648,9 +1656,10 @@ function WrapCard({ wrap, wrapItem, printing, onReprint, onCancel }) {
             Wrapping {wrap.sku}{wrapItem?.name ? ` · ${wrapItem.name}` : ''}
           </div>
           <div className="text-xs text-amber-800">
-            {wrap.print === 'sending' ? 'Printing the label…'
-              : wrap.print === 'failed' ? 'Label didn’t print — tap Reprint.'
-                : 'Stick the fresh label on the burrito, then scan it to finish.'}
+            {wrap.print === 'none' ? 'Wrap it — tap Print label if it needs a fresh one — then scan the label to finish.'
+              : wrap.print === 'sending' ? 'Printing the label…'
+                : wrap.print === 'failed' ? 'Label didn’t print — tap Print label again.'
+                  : 'Stick the fresh label on the burrito, then scan it to finish.'}
           </div>
         </div>
         <button
@@ -1659,7 +1668,7 @@ function WrapCard({ wrap, wrapItem, printing, onReprint, onCancel }) {
           disabled={wrap.print === 'sending' || !!printing}
           className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg bg-white border-2 border-amber-400 text-amber-800 active:bg-amber-100 disabled:opacity-50 flex items-center gap-1"
         >
-          <Printer className="w-4 h-4" /> Reprint
+          <Printer className="w-4 h-4" /> {wrap.print === 'sent' || wrap.print === 'sending' ? 'Reprint' : 'Print label'}
         </button>
         <button
           type="button"
