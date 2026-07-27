@@ -88,6 +88,16 @@ export function PackerView({ onLogout }) {
   const [err, setErr] = useState('');
   const [activeBoxId, setActiveBoxId] = useState(null);
   const [toast, setToast] = useState(null);
+  // Defined early: helpers declared above the mount/poll effects (the heat
+  // announce) toast through this.
+  const toastTimerRef = useRef(null);
+  const showToast = (msg, durationMs = 2200) => {
+    // Clear the previous timer so a short-lived toast (e.g. "Packed X",
+    // 1.5s) can't cut off a long instructional one shown right after.
+    clearTimeout(toastTimerRef.current);
+    setToast(msg);
+    toastTimerRef.current = setTimeout(() => setToast(null), durationMs);
+  };
   const [cameraMode, setCameraMode] = useState(null); // 'box' | 'item' | null
   // Box-size catalog (from Shipping Settings) + the per-box selection map
   // (shipmentBoxId → boxSizeId), shared with the Shipping tab via
@@ -147,6 +157,25 @@ export function PackerView({ onLogout }) {
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, []);
+  // One-shot attention-getter when boxes become heat-flagged while the app
+  // is open (or on first load with flags active): vibrate + toast. The
+  // landing HEAT ALERT banner is the persistent signal; this makes sure it
+  // gets seen. Event-driven from the mount/poll handlers (no effect), and
+  // per-session (the ref) so the same box never re-alerts every poll.
+  const seenHeatRef = useRef(new Set());
+  const announceHeatFlags = (heat, items) => {
+    if (!heat || !heatFlagsFresh(heat.checkedAt)) return;
+    const openIds = new Set((items || [])
+      .filter(i => i.status === 'sold' && i.shipmentBoxId && !i.deletedAt)
+      .map(i => i.shipmentBoxId));
+    const flagged = Object.keys(heat.byBox || {}).filter(id => openIds.has(id));
+    const fresh = flagged.filter(id => !seenHeatRef.current.has(id));
+    if (!fresh.length) return;
+    flagged.forEach(id => seenHeatRef.current.add(id));
+    if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 200]);
+    showToast(`🌡 HEAT — ${flagged.length} ${flagged.length === 1 ? 'box needs' : 'boxes need'} extra insulation. See the red list on the Boxes screen.`, 5000);
+  };
+
   // Desk-side sweep reset (Shipping tab): drop found-marks older than the
   // server stamp so every packer device starts the checklist over; marks
   // made after it (the new pass) survive. The stamp is brand-scoped but the
@@ -227,6 +256,7 @@ export function PackerView({ onLogout }) {
       const notes = notesMeta.boxNotes;
       applySweepReset(notesMeta.sweepResetAt, new Set((loaded || []).map(i => i.id)));
       setHeatFlags(notesMeta.heat ?? null);
+      announceHeatFlags(notesMeta.heat, loaded);
       setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
       setBoxSizeByBox(
         Object.fromEntries(
@@ -264,6 +294,9 @@ export function PackerView({ onLogout }) {
       );
       setLoading(false);
     })();
+    // applySweepReset/announceHeatFlags are per-render event-style helpers;
+    // this load is deliberately mount-once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Background sync with the shipping desk. The mount load above is one-shot;
@@ -292,6 +325,7 @@ export function PackerView({ onLogout }) {
         const notes = notesMeta.boxNotes;
         applySweepReset(notesMeta.sweepResetAt, new Set((fresh || []).map(i => i.id)));
         setHeatFlags(notesMeta.heat ?? null);
+        announceHeatFlags(notesMeta.heat, fresh);
         setItems(prev => mergeItems(prev, (fresh || []).filter(i => !i.deletedAt)));
         setTrackingByBox(
           Object.fromEntries(
@@ -330,6 +364,8 @@ export function PackerView({ onLogout }) {
       clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
     };
+    // Same: the 8s poll is created once; its helpers are event-style.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Open boxes, keyed by short code for scan lookup. A box is "open" while it
@@ -430,15 +466,6 @@ export function PackerView({ onLogout }) {
     return { total, packed, boxesLeft, nextId, rows, boxIds };
   }, [openBoxes, holdByBox, noteByBox]);
 
-  const toastTimerRef = useRef(null);
-  const showToast = (msg, durationMs = 2200) => {
-    // Clear the previous timer so a short-lived toast (e.g. "Packed X",
-    // 1.5s) can't cut off a long instructional one shown right after.
-    clearTimeout(toastTimerRef.current);
-    setToast(msg);
-    toastTimerRef.current = setTimeout(() => setToast(null), durationMs);
-  };
-
   const activeBox = activeBoxId
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
@@ -446,6 +473,12 @@ export function PackerView({ onLogout }) {
   // Fresh heat flags only — stale verdicts (desk hasn't re-checked within
   // the TTL) badge nothing.
   const heatByBox = heatFlags && heatFlagsFresh(heatFlags.checkedAt) ? (heatFlags.byBox || {}) : {};
+  // Flagged boxes still open on this device, hottest first — feeds the
+  // landing HEAT ALERT banner. Plain derivation (heatByBox has unstable
+  // identity when empty, so a memo would churn anyway; the compute is tiny).
+  const heatAlertBoxes = openBoxes
+    .filter(b => heatByBox[b.id] != null)
+    .sort((a, b) => heatByBox[b.id] - heatByBox[a.id]);
 
   // The wrap is honored only while its plant is still an unpacked sold item
   // of the CURRENT scope — the active box, or (at the wrap station) any box
@@ -1211,6 +1244,7 @@ export function PackerView({ onLogout }) {
         : stationOpen
         ? <WrapStationPane
             rows={shipPlan.rows}
+            heatByBox={heatByBox}
             packed={shipPlan.packed}
             total={shipPlan.total}
             wrap={activeWrap}
@@ -1227,6 +1261,34 @@ export function PackerView({ onLogout }) {
             onClose={() => setStationOpen(false)}
           />
         : <>
+            {/* HEAT ALERT — every flagged box in one glance, before any
+                packing starts, so the insulation material comes out first.
+                Tap a box chip to jump straight in. */}
+            {heatAlertBoxes.length > 0 && (
+              <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
+                <div className="max-w-5xl mx-auto rounded-2xl border-2 border-red-400 bg-red-50 px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <Thermometer className="w-6 h-6 text-red-600 shrink-0" />
+                    <span className="text-base font-extrabold text-red-800">
+                      HEAT ALERT — {heatAlertBoxes.length} {heatAlertBoxes.length === 1 ? 'box needs' : 'boxes need'} EXTRA INSULATION
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {heatAlertBoxes.map(b => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => goToBox(b.id)}
+                        className="inline-flex items-center gap-1 text-xs font-bold font-mono bg-red-600 text-white px-2 py-1 rounded-lg active:bg-red-800"
+                        title={`${b.buyer || b.code} — destination peaks ${heatByBox[b.id]}°F, add extra insulation`}
+                      >
+                        {b.code} · {heatByBox[b.id]}°F
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
             {/* Held + pickup plants come off the bench FIRST — stock that
                 isn't shipping this week mixed into this week's packing is
                 how wrong plants ship. */}
@@ -1515,7 +1577,7 @@ function WrapCard({ wrap, wrapItem, printing, onReprint, onCancel }) {
 // list. Scan a plant to locate it (row highlights + scrolls into view) and
 // start its wrap; scan the fresh label to finish. Rows carry the box code so
 // the finished burrito goes straight to its box.
-function WrapStationPane({ rows, packed, total, wrap, wrapItem, dupeLots, printing, onWrapReprint, onWrapCancel, onPrintPlantLabel, onCamera, onClose }) {
+function WrapStationPane({ rows, heatByBox, packed, total, wrap, wrapItem, dupeLots, printing, onWrapReprint, onWrapCancel, onPrintPlantLabel, onCamera, onClose }) {
   const allDone = total > 0 && packed === total;
   // Locate: bring the just-scanned plant's row into view.
   const wrapRowRef = useRef(null);
@@ -1602,6 +1664,14 @@ function WrapStationPane({ rows, packed, total, wrap, wrapItem, dupeLots, printi
                   <span className="shrink-0 text-[11px] font-mono font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
                     {box.code}
                   </span>
+                  {heatByBox?.[box.id] != null && (
+                    <span
+                      className="shrink-0 text-[11px] font-bold px-1.5 py-0.5 rounded bg-red-600 text-white"
+                      title={`Destination peaks ${heatByBox[box.id]}°F — add extra insulation`}
+                    >
+                      🌡 {heatByBox[box.id]}°F
+                    </span>
+                  )}
                   {item.quantity > 1 && (
                     <span className="text-sm font-bold shrink-0 text-blue-800">×{item.quantity}</span>
                   )}
