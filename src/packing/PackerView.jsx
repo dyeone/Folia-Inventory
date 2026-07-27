@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag, Thermometer,
+  Printer, Tag, Thermometer, StickyNote,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
@@ -1271,6 +1271,7 @@ export function PackerView({ onLogout }) {
         ? <BoxPane
             box={activeBox}
             assignedTracking={trackingByBox[activeBox.id] || null}
+            note={noteByBox[activeBox.id] || ''}
             dupeLots={dupeLots}
             onMarkPacked={handleMarkPacked}
             onPrintPlantLabel={handlePrintPlantLabel}
@@ -2030,6 +2031,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
             hasLabel={!!trackingByBox?.[box.id]}
             holdState={boxHoldState(box.items, holdByBox?.[box.id])}
             isPickup={boxIsLocalPickup(noteByBox?.[box.id], box.items)}
+            note={noteByBox?.[box.id] || ''}
             heatTemp={heatByBox?.[box.id]}
             onOpen={() => onOpen(box.id)}
           />
@@ -2040,7 +2042,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
   );
 }
 
-function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, heatTemp, onOpen }) {
+function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, note, heatTemp, onOpen }) {
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
@@ -2083,6 +2085,12 @@ function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, heatTemp, onOpe
         </div>
         <span className="text-xs font-medium text-gray-600 tabular-nums">{packed}/{total}</span>
       </div>
+      {note && (
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-yellow-900 bg-yellow-50 border border-yellow-200 rounded-md px-1.5 py-1" title={note}>
+          <StickyNote className="w-3.5 h-3.5 shrink-0 text-yellow-700" />
+          <span className="truncate">{note}</span>
+        </div>
+      )}
       <div className="mt-2 flex items-center gap-2 flex-wrap">
         <BoxContentBadges box={box} />
         {onHold && (
@@ -2146,7 +2154,7 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
+function BoxPane({ box, assignedTracking, note, dupeLots, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -2175,6 +2183,18 @@ function BoxPane({ box, assignedTracking, dupeLots, onMarkPacked, onPrintPlantLa
         </div>
       </div>
 
+
+      {/* The desk's box note — packing instructions ("extra insulation and
+          ice pack") were fetched for the pickup flag but never SHOWN; the
+          packer must read them where the packing happens. */}
+      {note && (
+        <div className="flex-shrink-0 px-4 sm:px-5 py-2.5 bg-yellow-50 border-b border-yellow-200">
+          <div className="max-w-5xl mx-auto flex items-start gap-2">
+            <StickyNote className="w-5 h-5 text-yellow-700 shrink-0 mt-0.5" />
+            <span className="text-base font-semibold text-yellow-900 whitespace-pre-wrap break-words min-w-0">{note}</span>
+          </div>
+        </div>
+      )}
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
