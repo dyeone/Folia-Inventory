@@ -11,7 +11,7 @@ import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup, isHoldItem } from './holdInfo.js';
 import { loadSweepMarks, saveSweepMarks, SWEEP_KEY } from './holdSweep.js';
-import { heatFlagsFresh } from './heatCheck.js';
+import { heatFlagsFresh, scanRecipientHeat } from './heatCheck.js';
 import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
@@ -82,6 +82,29 @@ function buyerLabel(box) {
   return name || (handle ? `@${handle}` : '');
 }
 
+// Minimal box shapes for the packer's own heat scan, straight from an items
+// snapshot: open sold boxes minus local pickups (no transit, no heat risk).
+function heatScanBoxes(items, boxNotes) {
+  const map = new Map();
+  for (const it of items || []) {
+    if (it.deletedAt || it.status !== 'sold' || !it.shipmentBoxId) continue;
+    let b = map.get(it.shipmentBoxId);
+    if (!b) {
+      b = {
+        id: it.shipmentBoxId,
+        code: shortBoxCode(it.shipmentBoxId),
+        buyer: it.buyer || '',
+        buyerUsername: it.buyerUsername || '',
+        buyerAddress: it.buyerAddress || {},
+        items: [],
+      };
+      map.set(it.shipmentBoxId, b);
+    }
+    b.items.push(it);
+  }
+  return [...map.values()].filter(b => !boxIsLocalPickup(boxNotes?.[b.id]?.note, b.items));
+}
+
 export function PackerView({ onLogout }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -147,6 +170,12 @@ export function PackerView({ onLogout }) {
   // once stale (heatFlagsFresh) so a cold snap doesn't inherit last week's
   // flags.
   const [heatFlags, setHeatFlags] = useState(null);
+  // The device's OWN heat scan — self-sufficient alerts. The desk's Heat
+  // check publishes a verdict too, but an alert this important must not
+  // depend on someone remembering a desk button: the packer checks its own
+  // boxes' destination forecasts (same key-less client-side APIs) on load
+  // and every 3 hours, and the two sources merge (higher temp wins).
+  const [localHeat, setLocalHeat] = useState(null);
   const [sweepMarks, setSweepMarks] = useState(loadSweepMarks);
   // Write-through on change, and adopt OTHER tabs' writes (storage events
   // never fire in the writing tab) — a second Safari tab must not clobber
@@ -174,6 +203,33 @@ export function PackerView({ onLogout }) {
     flagged.forEach(id => seenHeatRef.current.add(id));
     if (navigator.vibrate) navigator.vibrate([100, 50, 100, 50, 200]);
     showToast(`🌡 HEAT — ${flagged.length} ${flagged.length === 1 ? 'box needs' : 'boxes need'} extra insulation. See the red list on the Boxes screen.`, 5000);
+  };
+
+  const HEAT_RESCAN_MS = 3 * 60 * 60 * 1000;
+  const heatScanBusyRef = useRef(false);
+  const lastHeatScanRef = useRef(0);
+  // Event-driven from the mount/poll handlers (like the announce): runs at
+  // most every 3h; a failed scan retries in 10 minutes instead of hammering
+  // the weather APIs every 8s poll while offline.
+  const maybeLocalHeatScan = async (items, boxNotes) => {
+    if (heatScanBusyRef.current) return;
+    if (Date.now() - lastHeatScanRef.current < HEAT_RESCAN_MS) return;
+    const boxes = heatScanBoxes(items, boxNotes);
+    if (!boxes.length) { lastHeatScanRef.current = Date.now(); return; }
+    heatScanBusyRef.current = true;
+    try {
+      const r = await scanRecipientHeat(boxes);
+      const byBox = {};
+      for (const h of r.hot) for (const id of h.boxIds || []) byBox[id] = h.maxTemp;
+      const heat = { checkedAt: new Date().toISOString(), byBox };
+      lastHeatScanRef.current = Date.now();
+      setLocalHeat(heat);
+      announceHeatFlags(heat, items);
+    } catch {
+      lastHeatScanRef.current = Date.now() - HEAT_RESCAN_MS + 10 * 60 * 1000;
+    } finally {
+      heatScanBusyRef.current = false;
+    }
   };
 
   // Desk-side sweep reset (Shipping tab): drop found-marks older than the
@@ -257,6 +313,7 @@ export function PackerView({ onLogout }) {
       applySweepReset(notesMeta.sweepResetAt, new Set((loaded || []).map(i => i.id)));
       setHeatFlags(notesMeta.heat ?? null);
       announceHeatFlags(notesMeta.heat, loaded);
+      maybeLocalHeatScan(loaded, notesMeta.boxNotes);
       setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
       setBoxSizeByBox(
         Object.fromEntries(
@@ -326,6 +383,7 @@ export function PackerView({ onLogout }) {
         applySweepReset(notesMeta.sweepResetAt, new Set((fresh || []).map(i => i.id)));
         setHeatFlags(notesMeta.heat ?? null);
         announceHeatFlags(notesMeta.heat, fresh);
+        maybeLocalHeatScan(fresh, notesMeta.boxNotes);
         setItems(prev => mergeItems(prev, (fresh || []).filter(i => !i.deletedAt)));
         setTrackingByBox(
           Object.fromEntries(
@@ -470,9 +528,16 @@ export function PackerView({ onLogout }) {
     ? Object.values(boxesByCode).find(b => b.id === activeBoxId)
     : null;
 
-  // Fresh heat flags only — stale verdicts (desk hasn't re-checked within
-  // the TTL) badge nothing.
-  const heatByBox = heatFlags && heatFlagsFresh(heatFlags.checkedAt) ? (heatFlags.byBox || {}) : {};
+  // Effective heat flags: the device's own scan UNION the desk's published
+  // verdict — either alone suffices, the higher temp wins on overlap, and
+  // stale sources (past the TTL) contribute nothing.
+  const heatByBox = {};
+  for (const src of [heatFlags, localHeat]) {
+    if (!src || !heatFlagsFresh(src.checkedAt)) continue;
+    for (const [id, t] of Object.entries(src.byBox || {})) {
+      if (heatByBox[id] == null || t > heatByBox[id]) heatByBox[id] = t;
+    }
+  }
   // Flagged boxes still open on this device, hottest first — feeds the
   // landing HEAT ALERT banner. Plain derivation (heatByBox has unstable
   // identity when empty, so a memo would churn anyway; the compute is tiny).
