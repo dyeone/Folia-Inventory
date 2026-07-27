@@ -215,16 +215,38 @@ export function PackerView({ onLogout }) {
     if (heatScanBusyRef.current) return;
     if (Date.now() - lastHeatScanRef.current < HEAT_RESCAN_MS) return;
     const boxes = heatScanBoxes(items, boxNotes);
-    if (!boxes.length) { lastHeatScanRef.current = Date.now(); return; }
+    // No boxes can mean a failed items fetch or a quiet morning — don't
+    // stamp the gate; the next 8s tick retries for free (heatScanBoxes is
+    // one cheap pass, dwarfed by the poll's own work).
+    if (!boxes.length) return;
     heatScanBusyRef.current = true;
     try {
       const r = await scanRecipientHeat(boxes);
+      // scanRecipientHeat never rejects — offline shows up as every
+      // recipient "failed". That's a failed SCAN, not a cool forecast:
+      // route it to the backoff instead of wiping fresh flags with an
+      // empty verdict.
+      if (r.checked === 0 && r.total > 0) throw new Error('heat scan: nothing checked');
       const byBox = {};
       for (const h of r.hot) for (const id of h.boxIds || []) byBox[id] = h.maxTemp;
-      const heat = { checkedAt: new Date().toISOString(), byBox };
+      // A recipient that merely FAILED to check keeps its still-fresh flag
+      // (same guard the desk publish has). Functional update: this closure
+      // is captured by the mount-time poll, so reading localHeat directly
+      // would be a permanently-stale read.
+      const failedIds = new Set(r.failed.flatMap(f => f.boxIds || []));
       lastHeatScanRef.current = Date.now();
-      setLocalHeat(heat);
-      announceHeatFlags(heat, items);
+      setLocalHeat(prev => {
+        const merged = { ...byBox };
+        if (prev && heatFlagsFresh(prev.checkedAt)) {
+          for (const [id, t] of Object.entries(prev.byBox || {})) {
+            if (failedIds.has(id) && merged[id] == null) merged[id] = t;
+          }
+        }
+        return { checkedAt: new Date().toISOString(), byBox: merged };
+      });
+      // Announce the fresh verdict only — carried-over flags were announced
+      // when first seen (seenHeatRef dedupes regardless).
+      announceHeatFlags({ checkedAt: new Date().toISOString(), byBox }, items);
     } catch {
       lastHeatScanRef.current = Date.now() - HEAT_RESCAN_MS + 10 * 60 * 1000;
     } finally {
