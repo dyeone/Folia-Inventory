@@ -117,7 +117,7 @@ export function PrinterSettingsSheet({ dests, onDestChange, wrapFlow, onWrapFlow
                 {wrapFlow ? 'On — two-scan verified pack' : 'Off — single-scan pack'}
               </span>
               <span className="block text-sm text-gray-500 leading-snug">
-                Scan a plant → its label prints → wrap it → stick the fresh label on → scan it again to pack. Catches wrong labels before they ship.
+                At the wrap station: scan a plant → its label prints → wrap → scan the fresh label to pack. Off = station scans pack in one step. Box scans always pack in one step.
               </span>
             </span>
             <span className={`shrink-0 w-12 h-7 rounded-full p-0.5 transition ${wrapFlow ? 'bg-amber-500' : 'bg-gray-300'}`}>
