@@ -1177,13 +1177,26 @@ export function PackerView({ onLogout }) {
         </div>
       )}
       {/* Hot destination (desk heat check): the packer must add insulation
-          before sealing — loud red, same register as the hold banner. */}
+          before sealing — a BIG block, a register louder than the hold
+          banner, because this one gets read from across the packing table
+          with the box already in hand. */}
       {activeBox && heatByBox[activeBox.id] != null && (
-        <div className="flex-shrink-0 bg-red-600 text-white px-4 py-3 flex items-center justify-center gap-2 text-center">
-          <Thermometer className="w-6 h-6 flex-shrink-0" />
-          <span className="text-lg font-extrabold tracking-wide">
-            EXTRA INSULATION — destination peaks {heatByBox[activeBox.id]}°F
-          </span>
+        <div className="flex-shrink-0 bg-red-600 text-white px-4 py-4">
+          <div className="max-w-5xl mx-auto flex items-center justify-center gap-4">
+            <Thermometer className="w-10 h-10 sm:w-14 sm:h-14 flex-shrink-0 animate-pulse" />
+            <div>
+              <div className="text-3xl sm:text-5xl font-black tracking-wide leading-none">
+                EXTRA INSULATION
+              </div>
+              <div className="mt-1.5 text-lg sm:text-2xl font-bold text-red-100 leading-tight">
+                Destination peaks{' '}
+                <span className="text-white text-2xl sm:text-4xl font-black tabular-nums align-baseline">
+                  {heatByBox[activeBox.id]}°F
+                </span>
+                {' '}— do not seal without it
+              </div>
+            </div>
+          </div>
         </div>
       )}
       {activeBox && activeHoldReady && (
