@@ -274,7 +274,7 @@ const PALMSTREET_HANDLE_RE = /^https:\/\/(?:www\.)?palmstreet\.app\/u\/([A-Za-z0
 // (Fluid Compute reuses instances) while staying fresh enough for the
 // audience board's 3s refresh.
 const palmstreetCache = new Map(); // brandId -> { at, payload }
-const PALMSTREET_CACHE_MS = 3_000;
+const PALMSTREET_CACHE_MS = 1_000;
 
 async function loadPalmstreetConfig(brandId) {
   const { data, error } = await supabase

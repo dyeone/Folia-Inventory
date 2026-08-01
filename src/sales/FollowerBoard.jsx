@@ -12,10 +12,10 @@ import { takeBaseline } from './FollowerTicker.jsx';
 // stored per brand on the display device. Shows a progress bar + "to go"
 // until the goal is passed, then flips to a celebration state.
 //
-// Poll cadence matches the server-side cache (3s) so the audience sees new
-// follows almost as they land.
+// Tight cadence: 2s poll against a 1s server cache ≈ 2-3s worst-case lag
+// behind Palmstreet's own number — the floor is their backend, not us.
 
-const POLL_MS = 3_000;
+const POLL_MS = 2_000;
 
 function goalKey(brandId) {
   return `psFollowerGoal:${brandId || 'folia'}`;
