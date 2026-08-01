@@ -55,6 +55,33 @@ SB_KEY="$(grep '^SUPABASE_SERVICE_ROLE_KEY=' "$ENV_FILE" | head -1 | cut -d= -f2
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 API_BASE="${FOLIA_API_URL:-https://folia-inventory.vercel.app}"
 
+# ── 0.5 bake the built-in bridge config into the bundle ───────────────
+# bridge/builtin.env ships inside the app (extraResources), so a fresh Mac
+# runs with zero manual setup — no FOLIA_API_URL / BRIDGE_TOKEN entry. The
+# machine's own config (userData/bridge.env) still overrides it.
+# NOTE: the DMG is a public GitHub release asset, so the token inside is
+# extractable by anyone who finds it. To revoke: rotate the token
+# (POST /api/bridge?action=generate-token) and republish.
+echo "▸ Baking bridge/builtin.env (API URL + bridge token)"
+BUILTIN_TOKEN="$(curl -sS -m 20 \
+  "$SB_URL/rest/v1/users?select=username,bridgeToken&bridgeToken=not.is.null&order=username.asc" \
+  -H "Authorization: Bearer $SB_KEY" -H "apikey: $SB_KEY" | python3 -c '
+import json, sys
+rows = [r for r in json.load(sys.stdin) if r.get("bridgeToken")]
+if not rows:
+    sys.exit("no user has a bridgeToken set — mint one first (generate-token)")
+if len(rows) > 1:
+    names = ", ".join(r["username"] for r in rows)
+    sys.stderr.write("  warning: multiple users hold bridge tokens (" + names + ") — baking " + rows[0]["username"] + "\n")
+print(rows[0]["bridgeToken"])
+')"
+[ -n "$BUILTIN_TOKEN" ] || { echo "✗ could not fetch a bridge token from Supabase"; exit 1; }
+# The baked file holds a live secret — keep it out of the working tree once
+# the build is done (it is gitignored as well, belt and braces).
+trap 'rm -f "$SCRIPT_DIR/bridge/builtin.env"' EXIT
+printf 'FOLIA_API_URL=%s\nBRIDGE_TOKEN=%s\n' "$API_BASE" "$BUILTIN_TOKEN" > "$SCRIPT_DIR/bridge/builtin.env"
+echo "  baked: FOLIA_API_URL=$API_BASE, BRIDGE_TOKEN=${BUILTIN_TOKEN:0:6}…"
+
 # ── 1. build ──────────────────────────────────────────────────────────
 echo "▸ Building DMG (npm run dist)… this takes a few minutes"
 BUILD_LOG="$(mktemp)"

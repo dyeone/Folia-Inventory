@@ -303,9 +303,21 @@ class BridgeRunner extends EventEmitter {
   envPath() { return this.configPath; }
 
   readEnv() {
+    // Baked-in defaults first, machine config second — so a stock install
+    // works with zero setup, and any value the operator enters in the config
+    // panel (their own token, a staging URL) wins over the baked ones.
+    // builtin.env is written into the bundle by publish-release.sh at build
+    // time; a dev build simply doesn't have one.
+    return {
+      ...this._parseEnvFile(path.join(this.bridgeDir, 'builtin.env')),
+      ...this._parseEnvFile(this.envPath()),
+    };
+  }
+
+  _parseEnvFile(file) {
     const out = {};
     try {
-      const txt = fs.readFileSync(this.envPath(), 'utf-8');
+      const txt = fs.readFileSync(file, 'utf-8');
       for (const raw of txt.split('\n')) {
         const line = raw.trim();
         if (!line || line.startsWith('#')) continue;

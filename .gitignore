@@ -32,6 +32,7 @@ plant-inventory/
 # leaks. Rotate via /api/bridge?action=generate-token if exposed.
 # (The bridge now lives inside the Mac app — see mac-app/bridge/.)
 mac-app/bridge/.env
+mac-app/bridge/builtin.env
 mac-app/bridge/.bridge-device
 
 # Android build artifacts (per-machine SDK path + Gradle outputs)
