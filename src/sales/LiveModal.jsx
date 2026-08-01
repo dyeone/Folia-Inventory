@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Radio, Search, ScanLine, Gift, RotateCcw,
-  Smartphone, Layers,
+  Smartphone, Layers, Play,
 } from 'lucide-react';
 import { useLiveBridge } from './liveBridge.js';
 import { STORAGE_KEY, loadState, formatElapsed } from './liveState.js';
