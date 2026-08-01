@@ -148,8 +148,8 @@ export function FollowerBoard({ brandId, brands = [], onSwitchBrand, onClose }) 
           <button
             onClick={editGoal}
             title="Tap to set a follow goal"
-            className="bg-transparent border-0 cursor-pointer leading-none font-bold tabular-nums text-white"
-            style={{ fontSize: '24vmin', animation: bump ? 'fb-pop 0.9s ease' : 'none' }}
+            className="bg-transparent border-0 cursor-pointer leading-none font-bold tabular-nums text-red-500"
+            style={{ fontSize: '32vmin', animation: bump ? 'fb-pop 0.9s ease' : 'none' }}
           >
             {followers == null ? '—' : followers.toLocaleString()}
           </button>
