@@ -203,6 +203,15 @@ export const api = {
   bumpLineupNext: (next, week) =>
     request('/settings', { method: 'POST', body: { action: 'lineup-bump', next, ...(week != null ? { week } : {}) } }).then(r => r.next),
 
+  // Palmstreet follower monitor — the brand's store link (admin sets it once)
+  // and the live follower count, scraped server-side from the public store
+  // profile page (the browser can't fetch palmstreet.app — no CORS).
+  getPalmstreetConfig: () => request('/settings?action=palmstreet-get').then(r => r.config),
+  savePalmstreetConfig: (url) =>
+    request('/settings', { method: 'POST', body: { action: 'palmstreet-save', url } }).then(r => r.config),
+  // → { configured, followers?, at? }
+  getPalmstreetFollowers: () => request('/settings?action=palmstreet-followers'),
+
   // Personal GTD tasks — private per user. Stored as a JSON blob in
   // app_settings keyed `tasks:<userId>` and served by /settings (Hobby's
   // 12-function cap rules out a dedicated /tasks route). The server sanitizes

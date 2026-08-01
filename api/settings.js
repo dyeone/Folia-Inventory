@@ -64,6 +64,12 @@ export default wrap(async (req, res) => {
   if (typeof action === 'string' && action.startsWith('lineup-')) {
     return handleLineup(action, req, res, user, brandId);
   }
+  // Palmstreet follower monitor — live follower count for the brand's store,
+  // scraped server-side from the public profile page (the browser can't:
+  // palmstreet.app sends no CORS headers). Config is one brand-scoped row.
+  if (typeof action === 'string' && action.startsWith('palmstreet-')) {
+    return handlePalmstreet(action, req, res, user, brandId);
+  }
 
   const id = req.method === 'GET' ? req.query?.id : req.body?.id;
   if (!id) {
@@ -244,6 +250,98 @@ async function handleLineup(action, req, res, user, brandId) {
     }
     default:
       return methodNotAllowed(res, ['GET', 'POST']);
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Palmstreet follower monitor — the brand's store profile on the public web
+// (palmstreet.app/user/<id>) server-renders `follower_count` in its HTML, so
+// one GET + one regex gives the live number. Fetched here (not in the browser)
+// because palmstreet.app sends no CORS headers. The store link is one
+// brand-scoped app_settings row (id `palmstreet:<brandId>`). Same
+// no-new-function rationale as the groups above.
+// ----------------------------------------------------------------------------
+
+const PALMSTREET_NS = 'palmstreet:';
+// Store links look like https://palmstreet.app/user/<firebase-uid>. Extracting
+// the uid and rebuilding the URL ourselves means an admin can paste any share
+// link shape while the server only ever fetches palmstreet.app (no SSRF).
+const PALMSTREET_USER_RE = /^https:\/\/(?:www\.)?palmstreet\.app\/user\/([A-Za-z0-9_-]{6,64})\/?(?:[?#].*)?$/;
+// The count moves slowly; a short per-instance cache keeps several stations
+// polling at once from hammering Palmstreet (Fluid Compute reuses instances).
+const palmstreetCache = new Map(); // brandId -> { at, payload }
+const PALMSTREET_CACHE_MS = 20_000;
+
+async function loadPalmstreetConfig(brandId) {
+  const { data, error } = await supabase
+    .from('app_settings').select('data').eq('id', PALMSTREET_NS + brandId).maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return data?.data || null;
+}
+
+async function handlePalmstreet(action, req, res, user, brandId) {
+  switch (action) {
+    case 'palmstreet-get': {
+      // Any active user may read the configured store link.
+      return res.status(200).json({ config: await loadPalmstreetConfig(brandId) });
+    }
+    case 'palmstreet-save': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const url = str(req.body?.url, 200);
+      const m = PALMSTREET_USER_RE.exec(url);
+      if (!m) {
+        const e = new Error('Paste your store link — it looks like https://palmstreet.app/user/…');
+        e.status = 400; throw e;
+      }
+      const config = { url: `https://palmstreet.app/user/${m[1]}`, userId: m[1] };
+      const { error } = await supabase.from('app_settings').upsert({
+        id: PALMSTREET_NS + brandId, brandId, data: config,
+        updatedAt: new Date().toISOString(), updatedBy: user.id,
+      });
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      palmstreetCache.delete(brandId);
+      return res.status(200).json({ config });
+    }
+    case 'palmstreet-followers': {
+      const cached = palmstreetCache.get(brandId);
+      if (cached && Date.now() - cached.at < PALMSTREET_CACHE_MS) {
+        return res.status(200).json(cached.payload);
+      }
+      const config = await loadPalmstreetConfig(brandId);
+      if (!config?.userId) return res.status(200).json({ configured: false });
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      let html;
+      try {
+        const resp = await fetch(`https://palmstreet.app/user/${config.userId}`, {
+          signal: ctrl.signal,
+          headers: { accept: 'text/html' },
+        });
+        if (!resp.ok) { const e = new Error(`Palmstreet answered ${resp.status}`); e.status = 502; throw e; }
+        html = await resp.text();
+      } catch (err) {
+        if (err.status) throw err;
+        const e = new Error(err.name === 'AbortError' ? 'Palmstreet timed out' : 'Could not reach Palmstreet');
+        e.status = 502; throw e;
+      } finally {
+        clearTimeout(timer);
+      }
+      // The SSR payload carries `\"follower_count\":263` (escaped inside a
+      // script string). The loose separator class tolerates both escaped and
+      // plain JSON so a Next.js re-render on their side doesn't break us.
+      const match = /follower_count[\\":\s]*?(\d+)/.exec(html);
+      if (!match) {
+        const e = new Error('Palmstreet page format changed — follower count not found');
+        e.status = 502; throw e;
+      }
+      const payload = { configured: true, followers: parseInt(match[1], 10), at: new Date().toISOString() };
+      palmstreetCache.set(brandId, { at: Date.now(), payload });
+      return res.status(200).json(payload);
+    }
+    default: {
+      const e = new Error('Unknown palmstreet action'); e.status = 400; throw e;
+    }
   }
 }
 

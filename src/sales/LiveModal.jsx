@@ -10,8 +10,9 @@ import {
   CurrentItemCard, QueuedRow, DoneRow, GiveawayRow,
   BridgeBadge, BridgeDot, PaneTab, StreamPane, BridgeSettingsDialog,
 } from './LiveModalParts.jsx';
+import { FollowerTicker } from './FollowerTicker.jsx';
 
-export function LiveModal({ sale, items, onClose, setConfirmDialog }) {
+export function LiveModal({ sale, items, onClose, setConfirmDialog, isAdmin, activeBrand, showToast }) {
   const saleItems = useMemo(
     () => items.filter(i => i.saleId === sale.id),
     [items, sale.id]
@@ -204,6 +205,7 @@ export function LiveModal({ sale, items, onClose, setConfirmDialog }) {
                 <Gift className="w-3 h-3" /> {giveaways.length}
               </span>
             )}
+            <FollowerTicker brandId={activeBrand} isAdmin={isAdmin} dark showToast={showToast} />
             <BridgeBadge status={bridge.status} onSettings={() => setShowBridgeSettings(true)} />
           </div>
         </div>

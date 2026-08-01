@@ -3,6 +3,7 @@ import {
   X, Radio, ScanLine, AlertTriangle, Check, Loader2, WifiOff, Wifi, RotateCw,
 } from 'lucide-react';
 import { api } from '../api.js';
+import { FollowerTicker } from './FollowerTicker.jsx';
 import { buildLookups, computeIdealPrice } from '../inventory/pricing.js';
 import { normalizeSku } from '../labels/boxCode.js';
 
@@ -33,7 +34,7 @@ function displayAmount(mode, item, price) {
 // Live Scan Mode — keep the input autofocused; every barcode scan
 // resolves the SKU locally and enqueues a Palmstreet listing job.
 // No per-scan confirmation: scan = list it.
-export function LiveScanModal({ items, varieties, species, idealRate, onClose }) {
+export function LiveScanModal({ items, varieties, species, idealRate, onClose, isAdmin, activeBrand, showToast }) {
   const lookups = useMemo(() => buildLookups(varieties, species), [varieties, species]);
   const itemsBySku = useMemo(() => {
     const m = new Map();
@@ -200,6 +201,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose })
               <h3 className="font-semibold text-gray-900 text-lg flex items-center gap-2">
                 Live Scan Mode
                 <BridgeBadge status={bridgeStatus} />
+                <FollowerTicker brandId={activeBrand} isAdmin={isAdmin} showToast={showToast} />
               </h3>
               <p className="text-xs text-gray-500 mt-0.5">
                 Each barcode scan auto-pushes that SKU to Palmstreet as a listing.

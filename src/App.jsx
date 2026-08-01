@@ -1715,6 +1715,9 @@ function StaffOrAdminInventory() {
           items={items}
           onClose={() => setLiveSale(null)}
           setConfirmDialog={setConfirmDialog}
+          isAdmin={isAdmin}
+          activeBrand={activeBrand}
+          showToast={showToast}
         />
       )}
       {showLiveScan && (
@@ -1724,6 +1727,9 @@ function StaffOrAdminInventory() {
           species={species}
           idealRate={idealRate}
           onClose={() => setShowLiveScan(false)}
+          isAdmin={isAdmin}
+          activeBrand={activeBrand}
+          showToast={showToast}
         />
       )}
       {showValidateSales && (
