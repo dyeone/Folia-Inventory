@@ -270,10 +270,11 @@ const PALMSTREET_USER_RE = /^https:\/\/(?:www\.)?palmstreet\.app\/user\/([A-Za-z
 // The app's Share button hands out handle links (/u/<name>?pr=…) rather than
 // the canonical /user/<uid> shape — accept those too by resolving the handle.
 const PALMSTREET_HANDLE_RE = /^https:\/\/(?:www\.)?palmstreet\.app\/u\/([A-Za-z0-9_.-]{2,40})\/?(?:[?#].*)?$/;
-// The count moves slowly; a short per-instance cache keeps several stations
-// polling at once from hammering Palmstreet (Fluid Compute reuses instances).
+// Short per-instance cache: coalesces several stations polling at once
+// (Fluid Compute reuses instances) while staying fresh enough for the
+// audience board's 3s refresh.
 const palmstreetCache = new Map(); // brandId -> { at, payload }
-const PALMSTREET_CACHE_MS = 20_000;
+const PALMSTREET_CACHE_MS = 3_000;
 
 async function loadPalmstreetConfig(brandId) {
   const { data, error } = await supabase
