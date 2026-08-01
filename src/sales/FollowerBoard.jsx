@@ -23,7 +23,7 @@ function goalKey(brandId) {
 
 const BRAND_LABEL = { folia: 'Folia', bae: 'BAE' };
 
-export function FollowerBoard({ brandId, onClose }) {
+export function FollowerBoard({ brandId, brands = [], onSwitchBrand, onClose }) {
   const [followers, setFollowers] = useState(null);
   const [baseline, setBaseline] = useState(null);
   const [error, setError] = useState(null);
@@ -38,7 +38,7 @@ export function FollowerBoard({ brandId, onClose }) {
 
   const poll = async () => {
     try {
-      const r = await api.getPalmstreetFollowers();
+      const r = await api.getPalmstreetFollowers(brandId);
       if (!alive.current) return;
       if (!r?.configured) { setError('No store link set — configure it in the live screen first.'); return; }
       setError(null);
@@ -109,10 +109,37 @@ export function FollowerBoard({ brandId, onClose }) {
           <X className="w-5 h-5" />
         </button>
       </div>
+      {/* Brand switcher — same hover-reveal as the corner controls. */}
+      {brands.length > 1 && (
+        <div className="absolute top-3 left-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {brands.map(b => (
+            <button
+              key={b.id}
+              onClick={() => onSwitchBrand?.(b.id)}
+              className={`px-3 py-1.5 text-sm font-medium rounded-lg ${
+                b.id === brandId ? 'bg-gray-800 text-white' : 'text-gray-500 hover:text-white'
+              }`}
+            >
+              {b.name || BRAND_LABEL[b.id] || b.id}
+            </button>
+          ))}
+        </div>
+      )}
 
-      <div className="text-[3vmin] font-semibold tracking-[0.4em] uppercase text-gray-500">
-        {BRAND_LABEL[brandId] || brandId || ''} Followers
-      </div>
+      <button
+        onClick={() => {
+          // Clicking the title also cycles brands — handy on a touch display
+          // where hover-reveal pills are awkward.
+          if (brands.length > 1 && onSwitchBrand) {
+            const i = brands.findIndex(b => b.id === brandId);
+            onSwitchBrand(brands[(i + 1) % brands.length].id);
+          }
+        }}
+        className="bg-transparent border-0 cursor-pointer text-[3vmin] font-semibold tracking-[0.4em] uppercase text-gray-500"
+        title={brands.length > 1 ? 'Tap to switch brand' : undefined}
+      >
+        {(brands.find(b => b.id === brandId)?.name || BRAND_LABEL[brandId] || brandId || '')} Followers
+      </button>
 
       {error ? (
         <div className="mt-6 text-[2.5vmin] text-gray-400 max-w-[70vw] text-center">{error}</div>

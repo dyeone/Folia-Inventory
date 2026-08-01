@@ -186,10 +186,18 @@ export default function InventoryApp() {
     return <AuthScreen onLogin={login} />;
   }
 
-  if (hashRoute === '#follower-board') {
+  if (hashRoute.startsWith('#follower-board')) {
+    // `#follower-board=bae` pins the board to a brand regardless of the
+    // device session's active brand; bare `#follower-board` follows it.
+    const pinned = hashRoute.split('=')[1] || null;
+    const boardBrands = userBrands(currentUser.brandIds);
+    const boardBrand = boardBrands.some(b => b.id === pinned) ? pinned : activeBrand;
     return (
       <FollowerBoard
-        brandId={activeBrand}
+        key={boardBrand}
+        brandId={boardBrand}
+        brands={boardBrands}
+        onSwitchBrand={(id) => { window.location.hash = `#follower-board=${id}`; }}
         onClose={() => { window.location.hash = ''; }}
       />
     );

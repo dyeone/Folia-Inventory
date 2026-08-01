@@ -207,7 +207,7 @@ export function LiveModal({ sale, items, onClose, setConfirmDialog, isAdmin, act
             )}
             <FollowerTicker brandId={activeBrand} isAdmin={isAdmin} dark showToast={showToast} />
             <button
-              onClick={() => window.open('/#follower-board', '_blank', 'noopener')}
+              onClick={() => window.open(`/#follower-board=${activeBrand || ''}`, '_blank', 'noopener')}
               className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white rounded px-1.5 py-0.5 hover:bg-gray-800"
               title="Open the audience follower board — a giant counter to put in the camera frame"
             >

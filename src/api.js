@@ -33,7 +33,9 @@ async function request(path, { method = 'GET', body } = {}) {
     if (method === 'GET') {
       const sep = url.includes('?') ? '&' : '?';
       url = `${url}${sep}userId=${encodeURIComponent(authUserId ?? '')}`;
-      if (authBrandId) url += `&brandId=${encodeURIComponent(authBrandId)}`;
+      // A caller-supplied brandId in the path wins over the session brand —
+      // used by the follower board to show a non-active brand's store.
+      if (authBrandId && !url.includes('brandId=')) url += `&brandId=${encodeURIComponent(authBrandId)}`;
     } else {
       finalBody = { ...(body || {}), userId: authUserId, brandId: authBrandId ?? undefined };
     }
@@ -209,8 +211,10 @@ export const api = {
   getPalmstreetConfig: () => request('/settings?action=palmstreet-get').then(r => r.config),
   savePalmstreetConfig: (url) =>
     request('/settings', { method: 'POST', body: { action: 'palmstreet-save', url } }).then(r => r.config),
-  // → { configured, followers?, at? }
-  getPalmstreetFollowers: () => request('/settings?action=palmstreet-followers'),
+  // → { configured, followers?, at? }. Optional brandId overrides the session
+  // brand (server re-checks the caller's access to it).
+  getPalmstreetFollowers: (brandId) =>
+    request(`/settings?action=palmstreet-followers${brandId ? `&brandId=${encodeURIComponent(brandId)}` : ''}`),
 
   // Personal GTD tasks — private per user. Stored as a JSON blob in
   // app_settings keyed `tasks:<userId>` and served by /settings (Hobby's
