@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   X, Radio, Search, ScanLine, Gift, RotateCcw,
-  Smartphone, Layers, Play,
+  Smartphone, Layers, Play, MonitorUp,
 } from 'lucide-react';
 import { useLiveBridge } from './liveBridge.js';
 import { STORAGE_KEY, loadState, formatElapsed } from './liveState.js';
@@ -206,6 +206,13 @@ export function LiveModal({ sale, items, onClose, setConfirmDialog, isAdmin, act
               </span>
             )}
             <FollowerTicker brandId={activeBrand} isAdmin={isAdmin} dark showToast={showToast} />
+            <button
+              onClick={() => window.open('/#follower-board', '_blank', 'noopener')}
+              className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white rounded px-1.5 py-0.5 hover:bg-gray-800"
+              title="Open the audience follower board — a giant counter to put in the camera frame"
+            >
+              <MonitorUp className="w-3.5 h-3.5" /> Audience view
+            </button>
             <BridgeBadge status={bridge.status} onSettings={() => setShowBridgeSettings(true)} />
           </div>
         </div>

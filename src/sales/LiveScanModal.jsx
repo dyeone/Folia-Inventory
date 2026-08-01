@@ -205,6 +205,14 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
               </h3>
               <p className="text-xs text-gray-500 mt-0.5">
                 Each barcode scan auto-pushes that SKU to Palmstreet as a listing.
+                {' '}
+                <button
+                  onClick={() => window.open('/#follower-board', '_blank', 'noopener')}
+                  className="text-sky-600 hover:underline"
+                  title="Open the audience follower board — a giant counter to put in the camera frame"
+                >
+                  Audience view ↗
+                </button>
               </p>
             </div>
           </div>

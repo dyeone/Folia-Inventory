@@ -17,6 +17,9 @@ import { AuthScreen } from './auth/AuthScreen.jsx';
 import { Dashboard } from './dashboard/Dashboard.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
 import { exportPalmstreetCsv, exportAvailableToPalmstreet } from './sales/palmstreetExport.js';
+// Eager too: the #follower-board hash route renders before any Suspense
+// boundary exists, and the audience board is tiny.
+import { FollowerBoard } from './sales/FollowerBoard.jsx';
 
 // All named exports — wrap in `.then(m => ({ default: m.X }))` so React.lazy
 // (which expects a default export) gets a usable module.
@@ -103,6 +106,15 @@ export default function InventoryApp() {
   // whole app sees; sent on every API call via setAuthBrandId.
   const [activeBrand, setActiveBrand] = useState(null);
   const [loadingSession, setLoadingSession] = useState(true);
+  // Hash mini-route: #follower-board renders the audience-facing follower
+  // counter instead of the app — so a display device (spare tablet in the
+  // camera frame) can live on that URL after logging in once.
+  const [hashRoute, setHashRoute] = useState(() => window.location.hash);
+  useEffect(() => {
+    const onHash = () => setHashRoute(window.location.hash);
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   // Wire a signed-in user + their active brand into api.js and local state.
   const activate = (user) => {
@@ -172,6 +184,15 @@ export default function InventoryApp() {
 
   if (!currentUser) {
     return <AuthScreen onLogin={login} />;
+  }
+
+  if (hashRoute === '#follower-board') {
+    return (
+      <FollowerBoard
+        brandId={activeBrand}
+        onClose={() => { window.location.hash = ''; }}
+      />
+    );
   }
 
   return (

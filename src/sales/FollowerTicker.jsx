@@ -17,12 +17,13 @@ import { api } from '../api.js';
 const POLL_MS = 30_000;
 const BASELINE_TTL_MS = 12 * 60 * 60 * 1000;
 
-function baselineKey(brandId) {
+export function baselineKey(brandId) {
   return `psFollowerBase:${brandId || 'folia'}`;
 }
 
-// Read (or re-arm) the session baseline for the delta display.
-function takeBaseline(brandId, current) {
+// Read (or re-arm) the session baseline for the delta display. Shared with
+// FollowerBoard so the header ticker and the audience board agree on "+N".
+export function takeBaseline(brandId, current) {
   try {
     const raw = localStorage.getItem(baselineKey(brandId));
     if (raw) {
