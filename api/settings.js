@@ -267,6 +267,9 @@ const PALMSTREET_NS = 'palmstreet:';
 // the uid and rebuilding the URL ourselves means an admin can paste any share
 // link shape while the server only ever fetches palmstreet.app (no SSRF).
 const PALMSTREET_USER_RE = /^https:\/\/(?:www\.)?palmstreet\.app\/user\/([A-Za-z0-9_-]{6,64})\/?(?:[?#].*)?$/;
+// The app's Share button hands out handle links (/u/<name>?pr=…) rather than
+// the canonical /user/<uid> shape — accept those too by resolving the handle.
+const PALMSTREET_HANDLE_RE = /^https:\/\/(?:www\.)?palmstreet\.app\/u\/([A-Za-z0-9_.-]{2,40})\/?(?:[?#].*)?$/;
 // The count moves slowly; a short per-instance cache keeps several stations
 // polling at once from hammering Palmstreet (Fluid Compute reuses instances).
 const palmstreetCache = new Map(); // brandId -> { at, payload }
@@ -279,6 +282,27 @@ async function loadPalmstreetConfig(brandId) {
   return data?.data || null;
 }
 
+// Fetch a handle page (palmstreet.app/u/<name>) and pull the store owner's
+// uid out of the SSR payload — the owner's profile blob is the first user_id
+// on the page. Null when the handle doesn't resolve.
+async function resolveHandleToUid(handle) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 8000);
+  try {
+    const resp = await fetch(`https://palmstreet.app/u/${encodeURIComponent(handle)}`, {
+      signal: ctrl.signal,
+      headers: { accept: 'text/html' },
+    });
+    if (!resp.ok) return null;
+    const html = await resp.text();
+    return /user_id[\\"\s:]*([A-Za-z0-9_-]{20,40})/.exec(html)?.[1] || null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function handlePalmstreet(action, req, res, user, brandId) {
   switch (action) {
     case 'palmstreet-get': {
@@ -289,12 +313,16 @@ async function handlePalmstreet(action, req, res, user, brandId) {
       if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
       requireAdminRole(user);
       const url = str(req.body?.url, 200);
-      const m = PALMSTREET_USER_RE.exec(url);
-      if (!m) {
-        const e = new Error('Paste your store link — it looks like https://palmstreet.app/user/…');
+      let uid = PALMSTREET_USER_RE.exec(url)?.[1] || null;
+      if (!uid) {
+        const handle = PALMSTREET_HANDLE_RE.exec(url)?.[1];
+        if (handle) uid = await resolveHandleToUid(handle);
+      }
+      if (!uid) {
+        const e = new Error('Paste your store link — it looks like https://palmstreet.app/u/<name> or /user/…');
         e.status = 400; throw e;
       }
-      const config = { url: `https://palmstreet.app/user/${m[1]}`, userId: m[1] };
+      const config = { url: `https://palmstreet.app/user/${uid}`, userId: uid };
       const { error } = await supabase.from('app_settings').upsert({
         id: PALMSTREET_NS + brandId, brandId, data: config,
         updatedAt: new Date().toISOString(), updatedBy: user.id,
