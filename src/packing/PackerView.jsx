@@ -1322,87 +1322,80 @@ export function PackerView({ onLogout }) {
                 Tap a box chip to jump straight in. */}
             {heatAlertBoxes.length > 0 && (
               <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
-                <div className="max-w-5xl mx-auto rounded-2xl border-2 border-red-400 bg-red-50 px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <Thermometer className="w-6 h-6 text-red-600 shrink-0" />
-                    <span className="text-base font-extrabold text-red-800">
-                      HEAT ALERT — {heatAlertBoxes.length} {heatAlertBoxes.length === 1 ? 'box needs' : 'boxes need'} EXTRA INSULATION
-                    </span>
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {heatAlertBoxes.map(b => (
-                      <button
-                        key={b.id}
-                        type="button"
-                        onClick={() => goToBox(b.id)}
-                        className="inline-flex items-center gap-1 text-xs font-bold font-mono bg-red-600 text-white px-2 py-1 rounded-lg active:bg-red-800"
-                        title={`${b.buyer || b.code} — destination peaks ${heatByBox[b.id]}°F, add extra insulation`}
-                      >
-                        {b.code} · {heatByBox[b.id]}°F
-                      </button>
-                    ))}
-                  </div>
+                <div className="max-w-5xl mx-auto rounded-xl border-2 border-red-400 bg-red-50 px-3 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                  <Thermometer className="w-5 h-5 text-red-600 shrink-0" />
+                  <span className="text-sm font-extrabold text-red-800">
+                    HEAT — EXTRA INSULATION:
+                  </span>
+                  {heatAlertBoxes.map(b => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      onClick={() => goToBox(b.id)}
+                      className="inline-flex items-center gap-1 text-xs font-bold font-mono bg-red-600 text-white px-2 py-1 rounded-lg active:bg-red-800"
+                      title={`${b.buyer || b.code} — destination peaks ${heatByBox[b.id]}°F, add extra insulation`}
+                    >
+                      {b.code} · {heatByBox[b.id]}°F
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
-            {/* Held + pickup plants come off the bench FIRST — stock that
-                isn't shipping this week mixed into this week's packing is
-                how wrong plants ship. */}
-            {sweepBoxes.length > 0 && (
-              <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
-                <button
-                  type="button"
-                  onClick={() => { setStationOpen(false); setSweepOpen(true); }}
-                  className={`max-w-5xl mx-auto w-full text-left rounded-2xl border-2 px-4 py-3 flex items-center gap-3 transition active:scale-[0.99] ${
-                    sweepFound === sweepTotal
-                      ? 'border-emerald-300 bg-emerald-50'
-                      : 'border-amber-400 bg-amber-100 hover:border-amber-500'
-                  }`}
-                >
-                  {sweepFound === sweepTotal
-                    ? <Check className="w-6 h-6 text-emerald-600 shrink-0" />
-                    : <Clock className="w-6 h-6 text-amber-700 shrink-0" />}
-                  <span className="flex-1 min-w-0">
-                    <span className={`block text-base font-bold ${sweepFound === sweepTotal ? 'text-emerald-800' : 'text-amber-900'}`}>
-                      {sweepFound === sweepTotal
-                        ? 'All held & pickup plants off the bench ✓'
-                        : 'Step 1 — pull held & pickup plants off the bench'}
-                    </span>
-                    <span className={`block text-sm ${sweepFound === sweepTotal ? 'text-emerald-700' : 'text-amber-800'}`}>
-                      {sweepFound}/{sweepTotal} found · {sweepBoxes.length} {sweepBoxes.length === 1 ? 'box isn’t' : 'boxes aren’t'} shipping this week
-                    </span>
-                  </span>
-                </button>
-              </div>
-            )}
-            {/* Step 2 — wrap this week's plants into burritos. Progress is
-                the pack count (the wrap flow's terminal state IS packed);
-                tapping continues into the first box with work left. */}
-            {shipPlan.total > 0 && (
+            {/* Steps 1 + 2 share ONE slim row — status chips, not billboards,
+                so the open-box grid keeps the screen. Step 1 (bench sweep of
+                held + pickup plants) still comes before Step 2 (wrap & pack)
+                left-to-right; tapping opens the same panes as before, and the
+                full instructions live in the panes + tooltips. */}
+            {(sweepBoxes.length > 0 || shipPlan.total > 0) && (
               <div className="flex-shrink-0 px-3 sm:px-5 pt-2">
-                <button
-                  type="button"
-                  onClick={() => { setSweepOpen(false); setStationOpen(true); }}
-                  className={`max-w-5xl mx-auto w-full text-left rounded-2xl border-2 px-4 py-3 flex items-center gap-3 transition active:scale-[0.99] ${
-                    shipPlan.packed === shipPlan.total
-                      ? 'border-emerald-300 bg-emerald-50'
-                      : 'border-blue-400 bg-blue-50 hover:border-blue-500'
-                  }`}
-                >
-                  {shipPlan.packed === shipPlan.total
-                    ? <Check className="w-6 h-6 text-emerald-600 shrink-0" />
-                    : <span className="text-2xl shrink-0" aria-hidden>🌯</span>}
-                  <span className="flex-1 min-w-0">
-                    <span className={`block text-base font-bold ${shipPlan.packed === shipPlan.total ? 'text-emerald-800' : 'text-blue-900'}`}>
+                <div className="max-w-5xl mx-auto flex gap-2">
+                  {sweepBoxes.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => { setStationOpen(false); setSweepOpen(true); }}
+                      title={`Pull held & pickup plants off the bench first — ${sweepBoxes.length} ${sweepBoxes.length === 1 ? 'box isn’t' : 'boxes aren’t'} shipping this week`}
+                      className={`flex-1 min-w-0 rounded-xl border-2 px-3 py-2 flex items-center gap-2 transition active:scale-[0.99] ${
+                        sweepFound === sweepTotal
+                          ? 'border-emerald-300 bg-emerald-50'
+                          : 'border-amber-400 bg-amber-100 hover:border-amber-500'
+                      }`}
+                    >
+                      {sweepFound === sweepTotal
+                        ? <Check className="w-5 h-5 text-emerald-600 shrink-0" />
+                        : <Clock className="w-5 h-5 text-amber-700 shrink-0" />}
+                      <span className={`min-w-0 truncate text-sm font-bold ${sweepFound === sweepTotal ? 'text-emerald-800' : 'text-amber-900'}`}>
+                        Step 1<span className="hidden min-[480px]:inline"> · bench sweep</span>
+                      </span>
+                      <span className={`ml-auto shrink-0 text-sm font-bold tabular-nums ${sweepFound === sweepTotal ? 'text-emerald-700' : 'text-amber-800'}`}>
+                        {sweepFound === sweepTotal ? '✓' : `${sweepFound}/${sweepTotal}`}
+                      </span>
+                    </button>
+                  )}
+                  {shipPlan.total > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => { setSweepOpen(false); setStationOpen(true); }}
+                      title={shipPlan.boxesLeft > 0
+                        ? `Wrap this week’s plants into burritos — ${shipPlan.boxesLeft} ${shipPlan.boxesLeft === 1 ? 'box' : 'boxes'} to go`
+                        : 'All of this week’s plants are wrapped & packed'}
+                      className={`flex-1 min-w-0 rounded-xl border-2 px-3 py-2 flex items-center gap-2 transition active:scale-[0.99] ${
+                        shipPlan.packed === shipPlan.total
+                          ? 'border-emerald-300 bg-emerald-50'
+                          : 'border-blue-400 bg-blue-50 hover:border-blue-500'
+                      }`}
+                    >
                       {shipPlan.packed === shipPlan.total
-                        ? 'All of this week’s plants are wrapped & packed ✓'
-                        : 'Step 2 — wrap this week’s plants into burritos'}
-                    </span>
-                    <span className={`block text-sm ${shipPlan.packed === shipPlan.total ? 'text-emerald-700' : 'text-blue-800'}`}>
-                      {shipPlan.packed}/{shipPlan.total} packed{shipPlan.boxesLeft > 0 ? ` · ${shipPlan.boxesLeft} ${shipPlan.boxesLeft === 1 ? 'box' : 'boxes'} to go — tap for the wrap station` : ''}
-                    </span>
-                  </span>
-                </button>
+                        ? <Check className="w-5 h-5 text-emerald-600 shrink-0" />
+                        : <span className="text-lg leading-none shrink-0" aria-hidden>🌯</span>}
+                      <span className={`min-w-0 truncate text-sm font-bold ${shipPlan.packed === shipPlan.total ? 'text-emerald-800' : 'text-blue-900'}`}>
+                        Step 2<span className="hidden min-[480px]:inline"> · wrap &amp; pack</span>
+                      </span>
+                      <span className={`ml-auto shrink-0 text-sm font-bold tabular-nums ${shipPlan.packed === shipPlan.total ? 'text-emerald-700' : 'text-blue-800'}`}>
+                        {shipPlan.packed === shipPlan.total ? '✓' : `${shipPlan.packed}/${shipPlan.total}`}
+                      </span>
+                    </button>
+                  )}
+                </div>
               </div>
             )}
             <LandingGrid
