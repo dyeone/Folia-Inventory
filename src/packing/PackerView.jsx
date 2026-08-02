@@ -1316,39 +1316,48 @@ export function PackerView({ onLogout }) {
             onCamera={() => setCameraMode('station')}
             onClose={() => setStationOpen(false)}
           />
-        : <>
-            {/* HEAT ALERT — every flagged box in one glance, before any
-                packing starts, so the insulation material comes out first.
-                Tap a box chip to jump straight in. */}
-            {heatAlertBoxes.length > 0 && (
-              <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
-                <div className="max-w-5xl mx-auto rounded-xl border-2 border-red-400 bg-red-50 px-3 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
-                  <Thermometer className="w-5 h-5 text-red-600 shrink-0" />
-                  <span className="text-sm font-extrabold text-red-800">
-                    HEAT — EXTRA INSULATION:
-                  </span>
-                  {heatAlertBoxes.map(b => (
-                    <button
-                      key={b.id}
-                      type="button"
-                      onClick={() => goToBox(b.id)}
-                      className="inline-flex items-center gap-1 text-xs font-bold font-mono bg-red-600 text-white px-2 py-1 rounded-lg active:bg-red-800"
-                      title={`${b.buyer || b.code} — destination peaks ${heatByBox[b.id]}°F, add extra insulation`}
-                    >
-                      {b.code} · {heatByBox[b.id]}°F
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-            {/* Steps 1 + 2 share ONE slim row — status chips, not billboards,
-                so the open-box grid keeps the screen. Step 1 (bench sweep of
-                held + pickup plants) still comes before Step 2 (wrap & pack)
-                left-to-right; tapping opens the same panes as before, and the
-                full instructions live in the panes + tooltips. */}
-            {(sweepBoxes.length > 0 || shipPlan.total > 0) && (
-              <div className="flex-shrink-0 px-3 sm:px-5 pt-2">
-                <div className="max-w-5xl mx-auto flex gap-2">
+        : <LandingGrid
+            boxes={openBoxes}
+            boxSizes={boxSizes}
+            boxSizeByBox={boxSizeByBox}
+            trackingByBox={trackingByBox}
+            holdByBox={holdByBox}
+            noteByBox={noteByBox}
+            heatByBox={heatByBox}
+            onOpen={goToBox}
+            header={(heatAlertBoxes.length > 0 || sweepBoxes.length > 0 || shipPlan.total > 0) && (
+              <div className="max-w-5xl mx-auto space-y-2 mb-3">
+                {/* HEAT ALERT — every flagged box in one glance, before any
+                    packing starts, so the insulation material comes out first.
+                    Tap a box chip to jump straight in. Lives INSIDE the scroll
+                    area (like the steps row) so it scrolls away with the list
+                    instead of permanently eating grid height. */}
+                {heatAlertBoxes.length > 0 && (
+                  <div className="rounded-xl border-2 border-red-400 bg-red-50 px-3 py-2 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <Thermometer className="w-5 h-5 text-red-600 shrink-0" />
+                    <span className="text-sm font-extrabold text-red-800">
+                      HEAT — EXTRA INSULATION:
+                    </span>
+                    {heatAlertBoxes.map(b => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => goToBox(b.id)}
+                        className="inline-flex items-center gap-1 text-xs font-bold font-mono bg-red-600 text-white px-2 py-1 rounded-lg active:bg-red-800"
+                        title={`${b.buyer || b.code} — destination peaks ${heatByBox[b.id]}°F, add extra insulation`}
+                      >
+                        {b.code} · {heatByBox[b.id]}°F
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {/* Steps 1 + 2 share ONE slim row — status chips, not
+                    billboards. Step 1 (bench sweep of held + pickup plants)
+                    still comes before Step 2 (wrap & pack) left-to-right;
+                    tapping opens the same panes as before, and the full
+                    instructions live in the panes + tooltips. */}
+                {(sweepBoxes.length > 0 || shipPlan.total > 0) && (
+                  <div className="flex gap-2">
                   {sweepBoxes.length > 0 && (
                     <button
                       type="button"
@@ -1395,20 +1404,11 @@ export function PackerView({ onLogout }) {
                       </span>
                     </button>
                   )}
-                </div>
+                  </div>
+                )}
               </div>
             )}
-            <LandingGrid
-              boxes={openBoxes}
-              boxSizes={boxSizes}
-              boxSizeByBox={boxSizeByBox}
-              trackingByBox={trackingByBox}
-              holdByBox={holdByBox}
-              noteByBox={noteByBox}
-              heatByBox={heatByBox}
-              onOpen={goToBox}
-            />
-          </>
+          />
       }
 
       {cameraMode && (cameraMode === 'box' || cameraMode === 'sweep' || cameraMode === 'station' || activeBox) && (
@@ -2003,34 +2003,39 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
   );
 }
 
-function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, noteByBox, heatByBox, onOpen }) {
-  if (boxes.length === 0) {
-    return (
-      <div className="flex-1 flex flex-col items-center justify-center px-6 text-center pb-safe">
-        <PackageCheck className="w-16 h-16 text-emerald-300 mb-3" />
-        <h2 className="text-lg font-semibold text-gray-900">All caught up</h2>
-        <p className="text-sm text-gray-500 mt-1 max-w-xs">No open boxes to pack right now. Scan a box label if one was just created.</p>
-      </div>
-    );
-  }
+// `header` (heat alert + step chips) renders INSIDE the scroll area, so it
+// leads the page but scrolls away with the list — it never pins above the
+// grid eating height the box cards need.
+function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, noteByBox, heatByBox, onOpen, header }) {
   return (
     <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
-      <div className="max-w-5xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {boxes.map(box => (
-          <BoxCard
-            key={box.id}
-            box={box}
-            sizeName={boxSizes.find(s => s.id === boxSizeByBox[box.id])?.name || null}
-            hasLabel={!!trackingByBox?.[box.id]}
-            holdState={boxHoldState(box.items, holdByBox?.[box.id])}
-            isPickup={boxIsLocalPickup(noteByBox?.[box.id], box.items)}
-            note={noteByBox?.[box.id] || ''}
-            heatTemp={heatByBox?.[box.id]}
-            onOpen={() => onOpen(box.id)}
-          />
-        ))}
-      </div>
-      <div className="h-6 pb-safe" />
+      {header}
+      {boxes.length === 0 ? (
+        <div className="flex flex-col items-center justify-center px-6 py-16 text-center pb-safe">
+          <PackageCheck className="w-16 h-16 text-emerald-300 mb-3" />
+          <h2 className="text-lg font-semibold text-gray-900">All caught up</h2>
+          <p className="text-sm text-gray-500 mt-1 max-w-xs">No open boxes to pack right now. Scan a box label if one was just created.</p>
+        </div>
+      ) : (
+        <>
+          <div className="max-w-5xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {boxes.map(box => (
+              <BoxCard
+                key={box.id}
+                box={box}
+                sizeName={boxSizes.find(s => s.id === boxSizeByBox[box.id])?.name || null}
+                hasLabel={!!trackingByBox?.[box.id]}
+                holdState={boxHoldState(box.items, holdByBox?.[box.id])}
+                isPickup={boxIsLocalPickup(noteByBox?.[box.id], box.items)}
+                note={noteByBox?.[box.id] || ''}
+                heatTemp={heatByBox?.[box.id]}
+                onOpen={() => onOpen(box.id)}
+              />
+            ))}
+          </div>
+          <div className="h-6 pb-safe" />
+        </>
+      )}
     </div>
   );
 }
