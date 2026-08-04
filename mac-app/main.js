@@ -8,7 +8,7 @@
 // streamed line-by-line to the renderer; renderer doesn't get raw
 // access to the child process.
 
-const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -186,36 +186,127 @@ async function fetchPackingStatus() {
   }
 }
 
-// Both polls pause while the window is hidden (menu-bar background) — the
-// widget can't be seen, so there's nothing to keep fresh. A show re-ticks
-// immediately so the operator never stares at stale numbers.
+// Both polls pause while nothing that renders them is on screen — the main
+// window hidden to the menu bar AND the desktop widget hidden means there's
+// nothing to keep fresh. A show re-ticks immediately so the operator never
+// stares at stale numbers.
 const PRINTER_POLL_MS = 5000;
 const PACKING_POLL_MS = 15000;
 let printersInFlight = false;
 let packingInFlight = false;
 
 function widgetVisible() {
-  return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
+  const mainVis = !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
+  return mainVis || desktopWidgetShown();
+}
+// Push a status snapshot to every visible consumer (main window hero card +
+// floating desktop widget). Per-window try/catch: a window torn down between
+// the visibility check and the send must not kill the other one's update.
+function broadcastStatus(channel, payload) {
+  for (const w of [mainWindow, widgetWin]) {
+    if (!w || w.isDestroyed() || !w.isVisible()) continue;
+    try { w.webContents.send(channel, payload); } catch { /* closed mid-send */ }
+  }
 }
 async function tickPrinters() {
   if (!widgetVisible() || printersInFlight) return;
   printersInFlight = true;
-  try {
-    const st = await printerStatus();
-    // Re-check after the await — the window can be torn down mid-lpstat, and
-    // a send to a destroyed webContents throws in the main process.
-    if (widgetVisible()) mainWindow.webContents.send('printers:status', st);
-  } catch { /* window closed mid-tick */ }
+  try { broadcastStatus('printers:status', await printerStatus()); }
   finally { printersInFlight = false; }
 }
 async function tickPacking() {
   if (!widgetVisible() || packingInFlight) return;
   packingInFlight = true;
-  try {
-    const st = await fetchPackingStatus();
-    if (widgetVisible()) mainWindow.webContents.send('packing:status', st);
-  } catch { /* window closed mid-tick */ }
+  try { broadcastStatus('packing:status', await fetchPackingStatus()); }
   finally { packingInFlight = false; }
+}
+
+// ─── Desktop widget: floating always-on-top mini card ───────────────────────
+// A frameless transparent window pinned above normal windows and visible on
+// every Space, so packing + printer state stays glanceable with the main
+// window closed to the menu bar. Position and shown-state persist in
+// userData/widget-state.json. The ✕ in the card hides it (never quits).
+const WIDGET_W = 272;
+const WIDGET_H = 372;
+let widgetWin = null;
+let widgetStatePath = null;   // set in whenReady — needs userData
+
+function readWidgetState() {
+  try { return JSON.parse(fs.readFileSync(widgetStatePath, 'utf8')); }
+  catch { return {}; }
+}
+function writeWidgetState(patch) {
+  try { fs.writeFileSync(widgetStatePath, JSON.stringify({ ...readWidgetState(), ...patch })); }
+  catch { /* best-effort — losing the position is fine */ }
+}
+
+function desktopWidgetShown() {
+  return !!widgetWin && !widgetWin.isDestroyed() && widgetWin.isVisible();
+}
+
+// Saved position, but only if it still lands on a connected display —
+// a monitor unplugged since last run must not strand the widget off-screen.
+function widgetPosition() {
+  const saved = readWidgetState();
+  if (Number.isFinite(saved.x) && Number.isFinite(saved.y)) {
+    const rect = { x: saved.x, y: saved.y, width: WIDGET_W, height: WIDGET_H };
+    const d = screen.getDisplayMatching(rect).workArea;
+    const onScreen = saved.x < d.x + d.width && saved.x + WIDGET_W > d.x &&
+                     saved.y < d.y + d.height && saved.y + WIDGET_H > d.y;
+    if (onScreen) return { x: saved.x, y: saved.y };
+  }
+  const wa = screen.getPrimaryDisplay().workArea;
+  return { x: wa.x + wa.width - WIDGET_W - 16, y: wa.y + 16 };
+}
+
+function createWidgetWindow() {
+  if (widgetWin && !widgetWin.isDestroyed()) return widgetWin;
+  const pos = widgetPosition();
+  widgetWin = new BrowserWindow({
+    x: pos.x,
+    y: pos.y,
+    width: WIDGET_W,
+    height: WIDGET_H,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    alwaysOnTop: true,
+    fullscreenable: false,
+    minimizable: false,
+    maximizable: false,
+    skipTaskbar: true,
+    hasShadow: false,       // the card draws its own CSS shadow
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  // 'floating' keeps it above normal windows without fighting menus/panels.
+  widgetWin.setAlwaysOnTop(true, 'floating');
+  widgetWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  widgetWin.loadFile(path.join(__dirname, 'renderer', 'widget.html'));
+  widgetWin.on('moved', () => {
+    if (!widgetWin || widgetWin.isDestroyed()) return;
+    const [x, y] = widgetWin.getPosition();
+    writeWidgetState({ x, y });
+  });
+  widgetWin.on('show', () => { tickPrinters(); tickPacking(); });
+  widgetWin.on('closed', () => { widgetWin = null; });
+  return widgetWin;
+}
+
+function toggleDesktopWidget(force) {
+  const target = typeof force === 'boolean' ? force : !desktopWidgetShown();
+  if (target) createWidgetWindow().showInactive();   // no focus steal — it's furniture
+  else widgetWin?.hide();
+  writeWidgetState({ shown: target });
+  updateTray(lastState);   // tray label flips between Show/Hide
+  // Keep the main window's toggle button honest when the flip came from
+  // the tray or the widget's own ✕.
+  try { mainWindow?.webContents.send('widget:state', { shown: target }); } catch { /* closed */ }
+  return target;
 }
 
 // Re-check for a newer build every 6h so an operator who leaves the window
@@ -290,6 +381,10 @@ function buildTrayMenu(s = {}) {
         : 'Stopped';
   return Menu.buildFromTemplate([
     { label: 'Open Folia Bridge', click: showWindow },
+    {
+      label: desktopWidgetShown() ? 'Hide desktop widget' : 'Show desktop widget',
+      click: () => toggleDesktopWidget(),
+    },
     { type: 'separator' },
     { label: status, enabled: false },
     { label: `Queue: ${s.queued ?? 0}`, enabled: false },
@@ -329,6 +424,7 @@ app.whenReady().then(() => {
   // userData persists across app updates, so the operator enters it once and
   // never again. (The in-bundle bridge/.env was wiped by every update.)
   const configPath = path.join(app.getPath('userData'), 'bridge.env');
+  widgetStatePath = path.join(app.getPath('userData'), 'widget-state.json');
   runner = new BridgeRunner({ bridgeDir, configPath });
 
   // Stream every line of bridge stdout/stderr to the renderer. Renderer
@@ -348,6 +444,9 @@ app.whenReady().then(() => {
 
   createWindow();
   createTray();
+
+  // Restore the desktop widget if it was up when the app last quit.
+  if (readWidgetState().shown) toggleDesktopWidget(true);
 
   // Status widget polls — cheap, and self-gated to a visible window.
   setInterval(tickPrinters, PRINTER_POLL_MS);
@@ -374,6 +473,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   if (updateTimer) clearInterval(updateTimer);
+  widgetWin?.destroy();   // hidden-not-closed windows must not block quit
   runner?.stop();
 });
 
@@ -423,6 +523,12 @@ ipcMain.handle('printers:test', (_e, printer) => testPrinter(typeof printer === 
 // steady state arrives via the printers:status / packing:status pushes.
 ipcMain.handle('printers:get-status', () => printerStatus());
 ipcMain.handle('packing:get-status', () => fetchPackingStatus());
+
+// Desktop widget: toggled from the main window's header button, the tray
+// menu, or its own ✕ (which hides — quitting stays a tray/Cmd-Q decision).
+ipcMain.handle('widget:toggle', () => ({ shown: toggleDesktopWidget() }));
+ipcMain.handle('widget:hide', () => ({ shown: toggleDesktopWidget(false) }));
+ipcMain.handle('widget:get', () => ({ shown: desktopWidgetShown() }));
 
 ipcMain.handle('app:open-bridge-folder', async () => {
   await shell.openPath(runner.bridgeDir);

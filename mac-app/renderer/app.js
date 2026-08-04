@@ -362,6 +362,19 @@ function renderPackingStatus(st) {
 window.printers.onStatus(renderPrinterStatus);
 window.packing.onStatus(renderPackingStatus);
 
+// Floating desktop widget — same data, lives on the desktop above other
+// windows so it survives closing this window to the menu bar.
+const btnDesktopWidget = $('btn-desktop-widget');
+function applyDesktopWidget(shown) {
+  btnDesktopWidget.textContent = shown ? 'Hide desktop widget' : 'Show desktop widget';
+}
+btnDesktopWidget.addEventListener('click', async () => {
+  btnDesktopWidget.disabled = true;
+  try { applyDesktopWidget((await window.desktopWidget.toggle())?.shown); }
+  finally { btnDesktopWidget.disabled = false; }
+});
+window.desktopWidget.onState((s) => applyDesktopWidget(s?.shown));
+
 // ── Watch live (prototype) ───────────────────────────────────────────
 // The bridge scrapes the Palmstreet live screen while watching is on and
 // streams snapshots here. We render the current snapshot and derive a rough
@@ -591,6 +604,7 @@ window.app.onUpdateStatus((result) => applyUpdate(result));
   // reject unhandled.
   window.printers.getStatus().then(renderPrinterStatus).catch(() => {});
   window.packing.getStatus().then(renderPackingStatus).catch(() => {});
+  window.desktopWidget.get().then((r) => applyDesktopWidget(r?.shown)).catch(() => {});
   baseVersionLabel = `v${await window.app.getVersion()}`;
   els.versionLabel.textContent = baseVersionLabel;
   checkForUpdates();  // silent on launch — only the banner speaks up

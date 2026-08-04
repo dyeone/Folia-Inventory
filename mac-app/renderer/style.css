@@ -249,6 +249,98 @@ main {
 /* Jobs stuck behind a wedged queue are the thing to worry about. */
 .printer-jobs.is-stuck { background: var(--red-bg); color: var(--red); }
 
+/* ── Desktop widget (floating always-on-top mini card) ───────────────── */
+/* The window is frameless + transparent; the card draws its own chrome.
+   Whole card drags the window; only the ✕ opts out. */
+.dw-body {
+  background: transparent;
+  margin: 0;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.dw-card {
+  -webkit-app-region: drag;
+  box-sizing: border-box;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.93);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px 14px 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+@media (prefers-color-scheme: dark) {
+  .dw-card { background: rgba(38, 38, 40, 0.93); }
+}
+.dw-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.dw-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.dw-close {
+  -webkit-app-region: no-drag;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.dw-close:hover { background: var(--faint); color: var(--text); }
+
+.dw-big {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+#dw-ready { font-size: 40px; font-weight: 700; letter-spacing: -0.03em; }
+#dw-ready.is-done { color: var(--emerald); }
+.dw-big-rest { font-size: 15px; font-weight: 600; color: var(--muted); }
+.dw-sub { margin-top: 4px; font-size: 11px; color: var(--muted); }
+.dw-bar-wrap { margin-top: 10px; height: 6px; }
+.dw-meta {
+  margin-top: 7px;
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.dw-shipped { color: var(--emerald); font-weight: 600; }
+
+.dw-printers {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dw-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--faint);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+.dw-row .printer-dot { width: 10px; height: 10px; }
+.dw-role { font-weight: 600; font-size: 12px; flex: 1; min-width: 0; }
+.dw-row .printer-state { max-width: none; }
+.dw-note { margin-top: 8px; }
+
 .status-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
