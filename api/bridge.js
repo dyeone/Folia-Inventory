@@ -1,4 +1,4 @@
-import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, DEFAULT_BRAND } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { randomBytes } from 'node:crypto';
 
@@ -50,6 +50,7 @@ export default wrap(async (req, res) => {
     case 'status':          return status(req, res);
     case 'health':          return health(req, res);
     case 'mac-version':     return macVersion(req, res);
+    case 'packing-status':  return packingStatus(req, res);
     default: {
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
@@ -264,6 +265,96 @@ async function macVersion(req, res) {
     url: rel.url || null,
     notes: rel.notes || null,
   });
+}
+
+// Glanceable packing progress for the Mac app's dashboard widget. Bridge
+// auth — the app already holds the token, so no userId/brand round-trip.
+// Boxes derive from items' shipmentBoxId, mirroring the packer UI: a box is
+// "open" while it still has a 'sold' item, and "ready" once every sold item
+// carries packedAt. `since` (ISO — the app passes its local midnight) scopes
+// the shipped-today count and bounds how many shipped rows we ever read.
+async function packingStatus(req, res) {
+  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+  await requireBridgeUser(req);
+  const sinceRaw = (req.query?.since || '').toString();
+  let since = null;
+  if (sinceRaw) {
+    const parsed = Date.parse(sinceRaw);
+    if (Number.isNaN(parsed)) { const e = new Error('invalid since'); e.status = 400; throw e; }
+    // Clamp to 7 days back. The widget only ever asks for local midnight; the
+    // clamp keeps a stale or hostile token holder from forcing full-history
+    // scans (`since=1970-01-01`) on every poll.
+    since = new Date(Math.max(parsed, Date.now() - 7 * 24 * 60 * 60 * 1000)).toISOString();
+  }
+
+  // Page through every matching item — a live week tops Supabase's 1000-row
+  // cap, and a truncated read undercounts silently. Ordered by id: offset
+  // pagination without ORDER BY lets Postgres reshuffle rows between pages,
+  // which duplicates or drops items exactly when the count matters.
+  const PAGE = 1000;
+  const MAX_PAGES = 20;
+  const items = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const from = page * PAGE;
+    let q = supabase
+      .from('inventory_items')
+      .select('"brandId", status, "shipmentBoxId", "packedAt", "shippedAt", "deletedAt"')
+      .not('shipmentBoxId', 'is', null);
+    // `since` here is ONLY ever the clamped, re-serialized ISO string above —
+    // never interpolate raw query input into this .or() filter (PostgREST
+    // or-syntax injection: `,` `(` `)` are metacharacters).
+    q = since
+      ? q.or(`status.eq.sold,and(status.eq.shipped,shippedAt.gte.${since})`)
+      : q.eq('status', 'sold');
+    const { data, error } = await q.order('id').range(from, from + PAGE - 1);
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    items.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+
+  // brand → box → tallies. Soft-deleted rows are ghosts to the packer UI, so
+  // they're ghosts here too.
+  const brands = new Map();
+  for (const it of items) {
+    if (it.deletedAt) continue;
+    const brandId = it.brandId || DEFAULT_BRAND;
+    let boxes = brands.get(brandId);
+    if (!boxes) { boxes = new Map(); brands.set(brandId, boxes); }
+    let box = boxes.get(it.shipmentBoxId);
+    if (!box) { box = { sold: 0, packed: 0, shippedSince: false }; boxes.set(it.shipmentBoxId, box); }
+    if (it.status === 'sold') {
+      box.sold += 1;
+      if (it.packedAt) box.packed += 1;
+    }
+    if (since && it.shippedAt && Date.parse(it.shippedAt) >= Date.parse(since)) box.shippedSince = true;
+  }
+
+  const brandIds = [...brands.keys()];
+  let namesById = {};
+  if (brandIds.length) {
+    // Degrade to raw brand ids if the lookup fails — but say so in the logs.
+    const { data: rows, error: bErr } = await supabase.from('brands').select('id,name').in('id', brandIds);
+    if (bErr) console.warn('packing-status: brands lookup failed:', bErr.message);
+    namesById = Object.fromEntries((rows || []).map(r => [r.id, r.name]));
+  }
+
+  const out = brandIds.map(id => {
+    let boxesOpen = 0, boxesReady = 0, plantsTotal = 0, plantsPacked = 0, boxesShipped = 0;
+    for (const box of brands.get(id).values()) {
+      if (box.sold > 0) {
+        boxesOpen += 1;
+        plantsTotal += box.sold;
+        plantsPacked += box.packed;
+        if (box.packed === box.sold) boxesReady += 1;
+      } else if (box.shippedSince) {
+        boxesShipped += 1;
+      }
+    }
+    return { brandId: id, name: namesById[id] || id, boxesOpen, boxesReady, plantsTotal, plantsPacked, boxesShipped };
+  }).filter(b => b.boxesOpen > 0 || b.boxesShipped > 0)
+    .sort((a, b) => b.plantsTotal - a.plantsTotal);
+
+  return res.status(200).json({ brands: out, at: new Date().toISOString() });
 }
 
 async function complete(req, res) {
