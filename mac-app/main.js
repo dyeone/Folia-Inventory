@@ -72,6 +72,152 @@ async function testPrinter(printer) {
   }
 }
 
+// ─── Status widget: live printer + packing state ────────────────────────────
+// Per-role printer state for the dashboard widget. `lpstat -p` reports each
+// queue's state (idle / now printing / disabled), `lpstat -o` the queued jobs.
+// A disabled queue is what "the printer is wedged" looks like from CUPS —
+// that's the red the operator needs to see from across the room.
+const PRINTER_ROLES = [
+  { role: 'label',    key: 'LABEL_PRINTER',    title: 'Labels' },
+  { role: 'shipping', key: 'SHIPPING_PRINTER', title: 'Shipping' },
+  { role: 'slip',     key: 'SLIP_PRINTER',     title: 'Slips' },
+  { role: 'document', key: 'DOCUMENT_PRINTER', title: 'Docs' },
+];
+
+function parseLpstatP(text) {
+  // Lines look like:
+  //   printer Shipping_label is idle.  enabled since Mon Aug  3 ...
+  //   printer Box_labels now printing Box_labels-42.  enabled since ...
+  //   printer Star_TSP143 disabled since Mon Aug  3 ... -
+  //           Unable to send data to printer.
+  // Indented lines are the reason for the queue announced just above.
+  const queues = new Map();
+  let last = null;
+  for (const line of (text || '').split('\n')) {
+    const m = line.match(/^printer\s+(\S+)\s+(.*)$/);
+    if (m) {
+      const state = /now printing/.test(m[2]) ? 'printing'
+        : /disabled/.test(m[2]) ? 'paused'
+          : 'idle';
+      last = { state, reason: null };
+      queues.set(m[1], last);
+    } else if (/^\s+\S/.test(line) && last && last.state === 'paused' && !last.reason) {
+      last.reason = line.trim().replace(/\.$/, '');
+    }
+  }
+  return queues;
+}
+
+function parseLpstatO(text) {
+  // Job lines start with "<queue>-<jobId>"; count per queue.
+  const jobs = new Map();
+  for (const line of (text || '').split('\n')) {
+    const m = line.match(/^(\S+)-\d+\s/);
+    if (m) jobs.set(m[1], (jobs.get(m[1]) || 0) + 1);
+  }
+  return jobs;
+}
+
+async function printerStatus() {
+  // Pin the locale: the parsers match CUPS's English phrasing ("is idle",
+  // "now printing", "disabled since"), which localizes under a non-C LANG.
+  const lpstatOpts = { encoding: 'utf8', timeout: 5000, env: { ...process.env, LC_ALL: 'C' } };
+  let pOut = '', oOut = '', dOut = '', error = null;
+  try {
+    const [p, o, d] = await Promise.all([
+      execFileP(LPSTAT, ['-p'], lpstatOpts),
+      execFileP(LPSTAT, ['-o'], lpstatOpts).catch(() => ({ stdout: '' })),
+      execFileP(LPSTAT, ['-d'], lpstatOpts).catch(() => ({ stdout: '' })),
+    ]);
+    pOut = p.stdout; oOut = o.stdout; dOut = d.stdout;
+  } catch (e) {
+    // "lpstat: No destinations added." exits non-zero — that's a real state
+    // (no printers), not a crash. Anything else surfaces as the error note.
+    if (!/no destinations/i.test(e.stderr || e.message || '')) error = (e.stderr || e.message || 'lpstat failed').trim();
+  }
+  const queues = parseLpstatP(pOut);
+  const jobs = parseLpstatO(oOut);
+  const dm = (dOut || '').match(/system default destination:\s*(\S+)/i);
+  const defaultQueue = dm ? dm[1] : null;
+
+  const cfg = runner?.readEnv() || {};
+  const roles = PRINTER_ROLES.map(({ role, key, title }) => {
+    const configured = (cfg[key] || '').trim();
+    const name = configured || defaultQueue || '';
+    if (!name) return { role, title, printer: null, state: 'unset', jobs: 0, reason: null };
+    const q = queues.get(name);
+    return {
+      role,
+      title,
+      printer: name + (configured ? '' : ' (default)'),
+      state: q ? q.state : 'missing',
+      jobs: jobs.get(name) || 0,
+      reason: q?.reason || null,
+    };
+  });
+  return { roles, default: defaultQueue, error, at: Date.now() };
+}
+
+// Packing progress comes from the Folia API's packing-status action, using
+// the same base URL + bridge token the bridge subprocess runs on — so the
+// widget works even while the bridge itself is stopped.
+const PACKING_TIMEOUT_MS = 8000;
+async function fetchPackingStatus() {
+  const cfg = runner?.readEnv() || {};
+  const base = (cfg.FOLIA_API_URL || cfg.BRIDGE_URL || '').replace(/\/+$/, '');
+  const token = cfg.BRIDGE_TOKEN || '';
+  if (!base || !token) return { error: 'not-configured' };
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);   // local midnight → "shipped today" is the operator's today
+  const url = `${base}/api/bridge?action=packing-status&since=${encodeURIComponent(midnight.toISOString())}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), PACKING_TIMEOUT_MS);
+  try {
+    const resp = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    });
+    if (!resp.ok) return { error: `HTTP ${resp.status}` };
+    return await resp.json();
+  } catch (e) {
+    return { error: e.name === 'AbortError' ? 'timed out' : (e.message || 'network error') };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Both polls pause while the window is hidden (menu-bar background) — the
+// widget can't be seen, so there's nothing to keep fresh. A show re-ticks
+// immediately so the operator never stares at stale numbers.
+const PRINTER_POLL_MS = 5000;
+const PACKING_POLL_MS = 15000;
+let printersInFlight = false;
+let packingInFlight = false;
+
+function widgetVisible() {
+  return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
+}
+async function tickPrinters() {
+  if (!widgetVisible() || printersInFlight) return;
+  printersInFlight = true;
+  try {
+    const st = await printerStatus();
+    // Re-check after the await — the window can be torn down mid-lpstat, and
+    // a send to a destroyed webContents throws in the main process.
+    if (widgetVisible()) mainWindow.webContents.send('printers:status', st);
+  } catch { /* window closed mid-tick */ }
+  finally { printersInFlight = false; }
+}
+async function tickPacking() {
+  if (!widgetVisible() || packingInFlight) return;
+  packingInFlight = true;
+  try {
+    const st = await fetchPackingStatus();
+    if (widgetVisible()) mainWindow.webContents.send('packing:status', st);
+  } catch { /* window closed mid-tick */ }
+  finally { packingInFlight = false; }
+}
+
 // Re-check for a newer build every 6h so an operator who leaves the window
 // open for days still learns about a release without restarting. The
 // renderer also checks on load and on demand — this just covers the
@@ -100,7 +246,7 @@ let isQuitting = false;
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 720,
-    height: 560,
+    height: 700,
     title: 'Folia Bridge',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#fafafa',
@@ -112,6 +258,9 @@ function createWindow() {
   });
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => { mainWindow = null; });
+  // Coming back from the menu bar → refresh the status widget right away
+  // instead of waiting out a poll interval.
+  mainWindow.on('show', () => { tickPrinters(); tickPacking(); });
   // Closing the window keeps the app (and the bridge) alive in the menu bar.
   // The menu bar icon makes the still-running bridge visible — which is why we
   // no longer quit on close (the old "invisible bridge" concern). The Dock icon
@@ -200,6 +349,10 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
 
+  // Status widget polls — cheap, and self-gated to a visible window.
+  setInterval(tickPrinters, PRINTER_POLL_MS);
+  setInterval(tickPacking, PACKING_POLL_MS);
+
   updateTimer = setInterval(async () => {
     const result = await runUpdateCheck();
     if (result.status === 'update-available') {
@@ -265,6 +418,11 @@ ipcMain.handle('bridge:save-config', async (_e, cfg) => {
 // picks it up via _childEnv on its next start.
 ipcMain.handle('printers:list', () => listPrinters());
 ipcMain.handle('printers:test', (_e, printer) => testPrinter(typeof printer === 'string' ? printer : ''));
+
+// Status widget: one-shot pulls for the renderer's initial paint; the
+// steady state arrives via the printers:status / packing:status pushes.
+ipcMain.handle('printers:get-status', () => printerStatus());
+ipcMain.handle('packing:get-status', () => fetchPackingStatus());
 
 ipcMain.handle('app:open-bridge-folder', async () => {
   await shell.openPath(runner.bridgeDir);
