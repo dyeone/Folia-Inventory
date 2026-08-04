@@ -37,6 +37,13 @@ contextBridge.exposeInMainWorld('packing', {
   onStatus: (cb) => ipcRenderer.on('packing:status', (_e, s) => cb(s)),
 });
 
+contextBridge.exposeInMainWorld('desktopWidget', {
+  toggle: () => ipcRenderer.invoke('widget:toggle'),
+  hide:   () => ipcRenderer.invoke('widget:hide'),
+  get:    () => ipcRenderer.invoke('widget:get'),
+  onState: (cb) => ipcRenderer.on('widget:state', (_e, s) => cb(s)),
+});
+
 contextBridge.exposeInMainWorld('app', {
   openBridgeFolder: () => ipcRenderer.invoke('app:open-bridge-folder'),
   openLogFile:      () => ipcRenderer.invoke('app:open-log-file'),

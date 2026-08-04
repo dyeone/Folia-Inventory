@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline';" />
+  <title>Folia Bridge widget</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="dw-body">
+  <div class="dw-card">
+    <div class="dw-titlebar">
+      <span class="dw-title">Folia Bridge</span>
+      <button id="dw-close" class="dw-close" title="Hide widget">&#x2715;</button>
+    </div>
+
+    <div class="dw-pack">
+      <div class="dw-big">
+        <span id="dw-ready">–</span><span class="dw-big-rest">/ <span id="dw-total">–</span> boxes</span>
+      </div>
+      <div class="dw-sub" id="dw-sub">ready to ship</div>
+      <div class="widget-bar dw-bar-wrap"><div id="dw-bar" class="widget-bar-fill"></div></div>
+      <div class="dw-meta">
+        <span id="dw-plants">—</span>
+        <span id="dw-shipped" class="dw-shipped hidden"></span>
+      </div>
+    </div>
+
+    <div class="dw-printers" id="dw-printers"></div>
+    <div id="dw-note" class="dw-note muted small hidden"></div>
+  </div>
+
+  <script src="widget.js"></script>
+</body>
+</html>
