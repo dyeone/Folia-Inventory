@@ -64,6 +64,16 @@ const els = {
   btnTestSlip:   $('btn-test-slip'),
   btnTestDocument: $('btn-test-document'),
   btnSavePrinters: $('btn-save-printers'),
+  pkReady:       $('pk-ready'),
+  pkTotal:       $('pk-total'),
+  pkSub:         $('pk-sub'),
+  pkBar:         $('pk-bar'),
+  pkPlants:      $('pk-plants'),
+  pkShipped:     $('pk-shipped'),
+  pkBrands:      $('pk-brands'),
+  pkNote:        $('pk-note'),
+  prRows:        $('pr-rows'),
+  prNote:        $('pr-note'),
 };
 
 // ── State rendering ──────────────────────────────────────────────────
@@ -250,6 +260,107 @@ els.btnSavePrinters.addEventListener('click', async () => {
     els.btnSavePrinters.disabled = false;
   }
 });
+
+// ── Status widget (packing + printers) ───────────────────────────────
+// Main pushes fresh snapshots on its own poll cadence (printers 5s,
+// packing 15s, both paused while the window is hidden); we just render.
+// Everything is built with the DOM, not string HTML, so printer/brand
+// names can never inject markup.
+const PRINTER_STATE_TEXT = {
+  idle: 'ready',
+  printing: 'printing',
+  paused: 'PAUSED',
+  missing: 'not found',
+  unset: 'not set',
+};
+
+function renderPrinterStatus(st) {
+  els.prRows.replaceChildren();
+  const roles = st?.roles || [];
+  for (const r of roles) {
+    const row = document.createElement('div');
+    row.className = 'printer-row';
+
+    const dot = document.createElement('span');
+    dot.className = `printer-dot is-${r.state}`;
+    const role = document.createElement('span');
+    role.className = 'printer-role';
+    role.textContent = r.title;
+    const name = document.createElement('span');
+    name.className = 'printer-name';
+    name.textContent = r.printer || '—';
+    name.title = r.reason ? `${r.printer} — ${r.reason}` : (r.printer || '');
+    const state = document.createElement('span');
+    state.className = `printer-state is-${r.state}`;
+    state.textContent = r.state === 'paused' && r.reason
+      ? `PAUSED — ${r.reason}`
+      : PRINTER_STATE_TEXT[r.state] || r.state;
+
+    row.append(dot, role, name, state);
+    if (r.jobs > 0) {
+      const jobs = document.createElement('span');
+      jobs.className = 'printer-jobs' +
+        (r.state === 'paused' || r.state === 'missing' ? ' is-stuck' : '');
+      jobs.textContent = `${r.jobs} in queue`;
+      row.append(jobs);
+    }
+    els.prRows.appendChild(row);
+  }
+  els.prNote.textContent = st?.error ? `Couldn’t read printer state: ${st.error}` : '';
+  els.prNote.classList.toggle('hidden', !st?.error);
+}
+
+function renderPackingStatus(st) {
+  if (st?.error) {
+    els.pkNote.textContent = st.error === 'not-configured'
+      ? 'Set FOLIA_API_URL and a bridge token below to see packing progress.'
+      : `Couldn’t load packing status: ${st.error}`;
+    els.pkNote.classList.remove('hidden');
+    return;   // keep the last good numbers on screen through a blip
+  }
+  els.pkNote.classList.add('hidden');
+
+  const brands = st?.brands || [];
+  const sum = (k) => brands.reduce((s, b) => s + (b[k] || 0), 0);
+  const boxesOpen = sum('boxesOpen');
+  const boxesReady = sum('boxesReady');
+  const plantsTotal = sum('plantsTotal');
+  const plantsPacked = sum('plantsPacked');
+  const boxesShipped = sum('boxesShipped');
+
+  els.pkReady.textContent = String(boxesReady);
+  els.pkTotal.textContent = String(boxesOpen);
+  els.pkReady.classList.toggle('is-done', boxesOpen > 0 && boxesReady === boxesOpen);
+  els.pkSub.textContent =
+    boxesOpen === 0 ? 'no open boxes right now' :
+    boxesReady === boxesOpen ? 'all boxes packed — ready to ship' :
+    'packed & ready to ship';
+  const pct = plantsTotal > 0 ? Math.round((plantsPacked / plantsTotal) * 100) : 0;
+  els.pkBar.style.width = `${pct}%`;
+  els.pkPlants.textContent = plantsTotal > 0
+    ? `${plantsPacked} / ${plantsTotal} plants packed (${pct}%)`
+    : '—';
+  els.pkShipped.textContent = boxesShipped > 0
+    ? `${boxesShipped} box${boxesShipped === 1 ? '' : 'es'} shipped today`
+    : '';
+  els.pkShipped.classList.toggle('hidden', boxesShipped === 0);
+
+  // Per-brand chips only when the work spans more than one brand.
+  els.pkBrands.replaceChildren();
+  const active = brands.filter(b => b.boxesOpen > 0);
+  if (active.length > 1) {
+    for (const b of active) {
+      const chip = document.createElement('span');
+      chip.className = 'widget-brand-chip';
+      chip.textContent = `${b.name} ${b.boxesReady}/${b.boxesOpen}`;
+      els.pkBrands.appendChild(chip);
+    }
+  }
+  els.pkBrands.classList.toggle('hidden', active.length <= 1);
+}
+
+window.printers.onStatus(renderPrinterStatus);
+window.packing.onStatus(renderPackingStatus);
 
 // ── Watch live (prototype) ───────────────────────────────────────────
 // The bridge scrapes the Palmstreet live screen while watching is on and
@@ -475,6 +586,11 @@ window.app.onUpdateStatus((result) => applyUpdate(result));
   applyConfig(await window.bridge.getConfig());
   applyWatch((await window.live.getWatch())?.watching);
   refreshPrinters();  // populate the Printers panel; non-blocking
+  // Status widget first paint; steady state arrives via the pushes. A failed
+  // pull just leaves the placeholders until the next push — don't let it
+  // reject unhandled.
+  window.printers.getStatus().then(renderPrinterStatus).catch(() => {});
+  window.packing.getStatus().then(renderPackingStatus).catch(() => {});
   baseVersionLabel = `v${await window.app.getVersion()}`;
   els.versionLabel.textContent = baseVersionLabel;
   checkForUpdates();  // silent on launch — only the banner speaks up

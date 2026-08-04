@@ -28,6 +28,13 @@ contextBridge.exposeInMainWorld('live', {
 contextBridge.exposeInMainWorld('printers', {
   list: () => ipcRenderer.invoke('printers:list'),
   test: (printer) => ipcRenderer.invoke('printers:test', printer),
+  getStatus: () => ipcRenderer.invoke('printers:get-status'),
+  onStatus: (cb) => ipcRenderer.on('printers:status', (_e, s) => cb(s)),
+});
+
+contextBridge.exposeInMainWorld('packing', {
+  getStatus: () => ipcRenderer.invoke('packing:get-status'),
+  onStatus: (cb) => ipcRenderer.on('packing:status', (_e, s) => cb(s)),
 });
 
 contextBridge.exposeInMainWorld('app', {
