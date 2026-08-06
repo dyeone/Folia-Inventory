@@ -53,6 +53,26 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
     return nextSkuForSeller(seller?.code, v.code, existingItems) || '—';
   };
 
+  // Same-plant memory: if this seller consigned a plant by this name before,
+  // keep last time's price — repeat intakes shouldn't retype it. Runs when
+  // the name field is left; never clobbers a price already typed in the row.
+  const itemTs = (i) => Date.parse(i?.createdAt || '') || parseInt(i?.id, 10) || 0;
+  const prefillFromHistory = (key, name) => {
+    const q = (name || '').trim().toLowerCase();
+    if (!q || !seller?.id) return;
+    const prev = existingItems
+      .filter(i => i.sellerId === seller.id
+        && (i.name || '').trim().toLowerCase() === q
+        && i.listingPrice != null && i.listingPrice !== '')
+      .sort((a, b) => itemTs(b) - itemTs(a))[0];
+    if (!prev) return;
+    setRows(rs => rs.map(r => {
+      if (r.key !== key) return r;
+      if (String(r.listingPrice ?? '').trim() !== '') return r;
+      return { ...r, listingPrice: String(prev.listingPrice), keptFrom: prev.sku };
+    }));
+  };
+
   const totalUnits = rows.reduce((n, r) => n + Math.max(1, parseInt(r.quantity, 10) || 1), 0);
 
   const submit = async () => {
@@ -125,7 +145,14 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
               </select>
               <input
                 type="text" value={r.name}
-                onChange={(e) => patch(r.key, { name: e.target.value })}
+                onChange={(e) => patch(r.key, {
+                  name: e.target.value,
+                  // A price this row only has because of the old name goes
+                  // with it — the new name re-prefills on blur. A hand-typed
+                  // price (no keptFrom) stays put.
+                  ...(r.keptFrom ? { listingPrice: '', keptFrom: null } : {}),
+                })}
+                onBlur={() => prefillFromHistory(r.key, r.name)}
                 className="input" placeholder="e.g. warocqueanum"
               />
               <input
@@ -154,8 +181,11 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
-              <div className="hidden sm:block col-span-full text-[11px] font-mono text-gray-400 -mt-1 pl-1">
-                ≈ {skuPreview(r)}
+              <div className="hidden sm:block col-span-full text-[11px] -mt-1 pl-1">
+                <span className="font-mono text-gray-400">≈ {skuPreview(r)}</span>
+                {r.keptFrom && (
+                  <span className="text-amber-700"> · ${r.listingPrice} kept from last intake ({r.keptFrom})</span>
+                )}
               </div>
             </div>
           ))}

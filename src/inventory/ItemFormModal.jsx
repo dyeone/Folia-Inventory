@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
@@ -64,6 +64,60 @@ export function ItemFormModal({
     imageUrl: item?.imageUrl || '',
   });
   const [err, setErr] = useState('');
+
+  // Same-plant memory (add mode): picking a species we've stocked before
+  // carries Cost & Pricing forward from the most recent same-type item of
+  // that plant, so repeat adds don't retype numbers. Only fields the
+  // operator hasn't typed this session are touched — switching species
+  // replaces the previous carry-over (or clears it when the new species has
+  // no history) but never overwrites a hand-entered value.
+  const PREFILL_FIELDS = ['grossCost', 'netCost', 'profitRate', 'idealPrice', 'listingPrice'];
+  const [prefillNote, setPrefillNote] = useState(null);
+  const lastPrefill = useRef({});
+  // Rough recency: createdAt when present, else the timestamp baked into the
+  // id (newId() = Date.now() + random suffix), else acquiredAt date.
+  const itemTs = (i) =>
+    Date.parse(i?.createdAt || '') || parseInt(i?.id, 10) || Date.parse(i?.acquiredAt || '') || 0;
+
+  useEffect(() => {
+    if (isEditing) return;
+    const epithet = (pick.speciesEpithet || '').trim().toLowerCase();
+    const varietyName = (pick.varietyName || '').trim().toLowerCase();
+    if (!epithet) return;
+    const src = existingItems
+      .filter(i =>
+        i.type === form.type &&
+        (i.name || '').trim().toLowerCase() === epithet &&
+        (i.variety || '').trim().toLowerCase() === varietyName &&
+        PREFILL_FIELDS.some(f => i[f] != null && i[f] !== ''))
+      .sort((a, b) => itemTs(b) - itemTs(a))[0] || null;
+
+    let applied = false;
+    setForm(f => {
+      const next = { ...f };
+      for (const k of PREFILL_FIELDS) {
+        const cur = String(next[k] ?? '');
+        const prior = lastPrefill.current[k];
+        // Untouched = still empty, or still exactly what a previous
+        // carry-over wrote. Anything else is the operator's — leave it.
+        if (cur !== '' && cur !== prior) continue;
+        const val = src?.[k];
+        if (val != null && val !== '') {
+          next[k] = String(val);
+          lastPrefill.current[k] = String(val);
+          applied = true;
+        } else {
+          next[k] = '';
+          delete lastPrefill.current[k];
+        }
+      }
+      return next;
+    });
+    setPrefillNote(applied && src ? { sku: src.sku, ts: itemTs(src) } : null);
+    // setForm-in-effect is the point here: the carry-over reacts to the
+    // species pick. The overwrite guard above keeps it non-destructive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, pick.speciesEpithet, pick.varietyName, form.type, existingItems]);
 
   // Auto-generate the SKU from the selected variety (new items only). The
   // server owns the real assignment (addItem strips this); a chosen seller's
@@ -202,6 +256,12 @@ export function ItemFormModal({
 
         <div className="border-t border-gray-200 pt-3">
           <div className="text-xs font-semibold text-gray-700 mb-2">Cost & Pricing</div>
+          {prefillNote && (
+            <div className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5 mb-2">
+              Cost &amp; price carried from <span className="font-mono font-semibold">{prefillNote.sku}</span>
+              {prefillNote.ts ? ` (added ${new Date(prefillNote.ts).toLocaleDateString()})` : ''} — the last {form.type === 'tc' ? 'TC' : 'plant'} of this species. Edit anything below.
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Gross Cost">
               <input type="number" step="0.01" value={form.grossCost} onChange={(e) => setForm({ ...form, grossCost: e.target.value })} className="input" placeholder="0.00" />
