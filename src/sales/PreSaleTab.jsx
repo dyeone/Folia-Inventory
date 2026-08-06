@@ -116,9 +116,6 @@ export function PreSaleTab({
   const [dragId, setDragId] = useState(null);
   // Bulk photo → listings modal (open when true).
   const [showPhotoAssign, setShowPhotoAssign] = useState(false);
-  // A scanned item that's staged on another sale — offer to move it here.
-  // { item, otherName } or null.
-  const [conflict, setConflict] = useState(null);
   // Weekly running index: the brand's next lineup number to hand out inside
   // the sale week's 200-number block (Tue ends 258 → Fri starts at 259; see
   // lotBlock.js). Re-fetched when the active sale's lot week changes; advanced
@@ -162,7 +159,9 @@ export function PreSaleTab({
   useEffect(() => { setStartEdited(''); }, [saleId]);
   useEffect(() => {
     if (!msg) return undefined;
-    const t = setTimeout(() => setMsg(null), 2500);
+    // Move notices carry information (which sale the item left) — hold them
+    // on screen longer than a plain Added/error blip.
+    const t = setTimeout(() => setMsg(null), msg.type === 'move' ? 5000 : 2500);
     return () => clearTimeout(t);
   }, [msg]);
   // The highlight is a brief cue; clear it so it doesn't linger on the row.
@@ -248,12 +247,14 @@ export function PreSaleTab({
   const eligibleToAdd = (it) => {
     const cur = effSaleId(it);
     if (cur === saleId) return { ok: false, code: 'staged', reason: 'Already staged' };
+    // Type gate before the other-sale check so an auto-move can never pull a
+    // plant into a TC-only sale (or vice versa).
+    if (sale?.itemTypes === 'tc' && it.type !== 'tc') return { ok: false, code: 'type', reason: `${it.sku} is not a TC; this sale is TC only` };
+    if (sale?.itemTypes === 'plant' && it.type !== 'plant') return { ok: false, code: 'type', reason: `${it.sku} is not a plant; this sale is plants only` };
     if (cur && cur !== saleId) return { ok: false, code: 'other-sale', reason: `${it.sku} is already on another sale`, otherSaleId: cur };
     if (!['available', 'listed'].includes(it.status)) {
       return { ok: false, code: 'status', reason: `${it.sku} is ${it.status}, not available` };
     }
-    if (sale?.itemTypes === 'tc' && it.type !== 'tc') return { ok: false, code: 'type', reason: `${it.sku} is not a TC; this sale is TC only` };
-    if (sale?.itemTypes === 'plant' && it.type !== 'plant') return { ok: false, code: 'type', reason: `${it.sku} is not a plant; this sale is plants only` };
     return { ok: true };
   };
 
@@ -287,21 +288,8 @@ export function PreSaleTab({
     }
   };
 
-  // Move a staged item off its current sale onto this one. assign() clears
-  // the stale lot number, so it lands in this lineup's un-numbered tail.
-  const moveConflictHere = async () => {
-    const it = conflict?.item;
-    setConflict(null);
-    if (!it) return;
-    if (await assign(it, saleId)) {
-      markAdded(it.id);
-      flash('ok', `Moved ${it.sku} here`);
-    }
-  };
-
   const addItem = async (it) => {
     if (!saleId) { flash('error', 'Pick a sale event first'); return; }
-    setConflict(null); // each new scan clears any pending move prompt
     const elig = eligibleToAdd(it);
     if (!elig.ok) {
       if (elig.code === 'staged') {
@@ -310,10 +298,19 @@ export function PreSaleTab({
         if (quickAdd) flash('ok', `${it.sku} already staged`);
         else { markAdded(it.id); flash('ok', `Editing ${it.sku}`); }
       } else if (elig.code === 'other-sale') {
-        // Don't hard-reject — offer to move it here (see the banner below).
+        // Staged on another live — scanning it here means the operator wants
+        // it HERE, so move it without breaking the scan rhythm to ask. The
+        // amber notice names the sale it left so a mis-scan is visible and
+        // reversible (scan it back over there). assign() clears the stale lot
+        // number; existing listing details (price, photo) travel with it —
+        // quick add's flat price only fills in when it never had one.
         const otherName = sales.find(s => s.id === elig.otherSaleId)?.name || 'another sale';
-        setConflict({ item: it, otherName });
-        flash('error', `${it.sku} is on ${otherName}`);
+        const extra = quickAdd && !Number(it.listingPrice) ? { listingPrice: QUICK_ADD_PRICE } : {};
+        if (await assign(it, saleId, extra)) {
+          markAdded(it.id, !quickAdd);
+          flash('move', `Moved ${it.sku} here — was on ${otherName}`);
+          if (quickAdd) setTimeout(() => scanRef.current?.focus(), 0);
+        }
       } else flash('error', elig.reason);
       return;
     }
@@ -556,36 +553,18 @@ export function PreSaleTab({
             className="w-full pl-10 pr-3 py-3 text-base border-2 border-emerald-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-200 focus:border-emerald-500 bg-white"
           />
           {msg && (
-            <div className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs sm:text-sm px-2 py-1 rounded ${
-              msg.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
-            }`}>
+            <div
+              title={msg.text}
+              className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs sm:text-sm px-2 py-1 rounded max-w-[70%] truncate ${
+                msg.type === 'error' ? 'bg-red-100 text-red-700'
+                  : msg.type === 'move' ? 'bg-amber-100 text-amber-800'
+                    : 'bg-emerald-100 text-emerald-700'
+              }`}
+            >
               {msg.text}
             </div>
           )}
         </div>
-        {conflict && (
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2">
-            <span className="text-sm text-amber-800">
-              <span className="font-mono font-semibold">{conflict.item.sku}</span> is staged on{' '}
-              <span className="font-semibold">{conflict.otherName}</span>.
-            </span>
-            <div className="flex gap-1.5 flex-shrink-0">
-              <button
-                onClick={moveConflictHere}
-                disabled={busy}
-                className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-lg bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white disabled:opacity-50"
-              >
-                Move it here
-              </button>
-              <button
-                onClick={() => setConflict(null)}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg text-gray-600 hover:bg-gray-100"
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        )}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
             <input
