@@ -51,6 +51,7 @@ export default wrap(async (req, res) => {
     case 'health':          return health(req, res);
     case 'mac-version':     return macVersion(req, res);
     case 'packing-status':  return packingStatus(req, res);
+    case 'live-show':       return liveShow(req, res);
     default: {
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
@@ -355,6 +356,29 @@ async function packingStatus(req, res) {
     .sort((a, b) => b.plantsTotal - a.plantsTotal);
 
   return res.status(200).json({ brands: out, at: new Date().toISOString() });
+}
+
+// Latest live-show state for the Mac app's Show monitor. The Chrome
+// extension writes it during a live via /api/settings live-show-save; this
+// is the bridge-token read. ?brand= pins a brand; absent, the most recently
+// updated brand's show wins (one live runs at a time in practice).
+async function liveShow(req, res) {
+  if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+  await requireBridgeUser(req);
+  const brand = (req.query?.brand || '').toString().trim().toLowerCase();
+  let q = supabase
+    .from('app_settings')
+    .select('id, data, "updatedAt"')
+    .like('id', 'live_show:%');
+  if (brand) q = q.eq('id', `live_show:${brand}`);
+  const { data, error } = await q.order('updatedAt', { ascending: false }).limit(1);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const row = data?.[0] || null;
+  return res.status(200).json({
+    show: row?.data || null,
+    updatedAt: row?.updatedAt || null,
+    brandId: row ? row.id.slice('live_show:'.length) : null,
+  });
 }
 
 async function complete(req, res) {

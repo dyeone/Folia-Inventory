@@ -176,6 +176,33 @@
 
     <section class="card">
       <div class="card-head">
+        <h2>Show monitor</h2>
+        <span id="show-pill" class="pill pill-gray">no show</span>
+      </div>
+      <div id="show-empty" class="muted small">
+        Follows the live you run in Chrome — the Folia Label Helper extension
+        watches the Palmstreet seller dashboard and logs every sold lot with
+        its time, price, buyer, and bid trail. Appears here automatically once
+        a show is streaming.
+      </div>
+      <div id="show-body" class="hidden">
+        <div id="show-title" class="muted small" style="margin-bottom:10px"></div>
+        <div class="status-grid">
+          <div class="status-cell"><div class="status-label">Gross</div><div id="show-gross" class="status-value">—</div></div>
+          <div class="status-cell"><div class="status-label">Orders</div><div id="show-orders" class="status-value">—</div></div>
+          <div class="status-cell"><div class="status-label">Sold (tracked)</div><div id="show-sold-count" class="status-value">0</div></div>
+          <div class="status-cell"><div class="status-label">Current lot</div><div id="show-current" class="status-value">—</div></div>
+        </div>
+        <table class="live-table" id="show-table">
+          <thead><tr><th>Time</th><th>#</th><th>Item</th><th class="num">Start</th><th class="num">Final</th><th>Buyer</th><th class="num">Bids</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="show-more" class="muted small hidden" style="margin-top:6px"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
         <h2>Watch live</h2>
         <div class="row gap-sm">
           <span id="live-status" class="pill pill-gray">off</span>

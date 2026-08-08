@@ -375,6 +375,91 @@ btnDesktopWidget.addEventListener('click', async () => {
 });
 window.desktopWidget.onState((s) => applyDesktopWidget(s?.shown));
 
+// ── Show monitor (Chrome-dashboard live) ─────────────────────────────
+// The Chrome extension scrapes the Palmstreet seller dashboard during a
+// live and keeps the show state on the API; main polls it every 3s and
+// pushes here. Everything is DOM-built — buyer names, lot titles, and the
+// show title are scraped page text and must never become markup.
+const showEls = {
+  pill: $('show-pill'),
+  empty: $('show-empty'),
+  body: $('show-body'),
+  title: $('show-title'),
+  gross: $('show-gross'),
+  orders: $('show-orders'),
+  soldCount: $('show-sold-count'),
+  current: $('show-current'),
+  table: $('show-table'),
+  more: $('show-more'),
+};
+const SHOW_LIVE_FRESH_MS = 20_000;          // extension saves at least every ~5s while live
+const SHOW_SHOW_FOR_MS = 12 * 60 * 60 * 1000; // keep the last show on screen half a day
+const SHOW_MAX_ROWS = 150;
+
+const fmtMoney = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : `$${Number(v).toLocaleString()}`);
+
+function renderShowMonitor(st) {
+  if (!st || st.error) return;   // keep the last good state through a blip
+  const show = st.show;
+  const age = st.updatedAt ? Date.now() - new Date(st.updatedAt).getTime() : Infinity;
+  const hasShow = !!show && age < SHOW_SHOW_FOR_MS;
+
+  showEls.pill.className = 'pill ' + (age < SHOW_LIVE_FRESH_MS ? 'pill-emerald' : 'pill-gray');
+  showEls.pill.textContent = age < SHOW_LIVE_FRESH_MS ? 'live' : hasShow ? 'ended' : 'no show';
+  showEls.empty.classList.toggle('hidden', hasShow);
+  showEls.body.classList.toggle('hidden', !hasShow);
+  if (!hasShow) return;
+
+  const brand = st.brandId ? `[${st.brandId.toUpperCase()}] ` : '';
+  showEls.title.textContent =
+    `${brand}${show.title || 'Live show'}` +
+    `${show.streaming ? ` · streaming ${show.streaming}` : ''}` +
+    `${show.totals?.net != null ? ` · net ${fmtMoney(show.totals.net)}` : ''}`;
+  showEls.gross.textContent = fmtMoney(show.totals?.gross);
+  showEls.orders.textContent = show.totals?.orders != null ? String(show.totals.orders) : '—';
+  const sold = Array.isArray(show.sold) ? show.sold : [];
+  showEls.soldCount.textContent = String(sold.length);
+  showEls.current.textContent = show.current
+    ? `#${show.current.lot} ${show.current.title || ''} · ${fmtMoney(show.current.price)}`
+    : '—';
+
+  // Sold log, latest first. Start = first bid seen, Final = sale price;
+  // "3 bids" tooltips the whole trail with times.
+  const tb = showEls.table.querySelector('tbody');
+  tb.replaceChildren();
+  const shown = sold.slice(-SHOW_MAX_ROWS).reverse();
+  for (const s of shown) {
+    const tr = document.createElement('tr');
+    const cells = [
+      s.at ? new Date(s.at).toLocaleTimeString() : '—',
+      s.lot != null ? String(s.lot) : '—',
+      s.title || '—',
+      s.bids?.length ? fmtMoney(s.bids[0].price) : '—',
+      fmtMoney(s.price),
+      s.buyer ? `@${s.buyer}` : '—',
+      String(s.bids?.length || 0),
+    ];
+    cells.forEach((text, i) => {
+      const td = document.createElement('td');
+      td.textContent = text;
+      if (i === 3 || i === 4 || i === 6) td.className = 'num';
+      if (i === 6 && s.bids?.length) {
+        td.title = s.bids
+          .map(b => `${b.t ? new Date(b.t).toLocaleTimeString() : ''} $${b.price}`)
+          .join('\n');
+      }
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  }
+  showEls.more.textContent = sold.length > SHOW_MAX_ROWS
+    ? `Showing the latest ${SHOW_MAX_ROWS} of ${sold.length} sold lots.`
+    : '';
+  showEls.more.classList.toggle('hidden', sold.length <= SHOW_MAX_ROWS);
+}
+
+window.showMonitor.onStatus(renderShowMonitor);
+
 // ── Watch live (prototype) ───────────────────────────────────────────
 // The bridge scrapes the Palmstreet live screen while watching is on and
 // streams snapshots here. We render the current snapshot and derive a rough
@@ -604,6 +689,7 @@ window.app.onUpdateStatus((result) => applyUpdate(result));
   // reject unhandled.
   window.printers.getStatus().then(renderPrinterStatus).catch(() => {});
   window.packing.getStatus().then(renderPackingStatus).catch(() => {});
+  window.showMonitor.getStatus().then(renderShowMonitor).catch(() => {});
   window.desktopWidget.get().then((r) => applyDesktopWidget(r?.shown)).catch(() => {});
   baseVersionLabel = `v${await window.app.getVersion()}`;
   els.versionLabel.textContent = baseVersionLabel;
