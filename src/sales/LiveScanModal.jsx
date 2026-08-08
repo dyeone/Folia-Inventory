@@ -213,6 +213,14 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
                 >
                   Audience view ↗
                 </button>
+                {' · '}
+                <button
+                  onClick={() => window.open(`/#show-board=${activeBrand || ''}`, '_blank', 'noopener')}
+                  className="text-sky-600 hover:underline"
+                  title="Open the show board — price trend, room activity, and VIP buyers for your second monitor"
+                >
+                  Show board ↗
+                </button>
               </p>
             </div>
           </div>

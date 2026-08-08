@@ -213,6 +213,13 @@ export function LiveModal({ sale, items, onClose, setConfirmDialog, isAdmin, act
             >
               <MonitorUp className="w-3.5 h-3.5" /> Audience view
             </button>
+            <button
+              onClick={() => window.open(`/#show-board=${activeBrand || ''}`, '_blank', 'noopener')}
+              className="inline-flex items-center gap-1 text-xs text-gray-400 hover:text-white rounded px-1.5 py-0.5 hover:bg-gray-800"
+              title="Open the show board — price trend, room activity, and VIP buyers for your second monitor"
+            >
+              <MonitorUp className="w-3.5 h-3.5" /> Show board
+            </button>
             <BridgeBadge status={bridge.status} onSettings={() => setShowBridgeSettings(true)} />
           </div>
         </div>
