@@ -348,6 +348,10 @@ export const api = {
   // back to now + days (default 7) for stale callers.
   setBoxHold: ({ shipmentBoxId, hold, days, holdUntil, release }) =>
     request('/shipments', { method: 'POST', body: { action: 'set-box-hold', shipmentBoxId, hold, days, holdUntil, release } }).then(r => r.box),
+  // Manual "pack with extra insulation" mark (migration 0037) — desk sets it,
+  // the packer UI shows it.
+  setBoxInsulation: ({ shipmentBoxId, extraInsulation }) =>
+    request('/shipments', { method: 'POST', body: { action: 'set-box-insulation', shipmentBoxId, extraInsulation } }).then(r => r.box),
   // Get-or-create the BAE loyalty redemption code for a box (printed on the
   // shipping slip as QR + short code — see migration 0034). Returns
   // { code, qrPayload, badgeCount, status }. BAE boxes only.
