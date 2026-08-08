@@ -78,6 +78,9 @@ export function PreSaleTab({
   const sellerById = useMemo(() => new Map(sellers.map(s => [s.id, s])), [sellers]);
   const [addSellerId, setAddSellerId] = useState('');
   const [intakeSeller, setIntakeSeller] = useState(null);
+  // Quick-create OUR OWN plants (no seller) straight into inventory + this
+  // sale — same intake modal, own-plants mode.
+  const [showOwnIntake, setShowOwnIntake] = useState(false);
 
   const [saleSel, setSaleSel] = useState('');
   const saleId = (saleSel && openSales.some(s => s.id === saleSel))
@@ -576,11 +579,23 @@ export function PreSaleTab({
             <span className="font-medium text-gray-700">Quick add</span>
             <span className="text-xs text-gray-500">stage at ${QUICK_ADD_PRICE}, no details</span>
           </label>
-          <p className="text-[11px] text-gray-400">
-            {quickAdd
-              ? <>Each scan stages instantly at <span className="font-medium text-gray-500">${QUICK_ADD_PRICE}</span> — keep scanning.</>
-              : <>Scan → edit price &amp; drop a photo → <span className="font-medium text-gray-500">Save details</span> → scan the next.</>}
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-[11px] text-gray-400">
+              {quickAdd
+                ? <>Each scan stages instantly at <span className="font-medium text-gray-500">${QUICK_ADD_PRICE}</span> — keep scanning.</>
+                : <>Scan → edit price &amp; drop a photo → <span className="font-medium text-gray-500">Save details</span> → scan the next.</>}
+            </p>
+            <button
+              onClick={() => setShowOwnIntake(true)}
+              disabled={!sale || sale?.itemTypes === 'tc'}
+              title={sale?.itemTypes === 'tc'
+                ? 'This sale is TC only — the quick-create makes plants'
+                : 'Create new plants of our own — added to inventory with auto SKUs and staged straight into this event'}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 active:bg-emerald-200 disabled:opacity-40"
+            >
+              <Sprout className="w-4 h-4" /> New plants
+            </button>
+          </div>
         </div>
       </div>
 
@@ -834,6 +849,19 @@ export function PreSaleTab({
           onIntake={handleIntake}
           showToast={showToast}
           onClose={() => { setIntakeSeller(null); setAddSellerId(''); }}
+        />
+      )}
+
+      {showOwnIntake && sale && (
+        <SellerIntakeModal
+          seller={null}
+          sale={sale}
+          varieties={varieties}
+          existingItems={items}
+          isBae={isBae}
+          onIntake={handleIntake}
+          showToast={showToast}
+          onClose={() => setShowOwnIntake(false)}
         />
       )}
 
