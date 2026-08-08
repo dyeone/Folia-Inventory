@@ -456,6 +456,7 @@ alter table shipment_boxes add column if not exists "weightOz"  numeric;
 alter table shipment_boxes add column if not exists "serviceKey" text;
 alter table shipment_boxes add column if not exists "carrierOverride" text;
 alter table shipment_boxes add column if not exists "holdUntil" timestamptz;
+alter table shipment_boxes add column if not exists "extraInsulation" boolean;
 do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'shipment_boxes_servicekey_check') then

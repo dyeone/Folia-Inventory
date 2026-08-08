@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
-import { BoxNotePanel } from './BoxNotePanel.jsx';
+import { BoxNotePanel, InsulationStrip, InsulationChip } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 import { ShippingMarginNote } from './ShippingMarginNote.jsx';
 import { openLabelPdf, copyText } from './labelPdf.js';
@@ -25,7 +25,7 @@ export function ShipBoxCard({
   onBuyLabel, onVoidLabel,
   onSaveTracking, onClearTracking,
   onPrintItemLabels,
-  onSaveNote,
+  onSaveNote, onToggleInsulation,
   boxSizes, onSavePackaging, onBought,
 }) {
   const [open, setOpen] = useState(true);
@@ -169,6 +169,16 @@ export function ShipBoxCard({
             />
           )}
 
+          <InsulationStrip
+            on={!!box.extraInsulation}
+            onToggle={onToggleInsulation}
+            allShipped={allShipped}
+          />
+          {onToggleInsulation && !allShipped && !box.extraInsulation && (
+            <div className="px-4 py-2 border-t border-gray-100">
+              <InsulationChip on={false} onToggle={onToggleInsulation} />
+            </div>
+          )}
           {onSaveNote && (
             <BoxNotePanel
               note={box.note}

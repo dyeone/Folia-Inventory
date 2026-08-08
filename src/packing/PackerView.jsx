@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag, Thermometer, StickyNote,
+  Printer, Tag, Thermometer, StickyNote, Snowflake,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
@@ -141,6 +141,9 @@ export function PackerView({ onLogout }) {
   // Seller note per box (shipmentBoxId → note), so the packer can detect a
   // "local pickup" note and flag the box not-to-ship.
   const [noteByBox, setNoteByBox] = useState({});
+  // Desk's manual "extra insulation" marks (migration 0037) — same
+  // box-notes poll as notes/holds, so a desk mark lands here within ~8s.
+  const [insulationByBox, setInsulationByBox] = useState({});
   // Label printing at the packing table. Per-device, per-label-type choices
   // ({ shipping, boxtag } → 'ipad' | 'bridge'); the sheet lets the packer
   // switch each and fire a test print per type.
@@ -352,6 +355,11 @@ export function PackerView({ onLogout }) {
           Object.entries(notes || {}).map(([id, v]) => [id, v?.note || '']),
         ),
       );
+      setInsulationByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, !!v?.extraInsulation]),
+        ),
+      );
       setCarrierOverrideByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.carrierOverride || null]),
@@ -426,6 +434,9 @@ export function PackerView({ onLogout }) {
         );
         setNoteByBox(
           Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.note || ''])),
+        );
+        setInsulationByBox(
+          Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, !!v?.extraInsulation])),
         );
         setCarrierOverrideByBox(
           Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.carrierOverride || null])),
@@ -639,6 +650,11 @@ export function PackerView({ onLogout }) {
       setNoteByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.note || '']),
+        ),
+      );
+      setInsulationByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, !!v?.extraInsulation]),
         ),
       );
       setCarrierOverrideByBox(
@@ -1272,6 +1288,7 @@ export function PackerView({ onLogout }) {
             box={activeBox}
             assignedTracking={trackingByBox[activeBox.id] || null}
             note={noteByBox[activeBox.id] || ''}
+            insulate={!!insulationByBox[activeBox.id]}
             dupeLots={dupeLots}
             onMarkPacked={handleMarkPacked}
             onPrintPlantLabel={handlePrintPlantLabel}
@@ -1324,6 +1341,7 @@ export function PackerView({ onLogout }) {
             holdByBox={holdByBox}
             noteByBox={noteByBox}
             heatByBox={heatByBox}
+            insulationByBox={insulationByBox}
             onOpen={goToBox}
             header={(heatAlertBoxes.length > 0 || sweepBoxes.length > 0 || shipPlan.total > 0) && (
               <div className="max-w-5xl mx-auto space-y-2 mb-3">
@@ -2006,7 +2024,7 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
 // `header` (heat alert + step chips) renders INSIDE the scroll area, so it
 // leads the page but scrolls away with the list — it never pins above the
 // grid eating height the box cards need.
-function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, noteByBox, heatByBox, onOpen, header }) {
+function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, noteByBox, heatByBox, insulationByBox, onOpen, header }) {
   return (
     <div className="flex-1 overflow-y-auto px-3 sm:px-5 py-4">
       {header}
@@ -2029,6 +2047,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
                 isPickup={boxIsLocalPickup(noteByBox?.[box.id], box.items)}
                 note={noteByBox?.[box.id] || ''}
                 heatTemp={heatByBox?.[box.id]}
+                insulate={!!insulationByBox?.[box.id]}
                 onOpen={() => onOpen(box.id)}
               />
             ))}
@@ -2040,7 +2059,7 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
   );
 }
 
-function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, note, heatTemp, onOpen }) {
+function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, note, heatTemp, insulate, onOpen }) {
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
@@ -2111,6 +2130,11 @@ function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, note, heatTemp,
             <Thermometer className="w-3 h-3" /> {heatTemp}°F · insulate
           </span>
         )}
+        {insulate && (
+          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-sky-900 bg-sky-200 ring-1 ring-sky-400 px-1.5 py-0.5 rounded" title="Desk mark: pack this box with extra insulation">
+            <Snowflake className="w-3 h-3" /> Insulate
+          </span>
+        )}
         {sizeName && (
           <span className="inline-flex items-center gap-1 text-[11px] text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">
             <Ruler className="w-3 h-3" /> {sizeName}
@@ -2152,7 +2176,7 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, note, dupeLots, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
+function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -2181,6 +2205,17 @@ function BoxPane({ box, assignedTracking, note, dupeLots, onMarkPacked, onPrintP
         </div>
       </div>
 
+
+      {/* Desk's manual insulation mark — a loud sky banner where the packing
+          happens, like the heat and note strips. */}
+      {insulate && (
+        <div className="flex-shrink-0 px-4 sm:px-5 py-2.5 bg-sky-100 border-b border-sky-300">
+          <div className="max-w-5xl mx-auto flex items-center gap-2 text-sky-900">
+            <Snowflake className="w-5 h-5 shrink-0 text-sky-700" />
+            <span className="text-base font-extrabold tracking-wide">EXTRA INSULATION — pack this box with extra insulation</span>
+          </div>
+        </div>
+      )}
 
       {/* The desk's box note — packing instructions ("extra insulation and
           ice pack") were fetched for the pickup flag but never SHOWN; the

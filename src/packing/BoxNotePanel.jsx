@@ -1,5 +1,61 @@
 import { useState } from 'react';
-import { StickyNote, Pencil } from 'lucide-react';
+import { StickyNote, Pencil, Snowflake } from 'lucide-react';
+
+// Sky strip shown on a box the desk marked "extra insulation" (migration
+// 0037; distinct from the computed heat-check flags). Renders in the
+// Ready/Shipped BoxRow and the drill-down ShipBoxCard; the packer app shows
+// its own banner from the same box-notes field. Clear stays available until
+// the box ships.
+export function InsulationStrip({ on, onToggle, allShipped, compact = false }) {
+  const [busy, setBusy] = useState(false);
+  if (!on) return null;
+  return (
+    <div
+      className={`bg-sky-50 border-t border-sky-100 flex items-center gap-2 ${compact ? 'px-3 py-2' : 'px-4 py-2.5'}`}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <Snowflake className="w-4 h-4 text-sky-600 flex-shrink-0" />
+      <span className="text-sm font-semibold text-sky-800">EXTRA INSULATION</span>
+      <span className="text-xs text-sky-700 hidden sm:inline">— pack this box with extra insulation</span>
+      {!allShipped && onToggle && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={async (e) => {
+            e.stopPropagation();
+            setBusy(true);
+            try { await onToggle(false); } finally { setBusy(false); }
+          }}
+          className="ml-auto text-xs font-medium text-sky-700 hover:bg-sky-100 rounded px-2 py-1 disabled:opacity-50"
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
+// The action-row chip that toggles the mark on (the strip above carries the
+// clear affordance once set). Same chip grammar as Hold / Local pickup.
+export function InsulationChip({ on, onToggle, stop }) {
+  const [busy, setBusy] = useState(false);
+  if (on) return null;
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      onClick={async (e) => {
+        stop?.(e);
+        setBusy(true);
+        try { await onToggle(true); } finally { setBusy(false); }
+      }}
+      title="Mark this box: pack with extra insulation (the packer sees a banner)"
+      className="text-xs font-medium px-2 py-1 rounded-md border border-gray-300 text-gray-600 bg-white hover:bg-sky-50 hover:text-sky-700 hover:border-sky-300 active:bg-sky-100 flex items-center gap-1 disabled:opacity-50"
+    >
+      <Snowflake className="w-3 h-3" /> Insulation
+    </button>
+  );
+}
 
 // Operator's internal seller-note for a single box. Inline editable.
 // Used in both the top-level BoxRow (Ready/Shipped tab list) and the

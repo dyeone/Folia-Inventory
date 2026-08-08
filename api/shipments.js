@@ -52,6 +52,7 @@ export default wrap(async (req, res) => {
       if (action === 'set-box-note') return setBoxNote(req, res, userId, brandId);
       if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId, brandId);
       if (action === 'set-box-hold') return setBoxHold(req, res, userId, brandId);
+      if (action === 'set-box-insulation') return setBoxInsulation(req, res, userId, brandId);
       if (action === 'reset-hold-sweep') return resetHoldSweep(req, res, userId, brandId);
       if (action === 'set-heat-flags') return setHeatFlags(req, res, userId, brandId);
       if (action === 'send-to-phone') return sendToPhone(req, res, userId);
@@ -372,6 +373,40 @@ async function setBoxNote(req, res, userId, brandId) {
   return res.status(200).json({ box: data });
 }
 
+// POST /api/shipments  body: { action:'set-box-insulation', shipmentBoxId,
+//   extraInsulation }
+// The desk's manual "pack this box with extra insulation" mark (migration
+// 0037) — distinct from the computed heat-check flags. Boolean upsert on the
+// lazy shipment_boxes row; false stores null so un-marked and never-marked
+// read the same. Mirrors set-box-note's pattern.
+async function setBoxInsulation(req, res, userId, brandId) {
+  const { shipmentBoxId, extraInsulation } = req.body || {};
+  if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
+    const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
+  }
+  const payload = {
+    id: shipmentBoxId,
+    brandId,
+    extraInsulation: extraInsulation ? true : null,
+    updatedAt: new Date().toISOString(),
+    updatedBy: userId,
+  };
+  const { data, error } = await supabase
+    .from('shipment_boxes')
+    .upsert(payload, { onConflict: 'id' })
+    .select('id, "extraInsulation", "updatedAt", "updatedBy"')
+    .single();
+  if (error) {
+    const missing = /extraInsulation/i.test(error.message || '');
+    const e = new Error(missing
+      ? 'extraInsulation column missing — apply migration 0037_box_extra_insulation first'
+      : error.message);
+    e.status = missing ? 400 : 500;
+    throw e;
+  }
+  return res.status(200).json({ box: data });
+}
+
 // POST /api/shipments  body: { action:'set-box-packaging', shipmentBoxId,
 //   boxSizeId?, weightOz?, serviceKey? }
 // Upserts the per-box packaging selection (box size + weight + service)
@@ -561,6 +596,7 @@ async function boxNotes(req, res, brandId) {
     serviceKey: r.serviceKey ?? null,
     carrierOverride: r.carrierOverride ?? null,
     holdUntil: r.holdUntil ?? null,
+    extraInsulation: r.extraInsulation ?? null,
     updatedAt: r.updatedAt,
     updatedBy: r.updatedBy,
   }]));

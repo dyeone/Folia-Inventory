@@ -14,7 +14,7 @@ import { CombineBoxesModal } from './CombineBoxesModal.jsx';
 import { HeatCheckPanel } from './HeatCheckPanel.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { PrintListButton } from './PrintListButton.jsx';
-import { BoxNotePanel } from './BoxNotePanel.jsx';
+import { BoxNotePanel, InsulationStrip, InsulationChip } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 import { ShippingMarginNote } from './ShippingMarginNote.jsx';
 import { openLabelPdf, copyText, printShippingLabels } from './labelPdf.js';
@@ -401,6 +401,26 @@ export function PackingView({
     showToast(hold
       ? `Held — ships ${weekHoldUntil(new Date()).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`
       : release ? 'Hold released — OK to ship' : 'Hold cleared');
+  };
+
+  // Manual "extra insulation" mark — reaches the packer within one 8s
+  // box-notes poll cycle.
+  const onToggleInsulation = async (shipmentBoxId, on) => {
+    try {
+      const saved = await api.setBoxInsulation({ shipmentBoxId, extraInsulation: on });
+      setBoxNotesByBox(prev => ({
+        ...prev,
+        [shipmentBoxId]: {
+          ...(prev[shipmentBoxId] || {}),
+          extraInsulation: saved.extraInsulation ?? null,
+          updatedAt: saved.updatedAt,
+          updatedBy: saved.updatedBy,
+        },
+      }));
+      showToast(on ? '❄ Marked: extra insulation' : 'Insulation mark cleared');
+    } catch (e) {
+      showToast(e.message || 'Could not save the insulation mark', 'error');
+    }
   };
 
   useEffect(() => {
@@ -1350,6 +1370,7 @@ export function PackingView({
                     onSaveBoxPackaging={onSaveBoxPackaging}
                     onSetHold={onSetHold}
                     onTogglePickup={onTogglePickup}
+                    onToggleInsulation={onToggleInsulation}
                     onBought={refreshShipments}
                     onCancelLabel={onCancelLabel}
                     onOpenBox={(saleId) => setActiveSaleId(saleId)}
@@ -1857,7 +1878,7 @@ function addressOneLine(addr) {
 }
 
 function BuyerGroupCard({
-  group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onSetHold, onTogglePickup, onBought, onCancelLabel,
+  group, expandSet, sales, shipmentsByBox, boxNotesByBox, boxSizes, onSaveBoxNote, onSaveBoxPackaging, onSetHold, onTogglePickup, onToggleInsulation, onBought, onCancelLabel,
   onOpenBox, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, dupeLots, findDupeLotBox, showToast,
   isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   selectedBoxIds, onToggleBoxSelected,
@@ -1912,6 +1933,7 @@ function BuyerGroupCard({
             findDupeLotBox={findDupeLotBox}
             onSetHold={onSetHold ? (hold, release) => onSetHold(box.id, hold, release) : null}
             onTogglePickup={onTogglePickup ? (make) => onTogglePickup(box.id, make) : null}
+            onToggleInsulation={onToggleInsulation ? (on) => onToggleInsulation(box.id, on) : null}
             onSaveNote={onSaveBoxNote ? (note) => onSaveBoxNote(box.id, note) : null}
             boxSizes={boxSizes}
             onSavePackaging={onSaveBoxPackaging ? (patch) => onSaveBoxPackaging(box.id, patch) : null}
@@ -2237,7 +2259,7 @@ function CarrierToggle({ box, onSave, showToast }) {
 function BoxRow({
   box, sale, shipment, salesById,
   onOpen, onBuyLabel, onSaveTracking, onMarkShipped, onUnship, onTogglePacked, dupeLots, findDupeLotBox, showToast,
-  onSaveNote, onSetHold, onTogglePickup, boxSizes, onSavePackaging, onBought, onCancelLabel,
+  onSaveNote, onSetHold, onTogglePickup, onToggleInsulation, boxSizes, onSavePackaging, onBought, onCancelLabel,
   isAdmin, onEditItems, onEditAddress, onDeleteBox, onPrintSlip,
   isSelected, onToggleSelected, defaultExpanded,
 }) {
@@ -2679,6 +2701,11 @@ function BoxRow({
                 </button>
               )
             )}
+            {/* Extra-insulation mark — chip turns it on; the sky strip below
+                (next to the note) carries the Clear once set. */}
+            {action && onToggleInsulation && (
+              <InsulationChip on={!!box.extraInsulation} onToggle={onToggleInsulation} stop={stop} />
+            )}
             {action && isAdmin && onDeleteBox && (
               <button
                 onClick={(e) => { stop(e); onDeleteBox(); }}
@@ -2800,6 +2827,12 @@ function BoxRow({
               onBought={onBought}
             />
           )}
+          <InsulationStrip
+            on={!!box.extraInsulation}
+            onToggle={onToggleInsulation}
+            allShipped={allShipped}
+            compact
+          />
           {onSaveNote && (
             <BoxNotePanel
               note={box.note}
@@ -3100,9 +3133,12 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
             onBought={refreshShipments}
             onSavePackaging={async (patch) => {
               const saved = await api.setBoxPackaging({ shipmentBoxId: box.id, ...patch });
+              // Merge over the previous entry — a packaging save must not
+              // wipe fields it doesn't return (holdUntil, extraInsulation).
               setBoxNotesByBox(prev => ({
                 ...prev,
                 [box.id]: {
+                  ...(prev[box.id] || {}),
                   note: saved.note,
                   boxSizeId: saved.boxSizeId ?? null,
                   weightOz: saved.weightOz ?? null,
@@ -3112,6 +3148,14 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
                   updatedBy: saved.updatedBy,
                 },
               }));
+            }}
+            onToggleInsulation={async (on) => {
+              const saved = await api.setBoxInsulation({ shipmentBoxId: box.id, extraInsulation: on });
+              setBoxNotesByBox(prev => ({
+                ...prev,
+                [box.id]: { ...(prev[box.id] || {}), extraInsulation: saved.extraInsulation ?? null },
+              }));
+              showToast(on ? '❄ Marked: extra insulation' : 'Insulation mark cleared');
             }}
             onSaveNote={async (note) => {
               const saved = await api.setBoxNote({ shipmentBoxId: box.id, note });
