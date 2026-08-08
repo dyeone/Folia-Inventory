@@ -108,7 +108,8 @@ export function PreSaleTab({
   const [addedOrder, setAddedOrder] = useState([]);
   // Quick add: scan straight through, each item staged at $300, no detail editor.
   const [quickAdd, setQuickAdd] = useState(false);
-  // Which staged rows are checked for "Print labels" (prints only these).
+  // Which staged rows are checked. The selection scopes both "Print labels"
+  // and "Export CSV" — checked rows only; nothing checked = everything.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const toggleSelect = (id) => setSelectedIds(prev => {
     const next = new Set(prev);
@@ -394,9 +395,13 @@ export function PreSaleTab({
 
   const doExport = () => {
     if (!sale) return;
-    const res = exportPalmstreetCsv(sale, items);
+    // Checked rows scope the export (same selection Print labels uses);
+    // nothing checked exports the whole lineup. selectedStaged is already
+    // sale-scoped, so the exporter's own saleId filter passes it through.
+    const partial = selectedStaged.length > 0;
+    const res = exportPalmstreetCsv(sale, partial ? selectedStaged : items);
     if (!res.ok) { flash('error', res.reason); return; }
-    flash('ok', `Exported ${res.count} lots`);
+    flash('ok', partial ? `Exported ${res.count} selected lots` : `Exported ${res.count} lots`);
   };
 
   if (openSales.length === 0) {
@@ -534,10 +539,12 @@ export function PreSaleTab({
             <button
               onClick={doExport}
               disabled={!staged.length}
-              title="Download this lineup as a Palmstreet CSV"
+              title={someSelected
+                ? `Download a Palmstreet CSV of only the ${selectedStaged.length} checked plant${selectedStaged.length === 1 ? '' : 's'}`
+                : 'Download this lineup as a Palmstreet CSV — check plants in the staged list to export just those'}
               className="flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium rounded-lg bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white disabled:bg-gray-200 disabled:text-gray-400"
             >
-              <Download className="w-4 h-4" /> Export CSV
+              <Download className="w-4 h-4" /> Export CSV{someSelected ? ` (${selectedStaged.length})` : ''}
             </button>
           </div>
         </div>
