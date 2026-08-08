@@ -20,6 +20,9 @@ const LIVE_RAW_MS = 30000;      // refresh the calibration sample this often
 
 let liveState = null;           // the show blob (see api/settings.js handleLiveShow)
 let liveSeenSold = new Set();   // `${lot}|${buyer}|${price}` dedupe keys
+let liveSeenJoins = new Set();  // usernames seen joining this show
+let liveSeenBids = new Set();   // `${user}|${price}|${minute}` dedupe keys
+const LIVE_MAX_EVENTS = 400;    // client-side cap on joins/bidders (server re-caps)
 let liveSeeded = false;         // server re-seed attempted
 let liveLastSave = 0;
 let liveLastRaw = 0;
@@ -54,9 +57,18 @@ function parseLivePage() {
   // Show title: the line right above the LIVE badge in the left panel.
   const title = m(/^\s*(.{4,90}?)\s*\n+\s*LIVE\b/m);
 
+  // Chat-side events. Joins render as their own line ("subtle_gust_pod51
+  // joined"); bid attributions are best-effort — Palmstreet's exact phrasing
+  // gets calibrated from the raw sample if this pattern misses.
+  const joins = [...txt.matchAll(/^([A-Za-z0-9_.-]{2,30}) joined$/gm)].map(r => r[1]);
+  const bidders = [...txt.matchAll(/^([A-Za-z0-9_.-]{2,30})\s+(?:placed a bid|is bidding|bid)\b[^\n]*?\$?\s*([\d,]+(?:\.\d{1,2})?)?\s*$/gm)]
+    .map(r => ({ user: r[1], price: r[2] ? money(r[2]) : null }));
+
   return {
     at: new Date().toISOString(),
     title: title?.[1]?.trim() || null,
+    joins,
+    bidders,
     streaming: streaming?.[1]?.trim() || null,
     totals: {
       gross: gross ? money(gross[1]) : null,
@@ -118,6 +130,9 @@ async function seedFromServer(showId) {
   const prev = resp?.show;
   if (prev && prev.showId === showId) {
     liveSeenSold = new Set((prev.sold || []).map(s => `${s.lot}|${s.buyer}|${s.price}`));
+    liveSeenJoins = new Set((prev.joins || []).map(j => j.user));
+    liveSeenBids = new Set((prev.bidders || []).map(b =>
+      `${b.user}|${b.price}|${String(b.t || '').slice(0, 16)}`));
     return prev;
   }
   return null;
@@ -137,10 +152,18 @@ async function liveTick() {
       totals: {},
       current: null,
       sold: [],
+      joins: [],
+      bidders: [],
       raw: '',
     };
-    if (!adopted) liveSeenSold = new Set();
+    if (!adopted) {
+      liveSeenSold = new Set();
+      liveSeenJoins = new Set();
+      liveSeenBids = new Set();
+    }
   }
+  if (!Array.isArray(liveState.joins)) liveState.joins = [];
+  if (!Array.isArray(liveState.bidders)) liveState.bidders = [];
 
   let dirty = false;
   let soldNow = false;
@@ -193,6 +216,24 @@ async function liveTick() {
       dirty = true;
       soldNow = true;
     }
+  }
+
+  // Room activity: joins (once per username per show) and bid attributions
+  // (deduped per user+price+minute — chat lines linger across ticks).
+  for (const user of snap.joins || []) {
+    if (liveSeenJoins.has(user)) continue;
+    liveSeenJoins.add(user);
+    liveState.joins.push({ t: snap.at, user });
+    if (liveState.joins.length > LIVE_MAX_EVENTS) liveState.joins.splice(0, liveState.joins.length - LIVE_MAX_EVENTS);
+    dirty = true;
+  }
+  for (const b of snap.bidders || []) {
+    const key = `${b.user}|${b.price}|${snap.at.slice(0, 16)}`;
+    if (liveSeenBids.has(key)) continue;
+    liveSeenBids.add(key);
+    liveState.bidders.push({ t: snap.at, user: b.user, price: b.price });
+    if (liveState.bidders.length > LIVE_MAX_EVENTS) liveState.bidders.splice(0, liveState.bidders.length - LIVE_MAX_EVENTS);
+    dirty = true;
   }
 
   // Calibration sample, refreshed occasionally — not worth a save on its own.

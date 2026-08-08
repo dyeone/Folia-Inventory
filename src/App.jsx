@@ -20,6 +20,7 @@ import { exportPalmstreetCsv, exportAvailableToPalmstreet } from './sales/palmst
 // Eager too: the #follower-board hash route renders before any Suspense
 // boundary exists, and the audience board is tiny.
 import { FollowerBoard } from './sales/FollowerBoard.jsx';
+import { ShowBoard } from './sales/ShowBoard.jsx';
 
 // All named exports — wrap in `.then(m => ({ default: m.X }))` so React.lazy
 // (which expects a default export) gets a usable module.
@@ -184,6 +185,23 @@ export default function InventoryApp() {
 
   if (!currentUser) {
     return <AuthScreen onLogin={login} />;
+  }
+
+  if (hashRoute.startsWith('#show-board')) {
+    // Streamer-facing show dashboard (price trend + room activity + VIP
+    // badges) — same pinning rules as the follower board below.
+    const pinned = hashRoute.split('=')[1] || null;
+    const boardBrands = userBrands(currentUser.brandIds);
+    const boardBrand = boardBrands.some(b => b.id === pinned) ? pinned : activeBrand;
+    return (
+      <ShowBoard
+        key={boardBrand}
+        brandId={boardBrand}
+        brands={boardBrands}
+        onSwitchBrand={(id) => { window.location.hash = `#show-board=${id}`; }}
+        onClose={() => { window.location.hash = ''; }}
+      />
+    );
   }
 
   if (hashRoute.startsWith('#follower-board')) {

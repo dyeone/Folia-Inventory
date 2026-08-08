@@ -77,6 +77,13 @@ export const api = {
 
   // Items
   getItems: () => request('/items').then(r => r.items),
+  // Pinned-brand variants for the hash-route boards (#show-board=<brand>):
+  // an explicit brandId in the path wins over the session brand in request().
+  getItemsForBrand: (brandId) =>
+    request(`/items${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ''}`).then(r => r.items),
+  // Live show state written by the Chrome extension's dashboard scraper.
+  getLiveShow: (brandId) =>
+    request(`/settings?action=live-show-get${brandId ? `&brandId=${encodeURIComponent(brandId)}` : ''}`),
   upsertItems: (items) => request('/items', { method: 'POST', body: { items } }),
   // Atomic server-side box merge: moves every still-sold item from the source
   // boxes into the target box (identity re-stamped server-side). 409s when

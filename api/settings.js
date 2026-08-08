@@ -130,6 +130,7 @@ const LIVE_SHOW_NS = 'live_show:';
 const LIVE_SHOW_MAX_SOLD = 800;
 const LIVE_SHOW_MAX_BIDS = 80;
 const LIVE_SHOW_MAX_RAW = 4000;
+const LIVE_SHOW_MAX_EVENTS = 400;   // joins / bid attributions
 
 function cappedBids(list) {
   return (Array.isArray(list) ? list : []).slice(-LIVE_SHOW_MAX_BIDS);
@@ -160,6 +161,8 @@ async function handleLiveShow(action, req, res, user, brandId) {
         sold: (Array.isArray(show.sold) ? show.sold : [])
           .slice(-LIVE_SHOW_MAX_SOLD)
           .map(s => ({ ...s, bids: cappedBids(s?.bids) })),
+        joins: (Array.isArray(show.joins) ? show.joins : []).slice(-LIVE_SHOW_MAX_EVENTS),
+        bidders: (Array.isArray(show.bidders) ? show.bidders : []).slice(-LIVE_SHOW_MAX_EVENTS),
       };
       const { error } = await supabase
         .from('app_settings')
