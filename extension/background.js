@@ -23,6 +23,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           resp = await get(settings, '/api/shipments?action=with-tracking');
           sendResponse({ ok: true, boxes: resp.boxes || [] });
           break;
+        case 'api:liveShowGet':
+          // Re-seed the live monitor after a mid-show page reload.
+          resp = await get(settings, '/api/settings?action=live-show-get');
+          sendResponse({ ok: true, show: resp.show || null, updatedAt: resp.updatedAt || null });
+          break;
+        case 'api:liveShowSave':
+          await post(settings, '/api/settings', { action: 'live-show-save', show: msg.show });
+          sendResponse({ ok: true });
+          break;
         case 'api:recordTracking':
           resp = await post(settings, '/api/shipments', {
             action: 'record-tracking',

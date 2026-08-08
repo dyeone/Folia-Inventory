@@ -186,14 +186,41 @@ async function fetchPackingStatus() {
   }
 }
 
+// Live show state, written by the Chrome extension while the operator runs
+// the show and read here with the same bridge credentials as packing-status.
+// Kept separate from the phone-scrape Watch live panel — this one follows
+// the seller dashboard the show actually runs on.
+async function fetchLiveShow() {
+  const cfg = runner?.readEnv() || {};
+  const base = (cfg.FOLIA_API_URL || cfg.BRIDGE_URL || '').replace(/\/+$/, '');
+  const token = cfg.BRIDGE_TOKEN || '';
+  if (!base || !token) return { error: 'not-configured' };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), PACKING_TIMEOUT_MS);
+  try {
+    const resp = await fetch(`${base}/api/bridge?action=live-show`, {
+      signal: ctrl.signal,
+      headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+    });
+    if (!resp.ok) return { error: `HTTP ${resp.status}` };
+    return await resp.json();
+  } catch (e) {
+    return { error: e.name === 'AbortError' ? 'timed out' : (e.message || 'network error') };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Both polls pause while nothing that renders them is on screen — the main
 // window hidden to the menu bar AND the desktop widget hidden means there's
 // nothing to keep fresh. A show re-ticks immediately so the operator never
 // stares at stale numbers.
 const PRINTER_POLL_MS = 5000;
 const PACKING_POLL_MS = 15000;
+const SHOW_POLL_MS = 3000;
 let printersInFlight = false;
 let packingInFlight = false;
+let showInFlight = false;
 
 function widgetVisible() {
   const mainVis = !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
@@ -219,6 +246,19 @@ async function tickPacking() {
   packingInFlight = true;
   try { broadcastStatus('packing:status', await fetchPackingStatus()); }
   finally { packingInFlight = false; }
+}
+async function tickShow() {
+  // Main window only — the desktop widget doesn't render the show monitor.
+  const mainVis = !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible();
+  if (!mainVis || showInFlight) return;
+  showInFlight = true;
+  try {
+    const st = await fetchLiveShow();
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      mainWindow.webContents.send('show:status', st);
+    }
+  } catch { /* window closed mid-tick */ }
+  finally { showInFlight = false; }
 }
 
 // ─── Desktop widget: floating always-on-top mini card ───────────────────────
@@ -351,7 +391,7 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
   // Coming back from the menu bar → refresh the status widget right away
   // instead of waiting out a poll interval.
-  mainWindow.on('show', () => { tickPrinters(); tickPacking(); });
+  mainWindow.on('show', () => { tickPrinters(); tickPacking(); tickShow(); });
   // Closing the window keeps the app (and the bridge) alive in the menu bar.
   // The menu bar icon makes the still-running bridge visible — which is why we
   // no longer quit on close (the old "invisible bridge" concern). The Dock icon
@@ -451,6 +491,7 @@ app.whenReady().then(() => {
   // Status widget polls — cheap, and self-gated to a visible window.
   setInterval(tickPrinters, PRINTER_POLL_MS);
   setInterval(tickPacking, PACKING_POLL_MS);
+  setInterval(tickShow, SHOW_POLL_MS);
 
   updateTimer = setInterval(async () => {
     const result = await runUpdateCheck();
@@ -523,6 +564,7 @@ ipcMain.handle('printers:test', (_e, printer) => testPrinter(typeof printer === 
 // steady state arrives via the printers:status / packing:status pushes.
 ipcMain.handle('printers:get-status', () => printerStatus());
 ipcMain.handle('packing:get-status', () => fetchPackingStatus());
+ipcMain.handle('show:get-status', () => fetchLiveShow());
 
 // Desktop widget: toggled from the main window's header button, the tray
 // menu, or its own ✕ (which hides — quitting stays a tray/Cmd-Q decision).

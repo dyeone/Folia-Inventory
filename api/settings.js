@@ -70,6 +70,13 @@ export default wrap(async (req, res) => {
   if (typeof action === 'string' && action.startsWith('palmstreet-')) {
     return handlePalmstreet(action, req, res, user, brandId);
   }
+  // Live show monitor — the Chrome extension watches the Palmstreet seller
+  // dashboard during a live and keeps the whole show state here (one
+  // brand-scoped row); the Mac app reads it via /api/bridge?action=live-show.
+  // Same no-new-function rationale as the groups above.
+  if (typeof action === 'string' && action.startsWith('live-show-')) {
+    return handleLiveShow(action, req, res, user, brandId);
+  }
 
   const id = req.method === 'GET' ? req.query?.id : req.body?.id;
   if (!id) {
@@ -106,6 +113,65 @@ export default wrap(async (req, res) => {
       return methodNotAllowed(res, ['GET', 'PUT']);
   }
 });
+
+// ----------------------------------------------------------------------------
+// Live show monitor — one brand-scoped row (id `live_show:<brandId>`) holding
+// the current/most-recent show as one JSON blob:
+//   { showId, title, startedAt, totals: { gross, net, orders, entries },
+//     current: { lot, title, price, bids: [{t, price}] },
+//     sold: [{ at, lot, title, price, buyer, startedAt, bids }], raw }
+// The Chrome extension (live-monitor.js) is the ONLY writer and owns the
+// whole state, so save is a full replace — no server-side merge to get wrong;
+// on a mid-show page reload it re-seeds itself from live-show-get first.
+// Caps bound every growable part: the scraper runs unattended for hours.
+// ----------------------------------------------------------------------------
+
+const LIVE_SHOW_NS = 'live_show:';
+const LIVE_SHOW_MAX_SOLD = 800;
+const LIVE_SHOW_MAX_BIDS = 80;
+const LIVE_SHOW_MAX_RAW = 4000;
+
+function cappedBids(list) {
+  return (Array.isArray(list) ? list : []).slice(-LIVE_SHOW_MAX_BIDS);
+}
+
+async function handleLiveShow(action, req, res, user, brandId) {
+  const id = LIVE_SHOW_NS + brandId;
+  switch (action) {
+    case 'live-show-get': {
+      if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+      const { data, error } = await supabase
+        .from('app_settings').select('data, "updatedAt"').eq('id', id).maybeSingle();
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ show: data?.data || null, updatedAt: data?.updatedAt || null });
+    }
+    case 'live-show-save': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      const show = req.body?.show;
+      if (!show || typeof show !== 'object' || !show.showId) {
+        const e = new Error('show (object with showId) required'); e.status = 400; throw e;
+      }
+      const clean = {
+        ...show,
+        raw: typeof show.raw === 'string' ? show.raw.slice(0, LIVE_SHOW_MAX_RAW) : undefined,
+        current: show.current && typeof show.current === 'object'
+          ? { ...show.current, bids: cappedBids(show.current.bids) }
+          : null,
+        sold: (Array.isArray(show.sold) ? show.sold : [])
+          .slice(-LIVE_SHOW_MAX_SOLD)
+          .map(s => ({ ...s, bids: cappedBids(s?.bids) })),
+      };
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert({ id, data: clean, updatedAt: new Date().toISOString(), updatedBy: user.id });
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ ok: true });
+    }
+    default: {
+      const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
+    }
+  }
+}
 
 // ----------------------------------------------------------------------------
 // Lineup running index — one brand-scoped row (id `lineup-counter:<brand>`)

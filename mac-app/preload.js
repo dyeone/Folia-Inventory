@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('packing', {
   onStatus: (cb) => ipcRenderer.on('packing:status', (_e, s) => cb(s)),
 });
 
+contextBridge.exposeInMainWorld('showMonitor', {
+  getStatus: () => ipcRenderer.invoke('show:get-status'),
+  onStatus: (cb) => ipcRenderer.on('show:status', (_e, s) => cb(s)),
+});
+
 contextBridge.exposeInMainWorld('desktopWidget', {
   toggle: () => ipcRenderer.invoke('widget:toggle'),
   hide:   () => ipcRenderer.invoke('widget:hide'),
