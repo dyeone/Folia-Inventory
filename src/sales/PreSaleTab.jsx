@@ -111,11 +111,7 @@ export function PreSaleTab({
   // Which staged rows are checked. The selection scopes both "Print labels"
   // and "Export CSV" — checked rows only; nothing checked = everything.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
-  const toggleSelect = (id) => setSelectedIds(prev => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
+  const lastCheckedRef = useRef(null);
   // Drag-to-reorder the lineup: the id of the row currently being dragged.
   const [dragId, setDragId] = useState(null);
   // Bulk photo → listings modal (open when true).
@@ -190,13 +186,21 @@ export function PreSaleTab({
   // prior-session rows (floating them above this session's scans). Register the
   // new ids here so an intake batch appends at the bottom in add-order, like a
   // scan. onIntakeSeller returns the server-assigned ids of the created rows.
-  const handleIntake = async (payloads) => {
+  const handleIntake = async (payloads, { print = false } = {}) => {
     // No optional-chaining: if the handler is ever unwired, let it throw so the
     // modal surfaces the error rather than showing a false "Added" success.
-    const ids = await onIntakeSeller(payloads);
-    if (Array.isArray(ids) && ids.length) {
+    const res = await onIntakeSeller(payloads);
+    // Tolerate both contracts: the current { ids, rows } and the legacy bare
+    // ids array (a stale deploy of App while this chunk is fresh).
+    const ids = Array.isArray(res) ? res : (res?.ids || []);
+    const rows = Array.isArray(res) ? [] : (res?.rows || []);
+    if (ids.length) {
       setAddedOrder(o => [...o, ...ids.filter(id => !o.includes(id))]);
     }
+    // Print the new plants' labels (SKU barcode + WK chip; lineup number
+    // prints later when the lineup is numbered) straight after intake — the
+    // pots need labels before they can ever be scanned again.
+    if (print && rows.length) onPrintLabels?.(rows);
     return ids;
   };
 
@@ -235,6 +239,32 @@ export function PreSaleTab({
         return (a.sku || '').localeCompare(b.sku || '', undefined, { numeric: true });
       });
   }, [items, saleId, override, addedOrder]);
+
+  // Plain click toggles one row; shift-click extends from the last row
+  // clicked (the anchor) through this one, applying the clicked row's new
+  // state to the whole range — the standard file-manager gesture. Lives
+  // below the `staged` memo it reads (React Compiler ordering).
+  const toggleSelect = (id, shift = false) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      const anchor = lastCheckedRef.current;
+      if (shift && anchor && anchor !== id) {
+        const ids = staged.map(i => i.id);
+        const a = ids.indexOf(anchor);
+        const b = ids.indexOf(id);
+        if (a >= 0 && b >= 0) {
+          const on = !prev.has(id);
+          const [lo, hi] = a < b ? [a, b] : [b, a];
+          for (let k = lo; k <= hi; k++) on ? next.add(ids[k]) : next.delete(ids[k]);
+          lastCheckedRef.current = id;
+          return next;
+        }
+      }
+      next.has(id) ? next.delete(id) : next.add(id);
+      lastCheckedRef.current = id;
+      return next;
+    });
+  };
 
   // Where this sale's lineup numbering begins. A sale that's already numbered
   // shows its own lowest number (so the display matches after reload); a fresh
@@ -826,7 +856,7 @@ export function PreSaleTab({
                   showToast={showToast}
                   sellerName={it.sellerId ? (sellerById.get(it.sellerId)?.name || null) : null}
                   selected={selectedIds.has(it.id)}
-                  onToggleSelect={() => toggleSelect(it.id)}
+                  onToggleSelect={(e) => toggleSelect(it.id, !!e?.nativeEvent?.shiftKey)}
                   dragging={dragId === it.id}
                   onHandleDragStart={() => setDragId(it.id)}
                   onRowDrop={() => { handleReorder(dragId, it.id); setDragId(null); }}
@@ -1053,9 +1083,12 @@ function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onTog
           checked={!!selected}
           onChange={onToggleSelect}
           onClick={(e) => e.stopPropagation()}
+          // Shift-click extends the selection range — swallow the browser's
+          // text-highlight on mousedown so the gesture stays clean.
+          onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
           className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 flex-shrink-0"
-          title="Select for label printing"
-          aria-label="Select for label printing"
+          title="Select for labels / CSV export — shift-click selects a range"
+          aria-label="Select for labels and CSV export"
         />
         <button onClick={toggle} className="flex items-center gap-2.5 min-w-0 flex-1 text-left" aria-expanded={open}>
           <ChevronRight className={`w-4 h-4 text-gray-400 flex-shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />

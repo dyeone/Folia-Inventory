@@ -48,6 +48,10 @@ export function SellerIntakeModal({ seller = null, sale, varieties = [], existin
   const [rows, setRows] = useState([newRow(defPct, defaultVarietyId)]);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // Print each new plant's label (SKU barcode) right after adding — the pots
+  // need labels before they can be scanned again. Defaults on for our own
+  // quick-create; consignment intake keeps its old no-print default.
+  const [printAfter, setPrintAfter] = useState(isOwn);
 
   const patch = (key, p) => setRows(rs => rs.map(r => (r.key === key ? { ...r, ...p } : r)));
   const addRow = () => setRows(rs => [...rs, newRow(defPct, defaultVarietyId)]);
@@ -124,7 +128,7 @@ export function SellerIntakeModal({ seller = null, sale, varieties = [], existin
     if (prepared.length === 0) return setErr('Nothing to intake');
     setBusy(true);
     try {
-      await onIntake(prepared);
+      await onIntake(prepared, { print: printAfter });
       showToast?.(`Added ${prepared.length} plant${prepared.length === 1 ? '' : 's'}${seller ? ` for ${seller.name}` : ''}`);
       onClose();
     } catch (e) {
@@ -237,7 +241,18 @@ export function SellerIntakeModal({ seller = null, sale, varieties = [], existin
         </div>
 
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-gray-100">
-          <span className="text-sm text-gray-500">{totalUnits} plant{totalUnits === 1 ? '' : 's'} to add</span>
+          <div className="flex items-center gap-4 min-w-0">
+            <span className="text-sm text-gray-500 flex-shrink-0">{totalUnits} plant{totalUnits === 1 ? '' : 's'} to add</span>
+            <label className="flex items-center gap-1.5 text-sm text-gray-700 cursor-pointer select-none" title="Each new plant's label (SKU barcode) prints right after adding">
+              <input
+                type="checkbox"
+                checked={printAfter}
+                onChange={(e) => setPrintAfter(e.target.checked)}
+                className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500"
+              />
+              Print labels
+            </label>
+          </div>
           <div className="flex gap-2">
             <button onClick={onClose} disabled={busy} className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg">
               Cancel
