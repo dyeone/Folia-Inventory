@@ -423,17 +423,6 @@ export function PreSaleTab({
 
   const availableShown = available.slice(0, BROWSE_CAP);
 
-  const doExport = () => {
-    if (!sale) return;
-    // Checked rows scope the export (same selection Print labels uses);
-    // nothing checked exports the whole lineup. selectedStaged is already
-    // sale-scoped, so the exporter's own saleId filter passes it through.
-    const partial = selectedStaged.length > 0;
-    const res = exportPalmstreetCsv(sale, partial ? selectedStaged : items);
-    if (!res.ok) { flash('error', res.reason); return; }
-    flash('ok', partial ? `Exported ${res.count} selected lots` : `Exported ${res.count} lots`);
-  };
-
   if (openSales.length === 0) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
@@ -516,6 +505,29 @@ export function PreSaleTab({
     if (!confirmStartJump()) return;
     persistOrder(staged.map(i => i.id));
     onPrintLabels?.(chosen);
+  };
+
+  // Export the lineup (or just the checked rows) as a Palmstreet CSV. The
+  // CSV title carries the lineup number ("657 ???"), but rows added after
+  // the last Number click have no persisted lotNumber yet — so bake every
+  // row's current on-screen position first and persist that numbering,
+  // exactly like Print labels, so exported titles, printed labels, and
+  // scans all agree.
+  const doExport = () => {
+    if (!sale) return;
+    if (numberedMin == null && !lineupLoaded) {
+      flash('error', 'Loading this week’s lot numbers — try again in a second');
+      return;
+    }
+    const lineup = staged.map((it, idx) => ({ ...it, lotNumber: String(startNum + idx) }));
+    const partial = selectedStaged.length > 0;
+    const pool = partial ? lineup.filter(it => selectedIds.has(it.id)) : lineup;
+    if (!pool.length) return;
+    if (!confirmStartJump()) return;
+    persistOrder(staged.map(i => i.id));
+    const res = exportPalmstreetCsv(sale, pool);
+    if (!res.ok) { flash('error', res.reason); return; }
+    flash('ok', partial ? `Exported ${res.count} selected lots` : `Exported ${res.count} lots`);
   };
 
   // Consignment plants already staged in this event, grouped by seller — the
