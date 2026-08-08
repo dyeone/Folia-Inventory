@@ -706,10 +706,14 @@ function StaffOrAdminInventory() {
   // Pre Sale immediately. Throws so the intake modal can surface failures.
   const intakeSellerPlants = async (payloads) => {
     const res = await api.upsertItems(payloads);
-    applyItemsFresh(await api.getItems());
-    // Hand the new rows' ids back so the caller (PreSaleTab) can slot them
-    // into its session scan-order, appending at the bottom like a scan.
-    return res?.insertedIds || [];
+    const fresh = await api.getItems();
+    applyItemsFresh(fresh);
+    // Hand back the new rows' ids (so PreSaleTab can slot them into its
+    // session scan-order) AND the full server rows — the caller prints
+    // labels from these, and its own `items` prop is still one render stale.
+    const ids = res?.insertedIds || [];
+    const idSet = new Set(ids);
+    return { ids, rows: (fresh || []).filter(i => idSet.has(i.id)) };
   };
 
   const deleteItem = (id) => {
