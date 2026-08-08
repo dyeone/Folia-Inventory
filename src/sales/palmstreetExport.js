@@ -80,12 +80,21 @@ function variationCells(item) {
   return cells;
 }
 
+// Items without an assigned photo fall back to their brand's default tile so
+// no listing ever uploads imageless. Keyed by brandId because the art is
+// branded (BAE's "??? PLANT · MYSTERY" card); a brand without a tile keeps
+// the empty cell. The file ships in this app's public/ folder — a stable
+// public URL, no signed-URL expiry to rot inside an exported CSV.
+const DEFAULT_IMAGE_BY_BRAND = {
+  bae: 'https://folia-inventory.vercel.app/bae-mystery-tile.png',
+};
+
 // One 14-column row in the template's exact order.
 function baseRow(item, price) {
   return [
     buildTitle(item),
     buildDescription(item),
-    item.imageUrl || '',
+    item.imageUrl || DEFAULT_IMAGE_BY_BRAND[item.brandId] || '',
     price,
     parseInt(item.quantity) || 1,
     ...variationCells(item),
