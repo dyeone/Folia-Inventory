@@ -1,17 +1,22 @@
 import { useState } from 'react';
 import { AlertCircle, Plus, Trash2, Loader2, Sprout } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
-import { nextSkuForSeller } from '../constants.js';
+import { nextSkuForCode, nextSkuForSeller } from '../constants.js';
 
-// Intake a seller's plants INTO our inventory for one sale event. Each row
-// becomes N inventory items (expanded by quantity), tagged with sellerId +
-// commissionPct and pre-attached to the sale (saleId), so they land straight in
-// the event's lineup and Palmstreet export. The server assigns the authoritative
-// <SELLERCODE>-<VARIETY>-<n> SKU on save — the preview here is approximate.
+// Intake a batch of plants INTO our inventory for one sale event. Each row
+// becomes N inventory items (expanded by quantity), pre-attached to the sale
+// (saleId), so they land straight in the event's lineup and Palmstreet export.
+// Two modes:
+//   seller set  — consignment: rows carry sellerId + commissionPct and the
+//                 server mints <SELLERCODE>-<VARIETY>-<n> SKUs.
+//   seller null — OUR OWN plants: quick-create with a Cost column instead of
+//                 commission; normal <VARIETY>-<n> SKUs.
+// The server assigns the authoritative SKU on save — the preview here is
+// approximate.
 //
 // We deliberately reuse the normal item shape (type:'plant', status:'available')
 // rather than the 0032 'consigned' status: that status means WE handed a plant
-// out; here a seller handed a plant to US.
+// out; here plants are handed to US (or are ours to begin with).
 
 function numOrNull(v) {
   const s = String(v ?? '').trim();
@@ -27,10 +32,12 @@ const newRow = (commissionPct, varietyId = '') => ({
   name: '',
   quantity: 1,
   listingPrice: '',
+  grossCost: '',
   commissionPct: commissionPct ?? '',
 });
 
-export function SellerIntakeModal({ seller, sale, varieties = [], existingItems = [], isBae = false, onIntake, onClose, showToast }) {
+export function SellerIntakeModal({ seller = null, sale, varieties = [], existingItems = [], isBae = false, onIntake, onClose, showToast }) {
+  const isOwn = !seller;
   const defPct = seller?.defaultCommissionPct ?? '';
   // BAE sells anthuriums — every row starts on the Anthurium variety (the
   // dropdown stays editable). Folia's mixed catalog keeps the explicit pick.
@@ -50,26 +57,37 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
   const skuPreview = (row) => {
     const v = varietyById.get(row.varietyId);
     if (!v?.code) return '—';
-    return nextSkuForSeller(seller?.code, v.code, existingItems) || '—';
+    return (isOwn
+      ? nextSkuForCode(v.code, existingItems)
+      : nextSkuForSeller(seller?.code, v.code, existingItems)) || '—';
   };
 
-  // Same-plant memory: if this seller consigned a plant by this name before,
-  // keep last time's price — repeat intakes shouldn't retype it. Runs when
-  // the name field is left; never clobbers a price already typed in the row.
+  // Same-plant memory: if this plant was added by this name before (same
+  // seller in consignment mode; our own stock in own mode), keep last time's
+  // price — and, for our own plants, the cost. Runs when the name field is
+  // left; never clobbers a value already typed in the row.
   const itemTs = (i) => Date.parse(i?.createdAt || '') || parseInt(i?.id, 10) || 0;
   const prefillFromHistory = (key, name) => {
     const q = (name || '').trim().toLowerCase();
-    if (!q || !seller?.id) return;
+    if (!q || (!isOwn && !seller?.id)) return;
     const prev = existingItems
-      .filter(i => i.sellerId === seller.id
+      .filter(i => (isOwn ? !i.sellerId : i.sellerId === seller.id)
         && (i.name || '').trim().toLowerCase() === q
-        && i.listingPrice != null && i.listingPrice !== '')
+        && ((i.listingPrice != null && i.listingPrice !== '')
+          || (isOwn && i.grossCost != null && i.grossCost !== '')))
       .sort((a, b) => itemTs(b) - itemTs(a))[0];
     if (!prev) return;
     setRows(rs => rs.map(r => {
       if (r.key !== key) return r;
-      if (String(r.listingPrice ?? '').trim() !== '') return r;
-      return { ...r, listingPrice: String(prev.listingPrice), keptFrom: prev.sku };
+      const next = { ...r };
+      let kept = false;
+      if (String(r.listingPrice ?? '').trim() === '' && prev.listingPrice != null && prev.listingPrice !== '') {
+        next.listingPrice = String(prev.listingPrice); kept = true;
+      }
+      if (isOwn && String(r.grossCost ?? '').trim() === '' && prev.grossCost != null && prev.grossCost !== '') {
+        next.grossCost = String(prev.grossCost); kept = true;
+      }
+      return kept ? { ...next, keptFrom: prev.sku } : r;
     }));
   };
 
@@ -84,19 +102,22 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
       const name = r.name.trim();
       if (!name) return setErr('Every row needs a plant/species name');
       const qty = Math.max(1, parseInt(r.quantity, 10) || 1);
+      const cost = isOwn ? numOrNull(r.grossCost) : null;
       const base = {
         type: 'plant',
         variety: v.name,
         name,
-        sellerId: seller.id,
-        commissionPct: numOrNull(r.commissionPct),
         listingPrice: numOrNull(r.listingPrice),
         saleId: sale.id,
         lotKind: 'sale',
         status: 'available',
         quantity: 1,
-        grossCost: 0,
-        netCost: 0,
+        // Consignment plants carry no cost of ours (the seller owns it —
+        // commission is the economics). Our own plants record the cost the
+        // operator typed; the quick flow doesn't split gross vs net.
+        ...(isOwn
+          ? { grossCost: cost, cost, netCost: cost }
+          : { sellerId: seller.id, commissionPct: numOrNull(r.commissionPct), grossCost: 0, netCost: 0 }),
       };
       for (let i = 0; i < qty; i++) prepared.push({ ...base });
     }
@@ -104,7 +125,7 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
     setBusy(true);
     try {
       await onIntake(prepared);
-      showToast?.(`Added ${prepared.length} plant${prepared.length === 1 ? '' : 's'} for ${seller.name}`);
+      showToast?.(`Added ${prepared.length} plant${prepared.length === 1 ? '' : 's'}${seller ? ` for ${seller.name}` : ''}`);
       onClose();
     } catch (e) {
       setErr(e.message || 'Intake failed');
@@ -114,12 +135,16 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
   };
 
   return (
-    <Modal title={`Add ${seller?.name || 'seller'}'s plants → ${sale?.name || 'sale'}`} onClose={onClose} size="xl">
+    <Modal title={isOwn ? `Add our plants → ${sale?.name || 'sale'}` : `Add ${seller?.name || 'seller'}'s plants → ${sale?.name || 'sale'}`} onClose={onClose} size="xl">
       <div className="space-y-4">
         <div className="flex items-center gap-2 text-xs text-gray-500 bg-emerald-50/60 rounded-lg px-3 py-2">
           <Sprout className="w-4 h-4 text-emerald-600 flex-shrink-0" />
-          Plants are added to our inventory tagged to <span className="font-medium text-gray-700">{seller?.name}</span>
-          {' '}(code <span className="font-mono">{seller?.code}</span>) and staged into this event. Labels &amp; SKUs carry the seller.
+          {isOwn ? (
+            <>New plants are created in our inventory with auto-assigned SKUs and staged straight into this event.</>
+          ) : (
+            <>Plants are added to our inventory tagged to <span className="font-medium text-gray-700">{seller?.name}</span>
+            {' '}(code <span className="font-mono">{seller?.code}</span>) and staged into this event. Labels &amp; SKUs carry the seller.</>
+          )}
         </div>
 
         {err && (
@@ -131,7 +156,7 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
         <div className="space-y-2">
           {/* Header (sm+) */}
           <div className="hidden sm:grid grid-cols-[1.4fr_1.4fr_0.6fr_0.8fr_0.7fr_auto] gap-2 px-1 text-[11px] font-semibold text-gray-500 uppercase tracking-wide">
-            <span>Variety</span><span>Plant / species</span><span>Qty</span><span>Price</span><span>Comm %</span><span />
+            <span>Variety</span><span>Plant / species</span><span>Qty</span><span>Price</span><span>{isOwn ? 'Cost' : 'Comm %'}</span><span />
           </div>
           {rows.map(r => (
             <div key={r.key} className="grid grid-cols-2 sm:grid-cols-[1.4fr_1.4fr_0.6fr_0.8fr_0.7fr_auto] gap-2 items-center">
@@ -147,10 +172,10 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
                 type="text" value={r.name}
                 onChange={(e) => patch(r.key, {
                   name: e.target.value,
-                  // A price this row only has because of the old name goes
-                  // with it — the new name re-prefills on blur. A hand-typed
-                  // price (no keptFrom) stays put.
-                  ...(r.keptFrom ? { listingPrice: '', keptFrom: null } : {}),
+                  // A price/cost this row only has because of the old name
+                  // goes with it — the new name re-prefills on blur. Hand-
+                  // typed values (no keptFrom) stay put.
+                  ...(r.keptFrom ? { listingPrice: '', grossCost: '', keptFrom: null } : {}),
                 })}
                 onBlur={() => prefillFromHistory(r.key, r.name)}
                 className="input" placeholder="e.g. warocqueanum"
@@ -165,11 +190,19 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
                 onChange={(e) => patch(r.key, { listingPrice: e.target.value })}
                 className="input" placeholder="$"
               />
-              <input
-                type="number" step="1" min="0" max="100" value={r.commissionPct}
-                onChange={(e) => patch(r.key, { commissionPct: e.target.value })}
-                className="input" placeholder="%"
-              />
+              {isOwn ? (
+                <input
+                  type="number" step="0.01" min="0" value={r.grossCost}
+                  onChange={(e) => patch(r.key, { grossCost: e.target.value })}
+                  className="input" placeholder="$ cost"
+                />
+              ) : (
+                <input
+                  type="number" step="1" min="0" max="100" value={r.commissionPct}
+                  onChange={(e) => patch(r.key, { commissionPct: e.target.value })}
+                  className="input" placeholder="%"
+                />
+              )}
               <div className="flex items-center gap-2 justify-end col-span-2 sm:col-span-1">
                 <span className="text-[11px] font-mono text-gray-400 sm:hidden">≈ {skuPreview(r)}</span>
                 <button
@@ -184,7 +217,13 @@ export function SellerIntakeModal({ seller, sale, varieties = [], existingItems 
               <div className="hidden sm:block col-span-full text-[11px] -mt-1 pl-1">
                 <span className="font-mono text-gray-400">≈ {skuPreview(r)}</span>
                 {r.keptFrom && (
-                  <span className="text-amber-700"> · ${r.listingPrice} kept from last intake ({r.keptFrom})</span>
+                  <span className="text-amber-700">
+                    {' · '}
+                    {[
+                      String(r.listingPrice ?? '').trim() !== '' ? `$${r.listingPrice}` : null,
+                      isOwn && String(r.grossCost ?? '').trim() !== '' ? `cost $${r.grossCost}` : null,
+                    ].filter(Boolean).join(' / ')} kept from last time ({r.keptFrom})
+                  </span>
                 )}
               </div>
             </div>
