@@ -38,10 +38,19 @@ export function hasPaidNextDay(items) {
   return (items || []).some(i => NEXT_DAY_ITEM_RE.test(i?.name));
 }
 
+// Services that satisfy a paid Next Day upgrade: Saver (end of day) and the
+// full Next Day Air (morning). Both key and ShipStation serviceCode use the
+// same strings for these, so this predicate works on either.
+const UPS_NEXT_DAY_KEYS = ['ups_next_day_air_saver', 'ups_next_day_air'];
+export function isNextDayService(key) {
+  return UPS_NEXT_DAY_KEYS.includes(key);
+}
+
 // The UPS service a box will buy with, given its saved serviceKey: an
 // explicit UPS choice wins; otherwise a paid Next Day upgrade defaults to
-// Next Day Air Saver; otherwise 2nd Day Air.
+// Next Day Air Saver (the cheaper of the two next-day services); otherwise
+// 2nd Day Air.
 export function boxUpsServiceKey(items, serviceKey) {
-  if (serviceKey === 'ups_2nd_day_air' || serviceKey === 'ups_next_day_air_saver') return serviceKey;
+  if (['ups_2nd_day_air', ...UPS_NEXT_DAY_KEYS].includes(serviceKey)) return serviceKey;
   return hasPaidNextDay(items) ? 'ups_next_day_air_saver' : 'ups_2nd_day_air';
 }

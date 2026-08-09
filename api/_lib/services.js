@@ -1,4 +1,4 @@
-// The three shipping services the operator can price + ship a box by.
+// The shipping services the operator can price + ship a box by.
 // Server-side source of truth: maps our internal serviceKey to each
 // provider's own code so the rate-shopper can match quotes back.
 //
@@ -31,6 +31,14 @@ export const SHIPPING_SERVICES = [
     provider: 'ups',
     shipstationServiceCode: 'ups_next_day_air_saver',
     shippoToken: 'ups_next_day_air_saver',
+  },
+  {
+    // Full Next Day Air (morning delivery) — Saver above is end-of-day.
+    key: 'ups_next_day_air',
+    label: 'UPS Next Day Air',
+    provider: 'ups',
+    shipstationServiceCode: 'ups_next_day_air',
+    shippoToken: 'ups_next_day_air',
   },
 ];
 

@@ -5,7 +5,7 @@ import {
 import { api } from '../api.js';
 import { shortBoxCode } from '../labels/boxCode.js';
 import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
-import { hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
+import { hasPaidNextDay, boxUpsServiceKey, isNextDayService } from './carrier.js';
 import { ShipDateField } from './ShipDateField.jsx';
 import { shipDateProblem } from './shipDate.js';
 
@@ -50,6 +50,7 @@ const SERVICES = [
   { key: 'usps_priority', label: 'USPS Priority', carrier: 'usps' },
   { key: 'ups_2nd_day_air', label: 'UPS 2nd Day Air', carrier: 'ups' },
   { key: 'ups_next_day_air_saver', label: 'UPS Next Day Air Saver', carrier: 'ups' },
+  { key: 'ups_next_day_air', label: 'UPS Next Day Air', carrier: 'ups' },
 ];
 
 const money = (n) => (n == null ? '' : `$${Number(n).toFixed(2)}`);
@@ -453,8 +454,9 @@ export function BulkBuyLabelsModal({ boxes, boxSizes = [], preselectedIds, onClo
                           )}
                           {!st && problem && <span className="text-amber-600">{problem}</span>}
                           {/* The buyer paid for Next Day — flag any drift away
-                              from it (e.g. the operator changed the service). */}
-                          {!st && !problem && flags.nextDay && row.serviceKey !== 'ups_next_day_air_saver' && (
+                              from it (e.g. the operator changed the service).
+                              Saver or full Next Day Air both satisfy it. */}
+                          {!st && !problem && flags.nextDay && !isNextDayService(row.serviceKey) && (
                             <span className="text-red-600">buyer paid Next Day</span>
                           )}
                         </div>

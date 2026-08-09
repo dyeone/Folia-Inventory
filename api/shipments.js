@@ -413,7 +413,7 @@ async function setBoxInsulation(req, res, userId, brandId) {
 // onto the lazy shipment_boxes row. Only the keys present in the body are
 // touched, so saving a service doesn't wipe a previously-saved size. Empty
 // string / null clears a field. Mirrors set-box-note's upsert pattern.
-const VALID_SERVICE_KEYS = ['usps_priority', 'ups_2nd_day_air', 'ups_next_day_air_saver'];
+const VALID_SERVICE_KEYS = ['usps_priority', 'ups_2nd_day_air', 'ups_next_day_air_saver', 'ups_next_day_air'];
 const VALID_CARRIERS = ['usps', 'ups'];
 async function setBoxPackaging(req, res, userId, brandId) {
   const { shipmentBoxId, boxSizeId, weightOz, serviceKey, carrierOverride } = req.body || {};
