@@ -31,6 +31,7 @@ import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxHasHoldItem, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
 import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem, hasPaidNextDay, boxUpsServiceKey, isNextDayService } from './carrier.js';
+import { compareBoxesBySize, boxValue } from './boxSort.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
@@ -125,7 +126,7 @@ export function PackingView({
   // Header controls for the Ready section. readySort drives the order
   // boxes are listed; readyCarrierFilter narrows by carrier so the
   // operator can batch UPS-only or USPS-only work.
-  const [readySort, setReadySort] = useState('created-desc');
+  const [readySort, setReadySort] = useState('biggest');
   const [readyCarrierFilter, setReadyCarrierFilter] = useState('all'); // 'all' | 'usps' | 'ups'
   // Narrow the list to boxes that contain a given kind of item, so the
   // operator can batch-pack one product line at a time: 'tc' = boxes with
@@ -796,12 +797,28 @@ export function PackingView({
   };
   const sortDir = readySort.endsWith('-desc') ? -1 : 1;
   const sortBoxes = (arr) => [...arr].sort((a, b) => {
+    if (readySort === 'biggest') {
+      const d = compareBoxesBySize(a, b);
+      if (d !== 0) return d;
+      return shortBoxCode(a.id).localeCompare(shortBoxCode(b.id));
+    }
     const ka = boxSortKey(a), kb = boxSortKey(b);
     if (ka < kb) return -1 * sortDir;
     if (ka > kb) return 1 * sortDir;
     return shortBoxCode(a.id).localeCompare(shortBoxCode(b.id));
   });
   const sortGroups = (arr) => [...arr].sort((a, b) => {
+    if (readySort === 'biggest') {
+      // Group totals: most plants, then most value — same rule as the boxes
+      // inside, so the page reads big → small top to bottom.
+      const ai = a.boxes.reduce((s, x) => s + x.items.length, 0);
+      const bi = b.boxes.reduce((s, x) => s + x.items.length, 0);
+      if (ai !== bi) return bi - ai;
+      const av = a.boxes.reduce((s, x) => s + boxValue(x.items), 0);
+      const bv = b.boxes.reduce((s, x) => s + boxValue(x.items), 0);
+      if (av !== bv) return bv - av;
+      return a.displayName.localeCompare(b.displayName);
+    }
     if (readySort === 'customer') {
       return a.displayName.localeCompare(b.displayName);
     }
@@ -1059,6 +1076,7 @@ export function PackingView({
             onChange={(e) => setReadySort(e.target.value)}
             className="text-xs border border-gray-200 rounded-md py-1 px-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
           >
+            <option value="biggest">Biggest first</option>
             <option value="created-desc">Newest</option>
             <option value="created-asc">Oldest</option>
             <option value="customer">Customer A–Z</option>
@@ -3046,9 +3064,9 @@ function PackingBoxesPane({ sale, saleItems, onBack, onShipBox, onPrintItemLabel
       b.carrierOverride = boxNotesByBox?.[b.id]?.carrierOverride ?? null;
       b.carrier = resolveBoxCarrier(b.items, b.carrierOverride, b.stampedCarrier);
     }
-    return [...map.values()].sort((a, b) =>
-      (a.recipientName || '').localeCompare(b.recipientName || '')
-    );
+    // Biggest boxes first (plants, then value) — matches the Ready list's
+    // default and the packer's landing grid.
+    return [...map.values()].sort(compareBoxesBySize);
   }, [saleItems, boxNotesByBox]);
 
   // Carrier filter: 'all' | 'usps' | 'ups'. Default to 'all' so opening

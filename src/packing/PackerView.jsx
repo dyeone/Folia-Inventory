@@ -8,6 +8,7 @@ import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
+import { compareBoxesBySize } from './boxSort.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup, isHoldItem } from './holdInfo.js';
 import { loadSweepMarks, saveSweepMarks, SWEEP_KEY } from './holdSweep.js';
@@ -496,11 +497,13 @@ export function PackerView({ onLogout }) {
 
   const openBoxes = useMemo(
     () => Object.values(boxesByCode).sort((a, b) => {
-      // Boxes with work left float above fully-packed ones.
+      // Boxes with work left float above fully-packed ones; within each
+      // band, biggest boxes first (most plants, then most value) so the
+      // monster boxes get packed while bench space and energy are fresh.
       const ap = a.items.filter(i => i.status === 'sold' && !i.packedAt).length;
       const bp = b.items.filter(i => i.status === 'sold' && !i.packedAt).length;
       if ((ap === 0) !== (bp === 0)) return ap === 0 ? 1 : -1;
-      return (a.buyer || '').localeCompare(b.buyer || '');
+      return compareBoxesBySize(a, b);
     }),
     [boxesByCode],
   );
