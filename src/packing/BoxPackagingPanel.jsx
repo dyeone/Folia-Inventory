@@ -20,6 +20,7 @@ const SERVICES = [
   { key: 'usps_priority', label: 'USPS Priority', carrier: 'usps' },
   { key: 'ups_2nd_day_air', label: 'UPS 2nd Day Air', carrier: 'ups' },
   { key: 'ups_next_day_air_saver', label: 'UPS Next Day Air Saver', carrier: 'ups' },
+  { key: 'ups_next_day_air', label: 'UPS Next Day Air', carrier: 'ups' },
 ];
 
 const money = (n) => (n == null ? '—' : `$${Number(n).toFixed(2)}`);

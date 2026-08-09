@@ -30,7 +30,7 @@ import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxHasHoldItem, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
 import { findDupeLots } from './dupeLots.js';
-import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem, hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
+import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem, hasPaidNextDay, boxUpsServiceKey, isNextDayService } from './carrier.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
 // Re-export the shared building blocks so SalesUploadModal's existing
@@ -2312,8 +2312,9 @@ function BoxRow({
   const paidNextDay = hasPaidNextDay(box.items);
   const upsServiceKey = boxUpsServiceKey(box.items, box.serviceKey);
   // The buyer paid for Next Day but this box would buy something else —
-  // flag it in red, same drift warning the bulk modal shows.
-  const upsServiceDrift = paidNextDay && upsServiceKey !== 'ups_next_day_air_saver';
+  // flag it in red, same drift warning the bulk modal shows. Either next-day
+  // service (Saver or full Next Day Air) satisfies the upgrade.
+  const upsServiceDrift = paidNextDay && !isNextDayService(upsServiceKey);
   const [savingSvc, setSavingSvc] = useState(false);
   const saveUpsService = async (serviceKey) => {
     if (savingSvc || !onSavePackaging) return;
@@ -2518,6 +2519,7 @@ function BoxRow({
             >
               <option value="ups_2nd_day_air">2nd Day Air</option>
               <option value="ups_next_day_air_saver">Next Day Saver</option>
+              <option value="ups_next_day_air">Next Day Air</option>
             </select>
           )}
           <BoxContentBadges box={box} />

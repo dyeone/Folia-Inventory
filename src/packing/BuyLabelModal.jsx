@@ -3,7 +3,7 @@ import { X, Truck, MapPin, Package, AlertCircle, Check, FlaskConical, ShoppingCa
 import { api } from '../api.js';
 import { ShipDateField } from './ShipDateField.jsx';
 import { shipDateProblem } from './shipDate.js';
-import { hasPaidNextDay, boxUpsServiceKey } from './carrier.js';
+import { hasPaidNextDay, boxUpsServiceKey, isNextDayService } from './carrier.js';
 
 // Confirmation modal for buying a single shipping label. Pre-fills weight
 // and dims from the saved settings; the user can override before
@@ -141,7 +141,7 @@ export function BuyLabelModal({ box, onClose, onPurchased, showToast }) {
               {/* Service code (overridable) */}
               <Field label="Service code" value={serviceCode} onChange={setServiceCode}
                 hint={`Default for ${box.carrier?.toUpperCase()}: ${settings.carriers?.[box.carrier]?.serviceCode || '—'}`} />
-              {hasPaidNextDay(box.items) && serviceCode !== 'ups_next_day_air_saver' && (
+              {hasPaidNextDay(box.items) && !isNextDayService(serviceCode) && (
                 <div className="flex items-start gap-1.5 text-[11px] text-red-700 -mt-2">
                   <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />
                   Buyer paid for Next Day — this would buy a different service.
