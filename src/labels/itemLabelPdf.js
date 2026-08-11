@@ -1,4 +1,4 @@
-import JsBarcode from 'jsbarcode';
+import QRCode from 'qrcode';
 import { jsPDF } from 'jspdf';
 
 // The 2"×1" plant-label PDF builder plus its display helpers, in their own
@@ -77,7 +77,7 @@ export function displayName(item) {
   return name;
 }
 
-// The SKU to print / barcode. UNMATCHED-… and DBL-… are synthetic placeholder
+// The SKU to print / QR-encode. UNMATCHED-… and DBL-… are synthetic placeholder
 // SKUs (a line that didn't match real inventory) — they're long and don't scan
 // to anything, so we suppress them: those labels show just the big lineup number
 // + name for identification.
@@ -90,19 +90,53 @@ export function realSku(item) {
 const LABEL_W = 2;
 const LABEL_H = 1;
 
-// Renders a CODE128 barcode into a hidden canvas and returns it as a PNG data
-// URL, ready to embed in a jsPDF page.
-function barcodeDataUrl(canvas, value) {
+// Printed QR square sizes (inches). Shared with LabelSheet's preview so the
+// on-screen label can't drift from the printed one. Both keep the code
+// ≥0.08" off the label's bottom edge — thermal feed drift clips edges, and
+// while a clipped QR still error-corrects, a clipped CODE128 is dead (which
+// is why these labels are QR now).
+export const QR_SIZE_LOT = 0.42;   // lineup layout, right column
+export const QR_SIZE_FULL = 0.44;  // full-width layout
+
+// Renders a QR code into a canvas and returns it as a PNG data URL. QR
+// replaced CODE128 here: a 12-char SKU as CODE128 needs ~170 bar modules,
+// which squeezed into the label's ~1" slot is ~1.3 printer dots per bar at
+// 203 dpi — bars merge and the code won't scan. A version-1 QR is 21 modules
+// across (~3+ dots per module at 0.42") and adds 15% error correction on
+// top. Item labels are scanned by the packer station's 2D wedge scanner and
+// by the phone CameraScanner (ZXing + BarcodeDetector, QR whitelisted) —
+// both decode QR.
+//
+// Drawn by hand from QRCode.create() — the library's own renderers are
+// async-only (and toCanvas stomps the target's CSS size), while this
+// builder must stay synchronous for its callers (printChunked's buildPdf,
+// the packer's burrito-wrap reprint, LabelSheet's preview).
+export function qrDataUrl(canvas, value) {
   try {
-    JsBarcode(canvas, value, {
-      format: 'CODE128',
-      height: 50,      // drawing height in px
-      width: 2,        // bar width multiplier
-      margin: 0,
-      displayValue: false,
-    });
+    const qr = QRCode.create(value, { errorCorrectionLevel: 'M' });
+    const size = qr.modules.size;
+    const data = qr.modules.data; // row-major Uint8Array, 1 = dark
+    const margin = 2;  // quiet-zone modules baked into the image
+    const scale = 8;   // px per module — chunky so 1-bit thermal binarizes cleanly
+    const dim = (size + margin * 2) * scale;
+    canvas.width = dim;
+    canvas.height = dim;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, dim, dim);
+    ctx.fillStyle = '#000000';
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        if (data[y * size + x]) {
+          ctx.fillRect((x + margin) * scale, (y + margin) * scale, scale, scale);
+        }
+      }
+    }
     return canvas.toDataURL('image/png');
-  } catch {
+  } catch (e) {
+    // A label with SKU text but no code is easy to miss in a big batch —
+    // make the failure visible instead of silently printing blanks.
+    console.error('[labels] QR render failed for', value, e);
     return null;
   }
 }
@@ -134,7 +168,7 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
 
     if (lot) {
       // Combined layout: the big lineup number fills the wide left column (easy
-      // to read across the room during a live), with name / SKU / barcode stacked
+      // to read across the room during a live), with name / SKU / QR stacked
       // in the right column. A thin divider separates the two. A bold "WK N"
       // chip under the number says which week's lineup this is — numbers can
       // repeat across weeks on the bench, and the chip has to read at arm's
@@ -168,19 +202,23 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
       pdf.setFont('helvetica', 'normal');
       pdf.setFontSize(7);
       pdf.setTextColor(70);
-      pdf.text(title, cx, topTag ? 0.29 : 0.22, { align: 'center', maxWidth: cw });
+      // One line only (matches the preview's truncate) — maxWidth WRAPS, and
+      // a wrapped second line lands on the SKU glyphs below.
+      pdf.text(pdf.splitTextToSize(title, cw)[0] || '', cx, topTag ? 0.29 : 0.22, { align: 'center' });
       pdf.setFont('courier', 'bold');
       pdf.setFontSize(10.5);
       pdf.setTextColor(0);
-      pdf.text(sku, cx, 0.50, { align: 'center' });
+      pdf.text(sku, cx, 0.46, { align: 'center' });
       if (sku) {
-        const dataUrl = barcodeDataUrl(canvas, sku);
-        if (dataUrl) pdf.addImage(dataUrl, 'PNG', DIV + 0.05, 0.58, LABEL_W - DIV - 0.11, 0.34, undefined, 'FAST');
+        const dataUrl = qrDataUrl(canvas, sku);
+        if (dataUrl) {
+          pdf.addImage(dataUrl, 'PNG', cx - QR_SIZE_LOT / 2, 0.50, QR_SIZE_LOT, QR_SIZE_LOT, undefined, 'FAST');
+        }
       }
       return;
     }
 
-    // Full-width layout (no lineup number): brand tag, name, big SKU, barcode.
+    // Full-width layout (no lineup number): brand tag, name, big SKU, QR.
     if (topTag) {
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(7);
@@ -190,17 +228,19 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(70);
-    pdf.text(title, LABEL_W / 2, topTag ? 0.24 : 0.18, { align: 'center', maxWidth: LABEL_W - 0.15 });
+    // One line only — see the lot layout: wrapped title lines would reach
+    // into the SKU and the QR's quiet zone.
+    pdf.text(pdf.splitTextToSize(title, LABEL_W - 0.15)[0] || '', LABEL_W / 2, topTag ? 0.24 : 0.18, { align: 'center' });
     pdf.setFont('courier', 'bold');
     pdf.setFontSize(14);
     pdf.setTextColor(0);
-    pdf.text(sku, LABEL_W / 2, 0.45, { align: 'center' });
+    pdf.text(sku, LABEL_W / 2, 0.44, { align: 'center' });
     if (sku) {
-      const dataUrl = barcodeDataUrl(canvas, sku);
+      const dataUrl = qrDataUrl(canvas, sku);
       if (dataUrl) {
-        // 'FAST' = FlateDecode the embedded PNG; a 1-bit barcode compresses
+        // 'FAST' = FlateDecode the embedded PNG; a 1-bit QR compresses
         // hard, which keeps big batches well under the per-job size cap.
-        pdf.addImage(dataUrl, 'PNG', 0.1, 0.55, LABEL_W - 0.2, 0.4, undefined, 'FAST');
+        pdf.addImage(dataUrl, 'PNG', (LABEL_W - QR_SIZE_FULL) / 2, 0.48, QR_SIZE_FULL, QR_SIZE_FULL, undefined, 'FAST');
       }
     }
   });
