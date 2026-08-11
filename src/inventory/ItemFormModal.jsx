@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
-import { nextSkuForCode, nextSkuForSeller } from '../constants.js';
+import { nextSkuForCode, nextSkuForSeller, DEFAULT_ITEM_TYPE, DEFAULT_ADD_VARIETY } from '../constants.js';
 import { SpeciesPicker } from './SpeciesPicker.jsx';
 
 export function ItemFormModal({
@@ -17,8 +17,10 @@ export function ItemFormModal({
   const isEditing = !!item?.id;
 
   // Resolve initial catalog selection from the item (if linked) or by
-  // matching the legacy variety/name fields against the catalog.
-  const initialPick = (() => {
+  // matching the legacy variety/name fields against the catalog. Lazy
+  // initializer: this only matters at mount, so don't re-scan the catalog
+  // on every keystroke re-render.
+  const [pick, setPick] = useState(() => {
     if (item?.speciesId) {
       const sp = species.find(s => s.id === item.speciesId);
       const v = sp ? varieties.find(x => x.id === sp.varietyId) : null;
@@ -29,7 +31,14 @@ export function ItemFormModal({
         speciesEpithet: sp?.epithet || item?.name || '',
       };
     }
-    const v = varieties.find(x => x.name === item?.variety);
+    // Truly blank adds (no item at all — the bare Add button) start on the
+    // default genus so the species dropdown is one click away instead of
+    // two. Prefill-seeded adds never inherit it: a sample item missing its
+    // variety must not silently become an Anthurium with an ANT- SKU.
+    const v = varieties.find(x => x.name === item?.variety)
+      || (!item
+        ? varieties.find(x => x.name.trim().toLowerCase() === DEFAULT_ADD_VARIETY)
+        : null);
     const sp = v ? species.find(s => s.varietyId === v.id && s.epithet === item?.name) : null;
     return {
       varietyId: v?.id || '',
@@ -37,9 +46,7 @@ export function ItemFormModal({
       speciesId: sp?.id || null,
       speciesEpithet: sp?.epithet || item?.name || '',
     };
-  })();
-
-  const [pick, setPick] = useState(initialPick);
+  });
   // Consignment: adding on behalf of a seller stamps sellerId on the new
   // items — the server then mints seller-prefixed SKUs (JADE-ANT-142) and
   // consignment accounting follows. Add-mode only: changing the seller on an
@@ -47,7 +54,7 @@ export function ItemFormModal({
   const [sellerId, setSellerId] = useState(item?.sellerId || '');
   const [form, setForm] = useState({
     sku: item?.sku || '',
-    type: item?.type || 'tc',
+    type: item?.type || DEFAULT_ITEM_TYPE,
     quantity: item?.quantity || 1,
     grossCost: item?.grossCost ?? item?.cost ?? '',
     netCost: item?.netCost ?? '',
@@ -66,12 +73,23 @@ export function ItemFormModal({
   const [err, setErr] = useState('');
 
   // Same-plant memory (add mode): picking a species we've stocked before
-  // carries Cost & Pricing forward from the most recent same-type item of
-  // that plant, so repeat adds don't retype numbers. Only fields the
-  // operator hasn't typed this session are touched — switching species
-  // replaces the previous carry-over (or clears it when the new species has
-  // no history) but never overwrites a hand-entered value.
-  const PREFILL_FIELDS = ['grossCost', 'netCost', 'profitRate', 'idealPrice', 'listingPrice'];
+  // carries cost, pricing, source and image forward from the most recent
+  // same-type item of that plant, so repeat adds don't retype anything.
+  // Only fields the operator hasn't typed this session are touched —
+  // switching species replaces the previous carry-over (or clears it when
+  // the new species has no history) but never overwrites a hand-entered
+  // value. Eligibility stays cost-based: an item carrying only a source or
+  // photo must not outrank an older fully-priced one — that would blank
+  // the cost fields while the note claims they were carried.
+  const PRICE_FIELDS = ['grossCost', 'netCost', 'profitRate', 'idealPrice', 'listingPrice'];
+  const PREFILL_FIELDS = [...PRICE_FIELDS, 'source', 'imageUrl'];
+  // Legacy rows predating the gross/net split only have `cost` (and CSV
+  // imports can leave grossCost as '', which ?? alone would keep).
+  const srcVal = (i, k) => {
+    if (k !== 'grossCost') return i?.[k];
+    const g = i?.grossCost;
+    return (g == null || g === '') ? i?.cost : g;
+  };
   const [prefillNote, setPrefillNote] = useState(null);
   const lastPrefill = useRef({});
   // Rough recency: createdAt when present, else the timestamp baked into the
@@ -89,7 +107,7 @@ export function ItemFormModal({
         i.type === form.type &&
         (i.name || '').trim().toLowerCase() === epithet &&
         (i.variety || '').trim().toLowerCase() === varietyName &&
-        PREFILL_FIELDS.some(f => i[f] != null && i[f] !== ''))
+        PRICE_FIELDS.some(f => { const v = srcVal(i, f); return v != null && v !== ''; }))
       .sort((a, b) => itemTs(b) - itemTs(a))[0] || null;
 
     let applied = false;
@@ -101,7 +119,7 @@ export function ItemFormModal({
         // Untouched = still empty, or still exactly what a previous
         // carry-over wrote. Anything else is the operator's — leave it.
         if (cur !== '' && cur !== prior) continue;
-        const val = src?.[k];
+        const val = srcVal(src, k);
         if (val != null && val !== '') {
           next[k] = String(val);
           lastPrefill.current[k] = String(val);
@@ -258,7 +276,7 @@ export function ItemFormModal({
           <div className="text-xs font-semibold text-gray-700 mb-2">Cost & Pricing</div>
           {prefillNote && (
             <div className="text-[11px] text-amber-700 bg-amber-50 rounded-lg px-2.5 py-1.5 mb-2">
-              Cost &amp; price carried from <span className="font-mono font-semibold">{prefillNote.sku}</span>
+              Cost, price, source &amp; image carried from <span className="font-mono font-semibold">{prefillNote.sku}</span>
               {prefillNote.ts ? ` (added ${new Date(prefillNote.ts).toLocaleDateString()})` : ''} — the last {form.type === 'tc' ? 'TC' : 'plant'} of this species. Edit anything below.
             </div>
           )}
