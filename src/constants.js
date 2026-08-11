@@ -5,6 +5,14 @@
 // catalog UI.
 export const VARIETIES = ['Anthurium', 'Alocasia', 'Monstera', 'Jewel Orchid'];
 
+// Defaults for newly added items. The variety default is matched by name
+// (case-insensitive) against the brand's catalog — on a brand with no
+// Anthurium variety (e.g. BAE) it simply doesn't apply. Renaming the
+// Anthurium variety in the catalog silently disables the default; this
+// constant is the one place to update if the shop's main genus changes.
+export const DEFAULT_ITEM_TYPE = 'plant';
+export const DEFAULT_ADD_VARIETY = 'anthurium';
+
 // Compute the next SKU suffix given a code prefix and the existing items.
 // Numbering is GLOBAL across all items; the prefix is purely for display.
 export function nextSkuForCode(code, existingItems) {

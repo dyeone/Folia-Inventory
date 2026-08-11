@@ -1,42 +1,38 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { Download } from 'lucide-react';
-import JsBarcode from 'jsbarcode';
 import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
 import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 // The PDF builder + label display helpers live in itemLabelPdf.js (like
 // boxLabelPdf.js) so non-component code — the packer's burrito-wrap reprint —
 // can share them without this component file exporting non-components.
-import { buildItemLabelPdf, brandTag, realSku, lotStr, displayName, weekTag } from './itemLabelPdf.js';
+import {
+  buildItemLabelPdf, brandTag, realSku, lotStr, displayName, weekTag,
+  qrDataUrl, QR_SIZE_LOT, QR_SIZE_FULL,
+} from './itemLabelPdf.js';
 
 function Label({ item, tag, sellerName, week }) {
-  const svgRef = useRef(null);
   const sku = realSku(item);
   // Consignment plants print the seller's name alongside the brand tag so the
   // bench knows whose plant it is (the SKU carries the seller code too).
   const top = [tag, sellerName].filter(Boolean).join(' · ');
 
-  useEffect(() => {
-    if (svgRef.current && sku) {
-      try {
-        JsBarcode(svgRef.current, sku, {
-          format: 'CODE128',
-          height: 30, // pixels drawn; width scales via SVG to fill the label
-          margin: 0,
-          displayValue: false, // SKU is shown separately above
-        });
-      } catch (_e) {
-        // ignore — invalid SKU characters leave the svg blank
-      }
-    }
-  }, [sku]);
+  // QR, not CODE128 — same swap as the PDF builder (see itemLabelPdf.js):
+  // a barcode squeezed into the 2"×1" label was too fine to print/scan.
+  // Rendered through the shared qrDataUrl into an <img> so preview and PDF
+  // can't drift — and because qrcode's own toCanvas stomps the target's
+  // CSS size (sets style.width to the pixel count), blowing up the layout.
+  const qrSrc = useMemo(
+    () => (sku ? qrDataUrl(document.createElement('canvas'), sku) : null),
+    [sku],
+  );
 
   const lot = lotStr(item);
   const titleLine = `${displayName(item)}${item.variety ? ` · ${item.variety}` : ''}`;
 
   // Sized to a standard 2" x 1" thermal label. This is both the on-screen
   // preview and the printed size. When the plant has a lineup number, it fills
-  // the left; the name/SKU/barcode stack on the right.
+  // the left; the name/SKU/QR stack on the right.
   return (
     <div className="folia-label bg-white border border-gray-300"
          style={{ width: '2in', height: '1in', padding: '0.06in', boxSizing: 'border-box' }}>
@@ -56,7 +52,7 @@ function Label({ item, tag, sellerName, week }) {
             {top && <div className="text-[6pt] font-bold text-black leading-none truncate w-full">{top}</div>}
             <div className="text-[7pt] leading-tight text-gray-700 truncate w-full">{titleLine}</div>
             <div className="font-mono font-bold text-gray-900 leading-none" style={{ fontSize: '10.5pt' }}>{sku}</div>
-            <svg ref={svgRef} style={{ width: '1.05in', height: '0.3in' }} preserveAspectRatio="none" />
+            {qrSrc && <img src={qrSrc} alt="" style={{ width: `${QR_SIZE_LOT}in`, height: `${QR_SIZE_LOT}in` }} />}
           </div>
         </div>
       ) : (
@@ -64,7 +60,7 @@ function Label({ item, tag, sellerName, week }) {
           {top && <div className="text-[6pt] font-bold text-black leading-none">{top}</div>}
           <div className="text-[8pt] leading-tight text-gray-700 truncate w-full">{titleLine}</div>
           <div className="font-mono font-bold text-gray-900 tracking-wider leading-none" style={{ fontSize: '14pt' }}>{sku}</div>
-          <svg ref={svgRef} style={{ width: '1.8in', height: '0.35in' }} preserveAspectRatio="none" />
+          {qrSrc && <img src={qrSrc} alt="" style={{ width: `${QR_SIZE_FULL}in`, height: `${QR_SIZE_FULL}in` }} />}
         </div>
       )}
     </div>

@@ -5,8 +5,9 @@ import { BrowserMultiFormatReader } from '@zxing/browser';
 import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 
 // ZXing decode hints — only look for the formats we actually print
-// (CODE128 for both box and item labels, QR as a fallback for future
-// use). Limiting POSSIBLE_FORMATS is the single biggest win for scan
+// (CODE128 for box labels, QR for item labels — swapped from CODE128
+// because the tiny in-label barcode wouldn't print/scan reliably).
+// Limiting POSSIBLE_FORMATS is the single biggest win for scan
 // speed: by default ZXing tries every format it knows, which on a
 // phone CPU is the main reason for the laggy decode the operator
 // reported. TRY_HARDER intentionally left off — it's the opposite of

@@ -14,6 +14,7 @@ import { newTaskId } from './tasks/taskHelpers.js';
 // fresh phone load doesn't have to download xlsx / jspdf / live-bridge code
 // before the dashboard can paint.
 import { AuthScreen } from './auth/AuthScreen.jsx';
+import { DEFAULT_ITEM_TYPE } from './constants.js';
 import { Dashboard } from './dashboard/Dashboard.jsx';
 import { ConfirmDialog } from './ui/ConfirmDialog.jsx';
 import { exportPalmstreetCsv, exportAvailableToPalmstreet } from './sales/palmstreetExport.js';
@@ -1159,7 +1160,7 @@ function StaffOrAdminInventory() {
               // and copy a few useful fields from a sample item in the group
               // so cost / source / type don't have to be re-entered.
               setAddPrefill({
-                type: sampleItem?.type || 'tc',
+                type: sampleItem?.type || DEFAULT_ITEM_TYPE,
                 variety: speciesRow?.varietyId
                   ? varieties.find(v => v.id === speciesRow.varietyId)?.name
                   : sampleItem?.variety,
