@@ -32,7 +32,11 @@ function Label({ item, tag, sellerName, week }) {
 
   // Sized to a standard 2" x 1" thermal label. This is both the on-screen
   // preview and the printed size. When the plant has a lineup number, it fills
-  // the left; the name/SKU/QR stack on the right.
+  // the left; the name/SKU/QR stack on the right. Known acceptable drift:
+  // this preview truncates the title via CSS in the app font, while the PDF
+  // truncates by canvas/vector measure — the cut point can differ by a
+  // character or two. Geometry and the QR itself are shared, so nothing
+  // scannable can drift.
   return (
     <div className="folia-label bg-white border border-gray-300"
          style={{ width: '2in', height: '1in', padding: '0.06in', boxSizing: 'border-box' }}>
