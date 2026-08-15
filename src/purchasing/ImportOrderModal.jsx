@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-react';
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
+import { DEFAULT_ADD_VARIETY } from '../constants.js';
 
 // Wholesale order upload (admin's Orders pane — managing the wholesale
 // list is the admin's job; the packer's receiving screen only shows the
@@ -21,12 +22,19 @@ import { Modal } from '../ui/Modal.jsx';
 
 // Note: no '#' or 'amount' as qty aliases — '#' is usually the row-number
 // column and 'amount' is usually a dollar total; binding either to qty
-// silently orders row-47 or $249 worth of plants.
+// silently orders row-47 or $249 worth of plants. Chinese aliases cover the
+// headers wholesale suppliers actually send (simplified + traditional).
 const HEADER_ALIASES = {
-  species: ['species', 'name', 'plant', 'plant name', 'species name', 'cultivar', 'item'],
-  variety: ['variety', 'genus'],
-  qty: ['qty', 'quantity', 'count', 'units'],
-  price: ['price', 'cost', 'wholesale', 'unit price', 'wholesale price', 'unit cost', 'unit wholesale price'],
+  // 品种/品種 bind to SPECIES, not variety: Chinese nursery sheets use it
+  // for the cultivar/plant-name column ('variety' in the horticultural
+  // sense); the genus column is 属/屬. detectColumns is first-alias-wins,
+  // so a sheet with both 品名 and 品种 keeps 品名 as the name column.
+  species: ['species', 'name', 'plant', 'plant name', 'species name', 'cultivar', 'item',
+    '品名', '名称', '名稱', '植物', '品种', '品種', '品种名', '品種名'],
+  variety: ['variety', 'genus', '属', '屬'],
+  qty: ['qty', 'quantity', 'count', 'units', '数量', '數量', '株数', '株數'],
+  price: ['price', 'cost', 'wholesale', 'unit price', 'wholesale price', 'unit cost', 'unit wholesale price',
+    '单价', '單價', '价格', '價格', '批发价', '批發價'],
 };
 
 // Sanity rails on supplier-sheet cells. Rows outside them are skipped with
@@ -53,8 +61,16 @@ function detectColumns(headerRow) {
 
 export function ImportOrderModal({ species, varieties, showToast, onClose, onCreated }) {
   const [fileName, setFileName] = useState('');
-  const [rows, setRows] = useState(null);      // parsed + matched rows
+  const [baseRows, setBaseRows] = useState(null); // parsed rows, pre-matching
   const [parseErr, setParseErr] = useState('');
+  // Where new species land when the sheet has no (or an unknown-to-us)
+  // variety column. Defaults to the shop's main genus — same constant the
+  // Add form uses — so a plain list of names imports without ceremony.
+  const [defaultVarietyId, setDefaultVarietyId] = useState(() => {
+    const list = varieties || [];
+    const dflt = list.find(v => v.name.trim().toLowerCase() === DEFAULT_ADD_VARIETY);
+    return (dflt || list[0])?.id || '';
+  });
   const [supplier, setSupplier] = useState('');
   const [shippingFee, setShippingFee] = useState('');
   const [notes, setNotes] = useState('');
@@ -88,17 +104,28 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     [varieties],
   );
 
-  const matchRow = (r) => {
+  const matchRow = (r, defVarId) => {
     const candidates = speciesIndex.get(norm(r.species)) || [];
     const wantVariety = r.variety ? varietyByName.get(norm(r.variety)) : null;
-    const narrowed = wantVariety
+    // An unrecognized variety cell (size grades, 'TC', supplier codes)
+    // degrades to name-only matching — a unique catalog match still wins.
+    let narrowed = wantVariety
       ? candidates.filter(s => s.varietyId === wantVariety.id)
       : candidates;
+    // A name that exists in several varieties without a usable variety
+    // cell: prefer the chosen default genus before calling it ambiguous.
+    if (!wantVariety && narrowed.length > 1) {
+      const inDefault = narrowed.filter(s => s.varietyId === defVarId);
+      if (inDefault.length === 1) narrowed = inDefault;
+    }
     if (narrowed.length === 1) return { status: 'matched', speciesId: narrowed[0].id, varietyId: narrowed[0].varietyId };
     if (narrowed.length > 1) return { status: 'ambiguous' };
-    // No match. If the sheet names a variety we know, the species can be
-    // created under it during import.
+    // No match anywhere → create: under the sheet's variety when given.
+    // A row explicitly naming a genus we DON'T have is skipped — filing it
+    // under the default would mislabel it (add the variety, re-upload).
     if (wantVariety) return { status: 'create', varietyId: wantVariety.id };
+    if (r.variety) return { status: 'unknown-variety' };
+    if (defVarId) return { status: 'create', varietyId: defVarId, viaDefault: true };
     return { status: 'unmatched' };
   };
 
@@ -106,7 +133,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
 
   const handleFile = async (file) => {
     setParseErr('');
-    setRows(null);
+    setBaseRows(null);
     setNoQtyColumn(false);
     importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     if (!file) return;
@@ -158,41 +185,50 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
             price: Number.isFinite(price) && price >= 0 ? price : null,
           };
           if (row.qty < 1 || row.qty > MAX_QTY) return { ...row, status: 'bad-qty' };
-          if (speciesName.length > MAX_NAME_LEN) return { ...row, status: 'unmatched' };
-          return { ...row, ...matchRow(row) };
+          if (speciesName.length > MAX_NAME_LEN) return { ...row, status: 'bad-name' };
+          return row;
         })
         .filter(Boolean);
 
-      // Merge duplicate species rows — the import-order action aggregates
-      // them server-side anyway (summing quantity, keeping the FIRST price),
-      // so surface that here. Later duplicates fold their qty into the first
-      // row and show a chip (with a price-conflict note when it matters).
-      // A merged total past MAX_QTY skips the whole species: the server
-      // enforces the same cap on the aggregate and would reject the import.
-      const firstByKey = new Map();
-      for (const r of parsed) {
-        if (r.status !== 'matched' && r.status !== 'create') continue;
-        const key = r.status === 'matched' ? `m:${r.speciesId}` : `c:${r.varietyId}:${norm(r.species)}`;
-        const first = firstByKey.get(key);
-        if (!first) { firstByKey.set(key, r); continue; }
-        first.qty += r.qty;
-        r.status = 'duplicate';
-        r.priceConflict = r.price != null && first.price != null && r.price !== first.price;
-        if (first.price == null && r.price != null) first.price = r.price;
-      }
-      for (const first of firstByKey.values()) {
-        if (first.qty > MAX_QTY) first.status = 'bad-qty';
-      }
-
       if (!parsed.length) { setParseErr('No usable rows found — is there a species/name column?'); return; }
-      setRows(parsed);
+      setBaseRows(parsed);
     } catch (e) {
       setParseErr(e.message || 'Could not read that file.');
     }
   };
 
+  // Matching + duplicate-merge, derived so changing the "file under" genus
+  // re-matches live. Rows are cloned first — the merge mutates quantities.
+  // A merged total past MAX_QTY skips the whole species: the server enforces
+  // the same cap on the aggregate and would reject the import.
+  const rows = useMemo(() => {
+    if (!baseRows) return null;
+    const out = baseRows.map(r => (r.status ? { ...r } : { ...r, ...matchRow(r, defaultVarietyId) }));
+    const firstByKey = new Map();
+    for (const r of out) {
+      if (r.status !== 'matched' && r.status !== 'create') continue;
+      const key = r.status === 'matched' ? `m:${r.speciesId}` : `c:${r.varietyId}:${norm(r.species)}`;
+      const first = firstByKey.get(key);
+      if (!first) { firstByKey.set(key, r); continue; }
+      first.qty += r.qty;
+      r.status = 'duplicate';
+      r.priceConflict = r.price != null && first.price != null && r.price !== first.price;
+      if (first.price == null && r.price != null) first.price = r.price;
+    }
+    for (const first of firstByKey.values()) {
+      if (first.qty > MAX_QTY) first.status = 'bad-qty';
+    }
+    return out;
+    // matchRow reads only memoized indexes + the default id; listing the
+    // function itself would re-run this on every render for nothing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseRows, defaultVarietyId, speciesIndex, varietyByName]);
+
   const counts = useMemo(() => {
-    const c = { matched: 0, create: 0, ambiguous: 0, unmatched: 0, duplicate: 0, 'bad-qty': 0, units: 0 };
+    const c = {
+      matched: 0, create: 0, ambiguous: 0, unmatched: 0, duplicate: 0,
+      'bad-qty': 0, 'bad-name': 0, 'unknown-variety': 0, units: 0,
+    };
     for (const r of rows || []) {
       c[r.status] += 1;
       if (r.status === 'matched' || r.status === 'create') c.units += r.qty;
@@ -212,6 +248,16 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
 
   const runImport = async () => {
     if (busyRef.current || importing || !importable.length) return;
+    // Mass-create guard: hundreds of new species in one import usually
+    // means a wrong column was read as the plant name — the per-row chips
+    // are easy to skim past at that volume, so make it a deliberate step.
+    const createCount = importable.filter(r => r.status === 'create').length;
+    if (createCount > 50) {
+      const sure = window.confirm(
+        `This import creates ${createCount} NEW species in the catalog. That many usually means a wrong column was read as the plant name — check the preview's "new species" chips. Create them anyway?`,
+      );
+      if (!sure) return;
+    }
     busyRef.current = true;
     setImporting(true);
     const markOrdered = sendToReceiving;
@@ -265,15 +311,24 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   const statusChip = (r) => {
     switch (r.status) {
       case 'matched':   return <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">matched</span>;
-      case 'create':    return <span className="text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">new species</span>;
-      case 'ambiguous': return <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This name exists in more than one variety — add a variety column to pick one">ambiguous — skipped</span>;
+      case 'create': {
+        const vName = varietyById.get(r.varietyId)?.name || '?';
+        return (
+          <span className="text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={r.viaDefault ? 'Not in the catalog and no variety column — created under the genus chosen below' : 'Created under the variety named on this row'}>
+            new species → {vName}
+          </span>
+        );
+      }
+      case 'ambiguous': return <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This name exists in more than one variety (and not the default one) — add a variety column to pick one">ambiguous — skipped</span>;
       case 'duplicate': return (
         <span className="text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="Same species appears earlier in the sheet — quantities were combined into that row">
           duplicate — qty merged{r.priceConflict ? ' · price differs, first used' : ''}
         </span>
       );
       case 'bad-qty':   return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={`Quantity is 0 or over ${MAX_QTY} — fix the cell and re-upload`}>qty looks wrong — skipped</span>;
-      default:          return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="Not in the catalog (or the name is too long), and no known variety to create it under">no match — skipped</span>;
+      case 'bad-name':  return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={`Name is over ${MAX_NAME_LEN} characters — fix the cell and re-upload`}>name too long — skipped</span>;
+      case 'unknown-variety': return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This row names a variety that isn't in the catalog — add the variety first, or clear the cell to use the default genus">unknown variety — skipped</span>;
+      default:          return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">no match — skipped</span>;
     }
   };
 
@@ -358,13 +413,40 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
             <div className="flex items-center gap-2 text-xs flex-wrap">
               <span className="font-semibold text-gray-700">{rows.length} rows:</span>
               {counts.matched > 0 && <span className="text-emerald-700">{counts.matched} matched</span>}
-              {counts.create > 0 && <span className="text-sky-700">{counts.create} new species</span>}
+              {counts.create > 0 && (
+                <span className={counts.create > 50 ? 'text-red-700 font-bold' : 'text-sky-700'}>
+                  {counts.create} new species{counts.create > 50 ? ' ⚠' : ''}
+                </span>
+              )}
               {counts.duplicate > 0 && <span className="text-gray-500">{counts.duplicate} merged</span>}
               {counts.ambiguous > 0 && <span className="text-amber-700">{counts.ambiguous} ambiguous</span>}
               {counts.unmatched > 0 && <span className="text-red-700">{counts.unmatched} unmatched</span>}
+              {counts['unknown-variety'] > 0 && <span className="text-red-700">{counts['unknown-variety']} unknown variety</span>}
               {counts['bad-qty'] > 0 && <span className="text-red-700">{counts['bad-qty']} bad qty</span>}
+              {counts['bad-name'] > 0 && <span className="text-red-700">{counts['bad-name']} bad name</span>}
               <span className="ml-auto font-semibold text-gray-900">{counts.units} plants to order</span>
             </div>
+            {counts.create > 0 && (
+              <label className="flex items-center gap-2 text-xs text-gray-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">
+                <span className="font-medium shrink-0">File new species under</span>
+                <select
+                  value={defaultVarietyId}
+                  onChange={(e) => {
+                    setDefaultVarietyId(e.target.value);
+                    // A different genus is a different import: mint a fresh
+                    // idempotency id so a retry can't replay the previous
+                    // genus's order as "already imported".
+                    importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+                  }}
+                  className="input !py-1.5 text-sm flex-1"
+                >
+                  {(varieties || []).map(v => (
+                    <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
+                  ))}
+                </select>
+                <span className="text-gray-500 shrink-0 hidden sm:inline">rows with their own variety column keep it</span>
+              </label>
+            )}
             <div className="border border-gray-200 rounded-xl overflow-hidden">
               <div className="max-h-56 overflow-y-auto">
                 <table className="w-full text-xs">
