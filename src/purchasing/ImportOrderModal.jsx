@@ -3,10 +3,13 @@ import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-rea
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 
-// Wholesale order upload: the admin drops the supplier's list (.xlsx or
-// .csv) and gets a purchase order out of it — matched to the catalog, one
-// line per species — optionally marked "ordered" right away so it shows up
-// on the packer's receiving screen for counting + labeling.
+// Wholesale order upload — hosted by BOTH the admin's Orders pane and the
+// packer's ReceivingPane. Drop the supplier's list (.xlsx or .csv) and get
+// a purchase order out of it — matched to the catalog, one line per
+// species — marked "ordered" so it shows on the receiving screen for
+// counting + labeling. `forceSendToReceiving` (the packer context) hides
+// the mark-as-ordered choice: an unchecked import would create a draft the
+// packer can neither see nor fix (drafts and mark-ordered are admin-only).
 //
 // Expected columns (headers matched loosely, order doesn't matter):
 //   species / name / plant       required — the species or cultivar name
@@ -30,6 +33,7 @@ const HEADER_ALIASES = {
 // Sanity rails on supplier-sheet cells. Rows outside them are skipped with
 // a visible chip rather than silently coerced — a date serial in the qty
 // column must not become a million-unit order.
+// MAX_ROWS mirrors IMPORT_LINES_MAX in api/purchase-orders.js.
 const MAX_ROWS = 500;
 const MAX_QTY = 10000;
 const MAX_NAME_LEN = 200;
@@ -48,7 +52,7 @@ function detectColumns(headerRow) {
   return cols;
 }
 
-export function ImportOrderModal({ species, varieties, showToast, onClose, onCreated }) {
+export function ImportOrderModal({ species, varieties, showToast, onClose, onCreated, forceSendToReceiving = false }) {
   const [fileName, setFileName] = useState('');
   const [rows, setRows] = useState(null);      // parsed + matched rows
   const [parseErr, setParseErr] = useState('');
@@ -57,15 +61,12 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   const [notes, setNotes] = useState('');
   const [sendToReceiving, setSendToReceiving] = useState(true);
   const [importing, setImporting] = useState(false);
-  const [progress, setProgress] = useState('');
   const fileRef = useRef(null);
-  // Retry bookkeeping: a mid-import failure leaves these populated so
-  // clicking Create again CONTINUES the same draft PO from where it
-  // stopped, instead of minting a second PO shell, 409-ing on species the
-  // first attempt already created, or double-bumping already-added lines.
-  const createdPoRef = useRef(null);
-  const addedRowsRef = useRef(new Set());       // sheet row numbers already added
-  const createdSpeciesRef = useRef(new Map());  // dedup key → speciesId
+  // Synchronous double-tap guard (state alone loses to fast iPad taps) and
+  // the idempotency id: one per parsed sheet, used as the PO id server-side,
+  // so a retry after a lost success response can't mint a duplicate order.
+  const busyRef = useRef(false);
+  const importIdRef = useRef(null);
 
   const speciesIndex = useMemo(() => {
     // epithet (lowercased) → [species…]; a name can exist in several
@@ -108,12 +109,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     setParseErr('');
     setRows(null);
     setNoQtyColumn(false);
-    // New file = new import. Any half-finished PO from a failed prior
-    // attempt stays in Drafts (documented in its toast) — don't resume it
-    // against different rows.
-    createdPoRef.current = null;
-    addedRowsRef.current = new Set();
-    createdSpeciesRef.current = new Map();
+    importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     if (!file) return;
     setFileName(file.name);
     try {
@@ -168,10 +164,12 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
         })
         .filter(Boolean);
 
-      // Merge duplicate species rows: the server upserts lines by species,
-      // summing quantity but silently keeping the FIRST price — surface
-      // that here instead. Later duplicates fold their qty into the first
+      // Merge duplicate species rows — the import-order action aggregates
+      // them server-side anyway (summing quantity, keeping the FIRST price),
+      // so surface that here. Later duplicates fold their qty into the first
       // row and show a chip (with a price-conflict note when it matters).
+      // A merged total past MAX_QTY skips the whole species: the server
+      // enforces the same cap on the aggregate and would reject the import.
       const firstByKey = new Map();
       for (const r of parsed) {
         if (r.status !== 'matched' && r.status !== 'create') continue;
@@ -182,6 +180,9 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
         r.status = 'duplicate';
         r.priceConflict = r.price != null && first.price != null && r.price !== first.price;
         if (first.price == null && r.price != null) first.price = r.price;
+      }
+      for (const first of firstByKey.values()) {
+        if (first.qty > MAX_QTY) first.status = 'bad-qty';
       }
 
       if (!parsed.length) { setParseErr('No usable rows found — is there a species/name column?'); return; }
@@ -211,94 +212,55 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   const importable = (rows || []).filter(r => r.status === 'matched' || r.status === 'create');
 
   const runImport = async () => {
-    if (importing || !importable.length) return;
+    if (busyRef.current || importing || !importable.length) return;
+    busyRef.current = true;
     setImporting(true);
-    let po = createdPoRef.current;
+    const markOrdered = forceSendToReceiving || sendToReceiving;
     try {
-      if (!po) {
-        setProgress('Creating the order…');
-        po = await api.createPurchaseOrder({
-          supplier: supplier.trim(),
-          shippingFee: parseFloat(shippingFee) || 0,
-          notes: notes.trim() || undefined,
-        });
-        createdPoRef.current = po;
-      }
-
-      // Species creation first (dedup by variety+epithet so a name repeated
-      // across rows is only created once), then one add-line per row —
-      // add-line upserts by (PO, species), so repeats simply bump quantity.
-      const createdSpecies = createdSpeciesRef.current;
-      let done = 0;
-      for (const r of importable) {
-        done += 1;
-        if (addedRowsRef.current.has(r.row)) continue; // added on a prior attempt
-        setProgress(`Adding line ${done}/${importable.length} — ${r.species}`);
-        let speciesId = r.speciesId;
-        if (r.status === 'create') {
-          const key = `${r.varietyId}:${norm(r.species)}`;
-          if (!createdSpecies.has(key)) {
-            let sp;
-            try {
-              sp = await api.createSpecies({
-                varietyId: r.varietyId,
-                epithet: r.species,
-                wholesalePrice: r.price ?? undefined,
-              });
-            } catch (err) {
-              // 409 "already exists": a prior failed attempt (or another
-              // admin) beat us to it — find the existing row and continue.
-              if (/already exists/i.test(err?.message || '')) {
-                const fresh = await api.getSpecies();
-                sp = (fresh || []).find(
-                  s => s.varietyId === r.varietyId && norm(s.epithet) === norm(r.species),
-                );
-              }
-              if (!sp) throw err;
+      // One request: the import-order action creates species + PO + every
+      // line in batch statements server-side (and never leaves a line-less
+      // order behind), so there's no sequential per-row loop to resume.
+      const res = await api.importPurchaseOrder({
+        importId: importIdRef.current || undefined,
+        supplier: supplier.trim(),
+        shippingFee: parseFloat(shippingFee) || 0,
+        notes: notes.trim() || undefined,
+        markOrdered,
+        lines: importable.map(r => (r.status === 'matched'
+          ? {
+              speciesId: r.speciesId,
+              quantityOrdered: r.qty,
+              unitWholesalePrice: r.price ?? undefined,
             }
-            createdSpecies.set(key, sp.id);
-          }
-          speciesId = createdSpecies.get(key);
-        }
-        await api.addPurchaseOrderLine({
-          id: po.id,
-          speciesId,
-          quantityOrdered: r.qty,
-          // null lets the server fall back to the species' saved wholesale
-          // price; a price from the sheet always wins.
-          unitWholesalePrice: r.price ?? undefined,
-        });
-        addedRowsRef.current.add(r.row);
-      }
-
-      if (sendToReceiving) {
-        setProgress('Sending to receiving…');
-        await api.markPurchaseOrderOrdered(po.id);
-      }
+          : {
+              createSpecies: { varietyId: r.varietyId, epithet: r.species, wholesalePrice: r.price ?? undefined },
+              quantityOrdered: r.qty,
+              unitWholesalePrice: r.price ?? undefined,
+            })),
+      });
 
       const skipped = (rows || []).length - importable.length;
-      showToast?.(
-        `Order created — ${importable.length} species, ${counts.units} plants`
-        + (createdSpecies.size ? `, ${createdSpecies.size} new species` : '')
-        + (skipped ? ` (${skipped} row${skipped === 1 ? '' : 's'} skipped)` : '')
-        + (sendToReceiving ? '. It’s live on the packer’s receiving screen.' : '.'),
-        5000,
-      );
+      if (res.alreadyImported) {
+        showToast?.('This sheet was already imported — nothing was duplicated.', 4000);
+      } else if (res.markOrderedFailed) {
+        // The order EXISTS as a draft; retrying would duplicate it. An admin
+        // has to flip it from the Purchase tab's Orders list.
+        showToast?.('Order created as a DRAFT — it needs an admin to send it to receiving (do not re-upload).', 7000);
+      } else {
+        showToast?.(
+          `Order created — ${res.lineCount} species, ${res.unitCount} plants`
+          + (res.createdSpeciesCount ? `, ${res.createdSpeciesCount} new species` : '')
+          + (skipped ? ` (${skipped} row${skipped === 1 ? '' : 's'} skipped)` : '')
+          + (markOrdered ? '. It’s live on the receiving screen.' : '.'),
+          5000,
+        );
+      }
       onCreated?.();
       onClose();
     } catch (e) {
-      if (!po) {
-        // Nothing was created — don't point the admin at a draft that
-        // doesn't exist or churn the orders list for no reason.
-        showToast?.(`Import failed: ${e.message || 'unknown error'}`, 5000);
-      } else {
-        // Lines already added stay on the (draft) PO and the retry refs
-        // remember them — Create again continues where this stopped.
-        showToast?.(`Import stopped: ${e.message || 'unknown error'} — click Create again to continue (the partial order is in Drafts)`, 6000);
-        onCreated?.();
-      }
+      showToast?.(`Import failed: ${e.message || 'unknown error'} — fix and try again`, 5000);
+      busyRef.current = false;
       setImporting(false);
-      setProgress('');
     }
   };
 
@@ -449,38 +411,47 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
                 <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className="input mt-1" placeholder="optional" />
               </label>
             </div>
-            <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={sendToReceiving}
-                onChange={(e) => setSendToReceiving(e.target.checked)}
-                className="rounded border-gray-300 mt-0.5"
-              />
-              <span>
-                Mark as <strong>ordered</strong> and send to the packer's receiving screen
-                <span className="block text-xs text-gray-500">Unchecked, it stays a draft you can edit in the Orders list first. The shipping fee is split across every plant's cost at receive time.</span>
-              </span>
-            </label>
+            {forceSendToReceiving ? (
+              // Packer context: no draft escape hatch — an unchecked import
+              // would be invisible on this screen and only an admin could
+              // rescue it from Drafts.
+              <div className="text-xs text-gray-500">
+                The order goes straight to this receiving screen. The shipping fee is split across every plant's cost at receive time.
+              </div>
+            ) : (
+              <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sendToReceiving}
+                  onChange={(e) => setSendToReceiving(e.target.checked)}
+                  className="rounded border-gray-300 mt-0.5"
+                />
+                <span>
+                  Mark as <strong>ordered</strong> and send to the packer's receiving screen
+                  <span className="block text-xs text-gray-500">Unchecked, it stays a draft you can edit in the Orders list first. The shipping fee is split across every plant's cost at receive time.</span>
+                </span>
+              </label>
+            )}
           </>
         )}
 
         <div className="flex items-center gap-2 justify-end pt-1">
           {importing && (
             <span className="mr-auto text-xs text-gray-500 flex items-center gap-1.5">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> {progress}
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Importing {importable.length} species…
             </span>
           )}
           <button
             onClick={onClose}
             disabled={importing}
-            className="px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-40"
+            className="px-4 py-3 text-base font-medium text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-40"
           >
             Cancel
           </button>
           <button
             onClick={runImport}
             disabled={importing || !importable.length}
-            className="px-4 py-2.5 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg flex items-center gap-1.5 disabled:bg-gray-200 disabled:text-gray-500"
+            className="px-4 py-3 text-base font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl flex items-center gap-1.5 disabled:bg-gray-200 disabled:text-gray-500"
           >
             {importing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
             {importing
