@@ -11,6 +11,12 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 // creating a million-unit line that distorts shipping allocation forever.
 const RECEIVE_MAX = 500;
 const LINE_QTY_MAX = 10000;
+// Mirrored client-side as MAX_ROWS in ImportOrderModal.jsx.
+const IMPORT_LINES_MAX = 500;
+// Money ceiling for member-supplied prices/fees on import-order — the action
+// is open to non-admins, and an absurd unit price would flow straight into
+// minted inventory grossCost and every financial report.
+const PRICE_MAX = 100000;
 
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
@@ -29,11 +35,17 @@ export default wrap(async (req, res) => {
     // side posture as DELETE /api/items. Receiving (receive-line /
     // cancel-receive-line) stays open to any brand member: that IS the
     // packer's job.
+    // import-order is deliberately NOT admin-gated: uploading the supplier's
+    // list when the cargo lands is part of receiving, and the packer at the
+    // dock shouldn't wait on an admin. It only CREATES a fresh order in one
+    // deliberate action — editing, re-pricing, and deleting existing POs
+    // stay admin-only.
     const ADMIN_ACTIONS = new Set([
       'create', 'update-header', 'add-line', 'update-line', 'remove-line', 'delete', 'mark-ordered',
     ]);
     if (ADMIN_ACTIONS.has(action)) await requireAdmin(userId);
     switch (action) {
+      case 'import-order':        return importOrder(req, res, user, brandId);
       case 'create':              return create(req, res, user, brandId);
       case 'update-header':       return updateHeader(req, res, user, brandId);
       case 'add-line':            return addLine(req, res, brandId);
@@ -157,6 +169,240 @@ async function create(req, res, user, brandId) {
   const { error } = await supabase.from('purchase_orders').insert(row);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ purchaseOrder: row });
+}
+
+// One-request wholesale import: species + PO + every line land in a handful
+// of batch statements instead of one request per row (a 50-row sheet used to
+// be ~50 sequential add-line calls, each with its own loadPo overhead).
+// Open to brand members — see the dispatcher note. Write order is chosen so
+// a mid-flight failure leaves nothing half-armed: species first (orphans are
+// harmless catalog entries), then a DRAFT PO, then lines, and only then the
+// flip to 'ordered' — an empty or line-less order can never reach the
+// packer's receiving screen.
+async function importOrder(req, res, user, brandId) {
+  const { supplier, shippingFee, notes, lines, markOrdered, importId } = req.body || {};
+  if (!Array.isArray(lines) || lines.length === 0) {
+    const e = new Error('lines required'); e.status = 400; throw e;
+  }
+  if (lines.length > IMPORT_LINES_MAX) {
+    const e = new Error(`Too many lines — max ${IMPORT_LINES_MAX} per import`); e.status = 400; throw e;
+  }
+  const fee = parseFloat(shippingFee || 0) || 0;
+  if (!Number.isFinite(fee) || fee < 0 || fee > PRICE_MAX) {
+    const e = new Error(`shippingFee must be 0–${PRICE_MAX}`); e.status = 400; throw e;
+  }
+
+  // Validate + normalize every line BEFORE any write.
+  const wants = lines.map((l, i) => {
+    const qty = parseInt(l?.quantityOrdered, 10) || 0;
+    if (qty < 1 || qty > LINE_QTY_MAX) {
+      const e = new Error(`Line ${i + 1}: quantityOrdered must be 1–${LINE_QTY_MAX}`); e.status = 400; throw e;
+    }
+    const rawPrice = l?.unitWholesalePrice;
+    const price = (rawPrice === undefined || rawPrice === null || rawPrice === '') ? null : parseFloat(rawPrice);
+    if (price !== null && (!Number.isFinite(price) || price < 0 || price > PRICE_MAX)) {
+      const e = new Error(`Line ${i + 1}: unitWholesalePrice must be 0–${PRICE_MAX}`); e.status = 400; throw e;
+    }
+    const create = l?.createSpecies || null;
+    if (!l?.speciesId && !(create?.varietyId && String(create?.epithet || '').trim())) {
+      const e = new Error(`Line ${i + 1}: speciesId or createSpecies{varietyId, epithet} required`); e.status = 400; throw e;
+    }
+    return { speciesId: l?.speciesId || null, create, qty, price };
+  });
+
+  const nowIso = new Date().toISOString();
+
+  // Resolve species-to-create. An existing (variety, epithet) row is reused
+  // — a sheet re-sent after a failed attempt must not 409.
+  const needCreate = wants.filter(w => !w.speciesId);
+  let createdSpeciesCount = 0;
+  if (needCreate.length) {
+    const varietyIds = [...new Set(needCreate.map(w => w.create.varietyId))];
+    const { data: vrows, error: vErr } = await supabase
+      .from('varieties').select('id').eq('brandId', brandId).in('id', varietyIds);
+    if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
+    const knownVarieties = new Set((vrows || []).map(v => v.id));
+    const badVariety = varietyIds.find(v => !knownVarieties.has(v));
+    if (badVariety) { const e = new Error('Unknown variety on a new-species line'); e.status = 400; throw e; }
+
+    // Paginated: supabase-js silently caps selects at 1000 rows (recurring
+    // project gotcha) — a truncated dedup map would mint duplicate epithets
+    // and hit the unique index on every retry, hard-sticking the import.
+    const fetchSpeciesByKey = async () => {
+      const map = new Map();
+      for (let from = 0; ; from += 1000) {
+        const { data: page, error: exErr } = await supabase
+          .from('species').select('id, "varietyId", epithet')
+          .eq('brandId', brandId).in('varietyId', varietyIds)
+          .range(from, from + 999);
+        if (exErr) { const e = new Error(exErr.message); e.status = 500; throw e; }
+        for (const s of page || []) {
+          map.set(`${s.varietyId}:${String(s.epithet).trim().toLowerCase()}`, s.id);
+        }
+        if (!page || page.length < 1000) break;
+      }
+      return map;
+    };
+
+    // Two attempts: a concurrent import of the same sheet can create the
+    // same epithets between our select and insert — the unique index fails
+    // the batch (23505), and a fresh select resolves the winners' ids.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const speciesByKey = await fetchSpeciesByKey();
+      const newSpeciesRows = [];
+      for (const w of needCreate) {
+        const epithet = String(w.create.epithet).trim().slice(0, 200);
+        const key = `${w.create.varietyId}:${epithet.toLowerCase()}`;
+        let sid = speciesByKey.get(key);
+        if (!sid) {
+          sid = newId();
+          speciesByKey.set(key, sid);
+          const wp = parseFloat(w.create.wholesalePrice);
+          newSpeciesRows.push({
+            id: sid,
+            brandId,
+            varietyId: w.create.varietyId,
+            epithet,
+            commonName: null,
+            notes: null,
+            imageUrl: null,
+            wholesalePrice: Number.isFinite(wp) && wp >= 0 && wp <= PRICE_MAX ? wp : (w.price ?? null),
+            idealSellingPrice: null,
+            createdAt: nowIso,
+            createdBy: user.displayName,
+          });
+        }
+        w.speciesId = sid;
+      }
+      if (!newSpeciesRows.length) break;
+      const { error: sErr } = await supabase.from('species').insert(newSpeciesRows);
+      if (!sErr) { createdSpeciesCount = newSpeciesRows.length; break; }
+      if (sErr.code === '23505' && attempt === 0) continue;
+      const e = new Error(sErr.code === '23505'
+        ? 'Another import is creating the same species right now — try again in a moment'
+        : `Species create failed: ${sErr.message}`);
+      e.status = sErr.code === '23505' ? 409 : 500;
+      throw e;
+    }
+  }
+
+  // Verify referenced species + pull wholesale prices for the null-price
+  // fallback. Chunked: 500 ~20-char ids in one PostgREST `in` would push the
+  // GET query string toward gateway URL limits.
+  const allSpeciesIds = [...new Set(wants.map(w => w.speciesId))];
+  const priceById = new Map();
+  for (let i = 0; i < allSpeciesIds.length; i += 200) {
+    const { data: spRows, error: spErr } = await supabase
+      .from('species').select('id, "wholesalePrice"')
+      .eq('brandId', brandId).in('id', allSpeciesIds.slice(i, i + 200));
+    if (spErr) { const e = new Error(spErr.message); e.status = 500; throw e; }
+    for (const s of spRows || []) priceById.set(s.id, s.wholesalePrice ?? 0);
+  }
+  const unknown = allSpeciesIds.find(sid => !priceById.has(sid));
+  if (unknown) { const e = new Error('Unknown species on a line'); e.status = 400; throw e; }
+
+  // Aggregate by species — purchase_order_lines is UNIQUE(purchaseOrderId,
+  // speciesId), so duplicates sum quantity and keep the first explicit price.
+  // The per-line qty cap must hold on the SUM too, or 500 duplicate rows at
+  // the cap would fold into one multi-million-unit line.
+  const bySpecies = new Map();
+  for (const w of wants) {
+    const agg = bySpecies.get(w.speciesId);
+    if (agg) {
+      agg.qty += w.qty;
+      if (agg.price == null && w.price != null) agg.price = w.price;
+    } else {
+      bySpecies.set(w.speciesId, { qty: w.qty, price: w.price });
+    }
+  }
+  for (const agg of bySpecies.values()) {
+    if (agg.qty > LINE_QTY_MAX) {
+      const e = new Error(`A species totals ${agg.qty} units across duplicate rows — max ${LINE_QTY_MAX} per species`);
+      e.status = 400; throw e;
+    }
+  }
+
+  // Idempotency: the client sends one importId per parsed sheet, used as the
+  // PO id. A retry after a lost success response (dock Wi-Fi) re-sends the
+  // same id — the primary key rejects the duplicate and we return the
+  // already-imported order instead of minting a second one.
+  const cleanImportId = typeof importId === 'string' && /^[A-Za-z0-9_-]{8,64}$/.test(importId)
+    ? importId : null;
+  const po = {
+    id: cleanImportId || newId(),
+    brandId,
+    supplier: String(supplier || '').slice(0, 500),
+    status: 'draft',
+    shippingFee: fee,
+    notes: notes ? String(notes).slice(0, 500) : null,
+    createdAt: nowIso,
+    createdBy: user.displayName,
+  };
+  const { error: poErr } = await supabase.from('purchase_orders').insert(po);
+  if (poErr) {
+    if (poErr.code === '23505' && cleanImportId) {
+      const { data: prior } = await supabase
+        .from('purchase_orders').select('*').eq('id', cleanImportId).eq('brandId', brandId).maybeSingle();
+      if (prior) {
+        const { data: priorLines } = await supabase
+          .from('purchase_order_lines').select('"quantityOrdered"')
+          .eq('brandId', brandId).eq('purchaseOrderId', prior.id);
+        return res.status(200).json({
+          purchaseOrder: prior,
+          lineCount: (priorLines || []).length,
+          unitCount: (priorLines || []).reduce((s, l) => s + l.quantityOrdered, 0),
+          createdSpeciesCount: 0,
+          alreadyImported: true,
+        });
+      }
+    }
+    const e = new Error(poErr.message); e.status = 500; throw e;
+  }
+
+  const lineRows = [...bySpecies.entries()].map(([speciesId, agg], idx) => ({
+    id: newId(),
+    brandId,
+    purchaseOrderId: po.id,
+    speciesId,
+    quantityOrdered: agg.qty,
+    quantityReceived: 0,
+    unitWholesalePrice: agg.price ?? priceById.get(speciesId) ?? 0,
+    sortOrder: idx,
+  }));
+  const { error: lErr } = await supabase.from('purchase_order_lines').insert(lineRows);
+  if (lErr) {
+    // Leave nothing half-armed: a PO shell with no lines is deleted rather
+    // than left for someone to trip over in Drafts.
+    await supabase.from('purchase_orders').delete().eq('id', po.id).eq('brandId', brandId);
+    const e = new Error(`Line insert failed: ${lErr.message}`); e.status = 500; throw e;
+  }
+
+  // The flip failing is NOT an import failure — a complete draft exists.
+  // Throwing here made the client say "try again", and a retry would mint a
+  // duplicate order (the draft is invisible to packer-role users). Report
+  // success with a flag instead so the client can explain the draft.
+  let markOrderedFailed = false;
+  if (markOrdered) {
+    const { error: oErr } = await supabase
+      .from('purchase_orders')
+      .update({ status: 'ordered', orderedAt: nowIso, modifiedAt: nowIso, modifiedBy: user.displayName })
+      .eq('id', po.id)
+      .eq('brandId', brandId);
+    if (oErr) {
+      markOrderedFailed = true;
+    } else {
+      po.status = 'ordered';
+      po.orderedAt = nowIso;
+    }
+  }
+
+  return res.status(200).json({
+    purchaseOrder: po,
+    lineCount: lineRows.length,
+    unitCount: lineRows.reduce((s, l) => s + l.quantityOrdered, 0),
+    createdSpeciesCount,
+    ...(markOrderedFailed ? { markOrderedFailed: true } : {}),
+  });
 }
 
 async function updateHeader(req, res, user, brandId) {
