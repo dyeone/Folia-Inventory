@@ -245,33 +245,52 @@ export async function printBoxTag(box, dest, showToast) {
 // the packer wraps the plant in paper, applies this fresh label, and
 // scan-verifies it against the plant. Printed without seller/sale context
 // (see buildPdf's export note): seller line omitted, WK chip from soldAt.
-export async function printItemLabel(item, dest, showToast) {
+// Batch variant for the receiving pane: one call prints a whole species
+// line's labels. Bridge jobs are chunked like LabelSheet's printChunked —
+// the base64 PDF rides through the Vercel enqueue request, so a big batch
+// can't go in one job. The iPad path chunks too: pdfToPageImages hard-caps
+// rendering at MAX_PRINT_PAGES (a memory guard sized for 4×6 carrier PDFs),
+// so one big batch would silently print only its first pages — one OS
+// sheet per chunk instead. No success toast on the bridge path: the bridge
+// poll can resolve tens of seconds later, stomping whatever warning the
+// (single-slot) toast is showing by then.
+const LABELS_PER_JOB = 60;
+
+export async function printItemLabels(items, dest, showToast) {
+  if (!items?.length) return true;
   try {
-    // Lazy: keeps jspdf/jsbarcode out of the packer's initial chunk.
+    // Lazy: keeps jspdf/qrcode out of the packer's initial chunk.
     const { buildItemLabelPdf } = await import('../labels/itemLabelPdf.js');
-    const pdf = buildItemLabelPdf([item]);
     if (dest === 'bridge') {
       if (!(await bridgeOnlineNow())) {
         showToast?.('Label printer is offline — is the Mac app running? (Or switch plant labels to "This iPad".)', 5000);
         return false;
       }
-      // No success toast: the wrap card is the feedback channel, and the
-      // bridge poll can resolve tens of seconds later — stomping whatever
-      // warning the (single-slot) toast is showing by then.
-      await printPdfViaBridge({
-        pdfBase64: pdfToBase64(pdf), role: 'label', media: 'Custom.2x1in',
-      });
+      for (let i = 0; i < items.length; i += LABELS_PER_JOB) {
+        const pdf = buildItemLabelPdf(items.slice(i, i + LABELS_PER_JOB));
+        await printPdfViaBridge({
+          pdfBase64: pdfToBase64(pdf), role: 'label', media: 'Custom.2x1in',
+        });
+      }
       return true;
     }
-    await printImagesViaOsSheet(
-      await pdfToPageImages(new Uint8Array(pdf.output('arraybuffer'))),
-      { pageSize: '2in 1in' },
-    );
+    for (let i = 0; i < items.length; i += MAX_PRINT_PAGES) {
+      const pdf = buildItemLabelPdf(items.slice(i, i + MAX_PRINT_PAGES));
+      await printImagesViaOsSheet(
+        await pdfToPageImages(new Uint8Array(pdf.output('arraybuffer'))),
+        { pageSize: '2in 1in' },
+      );
+    }
     return true;
   } catch (e) {
-    showToast?.(e.message || 'Could not print the plant label', 4500);
+    showToast?.(e.message || 'Could not print the plant labels', 4500);
     return false;
   }
+}
+
+// The burrito-wrap flow's single-label print — same pipeline, one item.
+export async function printItemLabel(item, dest, showToast) {
+  return printItemLabels([item], dest, showToast);
 }
 
 // ── test label ─────────────────────────────────────────────────────────────

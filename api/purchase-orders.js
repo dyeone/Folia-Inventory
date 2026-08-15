@@ -1,19 +1,16 @@
-import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Purchase orders. Action-dispatched. See:
 //   docs/superpowers/specs/2026-05-22-purchasing-catalog-and-receive-design.md
 
-// Generates the next SKU for a variety code, using the same RPC the
-// existing /api/items handler uses. Synchronous in the request path:
-// a 10-unit receive does 10 RPC calls in sequence. Acceptable for
-// shipment-size batches.
-async function nextSku(varietyCode, brandId) {
-  const { data, error } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  const next = (data || 0) + 1;
-  return `${varietyCode}-${next}`;
-}
+// Hard ceilings. RECEIVE_MAX mirrors the packer UI's per-print cap — without
+// it any authenticated member could POST an arbitrary quantityReceived and
+// mint junk inventory until the function times out. LINE_QTY_MAX guards a
+// fat-fingered spreadsheet cell (a date serial in the qty column) from
+// creating a million-unit line that distorts shipping allocation forever.
+const RECEIVE_MAX = 500;
+const LINE_QTY_MAX = 10000;
 
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
@@ -27,6 +24,15 @@ export default wrap(async (req, res) => {
 
   if (req.method === 'POST') {
     const action = req.body?.action;
+    // PO editing is admin-shaped — it sets wholesale prices, deletes orders,
+    // and controls what reaches the packer's receiving screen. Same server-
+    // side posture as DELETE /api/items. Receiving (receive-line /
+    // cancel-receive-line) stays open to any brand member: that IS the
+    // packer's job.
+    const ADMIN_ACTIONS = new Set([
+      'create', 'update-header', 'add-line', 'update-line', 'remove-line', 'delete', 'mark-ordered',
+    ]);
+    if (ADMIN_ACTIONS.has(action)) await requireAdmin(userId);
     switch (action) {
       case 'create':              return create(req, res, user, brandId);
       case 'update-header':       return updateHeader(req, res, user, brandId);
@@ -134,12 +140,16 @@ async function getOne(req, res, brandId) {
 
 async function create(req, res, user, brandId) {
   const { supplier, shippingFee, notes } = req.body || {};
+  const fee = parseFloat(shippingFee || 0) || 0;
+  if (!Number.isFinite(fee) || fee < 0) {
+    const e = new Error('shippingFee must be ≥ 0'); e.status = 400; throw e;
+  }
   const row = {
     id: newId(),
     brandId,
     supplier: String(supplier || '').slice(0, 500),
     status: 'draft',
-    shippingFee: parseFloat(shippingFee || 0) || 0,
+    shippingFee: fee,
     notes: notes ? String(notes).slice(0, 500) : null,
     createdAt: new Date().toISOString(),
     createdBy: user.displayName,
@@ -188,6 +198,10 @@ async function addLine(req, res, brandId) {
   if (!speciesId) { const e = new Error('speciesId required'); e.status = 400; throw e; }
   const qty = parseInt(quantityOrdered, 10) || 1;
   if (qty < 1) { const e = new Error('quantityOrdered must be ≥ 1'); e.status = 400; throw e; }
+  if (qty > LINE_QTY_MAX) {
+    const e = new Error(`quantityOrdered must be ≤ ${LINE_QTY_MAX} — check the sheet's qty column`);
+    e.status = 400; throw e;
+  }
 
   let price = (unitWholesalePrice === undefined || unitWholesalePrice === null || unitWholesalePrice === '')
     ? null
@@ -288,7 +302,7 @@ async function removeLine(req, res, brandId) {
   return res.status(200).json({ ok: true });
 }
 
-// ─── placeholders, filled in tasks 5-6 ─────────────────────────────────────
+// ─── status transitions & receiving ────────────────────────────────────────
 
 async function markOrdered(req, res, user, brandId) {
   const { id } = req.body || {};
@@ -316,11 +330,18 @@ async function markOrdered(req, res, user, brandId) {
 async function receiveLine(req, res, user, brandId) {
   const { id, lineId, quantityReceived } = req.body || {};
   const po = await loadPo(id, brandId);
-  requireStatus(po, ['ordered']);
+  // 'received' is allowed too: extras often surface AFTER the last line
+  // completes and auto-flips the PO — the packer counts stragglers on a
+  // finished order. The allDone check below simply re-confirms 'received'.
+  requireStatus(po, ['ordered', 'received']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
   const n = parseInt(quantityReceived, 10);
   if (!Number.isFinite(n) || n <= 0) {
     const e = new Error('quantityReceived must be > 0'); e.status = 400; throw e;
+  }
+  if (n > RECEIVE_MAX) {
+    const e = new Error(`quantityReceived must be ≤ ${RECEIVE_MAX} per receive`);
+    e.status = 400; throw e;
   }
 
   const { data: line, error: lErr } = await supabase
@@ -360,45 +381,77 @@ async function receiveLine(req, res, user, brandId) {
   const todayDate = nowIso.slice(0, 10);
   const supplierLabel = po.supplier && po.supplier.trim() ? po.supplier.trim() : `PO #${po.id.slice(-6)}`;
 
-  const createdIds = [];
-  for (let i = 0; i < n; i++) {
-    const sku = await nextSku(variety?.code || 'PLT', brandId);
-    const itemId = newId();
-    const itemRow = {
-      id: itemId,
-      brandId,
-      sku,
-      type: 'plant',
-      name: species.epithet,
-      variety: variety?.name || null,
-      speciesId: species.id,
-      quantity: 1,
-      grossCost: Number(line.unitWholesalePrice) + perUnitShipping,
-      idealPrice: species.idealSellingPrice ?? null,
-      status: 'available',
-      lotKind: 'sale',
-      source: supplierLabel,
-      acquiredAt: todayDate,
-      createdAt: nowIso,
-      createdBy: user.displayName,
-    };
-    const { error: insErr } = await supabase.from('inventory_items').insert(itemRow);
-    if (insErr) { const e = new Error(`Insert SKU ${sku} failed: ${insErr.message}`); e.status = 500; throw e; }
-
-    const auditRow = {
-      id: newId(),
-      brandId,
-      lineId,
-      inventoryItemId: itemId,
-      receivedAt: nowIso,
-      receivedBy: user.displayName,
-    };
-    const { error: aErr } = await supabase.from('purchase_order_received_items').insert(auditRow);
-    if (aErr) { const e = new Error(`Audit insert failed for ${sku}: ${aErr.message}`); e.status = 500; throw e; }
-    createdIds.push(itemId);
+  // Batch mint: one suffix read + one items insert + one audit insert. The
+  // old per-unit loop was ~3 sequential round trips per plant, so a big
+  // receive from the packing table risked the serverless timeout mid-loop —
+  // stranding minted items with the line counter never updated. Two
+  // attempts: a concurrent minting flow (another receive, /api/items) can
+  // win the same suffix range, in which case the unique sku index fails the
+  // whole insert atomically (23505) and we re-read + retry once.
+  let createdItems = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { data: maxSuffix, error: mErr } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
+    if (mErr) { const e = new Error(mErr.message); e.status = 500; throw e; }
+    const base = (maxSuffix || 0) + 1;
+    const rows = [];
+    for (let i = 0; i < n; i++) {
+      rows.push({
+        id: newId(),
+        brandId,
+        sku: `${variety?.code || 'PLT'}-${base + i}`,
+        type: 'plant',
+        name: species.epithet,
+        variety: variety?.name || null,
+        speciesId: species.id,
+        quantity: 1,
+        grossCost: Number(line.unitWholesalePrice) + perUnitShipping,
+        idealPrice: species.idealSellingPrice ?? null,
+        status: 'available',
+        lotKind: 'sale',
+        source: supplierLabel,
+        acquiredAt: todayDate,
+        createdAt: nowIso,
+        createdBy: user.displayName,
+      });
+    }
+    const { error: insErr } = await supabase.from('inventory_items').insert(rows);
+    if (!insErr) { createdItems = rows; break; }
+    if (attempt === 0 && insErr.code === '23505') continue;
+    const e = new Error(`Item insert failed: ${insErr.message}`); e.status = 500; throw e;
+  }
+  if (!createdItems.length) {
+    const e = new Error('SKU numbering collided twice — retry the receive'); e.status = 409; throw e;
   }
 
-  const newReceived = line.quantityReceived + n;
+  const auditRows = createdItems.map(it => ({
+    id: newId(),
+    brandId,
+    lineId,
+    inventoryItemId: it.id,
+    receivedAt: nowIso,
+    receivedBy: user.displayName,
+  }));
+  const { error: aErr } = await supabase.from('purchase_order_received_items').insert(auditRows);
+  if (aErr) {
+    // Audit rows are how cancel-receive-line finds a line's items — items
+    // without them would be invisible to cleanup. Compensate (hard-delete
+    // the rows this call just made) so the failure leaves nothing behind.
+    await supabase.from('inventory_items').delete().eq('brandId', brandId)
+      .in('id', createdItems.map(it => it.id));
+    const e = new Error(`Audit insert failed: ${aErr.message} — nothing was received`); e.status = 500; throw e;
+  }
+
+  // Re-read the counter right before writing. supabase-js can't express an
+  // atomic increment, but the batch above takes milliseconds, so re-reading
+  // shrinks the concurrent-receive lost-update window from tens of seconds
+  // to almost nothing. The audit table stays the ground truth regardless.
+  const { data: lineNow } = await supabase
+    .from('purchase_order_lines')
+    .select('"quantityReceived"')
+    .eq('id', lineId)
+    .eq('brandId', brandId)
+    .maybeSingle();
+  const newReceived = (lineNow?.quantityReceived ?? line.quantityReceived) + n;
   const { error: uErr } = await supabase
     .from('purchase_order_lines')
     .update({ quantityReceived: newReceived })
@@ -414,7 +467,8 @@ async function receiveLine(req, res, user, brandId) {
     .eq('purchaseOrderId', id);
   if (rErr) { const e = new Error(rErr.message); e.status = 500; throw e; }
   const allDone = (refreshed || []).every(l => l.quantityReceived >= l.quantityOrdered);
-  if (allDone) {
+  // Don't re-stamp receivedAt when extras land on an already-received PO.
+  if (allDone && po.status !== 'received') {
     await supabase
       .from('purchase_orders')
       .update({ status: 'received', receivedAt: nowIso, modifiedAt: nowIso, modifiedBy: user.displayName })
@@ -424,7 +478,10 @@ async function receiveLine(req, res, user, brandId) {
 
   return res.status(200).json({
     line: { ...line, quantityReceived: newReceived },
-    createdInventoryItemIds: createdIds,
+    createdInventoryItemIds: createdItems.map(it => it.id),
+    // Full rows so the packer's receiving pane can print labels for exactly
+    // the SKUs this call minted, without a follow-up items fetch.
+    createdItems,
     poFlippedToReceived: allDone,
   });
 }
@@ -435,6 +492,20 @@ async function cancelReceiveLine(req, res, user, brandId) {
   // Cancel allowed on partially-received (ordered) AND fully-received POs.
   requireStatus(po, ['ordered', 'received']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
+
+  // The line MUST belong to the PO whose status was just checked — without
+  // this, a lineId from a different (long-closed) PO could be mass-cancelled
+  // by pairing it with any currently-ordered PO id, and the un-flip below
+  // would mutate the wrong order.
+  const { data: lineRow, error: lrErr } = await supabase
+    .from('purchase_order_lines')
+    .select('*')
+    .eq('id', lineId)
+    .eq('purchaseOrderId', id)
+    .eq('brandId', brandId)
+    .maybeSingle();
+  if (lrErr) { const e = new Error(lrErr.message); e.status = 500; throw e; }
+  if (!lineRow) { const e = new Error('Line not found on this purchase order'); e.status = 404; throw e; }
 
   const { data: audits, error: aErr } = await supabase
     .from('purchase_order_received_items')
@@ -447,26 +518,37 @@ async function cancelReceiveLine(req, res, user, brandId) {
     return res.status(200).json({ deletedCount: 0, line: null });
   }
 
-  const { data: items, error: iErr } = await supabase
+  // Soft-delete with the status conditions IN the update itself — an item
+  // that got scanned into a box or sold between a select and this write
+  // must not vanish. The returned rows are the ground truth for how many
+  // were actually cancelled.
+  const nowIso = new Date().toISOString();
+  const { data: deleted, error: dErr } = await supabase
     .from('inventory_items')
-    .select('id, status, "deletedAt"')
+    .update({ deletedAt: nowIso, deletedBy: user.displayName })
     .eq('brandId', brandId)
-    .in('id', itemIds);
-  if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
-  const cancelable = (items || []).filter(it => it.status === 'available' && !it.deletedAt);
-  if (cancelable.length === 0) {
+    .in('id', itemIds)
+    .eq('status', 'available')
+    .is('deletedAt', null)
+    .select('id');
+  if (dErr) { const e = new Error(dErr.message); e.status = 500; throw e; }
+  const cancelIds = (deleted || []).map(d => d.id);
+  if (cancelIds.length === 0) {
     const e = new Error('Nothing to cancel — every SKU from this line has already moved past available');
     e.status = 409; throw e;
   }
 
-  const nowIso = new Date().toISOString();
-  const cancelIds = cancelable.map(c => c.id);
-  const { error: dErr } = await supabase
-    .from('inventory_items')
-    .update({ deletedAt: nowIso, deletedBy: user.displayName })
+  // Drop the audit rows for the cancelled items so a Recently-Deleted
+  // restore brings them back as plain inventory, disconnected from the PO —
+  // otherwise a restore + re-receive double-counts the same physical stock
+  // and a later cancel decrements the line by more than reality.
+  const { error: adErr } = await supabase
+    .from('purchase_order_received_items')
+    .delete()
     .eq('brandId', brandId)
-    .in('id', cancelIds);
-  if (dErr) { const e = new Error(dErr.message); e.status = 500; throw e; }
+    .eq('lineId', lineId)
+    .in('inventoryItemId', cancelIds);
+  if (adErr) { const e = new Error(adErr.message); e.status = 500; throw e; }
 
   const { data: line } = await supabase
     .from('purchase_order_lines').select('*').eq('id', lineId).eq('brandId', brandId).maybeSingle();

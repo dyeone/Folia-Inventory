@@ -52,7 +52,10 @@ export default wrap(async (req, res) => {
       const { varietyId, epithet, commonName, notes, imageUrl,
               wholesalePrice, idealSellingPrice } = req.body || {};
       if (!varietyId) { const e = new Error('varietyId required'); e.status = 400; throw e; }
-      const cleanEpithet = String(epithet || '').trim();
+      // Length caps match the purchase-orders pattern — species now also get
+      // created from uploaded supplier spreadsheets, so cells can't become
+      // megabyte-long catalog names.
+      const cleanEpithet = String(epithet || '').trim().slice(0, 200);
       if (!cleanEpithet) { const e = new Error('epithet required'); e.status = 400; throw e; }
       const { data: vrow } = await supabase
         .from('varieties').select('id').eq('id', varietyId).eq('brandId', brandId).maybeSingle();
@@ -72,9 +75,9 @@ export default wrap(async (req, res) => {
         brandId,
         varietyId,
         epithet: cleanEpithet,
-        commonName: commonName ? String(commonName).trim() : null,
-        notes: notes ? String(notes) : null,
-        imageUrl: imageUrl ? String(imageUrl).trim() : null,
+        commonName: commonName ? String(commonName).trim().slice(0, 200) : null,
+        notes: notes ? String(notes).slice(0, 2000) : null,
+        imageUrl: imageUrl ? String(imageUrl).trim().slice(0, 1000) : null,
         wholesalePrice: parseMoney(wholesalePrice, 'wholesalePrice'),
         idealSellingPrice: parseMoney(idealSellingPrice, 'idealSellingPrice'),
         createdAt: new Date().toISOString(),

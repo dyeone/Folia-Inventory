@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag, Thermometer, StickyNote, Snowflake,
+  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
@@ -19,6 +19,7 @@ import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
 import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
 import { ItemNotes } from './ItemNotes.jsx';
+import { ReceivingPane } from './ReceivingPane.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
@@ -164,6 +165,11 @@ export function PackerView({ onLogout }) {
   // this week can't be mixed into this week's boxes. Found-marks persist per
   // device.
   const [sweepOpen, setSweepOpen] = useState(false);
+  // New-order receiving: ordered purchase orders waiting to be counted +
+  // labeled at the packing table. The list drives the landing banner; the
+  // pane itself does its own detail fetching.
+  const [receivingOpen, setReceivingOpen] = useState(false);
+  const [incomingPos, setIncomingPos] = useState([]);
   // Step-2 wrap station: one flat lot-ordered list of every plant shipping
   // this week — scan to locate + start a wrap, print, scan the fresh label,
   // burrito done. Mutually exclusive with the sweep pane (both replace the
@@ -302,6 +308,29 @@ export function PackerView({ onLogout }) {
   // polled app_settings row (~2.5s). Both are namespaced by the packer's user
   // id, so the iPad + phone must be the same login.
   const { currentUser, activeBrand, brands, switchBrand } = useContext(AuthContext);
+
+  // Incoming-order poll for the landing banner. 60s is enough — a new PO
+  // becomes visible within a minute, and the pane polls faster once open.
+  // Re-runs on brand switch (the api client scopes requests to the session
+  // brand, so the fetch after a switch returns the new brand's orders).
+  // One helper for both the poll and the pane's onChanged callback, so the
+  // normalization can't drift between the two paths.
+  const refreshIncomingPos = async () => {
+    try {
+      const fresh = await api.listPurchaseOrders('ordered');
+      setIncomingPos(fresh || []);
+    } catch { /* banner just stays as-is; the pane surfaces real errors */ }
+  };
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      // Hidden-tab guard matches the 8s items poll convention.
+      if (!cancelled && document.visibilityState !== 'hidden') refreshIncomingPos();
+    };
+    tick();
+    const id = setInterval(tick, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [activeBrand]);
   const isMobile = useIsMobile();
   const [handoff, setHandoff] = useState(null);     // box snapshot to show on the phone
   const channelRef = useRef(null);                  // live realtime channel (or null)
@@ -1078,6 +1107,11 @@ export function PackerView({ onLogout }) {
         // anything else is treated as a plant SKU to pack.
         if (looksLikeTracking(v)) handleScanLabel(v);
         else handleScanItem(v);
+      } else if (receivingOpen) {
+        // A stray box-tag scan (muscle memory, trigger pull) must not open
+        // that box — the box pane outranks receiving in the render, which
+        // would unmount the pane and destroy its counts + reprint batches.
+        showToast('Receiving is open — close it before scanning boxes', 2500);
       } else if (sweepOpen) {
         handleScanSweep(v);
       } else if (stationOpen) {
@@ -1303,6 +1337,14 @@ export function PackerView({ onLogout }) {
             printing={printing}
             onDone={() => goToBox(null)}
           />
+        : receivingOpen
+        ? <ReceivingPane
+            key={activeBrand}
+            printDest={printDests.itemlabel}
+            showToast={showToast}
+            onClose={() => setReceivingOpen(false)}
+            onChanged={refreshIncomingPos}
+          />
         : sweepOpen
         ? <SweepPane
             sweepBoxes={sweepBoxes}
@@ -1346,8 +1388,30 @@ export function PackerView({ onLogout }) {
             heatByBox={heatByBox}
             insulationByBox={insulationByBox}
             onOpen={goToBox}
-            header={(heatAlertBoxes.length > 0 || sweepBoxes.length > 0 || shipPlan.total > 0) && (
+            header={(heatAlertBoxes.length > 0 || sweepBoxes.length > 0 || shipPlan.total > 0 || incomingPos.length > 0) && (
               <div className="max-w-5xl mx-auto space-y-2 mb-3">
+                {/* New order receiving — an incoming wholesale shipment is
+                    waiting to be counted + labeled. Sits below nothing but
+                    heat (safety first) and above the packing steps: labeling
+                    the delivery usually happens before the day's packing. */}
+                {incomingPos.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => { setSweepOpen(false); setStationOpen(false); setReceivingOpen(true); }}
+                    title="An incoming order needs counting and labels — open the receiving checklist"
+                    className="w-full rounded-xl border-2 border-sky-400 bg-sky-50 hover:border-sky-500 px-3 py-2 flex items-center gap-2 transition active:scale-[0.99]"
+                  >
+                    <PackageOpen className="w-5 h-5 text-sky-700 shrink-0" />
+                    <span className="min-w-0 truncate text-sm font-bold text-sky-900">
+                      New order receiving<span className="hidden min-[480px]:inline"> — count &amp; label incoming plants</span>
+                    </span>
+                    <span className="ml-auto shrink-0 text-sm font-bold tabular-nums text-sky-800">
+                      {incomingPos.length === 1
+                        ? `${incomingPos[0].unitCount} plant${incomingPos[0].unitCount === 1 ? '' : 's'}`
+                        : `${incomingPos.length} orders`}
+                    </span>
+                  </button>
+                )}
                 {/* HEAT ALERT — every flagged box in one glance, before any
                     packing starts, so the insulation material comes out first.
                     Tap a box chip to jump straight in. Lives INSIDE the scroll

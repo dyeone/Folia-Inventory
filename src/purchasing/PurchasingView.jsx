@@ -56,6 +56,7 @@ export function PurchasingView({
           showToast={showToast}
           setConfirmDialog={setConfirmDialog}
           onItemsChanged={onItemsChanged}
+          onSpeciesChanged={onSpeciesChanged}
         />
       )}
     </div>
