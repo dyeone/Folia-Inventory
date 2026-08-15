@@ -167,8 +167,8 @@ export const api = {
     request('/purchase-orders', { method: 'POST', body: { action: 'remove-line', id, lineId } }),
   markPurchaseOrderOrdered: (id) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'mark-ordered', id } }).then(r => r.purchaseOrder),
-  importPurchaseOrder: ({ supplier, shippingFee, notes, lines, markOrdered }) =>
-    request('/purchase-orders', { method: 'POST', body: { action: 'import-order', supplier, shippingFee, notes, lines, markOrdered } }),
+  importPurchaseOrder: ({ importId, supplier, shippingFee, notes, lines, markOrdered }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'import-order', importId, supplier, shippingFee, notes, lines, markOrdered } }),
   receivePurchaseOrderLine: ({ id, lineId, quantityReceived }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'receive-line', id, lineId, quantityReceived } }),
   cancelReceivePurchaseOrderLine: ({ id, lineId }) =>
