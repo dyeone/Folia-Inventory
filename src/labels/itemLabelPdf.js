@@ -98,6 +98,65 @@ const LABEL_H = 1;
 export const QR_SIZE_LOT = 0.42;   // lineup layout, right column
 export const QR_SIZE_FULL = 0.44;  // full-width layout
 
+// jsPDF's built-in fonts are WinAnsi-only — a Chinese species name (now a
+// first-class import path) would print as garbage glyphs. When a label's
+// title contains CJK, render that one line with the BROWSER's fonts onto a
+// canvas (they handle Chinese natively) and embed it as an image; Latin
+// titles keep the vector-text path untouched.
+const CJK_RE = /[\u1100-\u11FF\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]|[\uD800-\uDBFF][\uDC00-\uDFFF]/;
+
+// One truncated-with-ellipsis text line → { dataUrl, wIn, hIn } (or null).
+// 300px-per-inch keeps it crisp on the 203dpi thermal head.
+function textLineImage(canvas, text, { fontPt, maxWidthIn, color = '#000000' }) {
+  try {
+    const PPI = 300;
+    const fontPx = Math.round((fontPt / 72) * PPI);
+    const maxPx = Math.round(maxWidthIn * PPI);
+    const font = `${fontPx}px -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif`;
+    let ctx = canvas.getContext('2d');
+    ctx.font = font;
+    let t = String(text);
+    if (ctx.measureText(t).width > maxPx) {
+      while (t.length > 1 && ctx.measureText(`${t}…`).width > maxPx) t = [...t].slice(0, -1).join('');
+      t += '…';
+    }
+    const wPx = Math.max(1, Math.min(maxPx, Math.ceil(ctx.measureText(t).width)));
+    const hPx = Math.ceil(fontPx * 1.25);
+    canvas.width = wPx;   // resizing clears the canvas (transparent)
+    canvas.height = hPx;
+    ctx = canvas.getContext('2d');
+    ctx.font = font;      // canvas resize resets context state
+    ctx.fillStyle = color;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(t, 0, hPx / 2);
+    return { dataUrl: canvas.toDataURL('image/png'), wIn: wPx / PPI, hIn: hPx / PPI };
+  } catch (e) {
+    // A label with no name line is easy to miss in a big batch — same
+    // failure-visibility convention as qrDataUrl below.
+    console.error('[labels] title render failed for', text, e);
+    return null;
+  }
+}
+
+// Title line for either layout: vector text for Latin, canvas image for CJK.
+// centerX/baselineY mirror the vector call's geometry; the image is placed
+// so its optical middle sits where the vector baseline's x-height was.
+function drawTitle(pdf, canvas, title, { centerX, baselineY, fontPt, maxWidthIn }) {
+  if (CJK_RE.test(title)) {
+    const img = textLineImage(canvas, title, { fontPt, maxWidthIn, color: '#464646' });
+    if (img) {
+      pdf.addImage(img.dataUrl, 'PNG', centerX - img.wIn / 2, baselineY - img.hIn * 0.7, img.wIn, img.hIn, undefined, 'FAST');
+    }
+    return;
+  }
+  pdf.setFont('helvetica', 'normal');
+  pdf.setFontSize(fontPt);
+  pdf.setTextColor(70);
+  // One line only (matches the preview's truncate) — maxWidth WRAPS, and a
+  // wrapped second line lands on the SKU glyphs below.
+  pdf.text(pdf.splitTextToSize(title, maxWidthIn)[0] || '', centerX, baselineY, { align: 'center' });
+}
+
 // Renders a QR code into a canvas and returns it as a PNG data URL. QR
 // replaced CODE128 here: a 12-char SKU as CODE128 needs ~170 bar modules,
 // which squeezed into the label's ~1" slot is ~1.3 printer dots per bar at
@@ -199,12 +258,7 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
         pdf.setTextColor(0);
         pdf.text(topTag, cx, 0.15, { align: 'center', maxWidth: cw });
       }
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(7);
-      pdf.setTextColor(70);
-      // One line only (matches the preview's truncate) — maxWidth WRAPS, and
-      // a wrapped second line lands on the SKU glyphs below.
-      pdf.text(pdf.splitTextToSize(title, cw)[0] || '', cx, topTag ? 0.29 : 0.22, { align: 'center' });
+      drawTitle(pdf, canvas, title, { centerX: cx, baselineY: topTag ? 0.29 : 0.22, fontPt: 7, maxWidthIn: cw });
       pdf.setFont('courier', 'bold');
       pdf.setFontSize(10.5);
       pdf.setTextColor(0);
@@ -225,12 +279,7 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
       pdf.setTextColor(0);
       pdf.text(topTag, LABEL_W / 2, 0.11, { align: 'center' });
     }
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(8);
-    pdf.setTextColor(70);
-    // One line only — see the lot layout: wrapped title lines would reach
-    // into the SKU and the QR's quiet zone.
-    pdf.text(pdf.splitTextToSize(title, LABEL_W - 0.15)[0] || '', LABEL_W / 2, topTag ? 0.24 : 0.18, { align: 'center' });
+    drawTitle(pdf, canvas, title, { centerX: LABEL_W / 2, baselineY: topTag ? 0.24 : 0.18, fontPt: 8, maxWidthIn: LABEL_W - 0.15 });
     pdf.setFont('courier', 'bold');
     pdf.setFontSize(14);
     pdf.setTextColor(0);
