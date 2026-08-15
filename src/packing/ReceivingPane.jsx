@@ -1,17 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   PackageOpen, Printer, Check, Loader2, ChevronLeft, RotateCcw,
-  AlertTriangle, Plus, Minus, Upload,
+  AlertTriangle, Plus, Minus,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { printItemLabels } from './packerPrint.js';
-// Same modal the admin uses on the Purchase tab — uploading the supplier's
-// list when cargo lands is part of receiving, so the packer gets it too.
-import { ImportOrderModal } from '../purchasing/ImportOrderModal.jsx';
 
-// New-order receiving at the packing table. Orders arrive either from the
-// admin's Purchase tab or from the packer's own upload right here; the pane
-// lists each order's species lines so the packer can label + count the
+// New-order receiving at the packing table. The ADMIN uploads/manages the
+// wholesale list on the Purchase tab; this pane just shows the packer what's
+// coming — each order's species lines — so they can label + count the
 // physical shipment:
 //
 //   For each species: count the plants on the bench, set the number (it
@@ -37,20 +34,10 @@ export function ReceivingPane({ printDest, showToast, onClose, onChanged }) {
   const [pos, setPos] = useState(null);          // ordered POs (null = loading)
   const [activePoId, setActivePoId] = useState(null);
   const [detail, setDetail] = useState(null);    // { po, lines } for activePoId
-  // Raw catalog arrays (the import modal matches against them); the maps
-  // below are the lookup form the line renderer uses.
+  // Catalog for the line renderer's species/variety names.
   const [catalog, setCatalog] = useState({ species: [], varieties: [] });
   const speciesById = useMemo(() => new Map(catalog.species.map(s => [s.id, s])), [catalog]);
   const varietyById = useMemo(() => new Map(catalog.varieties.map(v => [v.id, v])), [catalog]);
-  const [importOpen, setImportOpen] = useState(false);
-  // Ref mirror for the list poll: a mid-upload setPos would flip the
-  // single-PO derivation and unmount the modal, losing the parsed sheet.
-  const importOpenRef = useRef(false);
-  useEffect(() => { importOpenRef.current = importOpen; }, [importOpen]);
-  // 'loading' | 'ready' | 'error' — the import modal matches rows against
-  // this catalog, so uploading before it loads would mark every row
-  // "no match". The upload buttons wait for it.
-  const [catalogState, setCatalogState] = useState('loading');
   const [err, setErr] = useState('');
   const [countByLine, setCountByLine] = useState({});
   const [busyLine, setBusyLine] = useState(null);
@@ -75,7 +62,7 @@ export function ReceivingPane({ printDest, showToast, onClose, onChanged }) {
     let cancelled = false;
     const tick = async () => {
       // Hidden-tab guard matches the packer's 8s items poll convention.
-      if (busyRef.current || openPoRef.current || importOpenRef.current || document.visibilityState === 'hidden') return;
+      if (busyRef.current || openPoRef.current || document.visibilityState === 'hidden') return;
       try {
         const fresh = await api.listPurchaseOrders('ordered');
         if (cancelled) return;
@@ -92,10 +79,8 @@ export function ReceivingPane({ printDest, showToast, onClose, onChanged }) {
 
   // One ordered PO is the common case — open it directly instead of showing
   // a one-item list. Derived (not synced state) so no effect is needed;
-  // "back" from a single-PO view closes the whole pane instead. Suppressed
-  // while the import modal is up: it only renders in the list branch, and
-  // an arriving PO must not unmount it mid-upload.
-  const effectivePoId = activePoId ?? (!importOpen && pos && pos.length === 1 ? pos[0].id : null);
+  // "back" from a single-PO view closes the whole pane instead.
+  const effectivePoId = activePoId ?? (pos && pos.length === 1 ? pos[0].id : null);
   // Stale-detail guard: after switching POs, the previous order's lines must
   // not render under the new header while the fresh fetch is in flight.
   const activeDetail = detail && detail.po?.id === effectivePoId ? detail : null;
@@ -103,10 +88,9 @@ export function ReceivingPane({ printDest, showToast, onClose, onChanged }) {
 
   // Species / variety names for the lines (the packer view doesn't carry
   // the catalog otherwise). Refetched per opened PO, not just per mount —
-  // spreadsheet imports CREATE species (from either the admin tab or this
-  // very pane), and an order can arrive on the pane's poll while it's
-  // already open; a stale map would render "Unknown species" at the bench.
-  const [catalogTick, setCatalogTick] = useState(0);
+  // the admin's spreadsheet import CREATES species, and an order can arrive
+  // on the pane's poll while it's already open; a stale map would render
+  // every new-species line as "Unknown species" at the bench.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -114,16 +98,10 @@ export function ReceivingPane({ printDest, showToast, onClose, onChanged }) {
         const [species, varieties] = await Promise.all([api.getSpecies(), api.getVarieties()]);
         if (cancelled) return;
         setCatalog({ species: species || [], varieties: varieties || [] });
-        setCatalogState('ready');
-      } catch {
-        // Line names degrade to "Unknown species"; the import buttons stay
-        // locked (matching against an empty catalog would mark every row
-        // "no match") with a retry.
-        if (!cancelled) setCatalogState('error');
-      }
+      } catch { /* names degrade to "Unknown species"; lines still work */ }
     })();
     return () => { cancelled = true; };
-  }, [effectivePoId, catalogTick]);
+  }, [effectivePoId]);
 
   useEffect(() => {
     if (!effectivePoId) return undefined;
@@ -270,68 +248,31 @@ export function ReceivingPane({ printDest, showToast, onClose, onChanged }) {
             {pos === null ? (
               <div className="text-center text-gray-500 py-12"><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Loading incoming orders…</div>
             ) : pos.length === 0 ? (
-              <div className="text-center py-10 space-y-4">
+              <div className="text-center py-10 space-y-2">
                 <div className="text-gray-500">No incoming orders right now.</div>
-                <button
-                  type="button"
-                  onClick={() => (catalogState === 'error' ? setCatalogTick(t => t + 1) : setImportOpen(true))}
-                  disabled={catalogState === 'loading'}
-                  className="inline-flex items-center gap-2 px-5 py-3.5 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-base font-bold active:scale-[0.99] disabled:bg-gray-200 disabled:text-gray-500"
-                >
-                  {catalogState === 'loading' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
-                  {catalogState === 'loading' ? 'Loading the plant catalog…'
-                    : catalogState === 'error' ? 'Catalog failed to load — tap to retry'
-                    : "Upload the supplier's order list"}
-                </button>
-                <div className="text-sm text-gray-500">Cargo arrived without an order in the system? Upload the supplier's spreadsheet and start counting.</div>
+                <div className="text-sm text-gray-500">When the admin uploads a wholesale list, it shows up here for counting and labels.</div>
               </div>
             ) : (
-              <>
-                {pos.map(po => (
-                  <button
-                    key={po.id}
-                    type="button"
-                    onClick={() => setActivePoId(po.id)}
-                    className="w-full bg-white border-2 border-gray-200 hover:border-sky-400 rounded-xl px-4 py-3 flex items-center gap-3 text-left active:scale-[0.99] transition"
-                  >
-                    <PackageOpen className="w-7 h-7 text-sky-600 shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <div className="font-bold text-gray-900 truncate">{po.supplier || `Order #${po.id.slice(-6)}`}</div>
-                      <div className="text-xs text-gray-500">
-                        {po.orderedAt ? new Date(po.orderedAt).toLocaleDateString() : ''} · {po.lineCount} species · {po.unitCount} plants
-                      </div>
-                    </div>
-                    <ChevronLeft className="w-5 h-5 text-gray-400 rotate-180" />
-                  </button>
-                ))}
+              pos.map(po => (
                 <button
+                  key={po.id}
                   type="button"
-                  onClick={() => (catalogState === 'error' ? setCatalogTick(t => t + 1) : setImportOpen(true))}
-                  disabled={catalogState === 'loading'}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 text-sm font-semibold text-gray-600 hover:border-sky-400 hover:text-sky-700 disabled:opacity-40"
+                  onClick={() => setActivePoId(po.id)}
+                  className="w-full bg-white border-2 border-gray-200 hover:border-sky-400 rounded-xl px-4 py-3 flex items-center gap-3 text-left active:scale-[0.99] transition"
                 >
-                  <Upload className="w-4 h-4" />
-                  {catalogState === 'loading' ? 'Loading catalog…'
-                    : catalogState === 'error' ? 'Catalog failed — tap to retry'
-                    : 'Upload another order list'}
+                  <PackageOpen className="w-7 h-7 text-sky-600 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-bold text-gray-900 truncate">{po.supplier || `Order #${po.id.slice(-6)}`}</div>
+                    <div className="text-xs text-gray-500">
+                      {po.orderedAt ? new Date(po.orderedAt).toLocaleDateString() : ''} · {po.lineCount} species · {po.unitCount} plants
+                    </div>
+                  </div>
+                  <ChevronLeft className="w-5 h-5 text-gray-400 rotate-180" />
                 </button>
-              </>
+              ))
             )}
           </div>
         </div>
-        {importOpen && (
-          <ImportOrderModal
-            species={catalog.species}
-            varieties={catalog.varieties}
-            showToast={showToast}
-            forceSendToReceiving
-            onClose={() => setImportOpen(false)}
-            onCreated={() => {
-              api.listPurchaseOrders('ordered').then(setPos).catch(() => {});
-              onChanged?.();
-            }}
-          />
-        )}
       </div>
     );
   }

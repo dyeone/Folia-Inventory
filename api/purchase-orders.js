@@ -13,9 +13,9 @@ const RECEIVE_MAX = 500;
 const LINE_QTY_MAX = 10000;
 // Mirrored client-side as MAX_ROWS in ImportOrderModal.jsx.
 const IMPORT_LINES_MAX = 500;
-// Money ceiling for member-supplied prices/fees on import-order — the action
-// is open to non-admins, and an absurd unit price would flow straight into
-// minted inventory grossCost and every financial report.
+// Money ceiling for prices/fees on import-order — an absurd unit price
+// (typo'd cell, wrong column) would flow straight into minted inventory
+// grossCost and every financial report.
 const PRICE_MAX = 100000;
 
 export default wrap(async (req, res) => {
@@ -30,18 +30,14 @@ export default wrap(async (req, res) => {
 
   if (req.method === 'POST') {
     const action = req.body?.action;
-    // PO editing is admin-shaped — it sets wholesale prices, deletes orders,
-    // and controls what reaches the packer's receiving screen. Same server-
-    // side posture as DELETE /api/items. Receiving (receive-line /
-    // cancel-receive-line) stays open to any brand member: that IS the
-    // packer's job.
-    // import-order is deliberately NOT admin-gated: uploading the supplier's
-    // list when the cargo lands is part of receiving, and the packer at the
-    // dock shouldn't wait on an admin. It only CREATES a fresh order in one
-    // deliberate action — editing, re-pricing, and deleting existing POs
-    // stay admin-only.
+    // The wholesale list is the ADMIN's to manage — every action that
+    // creates or edits an order (including the spreadsheet import) requires
+    // admin, the same server-side posture as DELETE /api/items. The packer's
+    // side of receiving is count + label only, so receive-line and
+    // cancel-receive-line stay open to any brand member: that IS their job.
     const ADMIN_ACTIONS = new Set([
       'create', 'update-header', 'add-line', 'update-line', 'remove-line', 'delete', 'mark-ordered',
+      'import-order',
     ]);
     if (ADMIN_ACTIONS.has(action)) await requireAdmin(userId);
     switch (action) {
@@ -174,10 +170,10 @@ async function create(req, res, user, brandId) {
 // One-request wholesale import: species + PO + every line land in a handful
 // of batch statements instead of one request per row (a 50-row sheet used to
 // be ~50 sequential add-line calls, each with its own loadPo overhead).
-// Open to brand members — see the dispatcher note. Write order is chosen so
-// a mid-flight failure leaves nothing half-armed: species first (orphans are
-// harmless catalog entries), then a DRAFT PO, then lines, and only then the
-// flip to 'ordered' — an empty or line-less order can never reach the
+// Admin-only, like every other order-writing action. Write order is chosen
+// so a mid-flight failure leaves nothing half-armed: species first (orphans
+// are harmless catalog entries), then a DRAFT PO, then lines, and only then
+// the flip to 'ordered' — an empty or line-less order can never reach the
 // packer's receiving screen.
 async function importOrder(req, res, user, brandId) {
   const { supplier, shippingFee, notes, lines, markOrdered, importId } = req.body || {};
