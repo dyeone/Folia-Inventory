@@ -1393,39 +1393,30 @@ export function PackerView({ onLogout }) {
             heatByBox={heatByBox}
             insulationByBox={insulationByBox}
             onOpen={goToBox}
-            header={(
+            header={(heatAlertBoxes.length > 0 || sweepBoxes.length > 0 || shipPlan.total > 0 || incomingPos.length > 0) && (
               <div className="max-w-5xl mx-auto space-y-2 mb-3">
-                {/* New order receiving — always reachable: with orders
-                    waiting it's a loud call-to-action; without, a quiet
-                    entry so the packer can upload the supplier's list the
-                    moment cargo lands (no waiting on an admin). Sits below
-                    nothing but heat (safety first). */}
-                <button
-                  type="button"
-                  onClick={() => { setSweepOpen(false); setStationOpen(false); setReceivingOpen(true); }}
-                  title={incomingPos.length > 0
-                    ? 'An incoming order needs counting and labels — open the receiving checklist'
-                    : 'Receive a delivery: upload the supplier\'s order list, then count and label'}
-                  className={`w-full rounded-xl border-2 px-3 py-2 flex items-center gap-2 transition active:scale-[0.99] ${
-                    incomingPos.length > 0
-                      ? 'border-sky-400 bg-sky-50 hover:border-sky-500'
-                      : 'border-gray-200 bg-white hover:border-sky-300'
-                  }`}
-                >
-                  <PackageOpen className={`w-5 h-5 shrink-0 ${incomingPos.length > 0 ? 'text-sky-700' : 'text-gray-400'}`} />
-                  <span className={`min-w-0 truncate text-sm font-bold ${incomingPos.length > 0 ? 'text-sky-900' : 'text-gray-500'}`}>
-                    {incomingPos.length > 0
-                      ? <>New order receiving<span className="hidden min-[480px]:inline"> — count &amp; label incoming plants</span></>
-                      : <>Receive an order<span className="hidden min-[480px]:inline"> — upload the supplier&apos;s list</span></>}
-                  </span>
-                  <span className={`ml-auto shrink-0 text-sm font-bold tabular-nums ${incomingPos.length > 0 ? 'text-sky-800' : 'text-gray-400'}`}>
-                    {incomingPos.length === 0
-                      ? '›'
-                      : incomingPos.length === 1
+                {/* New order receiving — appears when the admin has sent a
+                    wholesale order to receiving. The packer's side is count
+                    + label only, so with nothing incoming there's nothing
+                    to open. Sits below nothing but heat (safety first). */}
+                {incomingPos.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => { setSweepOpen(false); setStationOpen(false); setReceivingOpen(true); }}
+                    title="An incoming order needs counting and labels — open the receiving checklist"
+                    className="w-full rounded-xl border-2 border-sky-400 bg-sky-50 hover:border-sky-500 px-3 py-2 flex items-center gap-2 transition active:scale-[0.99]"
+                  >
+                    <PackageOpen className="w-5 h-5 text-sky-700 shrink-0" />
+                    <span className="min-w-0 truncate text-sm font-bold text-sky-900">
+                      New order receiving<span className="hidden min-[480px]:inline"> — count &amp; label incoming plants</span>
+                    </span>
+                    <span className="ml-auto shrink-0 text-sm font-bold tabular-nums text-sky-800">
+                      {incomingPos.length === 1
                         ? `${incomingPos[0].unitCount} plant${incomingPos[0].unitCount === 1 ? '' : 's'}`
                         : `${incomingPos.length} orders`}
-                  </span>
-                </button>
+                    </span>
+                  </button>
+                )}
                 {/* HEAT ALERT — every flagged box in one glance, before any
                     packing starts, so the insulation material comes out first.
                     Tap a box chip to jump straight in. Lives INSIDE the scroll

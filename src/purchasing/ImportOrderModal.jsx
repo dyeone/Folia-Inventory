@@ -3,13 +3,12 @@ import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-rea
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 
-// Wholesale order upload — hosted by BOTH the admin's Orders pane and the
-// packer's ReceivingPane. Drop the supplier's list (.xlsx or .csv) and get
-// a purchase order out of it — matched to the catalog, one line per
-// species — marked "ordered" so it shows on the receiving screen for
-// counting + labeling. `forceSendToReceiving` (the packer context) hides
-// the mark-as-ordered choice: an unchecked import would create a draft the
-// packer can neither see nor fix (drafts and mark-ordered are admin-only).
+// Wholesale order upload (admin's Orders pane — managing the wholesale
+// list is the admin's job; the packer's receiving screen only shows the
+// result). Drop the supplier's list (.xlsx or .csv) and get a purchase
+// order out of it — matched to the catalog, one line per species —
+// optionally marked "ordered" so it shows on the packer's receiving screen
+// for counting + labeling.
 //
 // Expected columns (headers matched loosely, order doesn't matter):
 //   species / name / plant       required — the species or cultivar name
@@ -52,7 +51,7 @@ function detectColumns(headerRow) {
   return cols;
 }
 
-export function ImportOrderModal({ species, varieties, showToast, onClose, onCreated, forceSendToReceiving = false }) {
+export function ImportOrderModal({ species, varieties, showToast, onClose, onCreated }) {
   const [fileName, setFileName] = useState('');
   const [rows, setRows] = useState(null);      // parsed + matched rows
   const [parseErr, setParseErr] = useState('');
@@ -215,7 +214,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     if (busyRef.current || importing || !importable.length) return;
     busyRef.current = true;
     setImporting(true);
-    const markOrdered = forceSendToReceiving || sendToReceiving;
+    const markOrdered = sendToReceiving;
     try {
       // One request: the import-order action creates species + PO + every
       // line in batch statements server-side (and never leaves a line-less
@@ -243,9 +242,8 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
       if (res.alreadyImported) {
         showToast?.('This sheet was already imported — nothing was duplicated.', 4000);
       } else if (res.markOrderedFailed) {
-        // The order EXISTS as a draft; retrying would duplicate it. An admin
-        // has to flip it from the Purchase tab's Orders list.
-        showToast?.('Order created as a DRAFT — it needs an admin to send it to receiving (do not re-upload).', 7000);
+        // The order EXISTS as a draft; retrying would duplicate it.
+        showToast?.('Order created as a DRAFT — send it to receiving from the Orders list (do not re-upload).', 7000);
       } else {
         showToast?.(
           `Order created — ${res.lineCount} species, ${res.unitCount} plants`
@@ -411,27 +409,18 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
                 <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className="input mt-1" placeholder="optional" />
               </label>
             </div>
-            {forceSendToReceiving ? (
-              // Packer context: no draft escape hatch — an unchecked import
-              // would be invisible on this screen and only an admin could
-              // rescue it from Drafts.
-              <div className="text-xs text-gray-500">
-                The order goes straight to this receiving screen. The shipping fee is split across every plant's cost at receive time.
-              </div>
-            ) : (
-              <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={sendToReceiving}
-                  onChange={(e) => setSendToReceiving(e.target.checked)}
-                  className="rounded border-gray-300 mt-0.5"
-                />
-                <span>
-                  Mark as <strong>ordered</strong> and send to the packer's receiving screen
-                  <span className="block text-xs text-gray-500">Unchecked, it stays a draft you can edit in the Orders list first. The shipping fee is split across every plant's cost at receive time.</span>
-                </span>
-              </label>
-            )}
+            <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={sendToReceiving}
+                onChange={(e) => setSendToReceiving(e.target.checked)}
+                className="rounded border-gray-300 mt-0.5"
+              />
+              <span>
+                Mark as <strong>ordered</strong> and send to the packer's receiving screen
+                <span className="block text-xs text-gray-500">Unchecked, it stays a draft you can edit in the Orders list first. The shipping fee is split across every plant's cost at receive time.</span>
+              </span>
+            </label>
           </>
         )}
 
