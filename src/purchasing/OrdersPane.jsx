@@ -48,7 +48,12 @@ export function OrdersPane({ varieties, species, showToast, setConfirmDialog, on
       }
     })();
     return () => { cancelled = true; };
-  }, [activeFilters, onItemsChanged]);
+    // onItemsChanged is deliberately NOT a dep: App passes an inline closure
+    // whose identity changes on every items refresh — which this very effect
+    // triggers — so depending on it loops the load (POs + items refetching
+    // for as long as the tab is open). The effect only *calls* it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFilters]);
 
   const speciesById = useMemo(() => {
     const m = new Map();

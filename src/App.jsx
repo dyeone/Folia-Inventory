@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
-  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, LineChart, Truck, ShoppingCart,
+  Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, PackageOpen, LineChart, Truck, ShoppingCart,
   MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award,
 } from 'lucide-react';
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
@@ -32,6 +32,7 @@ const SalesView = lazyNamed(() => import('./sales/SalesView.jsx'), 'SalesView');
 const PackingView = lazyNamed(() => import('./packing/PackingView.jsx'), 'PackingView');
 const FinancialView = lazyNamed(() => import('./financial/FinancialView.jsx'), 'FinancialView');
 const PurchasingView = lazyNamed(() => import('./purchasing/PurchasingView.jsx'), 'PurchasingView');
+const OrdersPane = lazyNamed(() => import('./purchasing/OrdersPane.jsx'), 'OrdersPane');
 const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedView.jsx'), 'RecentlyDeletedView');
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
@@ -869,6 +870,7 @@ function StaffOrAdminInventory() {
     { id: 'calendar', label: 'Calendar', icon: CalendarDays },
     { id: 'plantcare', label: 'Plant Care', icon: Leaf },
     { id: 'purchasing', label: 'Purchase', icon: ShoppingCart },
+    { id: 'wholesale', label: 'Wholesale', icon: PackageOpen },
     { id: 'financial', label: 'Financial', icon: LineChart },
     {
       id: 'trash', label: 'Recently Deleted', icon: Trash2,
@@ -1546,7 +1548,22 @@ function StaffOrAdminInventory() {
           <PurchasingView
             varieties={varieties}
             species={species}
-            currentUser={currentUser}
+            showToast={showToast}
+            onOpenOrders={() => setActiveTab('wholesale')}
+            onSpeciesChanged={async () => {
+              const fresh = await api.getSpecies();
+              setSpecies(fresh);
+            }}
+          />
+        )}
+        {/* Wholesale orders — the dedicated home for handling an incoming
+            order end to end: import the supplier's list, watch the packer's
+            receiving progress, resolve drafts/discrepancies. Promoted out of
+            Purchase → Orders so it's one tap from anywhere. */}
+        {activeTab === 'wholesale' && (
+          <OrdersPane
+            varieties={varieties}
+            species={species}
             showToast={showToast}
             setConfirmDialog={setConfirmDialog}
             onSpeciesChanged={async () => {
