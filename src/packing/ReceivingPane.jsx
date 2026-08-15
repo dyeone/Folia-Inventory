@@ -7,9 +7,9 @@ import { api } from '../api.js';
 import { printItemLabels } from './packerPrint.js';
 
 // New-order receiving at the packing table. The ADMIN uploads/manages the
-// wholesale list on the Purchase tab; this pane just shows the packer what's
-// coming — each order's species lines — so they can label + count the
-// physical shipment:
+// wholesale list on the website's Wholesale tab; this pane just shows the
+// packer what's coming — each order's species lines — so they can label +
+// count the physical shipment:
 //
 //   For each species: count the plants on the bench, set the number (it
 //   defaults to what's still expected), hit "Receive & print" — the server
