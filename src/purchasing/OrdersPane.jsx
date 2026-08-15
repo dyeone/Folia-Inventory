@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Plus, Loader2 } from 'lucide-react';
+import { Plus, Loader2, Upload } from 'lucide-react';
 import { api } from '../api.js';
 import { PurchaseOrderCard } from './PurchaseOrderCard.jsx';
+import { ImportOrderModal } from './ImportOrderModal.jsx';
 
 const FILTERS = [
   { id: 'draft',    label: 'Draft' },
@@ -9,11 +10,12 @@ const FILTERS = [
   { id: 'received', label: 'Received' },
 ];
 
-export function OrdersPane({ species, showToast, setConfirmDialog, onItemsChanged }) {
+export function OrdersPane({ varieties, species, showToast, setConfirmDialog, onItemsChanged, onSpeciesChanged }) {
   const [activeFilters, setActiveFilters] = useState(new Set(['draft', 'ordered']));
   const [pos, setPos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [importOpen, setImportOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -93,14 +95,42 @@ export function OrdersPane({ species, showToast, setConfirmDialog, onItemsChange
             );
           })}
         </div>
+        {/* Wholesale list upload — spreadsheet in, ready-to-receive PO out.
+            The modal matches rows to the catalog and (optionally) marks the
+            PO ordered so it lands on the packer's receiving screen. */}
+        <button
+          type="button"
+          onClick={() => setImportOpen(true)}
+          className="ml-auto flex items-center gap-1.5 px-3 py-2 text-sm font-medium border border-emerald-600 text-emerald-700 hover:bg-emerald-50 rounded-lg"
+        >
+          <Upload className="w-4 h-4" /> Import list
+        </button>
         <button
           type="button"
           onClick={createNew}
-          className="ml-auto flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg"
+          className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg"
         >
           <Plus className="w-4 h-4" /> New PO
         </button>
       </div>
+
+      {importOpen && (
+        <ImportOrderModal
+          species={species}
+          varieties={varieties}
+          showToast={showToast}
+          onClose={() => setImportOpen(false)}
+          onCreated={() => {
+            // A sent-to-receiving PO is 'ordered'; make sure that filter is
+            // on so the fresh order is visible, then refresh. The import can
+            // also mint new catalog species — pull those into app state too,
+            // or the new PO's lines would show as unknown species.
+            setActiveFilters(prev => prev.has('ordered') ? prev : new Set([...prev, 'ordered']));
+            onSpeciesChanged?.();
+            refresh();
+          }}
+        />
+      )}
 
       {loading ? (
         <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-sm text-gray-500">
