@@ -47,6 +47,32 @@ const MAX_NAME_LEN = 200;
 
 const norm = (s) => String(s ?? '').trim().toLowerCase();
 
+// CSV bytes → string with real charset detection. SheetJS's browser build
+// reads un-BOM'd CSV bytes as Latin-1, which turns UTF-8 Chinese into
+// mojibake (红掌 → "çº¢æŽŒ") before any of our matching ever runs — and
+// Chinese Excel routinely saves "CSV" in the system codepage (GB18030 /
+// Big5), which Latin-1 garbles the same way. BOM wins when present; else
+// the first STRICT decoder that accepts the bytes wins (UTF-8's structure
+// makes false positives rare; GB18030 is tried before Big5 because
+// mainland suppliers are the common case — a Big5 file misread as GB18030
+// shows visibly wrong Chinese in the preview, the gate before any write).
+// Latin-1 never rejects anything, so it's the explicit last resort.
+function decodeCsvBytes(bytes) {
+  try {
+    if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+      return new TextDecoder('utf-8').decode(bytes.subarray(3));
+    }
+    if (bytes[0] === 0xFF && bytes[1] === 0xFE) return new TextDecoder('utf-16le').decode(bytes.subarray(2));
+    if (bytes[0] === 0xFE && bytes[1] === 0xFF) return new TextDecoder('utf-16be').decode(bytes.subarray(2));
+  } catch { /* fall through to the strict cascade */ }
+  for (const enc of ['utf-8', 'gb18030', 'big5']) {
+    try {
+      return new TextDecoder(enc, { fatal: true }).decode(bytes);
+    } catch { /* not this encoding */ }
+  }
+  return new TextDecoder('windows-1252').decode(bytes);
+}
+
 function detectColumns(headerRow) {
   const cols = {};
   headerRow.forEach((cell, idx) => {
@@ -143,7 +169,12 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
       // eagerly-loaded chunks — load it only when a file is actually chosen.
       const XLSX = await import('xlsx');
       const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
+      // CSVs go through our own charset detection (see decodeCsvBytes);
+      // xlsx/xls carry their encoding internally and stay on the array path.
+      const isCsv = /\.(csv|txt)$/i.test(file.name || '') || /csv/i.test(file.type || '');
+      const wb = isCsv
+        ? XLSX.read(decodeCsvBytes(new Uint8Array(buf)), { type: 'string' })
+        : XLSX.read(buf, { type: 'array' });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
       const nonEmpty = grid.filter(r => r.some(c => norm(c) !== ''));
