@@ -304,6 +304,12 @@ create table if not exists purchase_orders (
   "receivedAt"   timestamptz,
   "shippingFee"  numeric     not null default 0,
   notes          text,
+  -- 0038: how this order's items are minted at receive time.
+  "itemType"     text        not null default 'plant'
+                              check ("itemType" in ('plant','tc')),
+  "itemStatus"   text        not null default 'available'
+                              check ("itemStatus" in ('available','acclimated')),
+  "itemNotes"    text,
   "createdAt"    timestamptz not null default now(),
   "createdBy"    text,
   "modifiedAt"   timestamptz,

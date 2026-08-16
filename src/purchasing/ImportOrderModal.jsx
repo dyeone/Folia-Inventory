@@ -101,6 +101,12 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   const [shippingFee, setShippingFee] = useState('');
   const [notes, setNotes] = useState('');
   const [sendToReceiving, setSendToReceiving] = useState(true);
+  // How this order's items get minted at receive time (migration 0038).
+  // Only non-default choices are sent, so an un-migrated database keeps
+  // working until someone actually picks TC / acclimated / a note.
+  const [itemType, setItemType] = useState('plant');
+  const [itemStatus, setItemStatus] = useState('available');
+  const [itemNotes, setItemNotes] = useState('');
   const [importing, setImporting] = useState(false);
   const fileRef = useRef(null);
   // Synchronous double-tap guard (state alone loses to fast iPad taps) and
@@ -301,6 +307,9 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
         supplier: supplier.trim(),
         shippingFee: parseFloat(shippingFee) || 0,
         notes: notes.trim() || undefined,
+        itemType: itemType !== 'plant' ? itemType : undefined,
+        itemStatus: itemStatus !== 'available' ? itemStatus : undefined,
+        itemNotes: itemNotes.trim() || undefined,
         markOrdered,
         lines: importable.map(r => (r.status === 'matched'
           ? {
@@ -505,6 +514,41 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
                   </tbody>
                 </table>
               </div>
+            </div>
+
+            {/* Item settings — stamped on every item this order mints. */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-gray-50 rounded-lg p-3">
+              <label className="block">
+                <span className="text-xs font-medium text-gray-700">Items arrive as</span>
+                <select
+                  value={itemType}
+                  onChange={(e) => {
+                    setItemType(e.target.value);
+                    if (e.target.value !== 'tc') setItemStatus('available');
+                  }}
+                  className="input mt-1"
+                >
+                  <option value="plant">Plant</option>
+                  <option value="tc">TC (Tissue Culture)</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-gray-700">Initial status</span>
+                <select
+                  value={itemStatus}
+                  onChange={(e) => setItemStatus(e.target.value)}
+                  className="input mt-1"
+                  disabled={itemType !== 'tc'}
+                  title={itemType !== 'tc' ? 'Acclimated only applies to TC' : undefined}
+                >
+                  <option value="available">Available</option>
+                  {itemType === 'tc' && <option value="acclimated">Acclimated</option>}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-gray-700">Item note (on every plant)</span>
+                <input type="text" value={itemNotes} onChange={(e) => setItemNotes(e.target.value)} className="input mt-1" placeholder="optional" />
+              </label>
             </div>
 
             {/* Order header fields */}
