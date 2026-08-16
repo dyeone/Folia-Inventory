@@ -10,8 +10,12 @@ import { api } from '../api.js';
 export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poStatus, poId, showToast, onChanged }) {
   // Local form state — initialized once from props, not reset on prop
   // changes. Preserving mid-typed input across refreshes is a feature.
+  // The server strips unitWholesalePrice for non-admin viewers — every
+  // price render below must tolerate its absence (no '$NaN', no
+  // 'undefined' seeding the input, no spurious 403-ing saves on blur).
+  const hasPrice = line.unitWholesalePrice != null;
   const [qty, setQty]     = useState(String(line.quantityOrdered));
-  const [price, setPrice] = useState(String(line.unitWholesalePrice));
+  const [price, setPrice] = useState(hasPrice ? String(line.unitWholesalePrice) : '');
   const [busy, setBusy]   = useState(false);
   const [photoUrl, setPhotoUrl] = useState(null);
 
@@ -54,6 +58,7 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
   };
 
   const savePrice = async () => {
+    if (!hasPrice) return; // cost fields hidden for this viewer — nothing to save
     const n = parseFloat(price);
     if (!Number.isFinite(n) || n < 0) {
       setPrice(String(line.unitWholesalePrice));
@@ -138,22 +143,26 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
           ) : (
             <span className="font-semibold text-gray-900">{line.quantityOrdered}</span>
           )}
-          <span className="text-gray-500">@ $</span>
-          {isDraft ? (
-            <input
-              type="number"
-              step="0.01"
-              min={0}
-              value={price}
-              onChange={(e) => setPrice(e.target.value)}
-              onBlur={savePrice}
-              className="w-20 px-2 py-1 text-xs border border-gray-300 rounded"
-            />
-          ) : (
-            <span className="font-semibold text-gray-900">${Number(line.unitWholesalePrice).toFixed(2)}</span>
+          {hasPrice && (
+            <>
+              <span className="text-gray-500">@ $</span>
+              {isDraft ? (
+                <input
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  value={price}
+                  onChange={(e) => setPrice(e.target.value)}
+                  onBlur={savePrice}
+                  className="w-20 px-2 py-1 text-xs border border-gray-300 rounded"
+                />
+              ) : (
+                <span className="font-semibold text-gray-900">${Number(line.unitWholesalePrice).toFixed(2)}</span>
+              )}
+              <span className="text-gray-500">=</span>
+              <span className="font-semibold text-gray-900 tabular-nums">${lineTotal.toFixed(2)}</span>
+            </>
           )}
-          <span className="text-gray-500">=</span>
-          <span className="font-semibold text-gray-900 tabular-nums">${lineTotal.toFixed(2)}</span>
           {!isDraft && (
             <span className="ml-auto flex items-center gap-2">
               <span className="text-gray-500">

@@ -207,6 +207,14 @@ export default wrap(async (req, res) => {
 
       const data = await fetchAll(() =>
         supabase.from('inventory_items').select('*').eq('brandId', brandId));
+      // The packing bench never needs what plants COST — strip bought-price
+      // fields for packer logins so the data doesn't reach that client at
+      // all (mirrors the purchase-orders API; staff/admin keep full rows).
+      if (user.role === 'packer') {
+        return res.status(200).json({
+          items: (data || []).map(({ grossCost, netCost, cost, ...rest }) => rest),
+        });
+      }
       return res.status(200).json({ items: data });
     }
 

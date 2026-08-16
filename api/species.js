@@ -41,10 +41,16 @@ export default wrap(async (req, res) => {
         if (!photosBySpecies.has(ph.speciesId)) photosBySpecies.set(ph.speciesId, []);
         photosBySpecies.get(ph.speciesId).push(ph);
       }
-      const out = (species || []).map(s => ({
-        ...s,
-        photos: photosBySpecies.get(s.id) || [],
-      }));
+      // Packer logins fetch the catalog only for line NAMES on the
+      // receiving pane — strip wholesale pricing so bench clients can't
+      // reconstruct the costs the purchase-orders API hides from them.
+      const stripForPacker = user.role === 'packer';
+      const out = (species || []).map(s => {
+        const row = stripForPacker
+          ? (({ wholesalePrice, idealSellingPrice, ...rest }) => rest)(s)
+          : s;
+        return { ...row, photos: photosBySpecies.get(s.id) || [] };
+      });
       return res.status(200).json({ species: out });
     }
 

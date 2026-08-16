@@ -23,7 +23,10 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
   // don't blow away mid-typed input. After save, onChanged() bubbles up
   // and the parent reloads the list — the new prop will match local state.
   const [supplier,    setSupplier]    = useState(po.supplier || '');
-  const [shippingFee, setShippingFee] = useState(String(po.shippingFee ?? 0));
+  // The server strips shippingFee for non-admin viewers — absent means
+  // "hidden from you", not zero, so blur must never flush a 0 back.
+  const hasFee = po.shippingFee != null;
+  const [shippingFee, setShippingFee] = useState(hasFee ? String(po.shippingFee) : '');
   const [notes,       setNotes]       = useState(po.notes || '');
 
   // Fetch lines on first expand. Uses async IIFE so setState only fires
@@ -174,8 +177,8 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
                 step="0.01"
                 value={shippingFee}
                 onChange={(e) => setShippingFee(e.target.value)}
-                onBlur={() => parseFloat(shippingFee) !== Number(po.shippingFee) && flushHeader({ shippingFee: parseFloat(shippingFee) || 0 })}
-                disabled={po.status === 'received' || savingHeader}
+                onBlur={() => hasFee && parseFloat(shippingFee) !== Number(po.shippingFee) && flushHeader({ shippingFee: parseFloat(shippingFee) || 0 })}
+                disabled={po.status === 'received' || savingHeader || !hasFee}
                 className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:bg-gray-100"
               />
             </Field>
