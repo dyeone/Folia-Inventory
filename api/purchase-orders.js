@@ -18,14 +18,33 @@ const IMPORT_LINES_MAX = 500;
 // grossCost and every financial report.
 const PRICE_MAX = 100000;
 
+// The packing bench doesn't need to see what plants cost — cost fields are
+// stripped from every response to non-admin callers (the packer UI hides
+// them too, but the data shouldn't even reach the bench client).
+const stripPoCosts = (po) => {
+  if (!po) return po;
+  const { shippingFee, ...rest } = po;
+  return rest;
+};
+const stripLineCosts = (line) => {
+  if (!line) return line;
+  const { unitWholesalePrice, ...rest } = line;
+  return rest;
+};
+const stripItemCosts = (item) => {
+  const { grossCost, netCost, idealPrice, ...rest } = item;
+  return rest;
+};
+
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
+  const isAdminUser = user.role === 'admin';
 
   if (req.method === 'GET') {
     const action = req.query?.action;
-    if (action === 'get') return getOne(req, res, brandId);
-    return list(req, res, brandId); // default GET
+    if (action === 'get') return getOne(req, res, brandId, isAdminUser);
+    return list(req, res, brandId, isAdminUser); // default GET
   }
 
   if (req.method === 'POST') {
@@ -49,8 +68,8 @@ export default wrap(async (req, res) => {
       case 'remove-line':         return removeLine(req, res, brandId);
       case 'delete':              return softDelete(req, res, user, brandId);
       case 'mark-ordered':        return markOrdered(req, res, user, brandId);
-      case 'receive-line':        return receiveLine(req, res, user, brandId);
-      case 'cancel-receive-line': return cancelReceiveLine(req, res, user, brandId);
+      case 'receive-line':        return receiveLine(req, res, user, brandId, isAdminUser);
+      case 'cancel-receive-line': return cancelReceiveLine(req, res, user, brandId, isAdminUser);
       default: { const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e; }
     }
   }
@@ -83,7 +102,7 @@ function requireStatus(po, allowed) {
 
 // ─── list / get ─────────────────────────────────────────────────────────────
 
-async function list(req, res, brandId) {
+async function list(req, res, brandId, isAdminUser) {
   const statuses = (req.query?.status || 'draft,ordered')
     .split(',').map(s => s.trim()).filter(Boolean);
   const { data: pos, error } = await supabase
@@ -114,14 +133,14 @@ async function list(req, res, brandId) {
     tally.set(l.purchaseOrderId, t);
   }
   const out = (pos || []).map(p => ({
-    ...p,
+    ...(isAdminUser ? p : stripPoCosts(p)),
     lineCount: tally.get(p.id)?.lineCount || 0,
     unitCount: tally.get(p.id)?.unitCount || 0,
   }));
   return res.status(200).json({ purchaseOrders: out });
 }
 
-async function getOne(req, res, brandId) {
+async function getOne(req, res, brandId, isAdminUser) {
   const po = await loadPo(req.query?.id, brandId);
   const { data: lines, error: lErr } = await supabase
     .from('purchase_order_lines')
@@ -141,7 +160,14 @@ async function getOne(req, res, brandId) {
     if (rErr) { const e = new Error(rErr.message); e.status = 500; throw e; }
     received = r || [];
   }
-  return res.status(200).json({ purchaseOrder: po, lines: lines || [], receivedItems: received });
+  if (isAdminUser) {
+    return res.status(200).json({ purchaseOrder: po, lines: lines || [], receivedItems: received });
+  }
+  return res.status(200).json({
+    purchaseOrder: stripPoCosts(po),
+    lines: (lines || []).map(stripLineCosts),
+    receivedItems: received,
+  });
 }
 
 // ─── header writes ──────────────────────────────────────────────────────────
@@ -569,7 +595,7 @@ async function markOrdered(req, res, user, brandId) {
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ purchaseOrder: { ...po, status: 'ordered', orderedAt: now } });
 }
-async function receiveLine(req, res, user, brandId) {
+async function receiveLine(req, res, user, brandId, isAdminUser) {
   const { id, lineId, quantityReceived } = req.body || {};
   const po = await loadPo(id, brandId);
   // 'received' is allowed too: extras often surface AFTER the last line
@@ -718,17 +744,19 @@ async function receiveLine(req, res, user, brandId) {
       .eq('brandId', brandId);
   }
 
+  const lineOut = { ...line, quantityReceived: newReceived };
   return res.status(200).json({
-    line: { ...line, quantityReceived: newReceived },
+    line: isAdminUser ? lineOut : stripLineCosts(lineOut),
     createdInventoryItemIds: createdItems.map(it => it.id),
     // Full rows so the packer's receiving pane can print labels for exactly
-    // the SKUs this call minted, without a follow-up items fetch.
-    createdItems,
+    // the SKUs this call minted, without a follow-up items fetch. Labels
+    // need sku/name/variety — never costs, which non-admins don't get.
+    createdItems: isAdminUser ? createdItems : createdItems.map(stripItemCosts),
     poFlippedToReceived: allDone,
   });
 }
 
-async function cancelReceiveLine(req, res, user, brandId) {
+async function cancelReceiveLine(req, res, user, brandId, isAdminUser) {
   const { id, lineId } = req.body || {};
   const po = await loadPo(id, brandId);
   // Cancel allowed on partially-received (ordered) AND fully-received POs.
@@ -809,5 +837,8 @@ async function cancelReceiveLine(req, res, user, brandId) {
       .eq('brandId', brandId);
   }
 
-  return res.status(200).json({ deletedCount: cancelIds.length, line });
+  return res.status(200).json({
+    deletedCount: cancelIds.length,
+    line: isAdminUser ? line : stripLineCosts(line),
+  });
 }

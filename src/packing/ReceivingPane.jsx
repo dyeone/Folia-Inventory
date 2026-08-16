@@ -24,8 +24,6 @@ import { printItemLabels } from './packerPrint.js';
 // The receive happens BEFORE the print so a failed print never loses the
 // receive — the last-printed batch is kept per line for reprints.
 
-const dollars = (n) => (Number.isFinite(Number(n)) ? `$${Number(n).toFixed(2)}` : '');
-
 // One receive/print action caps here — mirrored server-side by RECEIVE_MAX
 // in api/purchase-orders.js, so the limit holds even off this UI.
 const MAX_PER_RECEIVE = 500;
@@ -410,10 +408,9 @@ function ReceivingLine({ line, name, count, onCount, busy, anyBusy, hasBatch, on
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0">
           <div className="font-bold text-gray-900 text-base sm:text-lg truncate">{name.epithet}</div>
-          <div className="text-xs text-gray-500 truncate">
-            {name.variety}
-            {line.unitWholesalePrice != null && ` · ${dollars(line.unitWholesalePrice)} each`}
-          </div>
+          {/* Variety only — what plants COST is the admin's business; the
+              server strips price fields for non-admin callers anyway. */}
+          <div className="text-xs text-gray-500 truncate">{name.variety}</div>
         </div>
         <div className="text-right shrink-0">
           <div className={`text-2xl font-black tabular-nums leading-none ${
