@@ -155,10 +155,10 @@ export const api = {
     request(`/purchase-orders?action=get&id=${encodeURIComponent(id)}`).then(r => ({
       purchaseOrder: r.purchaseOrder, lines: r.lines, receivedItems: r.receivedItems,
     })),
-  createPurchaseOrder: ({ supplier, shippingFee, notes } = {}) =>
-    request('/purchase-orders', { method: 'POST', body: { action: 'create', supplier, shippingFee, notes } }).then(r => r.purchaseOrder),
-  updatePurchaseOrderHeader: ({ id, supplier, shippingFee, notes }) =>
-    request('/purchase-orders', { method: 'POST', body: { action: 'update-header', id, supplier, shippingFee, notes } }).then(r => r.purchaseOrder),
+  createPurchaseOrder: ({ supplier, shippingFee, notes, itemType, itemStatus, itemNotes } = {}) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'create', supplier, shippingFee, notes, itemType, itemStatus, itemNotes } }).then(r => r.purchaseOrder),
+  updatePurchaseOrderHeader: ({ id, supplier, shippingFee, notes, itemType, itemStatus, itemNotes }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'update-header', id, supplier, shippingFee, notes, itemType, itemStatus, itemNotes } }).then(r => r.purchaseOrder),
   addPurchaseOrderLine: ({ id, speciesId, quantityOrdered, unitWholesalePrice }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'add-line', id, speciesId, quantityOrdered, unitWholesalePrice } }).then(r => r.line),
   updatePurchaseOrderLine: ({ id, lineId, quantityOrdered, unitWholesalePrice }) =>
@@ -167,8 +167,8 @@ export const api = {
     request('/purchase-orders', { method: 'POST', body: { action: 'remove-line', id, lineId } }),
   markPurchaseOrderOrdered: (id) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'mark-ordered', id } }).then(r => r.purchaseOrder),
-  importPurchaseOrder: ({ importId, supplier, shippingFee, notes, lines, markOrdered }) =>
-    request('/purchase-orders', { method: 'POST', body: { action: 'import-order', importId, supplier, shippingFee, notes, lines, markOrdered } }),
+  importPurchaseOrder: ({ importId, supplier, shippingFee, notes, lines, markOrdered, itemType, itemStatus, itemNotes }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'import-order', importId, supplier, shippingFee, notes, lines, markOrdered, itemType, itemStatus, itemNotes } }),
   receivePurchaseOrderLine: ({ id, lineId, quantityReceived }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'receive-line', id, lineId, quantityReceived } }),
   cancelReceivePurchaseOrderLine: ({ id, lineId }) =>

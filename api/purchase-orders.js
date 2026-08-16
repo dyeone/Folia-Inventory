@@ -18,6 +18,35 @@ const IMPORT_LINES_MAX = 500;
 // grossCost and every financial report.
 const PRICE_MAX = 100000;
 
+// Per-PO item settings (migration 0038): how receive-line mints this
+// order's items. Defaults preserve the original behavior (plant/available).
+const ITEM_TYPES = new Set(['plant', 'tc']);
+const ITEM_STATUSES = new Set(['available', 'acclimated']);
+function itemSettingsPatch({ itemType, itemStatus, itemNotes }) {
+  const patch = {};
+  if (itemType !== undefined) {
+    if (!ITEM_TYPES.has(itemType)) { const e = new Error("itemType must be 'plant' or 'tc'"); e.status = 400; throw e; }
+    patch.itemType = itemType;
+  }
+  if (itemStatus !== undefined) {
+    if (!ITEM_STATUSES.has(itemStatus)) { const e = new Error("itemStatus must be 'available' or 'acclimated'"); e.status = 400; throw e; }
+    patch.itemStatus = itemStatus;
+  }
+  if (itemNotes !== undefined) patch.itemNotes = itemNotes ? String(itemNotes).slice(0, 500) : null;
+  return patch;
+}
+// Clients only send item settings that differ from the defaults, so an
+// un-migrated database keeps working until someone actually picks a
+// non-default — then the error must say what to do, not just 500.
+function withMigrationHint(err) {
+  if (err && (err.code === 'PGRST204' || err.code === '42703')) {
+    const e = new Error('Item settings need database migration 0038_po_item_settings — run it in the Supabase SQL editor first');
+    e.status = 500;
+    return e;
+  }
+  return null;
+}
+
 // The packing bench doesn't need to see what plants cost — cost fields are
 // stripped from every response to non-admin callers (the packer UI hides
 // them too, but the data shouldn't even reach the bench client).
@@ -185,11 +214,12 @@ async function create(req, res, user, brandId) {
     status: 'draft',
     shippingFee: fee,
     notes: notes ? String(notes).slice(0, 500) : null,
+    ...itemSettingsPatch(req.body || {}),
     createdAt: new Date().toISOString(),
     createdBy: user.displayName,
   };
   const { error } = await supabase.from('purchase_orders').insert(row);
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (error) { const e = withMigrationHint(error) || new Error(error.message); e.status = e.status || 500; throw e; }
   return res.status(200).json({ purchaseOrder: row });
 }
 
@@ -357,11 +387,14 @@ async function importOrder(req, res, user, brandId) {
     status: 'draft',
     shippingFee: fee,
     notes: notes ? String(notes).slice(0, 500) : null,
+    ...itemSettingsPatch(req.body || {}),
     createdAt: nowIso,
     createdBy: user.displayName,
   };
   const { error: poErr } = await supabase.from('purchase_orders').insert(po);
   if (poErr) {
+    const hint = withMigrationHint(poErr);
+    if (hint) throw hint;
     if (poErr.code === '23505' && cleanImportId) {
       const { data: prior } = await supabase
         .from('purchase_orders').select('*').eq('id', cleanImportId).eq('brandId', brandId).maybeSingle();
@@ -439,8 +472,31 @@ async function updateHeader(req, res, user, brandId) {
     patch.shippingFee = n;
   }
   if (notes       !== undefined) patch.notes = notes ? String(notes).slice(0, 500) : null;
+  Object.assign(patch, itemSettingsPatch(req.body || {}));
+  // Cross-field rule: 'acclimated' only exists for TC. Normalizing on the
+  // EFFECTIVE type stops interleaved admin edits stranding acclimated on a
+  // plant PO (and a later plant→tc flip silently resurrecting it).
+  const effectiveType = patch.itemType ?? po.itemType ?? 'plant';
+  if (effectiveType !== 'tc' && (patch.itemStatus === 'acclimated' || (patch.itemType && po.itemStatus === 'acclimated'))) {
+    patch.itemStatus = 'available';
+  }
+  // Changing how items mint mid-receive splits one physical shipment into
+  // mixed types/statuses — freeze the settings once anything is received.
+  if ((patch.itemType !== undefined || patch.itemStatus !== undefined) && po.status === 'ordered') {
+    const { data: recv } = await supabase
+      .from('purchase_order_lines')
+      .select('"quantityReceived"')
+      .eq('brandId', brandId)
+      .eq('purchaseOrderId', id)
+      .gt('quantityReceived', 0)
+      .limit(1);
+    if (recv && recv.length) {
+      const e = new Error('Item settings are locked — this order already has received items (use Start over on the lines first)');
+      e.status = 409; throw e;
+    }
+  }
   const { error } = await supabase.from('purchase_orders').update(patch).eq('id', id).eq('brandId', brandId);
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (error) { const e = withMigrationHint(error) || new Error(error.message); e.status = e.status || 500; throw e; }
   return res.status(200).json({ purchaseOrder: { ...po, ...patch } });
 }
 
@@ -649,6 +705,12 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
   const todayDate = nowIso.slice(0, 10);
   const supplierLabel = po.supplier && po.supplier.trim() ? po.supplier.trim() : `PO #${po.id.slice(-6)}`;
 
+  // Per-PO item settings (0038). 'acclimated' only means anything for TC;
+  // absent columns (un-migrated DB) fall back to the original behavior.
+  const mintType = po.itemType === 'tc' ? 'tc' : 'plant';
+  const mintStatus = po.itemStatus === 'acclimated' && mintType === 'tc' ? 'acclimated' : 'available';
+  const mintNotes = po.itemNotes ? String(po.itemNotes).slice(0, 500) : null;
+
   // Batch mint: one suffix read + one items insert + one audit insert. The
   // old per-unit loop was ~3 sequential round trips per plant, so a big
   // receive from the packing table risked the serverless timeout mid-loop —
@@ -667,17 +729,18 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
         id: newId(),
         brandId,
         sku: `${variety?.code || 'PLT'}-${base + i}`,
-        type: 'plant',
+        type: mintType,
         name: species.epithet,
         variety: variety?.name || null,
         speciesId: species.id,
         quantity: 1,
         grossCost: Number(line.unitWholesalePrice) + perUnitShipping,
         idealPrice: species.idealSellingPrice ?? null,
-        status: 'available',
+        status: mintStatus,
         lotKind: 'sale',
         source: supplierLabel,
         acquiredAt: todayDate,
+        notes: mintNotes,
         createdAt: nowIso,
         createdBy: user.displayName,
       });
@@ -793,18 +856,20 @@ async function cancelReceiveLine(req, res, user, brandId, isAdminUser) {
   // must not vanish. The returned rows are the ground truth for how many
   // were actually cancelled.
   const nowIso = new Date().toISOString();
+  // 'acclimated' is a mint-time status too (TC POs, 0038) — items sitting
+  // on the bench in either state are equally un-moved and cancellable.
   const { data: deleted, error: dErr } = await supabase
     .from('inventory_items')
     .update({ deletedAt: nowIso, deletedBy: user.displayName })
     .eq('brandId', brandId)
     .in('id', itemIds)
-    .eq('status', 'available')
+    .in('status', ['available', 'acclimated'])
     .is('deletedAt', null)
     .select('id');
   if (dErr) { const e = new Error(dErr.message); e.status = 500; throw e; }
   const cancelIds = (deleted || []).map(d => d.id);
   if (cancelIds.length === 0) {
-    const e = new Error('Nothing to cancel — every SKU from this line has already moved past available');
+    const e = new Error('Nothing to cancel — every SKU from this line has already moved past its received state');
     e.status = 409; throw e;
   }
 

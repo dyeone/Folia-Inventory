@@ -301,6 +301,11 @@ export function ReceivingPane({ printDest, showToast, onClose, onChanged }) {
             <div className="flex-1 min-w-0">
               <h2 className="text-base font-bold text-sky-900 truncate">
                 {activeDetail?.po?.supplier || 'Incoming order'}
+                {activeDetail?.po?.itemType === 'tc' && (
+                  <span className="ml-2 align-middle inline-block px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 text-[11px] font-bold uppercase">
+                    TC
+                  </span>
+                )}
               </h2>
               <p className="text-xs text-sky-800">
                 Count each species, then print — one label per plant. Extras get added to inventory automatically.

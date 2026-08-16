@@ -28,6 +28,12 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
   const hasFee = po.shippingFee != null;
   const [shippingFee, setShippingFee] = useState(hasFee ? String(po.shippingFee) : '');
   const [notes,       setNotes]       = useState(po.notes || '');
+  // Item settings (0038) mirror the siblings' seeded-local-state pattern:
+  // the select shows the picked value immediately (no snap-back while the
+  // save round-trips), and absent columns (un-migrated DB) read as defaults.
+  const [itemType,   setItemType]   = useState(po.itemType || 'plant');
+  const [itemStatus, setItemStatus] = useState((po.itemType === 'tc' && po.itemStatus) || 'available');
+  const [itemNotes,  setItemNotes]  = useState(po.itemNotes || '');
 
   // Fetch lines on first expand. Uses async IIFE so setState only fires
   // via await resolution (satisfies the react-hooks/set-state-in-effect rule).
@@ -179,6 +185,48 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
                 onChange={(e) => setShippingFee(e.target.value)}
                 onBlur={() => hasFee && parseFloat(shippingFee) !== Number(po.shippingFee) && flushHeader({ shippingFee: parseFloat(shippingFee) || 0 })}
                 disabled={po.status === 'received' || savingHeader || !hasFee}
+                className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:bg-gray-100"
+              />
+            </Field>
+            {/* Item settings (0038) — stamped on every item this order
+                mints at receive time. Editable while draft/ordered like the
+                other header fields; absent values (un-migrated DB) read as
+                the defaults. */}
+            <Field label="Items arrive as">
+              <select
+                value={itemType}
+                onChange={(e) => {
+                  const t = e.target.value;
+                  setItemType(t);
+                  if (t !== 'tc') setItemStatus('available');
+                  flushHeader({ itemType: t, ...(t !== 'tc' ? { itemStatus: 'available' } : {}) });
+                }}
+                disabled={po.status === 'received' || savingHeader}
+                className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:bg-gray-100"
+              >
+                <option value="plant">Plant</option>
+                <option value="tc">TC (Tissue Culture)</option>
+              </select>
+            </Field>
+            <Field label="Initial status">
+              <select
+                value={itemStatus}
+                onChange={(e) => { setItemStatus(e.target.value); flushHeader({ itemStatus: e.target.value }); }}
+                disabled={po.status === 'received' || savingHeader || itemType !== 'tc'}
+                title={itemType !== 'tc' ? 'Acclimated only applies to TC' : undefined}
+                className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:bg-gray-100"
+              >
+                <option value="available">Available</option>
+                {itemType === 'tc' && <option value="acclimated">Acclimated</option>}
+              </select>
+            </Field>
+            <Field label="Item note (on every plant)">
+              <input
+                type="text"
+                value={itemNotes}
+                onChange={(e) => setItemNotes(e.target.value)}
+                onBlur={() => (itemNotes.trim() || '') !== (po.itemNotes || '') && flushHeader({ itemNotes: itemNotes.trim() })}
+                disabled={po.status === 'received' || savingHeader}
                 className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:bg-gray-100"
               />
             </Field>
