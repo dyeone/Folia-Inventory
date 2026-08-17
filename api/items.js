@@ -219,6 +219,38 @@ export default wrap(async (req, res) => {
     }
 
     case 'POST': {
+      // Race-safe bulk sale assignment (TikTok lives load TC per PO): the
+      // saleId-null guard is IN the update, so two admins assigning the
+      // same items to two sales can't both win — the response reports what
+      // was actually claimed, and the client reconciles from that.
+      if (req.body?.action === 'assign-to-sale') {
+        const { itemIds, saleId } = req.body;
+        if (!Array.isArray(itemIds) || itemIds.length === 0 || itemIds.length > 1000) {
+          const e = new Error('itemIds must be a non-empty array (max 1000)'); e.status = 400; throw e;
+        }
+        if (!saleId || typeof saleId !== 'string') {
+          const e = new Error('saleId required'); e.status = 400; throw e;
+        }
+        // lotKind/lotNumber reset matches every other staging path's
+        // invariant: staging must start un-numbered.
+        const { data: claimed, error } = await supabase
+          .from('inventory_items')
+          .update({
+            saleId,
+            lotKind: 'sale',
+            lotNumber: null,
+            modifiedAt: new Date().toISOString(),
+            modifiedBy: user.displayName,
+          })
+          .eq('brandId', brandId)
+          .in('id', itemIds)
+          .is('saleId', null)
+          .is('deletedAt', null)
+          .select('id');
+        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        return res.status(200).json({ assignedIds: (claimed || []).map(c => c.id) });
+      }
+
       const { items } = req.body || {};
       if (!Array.isArray(items)) {
         const e = new Error('items must be an array'); e.status = 400; throw e;

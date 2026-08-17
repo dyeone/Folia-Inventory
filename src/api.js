@@ -85,6 +85,8 @@ export const api = {
   getLiveShow: (brandId) =>
     request(`/settings?action=live-show-get${brandId ? `&brandId=${encodeURIComponent(brandId)}` : ''}`),
   upsertItems: (items) => request('/items', { method: 'POST', body: { items } }),
+  assignItemsToSale: ({ itemIds, saleId }) =>
+    request('/items', { method: 'POST', body: { action: 'assign-to-sale', itemIds, saleId } }),
   // Atomic server-side box merge: moves every still-sold item from the source
   // boxes into the target box (identity re-stamped server-side). 409s when
   // any involved box has an active label.

@@ -858,12 +858,16 @@ async function cancelReceiveLine(req, res, user, brandId, isAdminUser) {
   const nowIso = new Date().toISOString();
   // 'acclimated' is a mint-time status too (TC POs, 0038) — items sitting
   // on the bench in either state are equally un-moved and cancellable.
+  // Items claimed by a sale lineup (saleId set — e.g. a TikTok live loaded
+  // this PO's TC) HAVE moved: cancelling them out from under an exported
+  // listing would silently oversell, so they're skipped like sold ones.
   const { data: deleted, error: dErr } = await supabase
     .from('inventory_items')
     .update({ deletedAt: nowIso, deletedBy: user.displayName })
     .eq('brandId', brandId)
     .in('id', itemIds)
     .in('status', ['available', 'acclimated'])
+    .is('saleId', null)
     .is('deletedAt', null)
     .select('id');
   if (dErr) { const e = new Error(dErr.message); e.status = 500; throw e; }
