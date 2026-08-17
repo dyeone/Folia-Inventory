@@ -121,6 +121,32 @@ export function SaleFormModal({ initial, onSave, onClose, isBae }) {
           </div>
         </Field>
         <Field label="Platform">
+          {/* Quick-picks for the two platforms we actually sell on; the
+              text input stays for anything else. TikTok lives sell TC, so
+              picking it flips the item types (still overridable above). */}
+          <div className="flex gap-1.5 mb-1.5">
+            {['Palmstreet', 'TikTok'].map(p => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setForm({
+                  ...form,
+                  platform: p,
+                  // Auto-set TC only when CREATING — editing a live that
+                  // already holds plants must not silently hide them from
+                  // the lineup tools.
+                  ...(p === 'TikTok' && !isBae && !isEdit ? { itemTypes: 'tc' } : {}),
+                })}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg border-2 transition ${
+                  form.platform === p
+                    ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                    : 'border-gray-200 text-gray-600 hover:border-gray-300'
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
           <input
             type="text"
             value={form.platform}

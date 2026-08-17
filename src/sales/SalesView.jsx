@@ -2,10 +2,11 @@ import { useMemo, useState } from 'react';
 import {
   Plus, Calendar, Layers, Download, Trash2, Edit2, PackageOpen,
   Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock, Radio, Tag,
-  BarChart3, FileText, Users, Coins,
+  BarChart3, FileText, Users, Coins, Video,
 } from 'lucide-react';
 import { PreSaleTab } from './PreSaleTab.jsx';
 import { hasEval } from './saleEval.js';
+import { TikTokLiveModal } from './TikTokLiveModal.jsx';
 const STATUS_META = {
   ongoing:  { label: 'Ongoing',  cls: 'bg-emerald-100 text-emerald-800', icon: Clock },
   packing:  { label: 'Packing',  cls: 'bg-blue-100 text-blue-800',       icon: PackageOpen },
@@ -32,11 +33,14 @@ export function SalesView({
   onSendToPacking, onGoLive, onValidateSales, onStartLiveScan, isAdmin,
   onStageItems, onItemsChanged, showToast,
   onEvaluateSale, onViewReport, evalVersion, evalSaleIds,
-  activeBrand, sellers = [], varieties = [],
+  activeBrand, sellers = [], varieties = [], species = [],
   onManageSellers, onSellerSettlement, onIntakeSeller, onReloadSellers,
   onPrintLabels,
 }) {
   const [tab, setTab] = useState('active');
+  // TikTok live setup modal (bulk-load TC per PO + Seller Center export).
+  const [tiktokSale, setTiktokSale] = useState(null);
+  const speciesById = useMemo(() => new Map((species || []).map(s => [s.id, s])), [species]);
   // Consignment (seller sections + settlement) is a BAE-only workflow.
   const isBae = activeBrand === 'bae';
 
@@ -164,11 +168,23 @@ export function SalesView({
               onEvaluateSale={() => onEvaluateSale(sale)}
               onViewReport={() => onViewReport(sale)}
               onSellerSettlement={() => onSellerSettlement(sale)}
+              onTikTok={() => setTiktokSale(sale)}
               evalVersion={evalVersion}
               hasDbEval={!!evalSaleIds && evalSaleIds.has(sale.id)}
             />
           ))}
         </div>
+      )}
+      {tiktokSale && (
+        <TikTokLiveModal
+          sale={tiktokSale}
+          sales={sales}
+          items={items}
+          speciesById={speciesById}
+          showToast={showToast}
+          onItemsChanged={onItemsChanged}
+          onClose={() => setTiktokSale(null)}
+        />
       )}
     </div>
   );
@@ -177,8 +193,11 @@ export function SalesView({
 function SaleCard({
   sale, items, isAdmin, isBae,
   onBuildLineup, onExportCsv, onSendToPacking, onGoLive, onEdit, onDelete,
-  onEvaluateSale, onViewReport, onSellerSettlement, evalVersion, hasDbEval,
+  onEvaluateSale, onViewReport, onSellerSettlement, onTikTok, evalVersion, hasDbEval,
 }) {
+  // TikTok lives sell TC: inventory loads in bulk per purchase order and
+  // exports as Seller Center's bulk-listing file — its own setup flow.
+  const isTikTok = /tiktok/i.test(sale.platform || '');
   // Show "Financial Report" if a report exists in the DB (hasDbEval) OR in this
   // browser's localStorage cache. Re-check the cache when evalVersion bumps
   // (a report was just generated); `void evalVersion` makes that cache-bust
@@ -274,6 +293,14 @@ function SaleCard({
         </div>
       ) : (
         <div className="space-y-2 mt-auto">
+          {isTikTok && (
+            <button
+              onClick={onTikTok}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-gray-900 hover:bg-black active:bg-black text-white text-sm font-semibold rounded-lg transition shadow-sm"
+            >
+              <Video className="w-4 h-4" /> TikTok live — load TC &amp; export
+            </button>
+          )}
           {step1Done && sale.status === 'ongoing' && (
             <button
               onClick={onGoLive}

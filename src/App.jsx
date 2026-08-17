@@ -1261,6 +1261,7 @@ function StaffOrAdminInventory() {
             activeBrand={activeBrand}
             sellers={sellers}
             varieties={varieties}
+            species={species}
             onManageSellers={() => setShowSellers(true)}
             onSellerSettlement={(sale) => setSellerSettlement({ sale })}
             onIntakeSeller={intakeSellerPlants}
