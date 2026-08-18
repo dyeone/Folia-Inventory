@@ -3,6 +3,7 @@ import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-rea
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
+import { readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
 
 // Wholesale order upload (admin's Orders pane — managing the wholesale
 // list is the admin's job; the packer's receiving screen only shows the
@@ -20,70 +21,8 @@ import { DEFAULT_ADD_VARIETY } from '../constants.js';
 //                                falls back to the species' saved price
 // A headerless sheet is treated as [species, qty, price].
 
-// Note: no '#' or 'amount' as qty aliases — '#' is usually the row-number
-// column and 'amount' is usually a dollar total; binding either to qty
-// silently orders row-47 or $249 worth of plants. Chinese aliases cover the
-// headers wholesale suppliers actually send (simplified + traditional).
-const HEADER_ALIASES = {
-  // 品种/品種 bind to SPECIES, not variety: Chinese nursery sheets use it
-  // for the cultivar/plant-name column ('variety' in the horticultural
-  // sense); the genus column is 属/屬. detectColumns is first-alias-wins,
-  // so a sheet with both 品名 and 品种 keeps 品名 as the name column.
-  species: ['species', 'name', 'plant', 'plant name', 'species name', 'cultivar', 'item',
-    '品名', '名称', '名稱', '植物', '品种', '品種', '品种名', '品種名'],
-  variety: ['variety', 'genus', '属', '屬'],
-  qty: ['qty', 'quantity', 'count', 'units', '数量', '數量', '株数', '株數'],
-  price: ['price', 'cost', 'wholesale', 'unit price', 'wholesale price', 'unit cost', 'unit wholesale price',
-    '单价', '單價', '价格', '價格', '批发价', '批發價'],
-};
-
-// Sanity rails on supplier-sheet cells. Rows outside them are skipped with
-// a visible chip rather than silently coerced — a date serial in the qty
-// column must not become a million-unit order.
-// MAX_ROWS mirrors IMPORT_LINES_MAX in api/purchase-orders.js.
-const MAX_ROWS = 500;
-const MAX_QTY = 10000;
-const MAX_NAME_LEN = 200;
-
-const norm = (s) => String(s ?? '').trim().toLowerCase();
-
-// CSV bytes → string with real charset detection. SheetJS's browser build
-// reads un-BOM'd CSV bytes as Latin-1, which turns UTF-8 Chinese into
-// mojibake (红掌 → "çº¢æŽŒ") before any of our matching ever runs — and
-// Chinese Excel routinely saves "CSV" in the system codepage (GB18030 /
-// Big5), which Latin-1 garbles the same way. BOM wins when present; else
-// the first STRICT decoder that accepts the bytes wins (UTF-8's structure
-// makes false positives rare; GB18030 is tried before Big5 because
-// mainland suppliers are the common case — a Big5 file misread as GB18030
-// shows visibly wrong Chinese in the preview, the gate before any write).
-// Latin-1 never rejects anything, so it's the explicit last resort.
-function decodeCsvBytes(bytes) {
-  try {
-    if (bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
-      return new TextDecoder('utf-8').decode(bytes.subarray(3));
-    }
-    if (bytes[0] === 0xFF && bytes[1] === 0xFE) return new TextDecoder('utf-16le').decode(bytes.subarray(2));
-    if (bytes[0] === 0xFE && bytes[1] === 0xFF) return new TextDecoder('utf-16be').decode(bytes.subarray(2));
-  } catch { /* fall through to the strict cascade */ }
-  for (const enc of ['utf-8', 'gb18030', 'big5']) {
-    try {
-      return new TextDecoder(enc, { fatal: true }).decode(bytes);
-    } catch { /* not this encoding */ }
-  }
-  return new TextDecoder('windows-1252').decode(bytes);
-}
-
-function detectColumns(headerRow) {
-  const cols = {};
-  headerRow.forEach((cell, idx) => {
-    const h = norm(cell);
-    if (!h) return;
-    for (const [key, aliases] of Object.entries(HEADER_ALIASES)) {
-      if (cols[key] === undefined && aliases.includes(h)) cols[key] = idx;
-    }
-  });
-  return cols;
-}
+// Parsing plumbing (charset-safe CSV decode, header aliases incl. Chinese,
+// size rails) is shared with VendorPriceModal — see sheetParsing.js.
 
 export function ImportOrderModal({ species, varieties, showToast, onClose, onCreated }) {
   const [fileName, setFileName] = useState('');
@@ -115,51 +54,11 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   const busyRef = useRef(false);
   const importIdRef = useRef(null);
 
-  const speciesIndex = useMemo(() => {
-    // epithet (lowercased) → [species…]; a name can exist in several
-    // varieties, so the variety column (when present) disambiguates.
-    const m = new Map();
-    for (const s of species || []) {
-      const k = norm(s.epithet);
-      if (!m.has(k)) m.set(k, []);
-      m.get(k).push(s);
-    }
-    return m;
-  }, [species]);
-
-  const varietyByName = useMemo(
-    () => new Map((varieties || []).map(v => [norm(v.name), v])),
-    [varieties],
-  );
-  const varietyById = useMemo(
-    () => new Map((varieties || []).map(v => [v.id, v])),
-    [varieties],
-  );
-
-  const matchRow = (r, defVarId) => {
-    const candidates = speciesIndex.get(norm(r.species)) || [];
-    const wantVariety = r.variety ? varietyByName.get(norm(r.variety)) : null;
-    // An unrecognized variety cell (size grades, 'TC', supplier codes)
-    // degrades to name-only matching — a unique catalog match still wins.
-    let narrowed = wantVariety
-      ? candidates.filter(s => s.varietyId === wantVariety.id)
-      : candidates;
-    // A name that exists in several varieties without a usable variety
-    // cell: prefer the chosen default genus before calling it ambiguous.
-    if (!wantVariety && narrowed.length > 1) {
-      const inDefault = narrowed.filter(s => s.varietyId === defVarId);
-      if (inDefault.length === 1) narrowed = inDefault;
-    }
-    if (narrowed.length === 1) return { status: 'matched', speciesId: narrowed[0].id, varietyId: narrowed[0].varietyId };
-    if (narrowed.length > 1) return { status: 'ambiguous' };
-    // No match anywhere → create: under the sheet's variety when given.
-    // A row explicitly naming a genus we DON'T have is skipped — filing it
-    // under the default would mislabel it (add the variety, re-upload).
-    if (wantVariety) return { status: 'create', varietyId: wantVariety.id };
-    if (r.variety) return { status: 'unknown-variety' };
-    if (defVarId) return { status: 'create', varietyId: defVarId, viaDefault: true };
-    return { status: 'unmatched' };
-  };
+  // Catalog lookups + row matching + duplicate folding live in
+  // sheetParsing.js, shared with UpdateOrderModal — a supplier sheet must
+  // parse and match identically whichever door it comes in.
+  const matchCtx = useMemo(() => buildMatchContext(species, varieties), [species, varieties]);
+  const { varietyById } = matchCtx;
 
   const [noQtyColumn, setNoQtyColumn] = useState(false);
 
@@ -171,63 +70,8 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     if (!file) return;
     setFileName(file.name);
     try {
-      // Lazy: xlsx is ~140KB gzip and the repo deliberately keeps it out of
-      // eagerly-loaded chunks — load it only when a file is actually chosen.
-      const XLSX = await import('xlsx');
-      const buf = await file.arrayBuffer();
-      // CSVs go through our own charset detection (see decodeCsvBytes);
-      // xlsx/xls carry their encoding internally and stay on the array path.
-      const isCsv = /\.(csv|txt)$/i.test(file.name || '') || /csv/i.test(file.type || '');
-      const wb = isCsv
-        ? XLSX.read(decodeCsvBytes(new Uint8Array(buf)), { type: 'string' })
-        : XLSX.read(buf, { type: 'array' });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-      const nonEmpty = grid.filter(r => r.some(c => norm(c) !== ''));
-      if (!nonEmpty.length) { setParseErr('The file looks empty.'); return; }
-      if (nonEmpty.length > MAX_ROWS + 1) {
-        setParseErr(`That's ${nonEmpty.length} rows — the import caps at ${MAX_ROWS}. Split the sheet.`);
-        return;
-      }
-
-      let cols = detectColumns(nonEmpty[0]);
-      let dataRows;
-      if (cols.species !== undefined) {
-        dataRows = nonEmpty.slice(1);
-      } else {
-        // Headerless: species, qty, price — in that order.
-        cols = { species: 0, qty: 1, price: 2 };
-        dataRows = nonEmpty;
-      }
-      // A sheet with headers but no recognizable qty column silently
-      // defaults every row to 1 plant — make that loud, not silent.
-      setNoQtyColumn(cols.qty === undefined);
-
-      const parsed = dataRows
-        .map((r, i) => {
-          const speciesName = String(r[cols.species] ?? '').trim();
-          if (!speciesName) return null;
-          // Commas stripped like the price column — "1,000" must not
-          // parseInt to 1. An explicit 0 (out-of-stock marker) or an
-          // absurd value is skipped visibly, never coerced.
-          const qtyRaw = cols.qty !== undefined ? String(r[cols.qty] ?? '').replace(/[,\s]/g, '') : '';
-          const qty = cols.qty === undefined || qtyRaw === '' ? 1 : parseInt(qtyRaw, 10);
-          const priceRaw = cols.price !== undefined ? String(r[cols.price] ?? '').replace(/[$,\s]/g, '') : '';
-          const price = priceRaw === '' ? null : parseFloat(priceRaw);
-          const row = {
-            row: i + 1,
-            species: speciesName,
-            variety: cols.variety !== undefined ? String(r[cols.variety] ?? '').trim() : '',
-            qty: Number.isFinite(qty) ? qty : 0,
-            price: Number.isFinite(price) && price >= 0 ? price : null,
-          };
-          if (row.qty < 1 || row.qty > MAX_QTY) return { ...row, status: 'bad-qty' };
-          if (speciesName.length > MAX_NAME_LEN) return { ...row, status: 'bad-name' };
-          return row;
-        })
-        .filter(Boolean);
-
-      if (!parsed.length) { setParseErr('No usable rows found — is there a species/name column?'); return; }
+      const { rows: parsed, noQtyColumn: noQty } = parseOrderRows(await readSheetGrid(file));
+      setNoQtyColumn(noQty);
       setBaseRows(parsed);
     } catch (e) {
       setParseErr(e.message || 'Could not read that file.');
@@ -236,30 +80,12 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
 
   // Matching + duplicate-merge, derived so changing the "file under" genus
   // re-matches live. Rows are cloned first — the merge mutates quantities.
-  // A merged total past MAX_QTY skips the whole species: the server enforces
-  // the same cap on the aggregate and would reject the import.
   const rows = useMemo(() => {
     if (!baseRows) return null;
-    const out = baseRows.map(r => (r.status ? { ...r } : { ...r, ...matchRow(r, defaultVarietyId) }));
-    const firstByKey = new Map();
-    for (const r of out) {
-      if (r.status !== 'matched' && r.status !== 'create') continue;
-      const key = r.status === 'matched' ? `m:${r.speciesId}` : `c:${r.varietyId}:${norm(r.species)}`;
-      const first = firstByKey.get(key);
-      if (!first) { firstByKey.set(key, r); continue; }
-      first.qty += r.qty;
-      r.status = 'duplicate';
-      r.priceConflict = r.price != null && first.price != null && r.price !== first.price;
-      if (first.price == null && r.price != null) first.price = r.price;
-    }
-    for (const first of firstByKey.values()) {
-      if (first.qty > MAX_QTY) first.status = 'bad-qty';
-    }
-    return out;
-    // matchRow reads only memoized indexes + the default id; listing the
-    // function itself would re-run this on every render for nothing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseRows, defaultVarietyId, speciesIndex, varietyByName]);
+    return mergeDuplicateRows(
+      baseRows.map(r => (r.status ? { ...r } : { ...r, ...matchSheetRow(r, matchCtx, defaultVarietyId) })),
+    );
+  }, [baseRows, defaultVarietyId, matchCtx]);
 
   const counts = useMemo(() => {
     const c = {
@@ -289,7 +115,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     // means a wrong column was read as the plant name — the per-row chips
     // are easy to skim past at that volume, so make it a deliberate step.
     const createCount = importable.filter(r => r.status === 'create').length;
-    if (createCount > 50) {
+    if (createCount > MASS_CREATE_WARN) {
       const sure = window.confirm(
         `This import creates ${createCount} NEW species in the catalog. That many usually means a wrong column was read as the plant name — check the preview's "new species" chips. Create them anyway?`,
       );
@@ -325,24 +151,25 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
       });
 
       const skipped = (rows || []).length - importable.length;
+      // App's showToast is (msg, type) — 'error' renders red, anything else
+      // is the neutral toast. No duration parameter exists.
       if (res.alreadyImported) {
-        showToast?.('This sheet was already imported — nothing was duplicated.', 4000);
+        showToast?.('This sheet was already imported — nothing was duplicated.');
       } else if (res.markOrderedFailed) {
         // The order EXISTS as a draft; retrying would duplicate it.
-        showToast?.('Order created as a DRAFT — send it to receiving from the Orders list (do not re-upload).', 7000);
+        showToast?.('Order created as a DRAFT — send it to receiving from the Orders list (do not re-upload).', 'error');
       } else {
         showToast?.(
           `Order created — ${res.lineCount} species, ${res.unitCount} plants`
           + (res.createdSpeciesCount ? `, ${res.createdSpeciesCount} new species` : '')
           + (skipped ? ` (${skipped} row${skipped === 1 ? '' : 's'} skipped)` : '')
           + (markOrdered ? '. It’s live on the receiving screen.' : '.'),
-          5000,
         );
       }
       onCreated?.();
       onClose();
     } catch (e) {
-      showToast?.(`Import failed: ${e.message || 'unknown error'} — fix and try again`, 5000);
+      showToast?.(`Import failed: ${e.message || 'unknown error'} — fix and try again`, 'error');
       busyRef.current = false;
       setImporting(false);
     }
@@ -393,7 +220,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     <Modal
       title="Import wholesale order"
       onClose={importing
-        ? () => showToast?.('Import in progress — hang tight, closing now would leave a half-built order', 2500)
+        ? () => showToast?.('Import in progress — hang tight, closing now would leave a half-built order')
         : onClose}
       size="lg"
     >
@@ -454,8 +281,8 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
               <span className="font-semibold text-gray-700">{rows.length} rows:</span>
               {counts.matched > 0 && <span className="text-emerald-700">{counts.matched} matched</span>}
               {counts.create > 0 && (
-                <span className={counts.create > 50 ? 'text-red-700 font-bold' : 'text-sky-700'}>
-                  {counts.create} new species{counts.create > 50 ? ' ⚠' : ''}
+                <span className={counts.create > MASS_CREATE_WARN ? 'text-red-700 font-bold' : 'text-sky-700'}>
+                  {counts.create} new species{counts.create > MASS_CREATE_WARN ? ' ⚠' : ''}
                 </span>
               )}
               {counts.duplicate > 0 && <span className="text-gray-500">{counts.duplicate} merged</span>}
