@@ -392,6 +392,84 @@ async function fetchAllPoLines(poId, brandId, columns) {
   return out;
 }
 
+// A line's price changed AFTER some of its plants were already received —
+// restamp grossCost on exactly those items (found via the per-line
+// receiving audit trail), so a price list that arrives after the cargo
+// still lands on the inventory. ONLY the cost moves: sku, name, variety,
+// type, status, lot — everything a printed label carries — stays untouched,
+// so labels already on plants remain valid. netCost is a manually-set
+// override elsewhere and is never written here. Shipping share uses the
+// same live per-unit formula receiveLine uses.
+// pricedByLineId: Map lineId → new unit price. Returns items restamped.
+async function restampLineItemCosts(po, brandId, user, nowIso, pricedByLineId) {
+  if (!pricedByLineId || !pricedByLineId.size) return 0;
+  const allLines = await fetchAllPoLines(po.id, brandId, '"quantityOrdered"');
+  const totalOrdered = allLines.reduce((s, l) => s + l.quantityOrdered, 0) || 1;
+  const perUnitShipping = Math.round(((po.shippingFee || 0) / totalOrdered) * 10000) / 10000;
+
+  // Audit rows for every candidate line, batched (a 500-line sheet must not
+  // become 500 sequential reads) and paginated per batch (one line can have
+  // hundreds of audit rows; a 200-line batch can pass the 1000-row cap).
+  const lineIds = [...pricedByLineId.keys()];
+  const itemsByLine = new Map();
+  for (let i = 0; i < lineIds.length; i += 200) {
+    const batchIds = lineIds.slice(i, i + 200);
+    for (let from = 0; ; from += 1000) {
+      const { data: page, error } = await supabase
+        .from('purchase_order_received_items')
+        .select('"lineId", "inventoryItemId"')
+        .eq('brandId', brandId)
+        .in('lineId', batchIds)
+        .order('id')
+        .range(from, from + 999);
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      for (const a of page || []) {
+        if (!itemsByLine.has(a.lineId)) itemsByLine.set(a.lineId, []);
+        itemsByLine.get(a.lineId).push(a.inventoryItemId);
+      }
+      if (!page || page.length < 1000) break;
+    }
+  }
+
+  // One update statement per ≤200 items of a line, run in parallel chunks —
+  // same shape as bulk-price. The cost filter makes the restamp idempotent:
+  // items already at the right cost aren't rewritten (no modifiedAt churn
+  // on a re-uploaded sheet), and the returned rows count only real
+  // corrections. NULL is matched explicitly — an admin can blank an item's
+  // cost in the item form, and SQL NULL <> x would silently skip exactly
+  // the items most in need of a cost. Soft-deleted items are deliberately
+  // included: a restore from Recently Deleted should come back with the
+  // corrected cost. Accepted tradeoffs (see PR): when the PO's totals
+  // changed, a price-matching re-upload also re-normalizes every item's
+  // shipping share (live-allocation rule); a receive minting mid-restamp
+  // can keep the stale price until the next sheet re-upload converges it.
+  const statements = [];
+  for (const [lineId, price] of pricedByLineId) {
+    const itemIds = itemsByLine.get(lineId) || [];
+    const newCost = Number(price) + perUnitShipping;
+    for (let i = 0; i < itemIds.length; i += 200) {
+      statements.push({ ids: itemIds.slice(i, i + 200), newCost });
+    }
+  }
+  let restamped = 0;
+  for (let i = 0; i < statements.length; i += 20) {
+    const results = await Promise.all(statements.slice(i, i + 20).map(s =>
+      supabase
+        .from('inventory_items')
+        .update({ grossCost: s.newCost, modifiedAt: nowIso, modifiedBy: user.displayName })
+        .eq('brandId', brandId)
+        .in('id', s.ids)
+        .or(`grossCost.is.null,grossCost.neq.${s.newCost}`)
+        .select('id'),
+    ));
+    for (const r of results) {
+      if (r.error) { const e = new Error(r.error.message); e.status = 500; throw e; }
+      restamped += (r.data || []).length;
+    }
+  }
+  return restamped;
+}
+
 // One line's received count, verified to belong to the PO — shared by the
 // update-line and remove-line ordered-state guards.
 async function loadLineReceived(lineId, poId, brandId) {
@@ -578,6 +656,9 @@ async function updateOrderLines(req, res, user, brandId) {
 
   const toInsert = [];
   const toUpdate = []; // { lineId, patch }
+  // Lines whose sheet price EQUALS the line price — no line write needed,
+  // but their received items may still carry a stale cost (restamped below).
+  const samePriceByLineId = new Map();
   let unchangedCount = 0;
   let clampedCount = 0;
   let nextSort = (existing || []).reduce((m, l) => Math.max(m, l.sortOrder + 1), 0);
@@ -604,6 +685,11 @@ async function updateOrderLines(req, res, user, brandId) {
     // explicit price cell overwrites what's on the line.
     if (agg.price != null && Number(agg.price) !== Number(line.unitWholesalePrice)) {
       patch.unitWholesalePrice = agg.price;
+    } else if (agg.price != null) {
+      // Price already matches the line, but its RECEIVED items may predate
+      // it (list updated after the cargo) — still a restamp candidate; the
+      // item write is idempotent, so this is free when nothing is wrong.
+      samePriceByLineId.set(line.id, agg.price);
     }
     if (Object.keys(patch).length) toUpdate.push({ lineId: line.id, patch });
     else unchangedCount += 1;
@@ -632,17 +718,28 @@ async function updateOrderLines(req, res, user, brandId) {
   // not leave quantityOrdered below quantityReceived. A row skipped by the
   // guard simply stays put — re-applying the same sheet converges.
   let updatedCount = 0;
+  // Price changes that actually landed → their already-received items get
+  // their grossCost restamped below (the price list often arrives after
+  // the cargo). Only landed writes qualify — a guard-skipped row kept its
+  // old price, so its items keep their old cost.
+  const pricedByLineId = new Map();
   for (let i = 0; i < toUpdate.length; i += 20) {
-    const results = await Promise.all(toUpdate.slice(i, i + 20).map(u => {
+    const batch = toUpdate.slice(i, i + 20);
+    const results = await Promise.all(batch.map(u => {
       let q = supabase.from('purchase_order_lines')
         .update(u.patch).eq('id', u.lineId).eq('purchaseOrderId', id).eq('brandId', brandId);
       if (u.patch.quantityOrdered !== undefined) q = q.lte('quantityReceived', u.patch.quantityOrdered);
       return q.select('id');
     }));
-    for (const r of results) {
+    results.forEach((r, j) => {
       if (r.error) { const e = new Error(`Line update failed: ${r.error.message}`); e.status = 500; throw e; }
-      updatedCount += (r.data || []).length;
-    }
+      if ((r.data || []).length) {
+        updatedCount += 1;
+        if (batch[j].patch.unitWholesalePrice !== undefined) {
+          pricedByLineId.set(batch[j].lineId, batch[j].patch.unitWholesalePrice);
+        }
+      }
+    });
   }
   let removedCount = 0;
   const removedIds = new Set();
@@ -694,6 +791,16 @@ async function updateOrderLines(req, res, user, brandId) {
     .eq('id', id).eq('brandId', brandId);
   if (stampErr) { const e = new Error(stampErr.message); e.status = 500; throw e; }
 
+  // Re-cost the already-received plants of every line the sheet priced —
+  // both changed prices and matching ones (items minted before the price
+  // landed are the whole point). Drafts can't have received anything.
+  for (const [lid, p] of samePriceByLineId) {
+    if (!pricedByLineId.has(lid)) pricedByLineId.set(lid, p);
+  }
+  const restampedItemCount = po.status !== 'draft'
+    ? await restampLineItemCosts(po, brandId, user, nowIso, pricedByLineId)
+    : 0;
+
   // Lowering quantities to what arrived can complete the order; adding or
   // raising lines mid-flip can un-complete it — sync both directions.
   const poFlippedToReceived = (await syncPoReceivedStatus(id, brandId, user, nowIso)) === 'received';
@@ -707,6 +814,7 @@ async function updateOrderLines(req, res, user, brandId) {
     keptMissingSpeciesIds,
     clampedCount,
     createdSpeciesCount,
+    restampedItemCount,
     poFlippedToReceived,
   });
 }
@@ -900,17 +1008,32 @@ async function updateLine(req, res, user, brandId) {
   if (guardQty) q = q.lte('quantityReceived', patch.quantityOrdered);
   const { data: written, error } = await q.select('id');
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  if (guardQty && (!written || !written.length)) {
-    const e = new Error('Line was just received against — refresh and try again');
-    e.status = 409; throw e;
+  if (!written || !written.length) {
+    // Zero rows = the guard rejected it (guardQty) OR the lineId isn't on
+    // this PO at all. The distinction matters beyond the message: the
+    // restamp below keys on lineId alone, so proceeding on an unlanded
+    // write could re-cost a DIFFERENT PO's items with this PO's shipping
+    // share (cancel-receive defends the same id-pairing attack).
+    const e = new Error(guardQty
+      ? 'Line was just received against — refresh and try again'
+      : 'Line not found on this purchase order');
+    e.status = guardQty ? 409 : 404; throw e;
+  }
+  const nowIso = new Date().toISOString();
+  // A price edit re-costs the plants this line already minted — the price
+  // list often arrives after the cargo. Drafts can't have received items.
+  // Only reached when the line write LANDED (checked above).
+  let restampedCount = 0;
+  if (patch.unitWholesalePrice !== undefined && po.status !== 'draft') {
+    restampedCount = await restampLineItemCosts(po, brandId, user, nowIso, new Map([[lineId, patch.unitWholesalePrice]]));
   }
   // Lowering the quantity to what's already received can complete the order
   // (and raising one mid-flip can un-complete it) — a price-only patch can't
   // do either, so skip the extra lines read.
   const poFlippedToReceived = patch.quantityOrdered !== undefined
-    ? (await syncPoReceivedStatus(id, brandId, user, new Date().toISOString())) === 'received'
+    ? (await syncPoReceivedStatus(id, brandId, user, nowIso)) === 'received'
     : false;
-  return res.status(200).json({ ok: true, poFlippedToReceived });
+  return res.status(200).json({ ok: true, poFlippedToReceived, restampedCount });
 }
 
 async function removeLine(req, res, user, brandId) {

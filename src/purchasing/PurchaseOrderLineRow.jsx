@@ -77,7 +77,12 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
     if (n === Number(line.unitWholesalePrice)) return;
     setBusy(true);
     try {
-      await api.updatePurchaseOrderLine({ id: poId, lineId: line.id, unitWholesalePrice: n });
+      const r = await api.updatePurchaseOrderLine({ id: poId, lineId: line.id, unitWholesalePrice: n });
+      // Already-received plants from this line get re-costed server-side —
+      // say so, or the admin assumes (as before) that minted costs are stuck.
+      if (r?.restampedCount) {
+        showToast?.(`Price saved — ${r.restampedCount} received plant${r.restampedCount === 1 ? '' : 's'} re-costed`);
+      }
       onChanged?.();
     } catch (e) {
       showToast?.(e.message || 'Update failed', 'error');
