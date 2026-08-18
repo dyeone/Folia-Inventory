@@ -4,10 +4,12 @@ import { api } from '../api.js';
 
 // One line in an expanded PO. Editing rules:
 //   - poStatus = draft    → quantityOrdered + unitWholesalePrice editable; remove allowed
-//   - poStatus = ordered  → quantityReceived input + Receive button (Task 14)
-//   - poStatus = received → fully read-only (Task 14)
+//   - poStatus = ordered  → receive controls for everyone; ADMINS can also
+//     edit qty (never below what's received) / price, and remove lines with
+//     nothing received — suppliers revise orders after they're placed
+//   - poStatus = received → fully read-only
 
-export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poStatus, poId, showToast, onChanged }) {
+export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poStatus, poId, isAdmin, showToast, onChanged }) {
   // Local form state — initialized once from props, not reset on prop
   // changes. Preserving mid-typed input across refreshes is a feature.
   // The server strips unitWholesalePrice for non-admin viewers — every
@@ -46,13 +48,21 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
       setQty(String(line.quantityOrdered));
       return;
     }
+    // Mirrors the server guard: on an ordered PO the received count is
+    // physical reality — the ordered quantity can't drop below it.
+    if (poStatus === 'ordered' && n < line.quantityReceived) {
+      showToast?.(`${line.quantityReceived} already received — quantity can't go below that`, 'error');
+      setQty(String(line.quantityOrdered));
+      return;
+    }
     if (n === line.quantityOrdered) return;
     setBusy(true);
     try {
-      await api.updatePurchaseOrderLine({ id: poId, lineId: line.id, quantityOrdered: n });
+      const r = await api.updatePurchaseOrderLine({ id: poId, lineId: line.id, quantityOrdered: n });
+      if (r?.poFlippedToReceived) showToast?.('Order is now fully received');
       onChanged?.();
     } catch (e) {
-      showToast?.(e.message || 'Update failed', 3000);
+      showToast?.(e.message || 'Update failed', 'error');
       setQty(String(line.quantityOrdered));
     } finally { setBusy(false); }
   };
@@ -70,7 +80,7 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
       await api.updatePurchaseOrderLine({ id: poId, lineId: line.id, unitWholesalePrice: n });
       onChanged?.();
     } catch (e) {
-      showToast?.(e.message || 'Update failed', 3000);
+      showToast?.(e.message || 'Update failed', 'error');
       setPrice(String(line.unitWholesalePrice));
     } finally { setBusy(false); }
   };
@@ -78,15 +88,20 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
   const remove = async () => {
     setBusy(true);
     try {
-      await api.removePurchaseOrderLine({ id: poId, lineId: line.id });
+      const r = await api.removePurchaseOrderLine({ id: poId, lineId: line.id });
+      if (r?.poFlippedToReceived) showToast?.('Order is now fully received');
       onChanged?.();
     } catch (e) {
-      showToast?.(e.message || 'Remove failed', 3000);
+      showToast?.(e.message || 'Remove failed', 'error');
     } finally { setBusy(false); }
   };
 
   const lineTotal = (Number(price) || 0) * (parseInt(qty, 10) || 0);
   const isDraft = poStatus === 'draft';
+  // Admins keep editing after the order is placed; staff/packers see the
+  // ordered state read-only (the writes are admin actions server-side).
+  const canEdit = isDraft || (poStatus === 'ordered' && isAdmin);
+  const canRemove = canEdit && (isDraft || line.quantityReceived === 0);
   const remaining = Math.max(0, line.quantityOrdered - line.quantityReceived);
   const [receiveQty, setReceiveQty] = useState(String(remaining));
 
@@ -97,13 +112,13 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
     try {
       const r = await api.receivePurchaseOrderLine({ id: poId, lineId: line.id, quantityReceived: n });
       if (r?.poFlippedToReceived) {
-        showToast?.('Received — PO complete', 2200);
+        showToast?.('Received — PO complete');
       } else {
-        showToast?.(`Received ${n}`, 1500);
+        showToast?.(`Received ${n}`);
       }
       onChanged?.();
     } catch (e) {
-      showToast?.(e.message || 'Receive failed', 3000);
+      showToast?.(e.message || 'Receive failed', 'error');
     } finally {
       setBusy(false);
     }
@@ -113,10 +128,10 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
     setBusy(true);
     try {
       const r = await api.cancelReceivePurchaseOrderLine({ id: poId, lineId: line.id });
-      showToast?.(`Cancelled ${r.deletedCount} unit${r.deletedCount === 1 ? '' : 's'}`, 2000);
+      showToast?.(`Cancelled ${r.deletedCount} unit${r.deletedCount === 1 ? '' : 's'}`);
       onChanged?.();
     } catch (e) {
-      showToast?.(e.message || 'Cancel failed', 3000);
+      showToast?.(e.message || 'Cancel failed', 'error');
     } finally { setBusy(false); }
   };
 
@@ -131,10 +146,10 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
         </div>
         <div className="mt-1 flex items-center gap-2 text-xs flex-wrap">
           <span className="text-gray-500">Ordered</span>
-          {isDraft ? (
+          {canEdit ? (
             <input
               type="number"
-              min={1}
+              min={poStatus === 'ordered' ? Math.max(1, line.quantityReceived) : 1}
               value={qty}
               onChange={(e) => setQty(e.target.value)}
               onBlur={saveQty}
@@ -146,7 +161,7 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
           {hasPrice && (
             <>
               <span className="text-gray-500">@ $</span>
-              {isDraft ? (
+              {canEdit ? (
                 <input
                   type="number"
                   step="0.01"
@@ -208,7 +223,7 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
           )}
         </div>
       </div>
-      {isDraft && (
+      {canRemove && (
         <button
           type="button"
           onClick={remove}

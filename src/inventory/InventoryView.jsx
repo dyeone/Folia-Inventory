@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react';
-import { Search, Download, ArrowRightLeft, ArrowLeftRight, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil, FileText } from 'lucide-react';
+import { Search, Download, ArrowRightLeft, ArrowLeftRight, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil, FileText, DollarSign } from 'lucide-react';
+import { VendorPriceModal } from './VendorPriceModal.jsx';
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
@@ -23,7 +24,7 @@ function fmtAddedAt(iso) {
   return `${datePart}, ${timePart}`;
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onBulkRename, onStatusChange, isAdmin, brand }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, onSpeciesChanged, showToast, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onBulkRename, onStatusChange, isAdmin, brand }) {
   const isMobile = useIsMobile();
   // O(1) lookups for speciesForItem / computeIdealPrice — built once per
   // varieties/species change instead of linear-scanning per item per render.
@@ -35,6 +36,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
     [varieties]
   );
   const [varietyTab, setVarietyTab] = useState('all');
+  const [vendorPricesOpen, setVendorPricesOpen] = useState(false);
   const items = useMemo(
     () => varietyTab === 'all' ? filteredItems : filteredItems.filter(i => i.variety === varietyTab),
     [filteredItems, varietyTab]
@@ -391,6 +393,18 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
             className="ml-auto flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg whitespace-nowrap"
           >
             <Edit2 className="w-3.5 h-3.5" /> Edit
+          </button>
+        )}
+        {/* Vendor re-priced: upload their new list, auto-match to species,
+            manually match the stragglers, apply. Admin-only — wholesale
+            prices are the admin's domain (bulk-price API is gated too). */}
+        {isAdmin && (
+          <button
+            onClick={() => setVendorPricesOpen(true)}
+            title="Upload the vendor's new price list and update wholesale prices"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg whitespace-nowrap"
+          >
+            <DollarSign className="w-3.5 h-3.5" /> Vendor prices
           </button>
         )}
       </div>
@@ -940,6 +954,16 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           idealRate={idealRate}
           brand={brand}
           onClose={() => setShowInvoice(false)}
+        />
+      )}
+
+      {vendorPricesOpen && (
+        <VendorPriceModal
+          species={species}
+          varieties={varieties}
+          showToast={showToast}
+          onSpeciesChanged={onSpeciesChanged}
+          onClose={() => setVendorPricesOpen(false)}
         />
       )}
     </div>

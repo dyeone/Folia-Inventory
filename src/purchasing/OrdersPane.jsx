@@ -10,7 +10,7 @@ const FILTERS = [
   { id: 'received', label: 'Received' },
 ];
 
-export function OrdersPane({ varieties, species, showToast, setConfirmDialog, onItemsChanged, onSpeciesChanged }) {
+export function OrdersPane({ varieties, species, isAdmin, showToast, setConfirmDialog, onItemsChanged, onSpeciesChanged }) {
   const [activeFilters, setActiveFilters] = useState(new Set(['draft', 'ordered']));
   const [pos, setPos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -155,10 +155,14 @@ export function OrdersPane({ varieties, species, showToast, setConfirmDialog, on
             <PurchaseOrderCard
               key={po.id}
               po={po}
+              species={species}
+              varieties={varieties}
               speciesById={speciesById}
+              isAdmin={isAdmin}
               showToast={showToast}
               setConfirmDialog={setConfirmDialog}
               onChanged={refresh}
+              onSpeciesChanged={onSpeciesChanged}
             />
           ))}
         </div>

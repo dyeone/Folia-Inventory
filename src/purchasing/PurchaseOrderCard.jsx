@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Loader2, Trash2, Check, Truck } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Trash2, Check, Truck, Upload, Plus } from 'lucide-react';
 import { api } from '../api.js';
 import { PurchaseOrderLineRow } from './PurchaseOrderLineRow.jsx';
+import { NameAutocomplete } from './NameAutocomplete.jsx';
+import { UpdateOrderModal } from './UpdateOrderModal.jsx';
 
 const STATUS_CLASS = {
   draft:    'bg-gray-300',
@@ -9,7 +11,7 @@ const STATUS_CLASS = {
   received: 'bg-emerald-500',
 };
 
-export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setConfirmDialog }) {
+export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin, showToast, onChanged, onSpeciesChanged, setConfirmDialog }) {
   const [open, setOpen] = useState(false);
   const [lines, setLines] = useState(null);
   const [receivedItems, setReceivedItems] = useState([]);
@@ -17,6 +19,7 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
   // below flips it false in finally().
   const [loading, setLoading] = useState(true);
   const [savingHeader, setSavingHeader] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
 
   // Local header state — initialized once from props. Edits stick until
   // saved-or-discarded; subsequent prop changes (e.g., parent refresh)
@@ -47,7 +50,7 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
         setLines(ls);
         setReceivedItems(ri || []);
       } catch (e) {
-        if (!cancelled) showToast?.(e.message || 'Load failed', 3000);
+        if (!cancelled) showToast?.(e.message || 'Load failed', 'error');
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -62,7 +65,7 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
       setReceivedItems(ri || []);
       onChanged?.();
     } catch (e) {
-      showToast?.(e.message || 'Load failed', 3000);
+      showToast?.(e.message || 'Load failed', 'error');
     }
   };
 
@@ -72,7 +75,7 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
       await api.updatePurchaseOrderHeader({ id: po.id, ...patch });
       onChanged?.();
     } catch (e) {
-      showToast?.(e.message || 'Save failed', 3000);
+      showToast?.(e.message || 'Save failed', 'error');
     } finally {
       setSavingHeader(false);
     }
@@ -82,9 +85,9 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
     try {
       await api.markPurchaseOrderOrdered(po.id);
       await refreshLines();
-      showToast?.('Marked as ordered', 1500);
+      showToast?.('Marked as ordered');
     } catch (e) {
-      showToast?.(e.message || 'Failed', 3000);
+      showToast?.(e.message || 'Failed', 'error');
     }
   };
 
@@ -92,7 +95,7 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
     if (!lines) return;
     const targets = lines.filter(l => l.quantityReceived < l.quantityOrdered);
     if (targets.length === 0) {
-      showToast?.('Already fully received', 1500);
+      showToast?.('Already fully received');
       return;
     }
     try {
@@ -104,9 +107,9 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
         });
       }
       await refreshLines();
-      showToast?.('Marked all received', 1800);
+      showToast?.('Marked all received');
     } catch (e) {
-      showToast?.(e.message || 'Receive failed', 3000);
+      showToast?.(e.message || 'Receive failed', 'error');
       await refreshLines();
     }
   };
@@ -120,10 +123,10 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
       onConfirm: async () => {
         try {
           await api.deletePurchaseOrder(po.id);
-          showToast?.('Deleted', 1500);
+          showToast?.('Deleted');
           onChanged?.();
         } catch (e) {
-          showToast?.(e.message || 'Delete failed', 3000);
+          showToast?.(e.message || 'Delete failed', 'error');
         }
       },
     });
@@ -249,7 +252,7 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
             </div>
           ) : !lines || lines.length === 0 ? (
             <div className="p-6 text-center text-sm text-gray-500">
-              No lines yet. Add plants from the Catalog tab.
+              No lines yet. Add plants {isAdmin ? 'below or ' : ''}from the Catalog tab.
             </div>
           ) : (
             <div>
@@ -261,6 +264,7 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
                   receivedItemIds={receivedItems.filter(r => r.lineId === line.id).map(r => r.inventoryItemId)}
                   poStatus={po.status}
                   poId={po.id}
+                  isAdmin={isAdmin}
                   showToast={showToast}
                   onChanged={refreshLines}
                 />
@@ -268,9 +272,30 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
             </div>
           )}
 
+          {/* Manual add — the list stays editable after ordering (suppliers
+              revise orders); the new line joins the receiving screen. */}
+          {isAdmin && !loading && (isDraft || po.status === 'ordered') && (
+            <AddLineRow
+              poId={po.id}
+              species={species}
+              showToast={showToast}
+              onAdded={refreshLines}
+            />
+          )}
+
           {/* Footer actions */}
           {(isDraft || po.status === 'ordered') && lines && (
             <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setUpdateOpen(true)}
+                  className="mr-auto flex items-center gap-1.5 px-3 py-2 text-sm border border-emerald-600 text-emerald-700 rounded-lg hover:bg-emerald-50"
+                  title="Upload the supplier's revised list and sync this order to it"
+                >
+                  <Upload className="w-4 h-4" /> Update from list
+                </button>
+              )}
               {isDraft && (
                 <>
                   <button
@@ -304,6 +329,101 @@ export function PurchaseOrderCard({ po, speciesById, showToast, onChanged, setCo
           )}
         </div>
       )}
+
+      {updateOpen && (
+        <UpdateOrderModal
+          po={po}
+          species={species}
+          varieties={varieties}
+          showToast={showToast}
+          onClose={() => setUpdateOpen(false)}
+          onUpdated={refreshLines}
+          onSpeciesChanged={onSpeciesChanged}
+        />
+      )}
+    </div>
+  );
+}
+
+// Inline add-a-line form: type a species name, pick from the catalog, set
+// qty (+ price — blank uses the species' saved wholesale price). Admin-only:
+// add-line is an admin action server-side.
+function AddLineRow({ poId, species, showToast, onAdded }) {
+  const [name, setName] = useState('');
+  const [picked, setPicked] = useState(null);
+  const [qty, setQty] = useState('1');
+  const [price, setPrice] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const add = async () => {
+    if (busy) return;
+    if (!picked) { showToast?.('Pick a species from the suggestions first', 'error'); return; }
+    const n = parseInt(qty, 10);
+    if (!Number.isFinite(n) || n < 1) { showToast?.('Quantity must be at least 1', 'error'); return; }
+    setBusy(true);
+    try {
+      await api.addPurchaseOrderLine({
+        id: poId,
+        speciesId: picked.id,
+        quantityOrdered: n,
+        unitWholesalePrice: price === '' ? undefined : parseFloat(price),
+      });
+      setName(''); setPicked(null); setQty('1'); setPrice('');
+      onAdded?.();
+    } catch (e) {
+      showToast?.(e.message || 'Add failed', 'error');
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="px-3 py-2.5 border-t border-gray-100 bg-gray-50/60 flex items-center gap-2 flex-wrap">
+      <div className="flex-1 min-w-[180px]">
+        <NameAutocomplete
+          value={name}
+          // Typing again after a pick invalidates it — the add must never
+          // silently use a species that no longer matches the text.
+          onChange={(v) => { setName(v); setPicked(null); }}
+          onPick={(s) => {
+            setPicked(s);
+            setName(s.epithet);
+            if (s.wholesalePrice != null) setPrice(String(s.wholesalePrice));
+          }}
+          candidates={species || []}
+          matchField="epithet"
+          inputProps={{
+            placeholder: 'Add species…',
+            className: 'w-full px-2 py-1.5 text-xs border border-gray-300 rounded',
+          }}
+        />
+      </div>
+      <input
+        type="number"
+        min={1}
+        value={qty}
+        onChange={(e) => setQty(e.target.value)}
+        className="w-16 px-2 py-1.5 text-xs border border-gray-300 rounded"
+        title="Quantity"
+      />
+      <span className="text-xs text-gray-500">@ $</span>
+      <input
+        type="number"
+        step="0.01"
+        min={0}
+        value={price}
+        onChange={(e) => setPrice(e.target.value)}
+        placeholder="catalog"
+        className="w-20 px-2 py-1.5 text-xs border border-gray-300 rounded"
+        title="Unit wholesale price — blank uses the species' saved price"
+      />
+      <button
+        type="button"
+        onClick={add}
+        disabled={busy || !picked}
+        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded disabled:opacity-50"
+      >
+        {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+        Add
+      </button>
     </div>
   );
 }

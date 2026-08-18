@@ -145,6 +145,8 @@ export const api = {
     request('/species', { method: 'POST', body: { action: 'merge', fromId, intoId } }),
   createSpecies: ({ varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice }) =>
     request('/species', { method: 'POST', body: { varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice } }).then(r => r.species),
+  bulkSpeciesPrices: (prices) =>
+    request('/species', { method: 'POST', body: { action: 'bulk-price', prices } }).then(r => r.updated),
   updateSpecies: ({ id, patch }) =>
     request('/species', { method: 'PATCH', body: { id, ...patch } }),
   deleteSpecies: (id) =>
@@ -171,6 +173,8 @@ export const api = {
     request('/purchase-orders', { method: 'POST', body: { action: 'mark-ordered', id } }).then(r => r.purchaseOrder),
   importPurchaseOrder: ({ importId, supplier, shippingFee, notes, lines, markOrdered, itemType, itemStatus, itemNotes }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'import-order', importId, supplier, shippingFee, notes, lines, markOrdered, itemType, itemStatus, itemNotes } }),
+  updatePurchaseOrderLines: ({ id, lines, removeMissing }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'update-order-lines', id, lines, removeMissing } }),
   receivePurchaseOrderLine: ({ id, lineId, quantityReceived }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'receive-line', id, lineId, quantityReceived } }),
   cancelReceivePurchaseOrderLine: ({ id, lineId }) =>

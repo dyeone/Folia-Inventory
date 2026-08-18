@@ -5,6 +5,12 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 // list and create (so staff can add new plants on the fly); only admins
 // can edit or delete (so accidental renames don't desync linked items).
 
+// Mirrors PRICE_MAX / IMPORT_LINES_MAX in api/purchase-orders.js and
+// MAX_ROWS in src/purchasing/sheetParsing.js — one vendor sheet is the
+// upstream source for all three caps.
+const PRICE_MAX = 100000;
+const BULK_PRICE_MAX_ROWS = 500;
+
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
@@ -16,25 +22,80 @@ export default wrap(async (req, res) => {
     return mergeSpecies(req, res, userId, user, brandId);
   }
 
+  // Bulk wholesale-price update (vendor sent a new price list). Admin-only:
+  // prices are the admin's domain, same posture as PO editing. Runs the
+  // updates in parallel chunks so a 300-row list doesn't take a minute.
+  if (req.method === 'POST' && req.body?.action === 'bulk-price') {
+    await requireAdmin(userId);
+    const { prices } = req.body || {};
+    if (!Array.isArray(prices) || prices.length === 0 || prices.length > BULK_PRICE_MAX_ROWS) {
+      const e = new Error(`prices must be a non-empty array (max ${BULK_PRICE_MAX_ROWS})`); e.status = 400; throw e;
+    }
+    const clean = prices.map((p, i) => {
+      const n = parseFloat(p?.wholesalePrice);
+      if (!p?.id || typeof p.id !== 'string' || !Number.isFinite(n) || n < 0 || n > PRICE_MAX) {
+        const e = new Error(`Row ${i + 1}: id and a wholesalePrice of 0–${PRICE_MAX} required`); e.status = 400; throw e;
+      }
+      return { id: p.id, wholesalePrice: n };
+    });
+    // Note: the species table carries no modifiedAt/modifiedBy — only the
+    // price column moves.
+    let updated = 0;
+    for (let i = 0; i < clean.length; i += 20) {
+      const results = await Promise.all(clean.slice(i, i + 20).map(p =>
+        supabase
+          .from('species')
+          .update({ wholesalePrice: p.wholesalePrice })
+          .eq('id', p.id)
+          .eq('brandId', brandId)
+          .select('id'),
+      ));
+      for (const r of results) {
+        if (r.error) { const e = new Error(r.error.message); e.status = 500; throw e; }
+        updated += (r.data || []).length;
+      }
+    }
+    return res.status(200).json({ updated });
+  }
+
   switch (req.method) {
     case 'GET': {
-      const { data: species, error } = await supabase
-        .from('species')
-        .select('*')
-        .eq('brandId', brandId)
-        .order('epithet');
-      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-      const ids = (species || []).map(s => s.id);
-      let photos = [];
-      if (ids.length) {
-        const { data: p, error: pe } = await supabase
-          .from('species_photos')
-          .select('id, "speciesId", "storagePath", "sortOrder", "kind"')
-          .in('speciesId', ids)
+      // Paginated: supabase-js silently caps selects at 1000 rows (recurring
+      // project gotcha). The vendor price-list flow matches an entire sheet
+      // against this list — a truncated catalog would silently show real
+      // species as "unmatched" and their prices would never update.
+      let species = [];
+      for (let from = 0; ; from += 1000) {
+        const { data: page, error } = await supabase
+          .from('species')
+          .select('*')
           .eq('brandId', brandId)
-          .order('sortOrder');
-        if (pe) { const e = new Error(pe.message); e.status = 500; throw e; }
-        photos = p || [];
+          // The id tiebreak keeps page boundaries stable — offset pages over
+          // non-unique epithets can drop/duplicate rows on ties otherwise.
+          .order('epithet')
+          .order('id')
+          .range(from, from + 999);
+        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        species = species.concat(page || []);
+        if (!page || page.length < 1000) break;
+      }
+      // Photos: fetch by brand (paginated) instead of .in(speciesId) — a
+      // 1000+-id `in` list would blow past URL limits, and every photo row
+      // belongs to a brand species anyway.
+      let photos = [];
+      if (species.length) {
+        for (let from = 0; ; from += 1000) {
+          const { data: p, error: pe } = await supabase
+            .from('species_photos')
+            .select('id, "speciesId", "storagePath", "sortOrder", "kind"')
+            .eq('brandId', brandId)
+            .order('sortOrder')
+            .order('id')
+            .range(from, from + 999);
+          if (pe) { const e = new Error(pe.message); e.status = 500; throw e; }
+          photos = photos.concat(p || []);
+          if (!p || p.length < 1000) break;
+        }
       }
       const photosBySpecies = new Map();
       for (const ph of photos) {
