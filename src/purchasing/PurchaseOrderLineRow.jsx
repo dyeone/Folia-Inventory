@@ -147,7 +147,7 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-sm text-gray-900 truncate">
-          {species?.varietyName || ''} · {species?.epithet || '(unknown)'}
+          {[species?.varietyName, species?.epithet || '(unknown)'].filter(Boolean).join(' · ')}
         </div>
         <div className="mt-1 flex items-center gap-2 text-xs flex-wrap">
           <span className="text-gray-500">Ordered</span>

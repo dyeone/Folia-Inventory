@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet, ArrowRight, X } from 'lucide-react';
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
-import { norm, readSheetGrid, splitGrid, buildMatchContext, MAX_NAME_LEN } from '../purchasing/sheetParsing.js';
+import { norm, readSheetGrid, splitGrid, buildMatchContext, buildSuggestIndex, suggest, MAX_NAME_LEN } from '../purchasing/sheetParsing.js';
 
 // Vendor price-list update: the vendor re-priced, so upload their new list
 // and refresh the catalog's WHOLESALE prices. Exact species matches apply
@@ -16,36 +16,8 @@ import { norm, readSheetGrid, splitGrid, buildMatchContext, MAX_NAME_LEN } from 
 
 const money = (n) => (n == null ? '—' : `$${Number(n).toFixed(2)}`);
 
-// Fuzzy candidates for a sheet name: startsWith beats contains beats
-// shared-token overlap. Purely for SUGGESTION ordering — nothing applies
-// without the user picking. The species side is normalized ONCE per parse
-// (buildSuggestIndex): re-normalizing thousands of catalog rows for every
-// unmatched sheet row would freeze the iPad for seconds on a bad sheet.
-function buildSuggestIndex(species) {
-  return (species || []).map(s => {
-    const e = norm(s.epithet);
-    return { s, e, c: norm(s.commonName || ''), tokens: new Set(e.split(/\s+/).filter(Boolean)) };
-  });
-}
-
-function suggest(name, index, limit = 4) {
-  const q = norm(name);
-  if (!q) return [];
-  const qTokens = q.split(/\s+/).filter(Boolean);
-  const scored = [];
-  for (const { s, e, c, tokens } of index) {
-    let score = 0;
-    if (e.startsWith(q) || q.startsWith(e)) score = 4;
-    else if (e.includes(q) || q.includes(e)) score = 3;
-    else if (c && (c.includes(q) || q.includes(c))) score = 2;
-    else {
-      const overlap = qTokens.filter(t => tokens.has(t)).length;
-      if (overlap > 0) score = 1 + overlap / 10;
-    }
-    if (score > 0) scored.push({ s, score });
-  }
-  return scored.sort((a, b) => b.score - a.score).slice(0, limit).map(x => x.s);
-}
+// Fuzzy matching (buildSuggestIndex/suggest) lives in sheetParsing.js —
+// shared with the order modals' manual-match pickers.
 
 export function VendorPriceModal({ species, varieties, showToast, onClose, onSpeciesChanged }) {
   const [fileName, setFileName] = useState('');
