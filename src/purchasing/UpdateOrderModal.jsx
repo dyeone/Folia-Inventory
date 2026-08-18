@@ -165,6 +165,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
       + (res.removedCount ? `, ${res.removedCount} removed` : '')
       + (res.clampedCount ? ` · ${res.clampedCount} kept at the received count` : '')
       + (removeMissing && kept ? ` · ${kept} kept (has received items)` : '')
+      + (res.restampedItemCount ? ` · ${res.restampedItemCount} received plant${res.restampedItemCount === 1 ? '' : 's'} re-costed` : '')
       + (res.poFlippedToReceived ? ' · order is now fully received' : ''),
     );
     onUpdated?.();
