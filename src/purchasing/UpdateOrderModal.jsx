@@ -150,6 +150,24 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
 
   const usable = (rows || []).filter(r => r.status === 'matched' || r.status === 'create');
 
+  // Line-side matching: sheet rows nothing claimed yet, offered as options
+  // on each missing LINE (the admin looks at the $0 line and picks which
+  // sheet row it is — the reverse direction of the per-row pickers above).
+  // Binding writes the same overrides map: rowIdx → the line's species.
+  const unresolvedRows = useMemo(() => (rows || []).filter(r => r.suggestions), [rows]);
+  const rowSuggestIndex = useMemo(
+    () => buildSuggestIndex(unresolvedRows.map(r => ({ id: String(r.idx), epithet: r.species, commonName: '' }))),
+    [unresolvedRows],
+  );
+  const rowByIdx = useMemo(() => new Map(unresolvedRows.map(r => [r.idx, r])), [unresolvedRows]);
+  const topRowsForLine = (l) => {
+    const name = speciesById.get(l.speciesId)?.epithet || '';
+    return suggest(name, rowSuggestIndex, 3).map(p => rowByIdx.get(Number(p.id))).filter(Boolean);
+  };
+  const bindRowToLine = (rowIdx, l) => {
+    setOverrides(o => ({ ...o, [rowIdx]: { speciesId: l.speciesId } }));
+  };
+
   const apply = async () => {
     if (busyRef.current || applying || !usable.length) return;
     const createCount = usable.filter(r => r.status === 'create').length;
@@ -431,20 +449,55 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                   <div className="border border-gray-200 rounded-xl p-3 space-y-2">
                     <div className="text-xs font-semibold text-gray-700">
                       {missingLines.length} line{missingLines.length === 1 ? '' : 's'} on the order but not in this list
+                      {unresolvedRows.length > 0 && (
+                        <span className="ml-1 font-normal text-amber-700">
+                          — {unresolvedRows.length} sheet row{unresolvedRows.length === 1 ? '' : 's'} unclaimed: pick which row each line is
+                        </span>
+                      )}
                     </div>
-                    <div className="max-h-28 overflow-y-auto space-y-1">
+                    <div className="max-h-56 overflow-y-auto space-y-1.5">
                       {missingLines.map(l => (
-                        <div key={l.id} className="flex items-center gap-2 text-xs">
-                          <span className="text-gray-900 truncate">{missingLabel(l)}</span>
-                          <span className="text-gray-500 shrink-0">×{l.quantityOrdered}</span>
-                          {l.quantityReceived > 0 ? (
-                            <span className="ml-auto shrink-0 text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="Lines with received items are never removed by an update">
-                              {l.quantityReceived} received — kept
-                            </span>
-                          ) : removeMissing ? (
-                            <span className="ml-auto shrink-0 text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">will be removed</span>
-                          ) : (
-                            <span className="ml-auto shrink-0 text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">kept</span>
+                        <div key={l.id} className="text-xs space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-900 truncate">{missingLabel(l)}</span>
+                            <span className="text-gray-500 shrink-0">×{l.quantityOrdered}</span>
+                            {l.quantityReceived > 0 ? (
+                              <span className="ml-auto shrink-0 text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="Lines with received items are never removed by an update">
+                                {l.quantityReceived} received — kept
+                              </span>
+                            ) : removeMissing ? (
+                              <span className="ml-auto shrink-0 text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">will be removed</span>
+                            ) : (
+                              <span className="ml-auto shrink-0 text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">kept</span>
+                            )}
+                          </div>
+                          {unresolvedRows.length > 0 && (
+                            <div className="flex items-center gap-1 flex-wrap pl-2">
+                              <span className="text-[10px] text-gray-400 shrink-0">this line is sheet row:</span>
+                              {topRowsForLine(l).map(r => (
+                                <button
+                                  key={r.idx}
+                                  type="button"
+                                  onClick={() => bindRowToLine(r.idx, l)}
+                                  className="px-2 py-1 rounded bg-sky-50 text-sky-700 text-xs font-medium hover:bg-sky-100"
+                                >
+                                  {r.species}{r.price != null ? ` · $${r.price.toFixed(2)}` : ''}
+                                </button>
+                              ))}
+                              <select
+                                value=""
+                                onChange={(e) => { if (e.target.value !== '') bindRowToLine(Number(e.target.value), l); }}
+                                className="text-xs border border-gray-200 rounded px-1.5 py-1 text-gray-600 max-w-[180px]"
+                                title="Every sheet row nothing has claimed yet"
+                              >
+                                <option value="">all unclaimed rows…</option>
+                                {unresolvedRows.map(r => (
+                                  <option key={r.idx} value={r.idx}>
+                                    {r.species}{r.price != null ? ` — $${r.price.toFixed(2)}` : ''} ×{r.qty}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
                           )}
                         </div>
                       ))}
