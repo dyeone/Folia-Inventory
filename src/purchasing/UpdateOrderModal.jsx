@@ -3,7 +3,14 @@ import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-rea
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
-import { readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { MatchPicker } from './MatchPicker.jsx';
+
+// Rows the auto-matcher couldn't bind to an existing species — every one
+// gets a manual-match picker (chips + full catalog search) so a near-miss
+// name can be pointed at the right species instead of silently becoming a
+// duplicate catalog entry.
+const REVIEWABLE = new Set(['create', 'ambiguous', 'unknown-variety', 'unmatched']);
 
 // Re-sync an EXISTING purchase order to a revised supplier list (admin's
 // Wholesale tab). Drop the new .xlsx/.csv and the modal previews the diff
@@ -24,6 +31,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
   const [parseErr, setParseErr] = useState('');
   const [noQtyColumn, setNoQtyColumn] = useState(false);
   const [removeMissing, setRemoveMissing] = useState(false);
+  const [overrides, setOverrides] = useState({}); // baseRow index → {speciesId}|{skip:true}
   const [defaultVarietyId, setDefaultVarietyId] = useState(() => {
     const list = varieties || [];
     const dflt = list.find(v => v.name.trim().toLowerCase() === DEFAULT_ADD_VARIETY);
@@ -60,6 +68,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
     setParseErr('');
     setBaseRows(null);
     setNoQtyColumn(false);
+    setOverrides({});
     if (!file) return;
     setFileName(file.name);
     try {
@@ -71,13 +80,37 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
     }
   };
 
-  // Match + fold duplicates (shared plumbing), then classify each usable
-  // row against the order's current lines: add / update / no change.
+  const suggestIndex = useMemo(() => buildSuggestIndex(species), [species]);
+
+  // Match + apply manual overrides + fold duplicates (shared plumbing),
+  // then classify each usable row against the order's current lines:
+  // add / update / no change.
   const rows = useMemo(() => {
     if (!baseRows) return null;
-    const out = mergeDuplicateRows(
-      baseRows.map(r => (r.status ? { ...r } : { ...r, ...matchSheetRow(r, matchCtx, defaultVarietyId) })),
-    );
+    const mapped = baseRows.map((r, i) => {
+      let row = r.status ? { ...r } : { ...r, ...matchSheetRow(r, matchCtx, defaultVarietyId) };
+      const ov = overrides[i];
+      // A manual pick beats whatever the auto-matcher decided —
+      // UNCONDITIONALLY: a later genus change can flip an ambiguous row to
+      // auto-matched, and the user's explicit bind must not lose to that.
+      if (ov?.speciesId) {
+        const sp = speciesById.get(ov.speciesId);
+        row = { ...row, status: 'matched', speciesId: ov.speciesId, varietyId: sp?.varietyId, manual: true, viaDefault: false, reviewable: true };
+      } else if (ov?.skip) {
+        row = { ...row, status: 'skipped-manual', reviewable: true };
+      } else if (REVIEWABLE.has(row.status)) {
+        row.suggestions = suggest(row.species, suggestIndex);
+        row.reviewable = true;
+      }
+      row.idx = i;
+      return row;
+    });
+    const out = mergeDuplicateRows(mapped);
+    // A row folded into an earlier duplicate is no longer independently
+    // matchable — its picker and review count would be pure noise.
+    for (const r of out) {
+      if (r.status === 'duplicate') { delete r.suggestions; r.reviewable = false; }
+    }
     for (const r of out) {
       if (r.status === 'create') { r.change = 'add'; continue; }
       if (r.status !== 'matched') continue;
@@ -93,11 +126,12 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
       r.change = newQty !== line.quantityOrdered || priceChanges ? 'update' : 'same';
     }
     return out;
-  }, [baseRows, defaultVarietyId, matchCtx, lineBySpecies]);
+  }, [baseRows, defaultVarietyId, matchCtx, lineBySpecies, overrides, suggestIndex, speciesById]);
 
   const counts = useMemo(() => {
-    const c = { add: 0, update: 0, same: 0, create: 0, skipped: 0 };
+    const c = { add: 0, update: 0, same: 0, create: 0, skipped: 0, review: 0 };
     for (const r of rows || []) {
+      if (r.suggestions) c.review += 1;
       if (r.change === 'add') { c.add += 1; if (r.status === 'create') c.create += 1; }
       else if (r.change === 'update') c.update += 1;
       else if (r.change === 'same') c.same += 1;
@@ -194,7 +228,8 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
         break;
     }
     switch (r.status) {
-      case 'ambiguous': return <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This name exists in more than one variety (and not the default one) — add a variety column to pick one">ambiguous — skipped</span>;
+      case 'skipped-manual': return <span className="text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">skipped</span>;
+      case 'ambiguous': return <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This name exists in more than one variety (and not the default one) — match it below or add a variety column">ambiguous</span>;
       case 'duplicate': return (
         <span className="text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="Same species appears earlier in the sheet — quantities were combined into that row">
           duplicate — qty merged{r.priceConflict ? ' · price differs, first used' : ''}
@@ -202,8 +237,8 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
       );
       case 'bad-qty':   return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={`Quantity is 0 or over ${MAX_QTY} — fix the cell and re-upload`}>qty looks wrong — skipped</span>;
       case 'bad-name':  return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={`Name is over ${MAX_NAME_LEN} characters — fix the cell and re-upload`}>name too long — skipped</span>;
-      case 'unknown-variety': return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This row names a variety that isn't in the catalog — add the variety first, or clear the cell to use the default genus">unknown variety — skipped</span>;
-      default:          return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">no match — skipped</span>;
+      case 'unknown-variety': return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This row names a variety that isn't in the catalog — match it below, add the variety, or clear the cell to use the default genus">unknown variety</span>;
+      default:          return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">no match</span>;
     }
   };
 
@@ -235,7 +270,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
 
   const rowTint = (r) => {
     if (r.change) return r.change === 'same' ? 'text-gray-400' : '';
-    if (r.status === 'duplicate') return 'bg-gray-50 text-gray-400';
+    if (r.status === 'duplicate' || r.status === 'skipped-manual') return 'bg-gray-50 text-gray-400';
     if (r.status === 'ambiguous') return 'bg-amber-50/60';
     return 'bg-red-50/60';
   };
@@ -330,7 +365,14 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                   {counts.update > 0 && <span className="text-blue-700">{counts.update} changed</span>}
                   {counts.same > 0 && <span className="text-gray-500">{counts.same} unchanged</span>}
                   {counts.skipped > 0 && <span className="text-red-700">{counts.skipped} skipped</span>}
+                  {counts.review > 0 && <span className="text-amber-700 font-semibold">{counts.review} need a manual match below</span>}
                 </div>
+                {counts.review > 0 && (
+                  <div className="flex items-center gap-2 bg-amber-50 text-amber-800 text-xs px-3 py-2 rounded-lg">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    {counts.review} row{counts.review === 1 ? " didn't" : "s didn't"} match the catalog — tap a suggestion or search to bind each one to an existing species. Left alone, a "new species" row is created under the genus below; other unmatched rows are skipped.
+                  </div>
+                )}
                 {counts.create > 0 && (
                   <label className="flex items-center gap-2 text-xs text-gray-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">
                     <span className="font-medium shrink-0">File new species under</span>
@@ -354,16 +396,30 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                           <th className="px-2.5 py-1.5 font-medium">Species</th>
                           <th className="px-2.5 py-1.5 font-medium text-right">Qty</th>
                           <th className="px-2.5 py-1.5 font-medium text-right">Price</th>
-                          <th className="px-2.5 py-1.5 font-medium">Change</th>
+                          <th className="px-2.5 py-1.5 font-medium w-2/5">Change</th>
                         </tr>
                       </thead>
                       <tbody>
                         {rows.map((r, i) => (
-                          <tr key={i} className={`border-t border-gray-100 ${rowTint(r)}`}>
+                          <tr key={i} className={`border-t border-gray-100 align-top ${rowTint(r)}`}>
                             <td className="px-2.5 py-1.5 text-gray-900">{r.species}</td>
                             <td className="px-2.5 py-1.5 text-right tabular-nums">{qtyCell(r)}</td>
                             <td className="px-2.5 py-1.5 text-right tabular-nums">{priceCell(r)}</td>
-                            <td className="px-2.5 py-1.5">{changeChip(r)}</td>
+                            <td className="px-2.5 py-1.5">
+                              {changeChip(r)}
+                              {r.reviewable && (
+                                <div className="mt-1">
+                                  <MatchPicker
+                                    row={r}
+                                    override={overrides[r.idx] || null}
+                                    species={species}
+                                    varietyById={varietyById}
+                                    defaultLabel={r.status === 'create' ? 'new species' : 'skipped'}
+                                    onOverride={(ov) => setOverrides(o => ({ ...o, [r.idx]: ov }))}
+                                  />
+                                </div>
+                              )}
+                            </td>
                           </tr>
                         ))}
                       </tbody>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Loader2, Trash2, Check, Truck, Upload, Plus } from 'lucide-react';
 import { api } from '../api.js';
 import { PurchaseOrderLineRow } from './PurchaseOrderLineRow.jsx';
@@ -134,6 +134,13 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
 
   const isDraft = po.status === 'draft';
 
+  // Species rows carry only varietyId — look up the NAME so a line reads
+  // "Monstera · Thai Con" instead of a dangling "· Thai Con".
+  const varietyNameById = useMemo(
+    () => new Map((varieties || []).map(v => [v.id, v.name])),
+    [varieties],
+  );
+
   return (
     <div className="bg-white rounded-xl border border-gray-200">
       <button
@@ -256,11 +263,13 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
             </div>
           ) : (
             <div>
-              {lines.map(line => (
+              {lines.map(line => {
+                const sp = speciesById?.get(line.speciesId);
+                return (
                 <PurchaseOrderLineRow
                   key={line.id}
                   line={line}
-                  species={speciesById?.get(line.speciesId)}
+                  species={sp ? { ...sp, varietyName: sp.varietyName || varietyNameById.get(sp.varietyId) || '' } : sp}
                   receivedItemIds={receivedItems.filter(r => r.lineId === line.id).map(r => r.inventoryItemId)}
                   poStatus={po.status}
                   poId={po.id}
@@ -268,7 +277,8 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
                   showToast={showToast}
                   onChanged={refreshLines}
                 />
-              ))}
+                );
+              })}
             </div>
           )}
 

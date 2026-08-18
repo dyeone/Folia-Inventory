@@ -191,6 +191,37 @@ export function matchSheetRow(r, { speciesIndex, varietyByName }, defVarId) {
   return { status: 'unmatched' };
 }
 
+// Fuzzy candidates for a sheet name: startsWith beats contains beats
+// shared-token overlap. Purely for SUGGESTION ordering — nothing applies
+// without the user picking. The species side is normalized ONCE per parse
+// (buildSuggestIndex): re-normalizing thousands of catalog rows for every
+// unmatched sheet row would freeze the iPad for seconds on a bad sheet.
+export function buildSuggestIndex(species) {
+  return (species || []).map(s => {
+    const e = norm(s.epithet);
+    return { s, e, c: norm(s.commonName || ''), tokens: new Set(e.split(/\s+/).filter(Boolean)) };
+  });
+}
+
+export function suggest(name, index, limit = 4) {
+  const q = norm(name);
+  if (!q) return [];
+  const qTokens = q.split(/\s+/).filter(Boolean);
+  const scored = [];
+  for (const { s, e, c, tokens } of index) {
+    let score = 0;
+    if (e.startsWith(q) || q.startsWith(e)) score = 4;
+    else if (e.includes(q) || q.includes(e)) score = 3;
+    else if (c && (c.includes(q) || q.includes(c))) score = 2;
+    else {
+      const overlap = qTokens.filter(t => tokens.has(t)).length;
+      if (overlap > 0) score = 1 + overlap / 10;
+    }
+    if (score > 0) scored.push({ s, score });
+  }
+  return scored.sort((a, b) => b.score - a.score).slice(0, limit).map(x => x.s);
+}
+
 // Fold duplicate sheet rows (same matched species, or same to-be-created
 // name under the same variety) into the FIRST occurrence: quantities sum,
 // the first explicit price wins, later rows become 'duplicate' chips.

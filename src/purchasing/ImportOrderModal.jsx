@@ -3,7 +3,13 @@ import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-rea
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
-import { readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { MatchPicker } from './MatchPicker.jsx';
+
+// Rows the auto-matcher couldn't bind to an existing species — each gets a
+// manual-match picker so a near-miss name lands on the right species
+// instead of silently becoming a duplicate catalog entry.
+const REVIEWABLE = new Set(['create', 'ambiguous', 'unknown-variety', 'unmatched']);
 
 // Wholesale order upload (admin's Orders pane — managing the wholesale
 // list is the admin's job; the packer's receiving screen only shows the
@@ -61,11 +67,13 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   const { varietyById } = matchCtx;
 
   const [noQtyColumn, setNoQtyColumn] = useState(false);
+  const [overrides, setOverrides] = useState({}); // baseRow index → {speciesId}|{skip:true}
 
   const handleFile = async (file) => {
     setParseErr('');
     setBaseRows(null);
     setNoQtyColumn(false);
+    setOverrides({});
     importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     if (!file) return;
     setFileName(file.name);
@@ -78,22 +86,50 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     }
   };
 
-  // Matching + duplicate-merge, derived so changing the "file under" genus
-  // re-matches live. Rows are cloned first — the merge mutates quantities.
+  const speciesById = useMemo(() => new Map((species || []).map(s => [s.id, s])), [species]);
+  const suggestIndex = useMemo(() => buildSuggestIndex(species), [species]);
+
+  // Matching + manual overrides + duplicate-merge, derived so changing the
+  // "file under" genus re-matches live. Rows are cloned first — the merge
+  // mutates quantities.
   const rows = useMemo(() => {
     if (!baseRows) return null;
-    return mergeDuplicateRows(
-      baseRows.map(r => (r.status ? { ...r } : { ...r, ...matchSheetRow(r, matchCtx, defaultVarietyId) })),
-    );
-  }, [baseRows, defaultVarietyId, matchCtx]);
+    const mapped = baseRows.map((r, i) => {
+      let row = r.status ? { ...r } : { ...r, ...matchSheetRow(r, matchCtx, defaultVarietyId) };
+      const ov = overrides[i];
+      // A manual pick beats whatever the auto-matcher decided —
+      // UNCONDITIONALLY: a later genus change can flip an ambiguous row to
+      // auto-matched, and the user's explicit bind must not lose to that.
+      if (ov?.speciesId) {
+        const sp = speciesById.get(ov.speciesId);
+        row = { ...row, status: 'matched', speciesId: ov.speciesId, varietyId: sp?.varietyId, manual: true, viaDefault: false, reviewable: true };
+      } else if (ov?.skip) {
+        row = { ...row, status: 'skipped-manual', reviewable: true };
+      } else if (REVIEWABLE.has(row.status)) {
+        row.suggestions = suggest(row.species, suggestIndex);
+        row.reviewable = true;
+      }
+      row.idx = i;
+      return row;
+    });
+    const out = mergeDuplicateRows(mapped);
+    // A row folded into an earlier duplicate is no longer independently
+    // matchable — its picker and review count would be pure noise.
+    for (const r of out) {
+      if (r.status === 'duplicate') { delete r.suggestions; r.reviewable = false; }
+    }
+    return out;
+  }, [baseRows, defaultVarietyId, matchCtx, overrides, suggestIndex, speciesById]);
 
   const counts = useMemo(() => {
     const c = {
       matched: 0, create: 0, ambiguous: 0, unmatched: 0, duplicate: 0,
-      'bad-qty': 0, 'bad-name': 0, 'unknown-variety': 0, units: 0,
+      'bad-qty': 0, 'bad-name': 0, 'unknown-variety': 0, 'skipped-manual': 0,
+      units: 0, review: 0,
     };
     for (const r of rows || []) {
       c[r.status] += 1;
+      if (r.suggestions) c.review += 1;
       if (r.status === 'matched' || r.status === 'create') c.units += r.qty;
     }
     return c;
@@ -186,7 +222,8 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
           </span>
         );
       }
-      case 'ambiguous': return <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This name exists in more than one variety (and not the default one) — add a variety column to pick one">ambiguous — skipped</span>;
+      case 'skipped-manual': return <span className="text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">skipped</span>;
+      case 'ambiguous': return <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This name exists in more than one variety (and not the default one) — match it below or add a variety column">ambiguous</span>;
       case 'duplicate': return (
         <span className="text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="Same species appears earlier in the sheet — quantities were combined into that row">
           duplicate — qty merged{r.priceConflict ? ' · price differs, first used' : ''}
@@ -194,8 +231,8 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
       );
       case 'bad-qty':   return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={`Quantity is 0 or over ${MAX_QTY} — fix the cell and re-upload`}>qty looks wrong — skipped</span>;
       case 'bad-name':  return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={`Name is over ${MAX_NAME_LEN} characters — fix the cell and re-upload`}>name too long — skipped</span>;
-      case 'unknown-variety': return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This row names a variety that isn't in the catalog — add the variety first, or clear the cell to use the default genus">unknown variety — skipped</span>;
-      default:          return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">no match — skipped</span>;
+      case 'unknown-variety': return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This row names a variety that isn't in the catalog — match it below, add the variety, or clear the cell to use the default genus">unknown variety</span>;
+      default:          return <span className="text-red-700 bg-red-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">no match</span>;
     }
   };
 
@@ -211,7 +248,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
 
   const rowTint = (r) => {
     if (r.status === 'matched' || r.status === 'create') return '';
-    if (r.status === 'duplicate') return 'bg-gray-50 text-gray-400';
+    if (r.status === 'duplicate' || r.status === 'skipped-manual') return 'bg-gray-50 text-gray-400';
     if (r.status === 'ambiguous') return 'bg-amber-50/60';
     return 'bg-red-50/60';
   };
@@ -291,8 +328,16 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
               {counts['unknown-variety'] > 0 && <span className="text-red-700">{counts['unknown-variety']} unknown variety</span>}
               {counts['bad-qty'] > 0 && <span className="text-red-700">{counts['bad-qty']} bad qty</span>}
               {counts['bad-name'] > 0 && <span className="text-red-700">{counts['bad-name']} bad name</span>}
+              {counts['skipped-manual'] > 0 && <span className="text-gray-500">{counts['skipped-manual']} skipped</span>}
+              {counts.review > 0 && <span className="text-amber-700 font-semibold">{counts.review} need a manual match below</span>}
               <span className="ml-auto font-semibold text-gray-900">{counts.units} plants to order</span>
             </div>
+            {counts.review > 0 && (
+              <div className="flex items-center gap-2 bg-amber-50 text-amber-800 text-xs px-3 py-2 rounded-lg">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                {counts.review} row{counts.review === 1 ? " didn't" : "s didn't"} match the catalog — tap a suggestion or search to bind each one to an existing species. Left alone, a "new species" row is created under the genus below; other unmatched rows are skipped.
+              </div>
+            )}
             {counts.create > 0 && (
               <label className="flex items-center gap-2 text-xs text-gray-700 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">
                 <span className="font-medium shrink-0">File new species under</span>
@@ -328,14 +373,35 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
                   </thead>
                   <tbody>
                     {rows.map((r, i) => (
-                      <tr key={i} className={`border-t border-gray-100 ${rowTint(r)}`}>
+                      <tr key={i} className={`border-t border-gray-100 align-top ${rowTint(r)}`}>
                         <td className="px-2.5 py-1.5 text-gray-900">{r.species}</td>
                         <td className="px-2.5 py-1.5 text-gray-500">
                           {r.variety || (r.speciesId ? varietyById.get(r.varietyId)?.name : '') || '—'}
                         </td>
                         <td className="px-2.5 py-1.5 text-right tabular-nums">{r.qty}</td>
                         <td className="px-2.5 py-1.5 text-right tabular-nums">{priceCell(r)}</td>
-                        <td className="px-2.5 py-1.5">{statusChip(r)}</td>
+                        <td className="px-2.5 py-1.5">
+                          {statusChip(r)}
+                          {r.reviewable && (
+                            <div className="mt-1">
+                              <MatchPicker
+                                row={r}
+                                override={overrides[r.idx] || null}
+                                species={species}
+                                varietyById={varietyById}
+                                defaultLabel={r.status === 'create' ? 'new species' : 'skipped'}
+                                onOverride={(ov) => {
+                                  // A different match set is a different import —
+                                  // same re-mint rule as the genus select, so a
+                                  // retry after fixing matches can't be swallowed
+                                  // as "already imported".
+                                  importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+                                  setOverrides(o => ({ ...o, [r.idx]: ov }));
+                                }}
+                              />
+                            </div>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
