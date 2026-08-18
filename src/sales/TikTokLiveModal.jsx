@@ -31,8 +31,11 @@ export function TikTokLiveModal({ sale, sales = [], items, speciesById, showToas
     [items, sale.id],
   );
   const groups = useMemo(() => groupTcForListing(saleTc, speciesById), [saleTc, speciesById]);
+  // Cost now backstops the price and the brand image backstops the photo,
+  // so these only fire when an item has NEITHER a price NOR a cost.
   const missingPrice = groups.filter(g => g.price == null).length;
   const missingImage = groups.filter(g => !g.imageUrl).length;
+  const atCostCount = groups.filter(g => g.priceSource === 'cost').length;
 
   // Unsold TC parked in a CLOSED sale is reclaimable — closing a live never
   // clears its unsold items' saleId, and without this the leftovers from
@@ -202,14 +205,20 @@ export function TikTokLiveModal({ sale, sales = [], items, speciesById, showToas
                   <span className={`shrink-0 tabular-nums ${g.price == null ? 'text-red-600 font-semibold' : 'text-gray-700'}`}>
                     {g.price != null ? `$${g.price.toFixed(2)}` : 'no price'}
                   </span>
+                  {g.priceSource === 'cost' && (
+                    <span className="shrink-0 text-[10px] px-1 py-0.5 rounded bg-amber-50 text-amber-700 font-semibold" title="No listing price set — exporting at the plantlet's cost as the starting price">
+                      at cost
+                    </span>
+                  )}
                   {!g.imageUrl && <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" title="No image URL — TikTok requires a main image" />}
                 </div>
               ))}
             </div>
           )}
-          {(missingPrice > 0 || missingImage > 0) && (
+          {(missingPrice > 0 || missingImage > 0 || atCostCount > 0) && (
             <div className="mt-1.5 text-[11px] text-amber-700">
-              {missingPrice > 0 && `${missingPrice} listing${missingPrice === 1 ? '' : 's'} missing a price (TikTok requires one — set listing price on the items). `}
+              {missingPrice > 0 && `${missingPrice} listing${missingPrice === 1 ? '' : 's'} missing a price (no listing price AND no cost on the items — set one of them). `}
+              {atCostCount > 0 && `${atCostCount} listing${atCostCount === 1 ? '' : 's'} priced at cost — the plantlet's cost is the starting price until you set a listing price. `}
               {missingImage > 0 && `${missingImage} missing an image URL (fill in Seller Center or on the items).`}
             </div>
           )}

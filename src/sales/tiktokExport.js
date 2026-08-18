@@ -16,6 +16,11 @@
 
 const CATEGORY = 'Garden Supplies/Live Plants/Indoor Plants/Flowers';
 const TEMPLATE_URL = '/tiktok-flowers-template.xlsx';
+// Brand image used as every listing's main image unless the item carries
+// its own photo URL. ABSOLUTE prod URL on purpose: Seller Center fetches
+// it from TikTok's side, so a relative path or localhost origin would 404
+// there even though the preview here looked fine.
+export const DEFAULT_PRODUCT_IMAGE = 'https://folia-inventory.vercel.app/tiktok-product-image.png';
 const TEMPLATE_SHEET = 'Template';
 const HEADER_ROW = 2;     // 0-based; Excel row 3 holds the column titles
 const DATA_START_ROW = 6; // 0-based; Excel rows 1–6 are template chrome
@@ -63,6 +68,8 @@ export function groupTcForListing(saleItems, speciesById) {
         sku: it.sku || '',
         imageUrl: it.imageUrl || '',
         price: null,
+        priceSource: null, // 'listing' | 'cost'
+        costPrice: null,
         count: 0,
       };
       groups.set(key, g);
@@ -72,11 +79,32 @@ export function groupTcForListing(saleItems, speciesById) {
       // A zero price is "not priced yet", not a free plantlet — TikTok
       // would happily list it at $0. Only positive prices count.
       const p = it.listingPrice ?? it.idealPrice;
-      if (p != null && p !== '' && Number(p) > 0) g.price = Number(p);
+      if (p != null && p !== '' && Number(p) > 0) { g.price = Number(p); g.priceSource = 'listing'; }
+    }
+    if (g.costPrice == null) {
+      // What the plantlet cost us — the auction START price when nobody
+      // set a listing price (selling below cost is never the default).
+      const c = it.grossCost ?? it.cost;
+      if (c != null && c !== '' && Number(c) > 0) g.costPrice = Number(c);
     }
     if (!g.imageUrl && it.imageUrl) g.imageUrl = it.imageUrl;
   }
-  return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const out = [...groups.values()];
+  for (const g of out) {
+    if (g.price == null && g.costPrice != null) {
+      // Costs carry a 4-decimal shipping share; Seller Center wants cents.
+      // Round UP — the start price must never dip below what the plant cost.
+      g.price = Math.ceil(g.costPrice * 100) / 100;
+      g.priceSource = 'cost';
+    }
+    // Every listing exports with an image: the item's own photo when it
+    // has one, the brand image otherwise.
+    if (!g.imageUrl) {
+      g.imageUrl = DEFAULT_PRODUCT_IMAGE;
+      g.imageDefault = true;
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // One group → the 62-column row (sparse array, index = template column).
