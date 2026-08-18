@@ -32,6 +32,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
   const [noQtyColumn, setNoQtyColumn] = useState(false);
   const [removeMissing, setRemoveMissing] = useState(false);
   const [overrides, setOverrides] = useState({}); // baseRow index → {speciesId}|{skip:true}
+  const [lineBinds, setLineBinds] = useState({}); // missing line id → sheet row idx (price adoption)
   const [defaultVarietyId, setDefaultVarietyId] = useState(() => {
     const list = varieties || [];
     const dflt = list.find(v => v.name.trim().toLowerCase() === DEFAULT_ADD_VARIETY);
@@ -69,6 +70,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
     setBaseRows(null);
     setNoQtyColumn(false);
     setOverrides({});
+    setLineBinds({});
     if (!file) return;
     setFileName(file.name);
     try {
@@ -150,23 +152,34 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
 
   const usable = (rows || []).filter(r => r.status === 'matched' || r.status === 'create');
 
-  // Line-side matching: sheet rows nothing claimed yet, offered as options
-  // on each missing LINE (the admin looks at the $0 line and picks which
-  // sheet row it is — the reverse direction of the per-row pickers above).
-  // Binding writes the same overrides map: rowIdx → the line's species.
-  const unresolvedRows = useMemo(() => (rows || []).filter(r => r.suggestions), [rows]);
-  const rowSuggestIndex = useMemo(
-    () => buildSuggestIndex(unresolvedRows.map(r => ({ id: String(r.idx), epithet: r.species, commonName: '' }))),
-    [unresolvedRows],
+  // Line-side matching: a missing line can adopt ANY priced sheet row —
+  // including rows already matched to another (duplicate, properly-named)
+  // species. Adopting takes the row's PRICE for the line; the line keeps
+  // its own quantity and the row's own match is untouched, so a bind never
+  // steals the match away from the renamed line. This is the old-list vs
+  // new-list repair: received plants sitting on mangled-name lines take
+  // their price from the same species' row in the corrected list.
+  const pricedRows = useMemo(
+    () => (rows || []).filter(r => r.price != null
+      && r.status !== 'duplicate' && r.status !== 'skipped-manual'
+      && r.status !== 'bad-qty' && r.status !== 'bad-name'),
+    [rows],
   );
-  const rowByIdx = useMemo(() => new Map(unresolvedRows.map(r => [r.idx, r])), [unresolvedRows]);
+  const rowSuggestIndex = useMemo(
+    () => buildSuggestIndex(pricedRows.map(r => ({ id: String(r.idx), epithet: r.species, commonName: '' }))),
+    [pricedRows],
+  );
+  const rowByIdx = useMemo(() => new Map(pricedRows.map(r => [r.idx, r])), [pricedRows]);
   const topRowsForLine = (l) => {
     const name = speciesById.get(l.speciesId)?.epithet || '';
     return suggest(name, rowSuggestIndex, 3).map(p => rowByIdx.get(Number(p.id))).filter(Boolean);
   };
-  const bindRowToLine = (rowIdx, l) => {
-    setOverrides(o => ({ ...o, [rowIdx]: { speciesId: l.speciesId } }));
-  };
+  const boundRowFor = (l) => rowByIdx.get(lineBinds[l.id]);
+  const boundLines = missingLines.filter(l => boundRowFor(l));
+  // The user's rule: everything received from the old list must end up
+  // priced — surface what's still short of that.
+  const unpricedReceived = missingLines.filter(l =>
+    l.quantityReceived > 0 && !boundRowFor(l) && !(Number(l.unitWholesalePrice) > 0)).length;
 
   const apply = async () => {
     if (busyRef.current || applying || !usable.length) return;
@@ -184,17 +197,27 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
       res = await api.updatePurchaseOrderLines({
         id: po.id,
         removeMissing,
-        lines: usable.map(r => (r.status === 'matched'
-          ? {
-              speciesId: r.speciesId,
-              quantityOrdered: r.qty,
-              unitWholesalePrice: r.price ?? undefined,
-            }
-          : {
-              createSpecies: { varietyId: r.varietyId, epithet: r.species, wholesalePrice: r.price ?? undefined },
-              quantityOrdered: r.qty,
-              unitWholesalePrice: r.price ?? undefined,
-            })),
+        lines: [
+          ...usable.map(r => (r.status === 'matched'
+            ? {
+                speciesId: r.speciesId,
+                quantityOrdered: r.qty,
+                unitWholesalePrice: r.price ?? undefined,
+              }
+            : {
+                createSpecies: { varietyId: r.varietyId, epithet: r.species, wholesalePrice: r.price ?? undefined },
+                quantityOrdered: r.qty,
+                unitWholesalePrice: r.price ?? undefined,
+              })),
+          // Price adoptions: a bound missing line takes its chosen row's
+          // price, keeps its own quantity, and (being in the payload) is
+          // exempt from removeMissing. The row's own match is unaffected.
+          ...boundLines.map(l => ({
+            speciesId: l.speciesId,
+            quantityOrdered: l.quantityOrdered,
+            unitWholesalePrice: boundRowFor(l).price,
+          })),
+        ],
       });
     } catch (e) {
       showToast?.(`Update failed: ${e.message || 'unknown error'} — re-upload the same sheet to converge`, 'error');
@@ -449,19 +472,39 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                   <div className="border border-gray-200 rounded-xl p-3 space-y-2">
                     <div className="text-xs font-semibold text-gray-700">
                       {missingLines.length} line{missingLines.length === 1 ? '' : 's'} on the order but not in this list
-                      {unresolvedRows.length > 0 && (
-                        <span className="ml-1 font-normal text-amber-700">
-                          — {unresolvedRows.length} sheet row{unresolvedRows.length === 1 ? '' : 's'} unclaimed: pick which row each line is
+                      {pricedRows.length > 0 && (
+                        <span className="ml-1 font-normal text-gray-500">
+                          — pick which sheet row each line is to take its price
                         </span>
                       )}
                     </div>
+                    {unpricedReceived > 0 && (
+                      <div className="flex items-center gap-2 bg-amber-50 text-amber-800 text-xs px-3 py-2 rounded-lg">
+                        <AlertCircle className="w-4 h-4 shrink-0" />
+                        {unpricedReceived} received line{unpricedReceived === 1 ? '' : 's'} still {unpricedReceived === 1 ? 'has' : 'have'} no price — match {unpricedReceived === 1 ? 'it' : 'each one'} to its row in the new list so every received plant gets a cost.
+                      </div>
+                    )}
                     <div className="max-h-56 overflow-y-auto space-y-1.5">
-                      {missingLines.map(l => (
+                      {missingLines.map(l => {
+                        const bound = boundRowFor(l);
+                        return (
                         <div key={l.id} className="text-xs space-y-1">
                           <div className="flex items-center gap-2">
                             <span className="text-gray-900 truncate">{missingLabel(l)}</span>
                             <span className="text-gray-500 shrink-0">×{l.quantityOrdered}</span>
-                            {l.quantityReceived > 0 ? (
+                            {bound ? (
+                              <span className="ml-auto shrink-0 inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">
+                                <Check className="w-3 h-3" /> takes ${bound.price.toFixed(2)} — {bound.species}
+                                <button
+                                  type="button"
+                                  onClick={() => setLineBinds(b => { const n = { ...b }; delete n[l.id]; return n; })}
+                                  className="p-1 -m-0.5 text-emerald-700/60 hover:text-emerald-900"
+                                  aria-label="Undo match"
+                                >
+                                  ✕
+                                </button>
+                              </span>
+                            ) : l.quantityReceived > 0 ? (
                               <span className="ml-auto shrink-0 text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="Lines with received items are never removed by an update">
                                 {l.quantityReceived} received — kept
                               </span>
@@ -471,36 +514,37 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                               <span className="ml-auto shrink-0 text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">kept</span>
                             )}
                           </div>
-                          {unresolvedRows.length > 0 && (
+                          {!bound && pricedRows.length > 0 && (
                             <div className="flex items-center gap-1 flex-wrap pl-2">
                               <span className="text-[10px] text-gray-400 shrink-0">this line is sheet row:</span>
                               {topRowsForLine(l).map(r => (
                                 <button
                                   key={r.idx}
                                   type="button"
-                                  onClick={() => bindRowToLine(r.idx, l)}
+                                  onClick={() => setLineBinds(b => ({ ...b, [l.id]: r.idx }))}
                                   className="px-2 py-1 rounded bg-sky-50 text-sky-700 text-xs font-medium hover:bg-sky-100"
                                 >
-                                  {r.species}{r.price != null ? ` · $${r.price.toFixed(2)}` : ''}
+                                  {r.species} · ${r.price.toFixed(2)}
                                 </button>
                               ))}
                               <select
                                 value=""
-                                onChange={(e) => { if (e.target.value !== '') bindRowToLine(Number(e.target.value), l); }}
+                                onChange={(e) => { if (e.target.value !== '') setLineBinds(b => ({ ...b, [l.id]: Number(e.target.value) })); }}
                                 className="text-xs border border-gray-200 rounded px-1.5 py-1 text-gray-600 max-w-[180px]"
-                                title="Every sheet row nothing has claimed yet"
+                                title="Every priced row in the sheet"
                               >
-                                <option value="">all unclaimed rows…</option>
-                                {unresolvedRows.map(r => (
+                                <option value="">all sheet rows…</option>
+                                {pricedRows.map(r => (
                                   <option key={r.idx} value={r.idx}>
-                                    {r.species}{r.price != null ? ` — $${r.price.toFixed(2)}` : ''} ×{r.qty}
+                                    {r.species} — ${r.price.toFixed(2)} ×{r.qty}
                                   </option>
                                 ))}
                               </select>
                             </div>
                           )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                     <label className="flex items-start gap-2 text-sm text-gray-800 cursor-pointer">
                       <input
@@ -534,13 +578,15 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
               </button>
               <button
                 onClick={apply}
-                disabled={applying || !usable.length}
+                disabled={applying || (!usable.length && !boundLines.length)}
                 className="px-4 py-3 text-base font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl flex items-center gap-1.5 disabled:bg-gray-200 disabled:text-gray-500"
               >
                 {applying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
                 {applying
                   ? 'Applying…'
-                  : `Apply — ${counts.add} added · ${counts.update} changed${removeMissing ? ` · ${missingLines.filter(l => !l.quantityReceived).length} removed` : ''}`}
+                  : `Apply — ${counts.add} added · ${counts.update} changed`
+                    + (boundLines.length ? ` · ${boundLines.length} matched` : '')
+                    + (removeMissing ? ` · ${missingLines.filter(l => !l.quantityReceived && !boundRowFor(l)).length} removed` : '')}
               </button>
             </div>
           </>
