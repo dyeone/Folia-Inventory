@@ -85,16 +85,17 @@ export default wrap(async (req, res) => {
     // cancel-receive-line stay open to any brand member: that IS their job.
     const ADMIN_ACTIONS = new Set([
       'create', 'update-header', 'add-line', 'update-line', 'remove-line', 'delete', 'mark-ordered',
-      'import-order',
+      'import-order', 'update-order-lines',
     ]);
     if (ADMIN_ACTIONS.has(action)) await requireAdmin(userId);
     switch (action) {
       case 'import-order':        return importOrder(req, res, user, brandId);
+      case 'update-order-lines':  return updateOrderLines(req, res, user, brandId);
       case 'create':              return create(req, res, user, brandId);
       case 'update-header':       return updateHeader(req, res, user, brandId);
-      case 'add-line':            return addLine(req, res, brandId);
-      case 'update-line':         return updateLine(req, res, brandId);
-      case 'remove-line':         return removeLine(req, res, brandId);
+      case 'add-line':            return addLine(req, res, user, brandId);
+      case 'update-line':         return updateLine(req, res, user, brandId);
+      case 'remove-line':         return removeLine(req, res, user, brandId);
       case 'delete':              return softDelete(req, res, user, brandId);
       case 'mark-ordered':        return markOrdered(req, res, user, brandId);
       case 'receive-line':        return receiveLine(req, res, user, brandId, isAdminUser);
@@ -171,14 +172,8 @@ async function list(req, res, brandId, isAdminUser) {
 
 async function getOne(req, res, brandId, isAdminUser) {
   const po = await loadPo(req.query?.id, brandId);
-  const { data: lines, error: lErr } = await supabase
-    .from('purchase_order_lines')
-    .select('*')
-    .eq('brandId', brandId)
-    .eq('purchaseOrderId', po.id)
-    .order('sortOrder');
-  if (lErr) { const e = new Error(lErr.message); e.status = 500; throw e; }
-  const lineIds = (lines || []).map(l => l.id);
+  const lines = await fetchAllPoLines(po.id, brandId, '*');
+  const lineIds = lines.map(l => l.id);
   let received = [];
   if (lineIds.length) {
     const { data: r, error: rErr } = await supabase
@@ -223,29 +218,20 @@ async function create(req, res, user, brandId) {
   return res.status(200).json({ purchaseOrder: row });
 }
 
-// One-request wholesale import: species + PO + every line land in a handful
-// of batch statements instead of one request per row (a 50-row sheet used to
-// be ~50 sequential add-line calls, each with its own loadPo overhead).
-// Admin-only, like every other order-writing action. Write order is chosen
-// so a mid-flight failure leaves nothing half-armed: species first (orphans
-// are harmless catalog entries), then a DRAFT PO, then lines, and only then
-// the flip to 'ordered' — an empty or line-less order can never reach the
-// packer's receiving screen.
-async function importOrder(req, res, user, brandId) {
-  const { supplier, shippingFee, notes, lines, markOrdered, importId } = req.body || {};
+// ─── shared import/update plumbing ──────────────────────────────────────────
+// import-order and update-order-lines take the same lines wire shape; both
+// funnel through these helpers so species creation, price fallbacks, and
+// duplicate aggregation can't drift between the two.
+
+// Validate + normalize every line BEFORE any write.
+function validateLineWants(lines) {
   if (!Array.isArray(lines) || lines.length === 0) {
     const e = new Error('lines required'); e.status = 400; throw e;
   }
   if (lines.length > IMPORT_LINES_MAX) {
     const e = new Error(`Too many lines — max ${IMPORT_LINES_MAX} per import`); e.status = 400; throw e;
   }
-  const fee = parseFloat(shippingFee || 0) || 0;
-  if (!Number.isFinite(fee) || fee < 0 || fee > PRICE_MAX) {
-    const e = new Error(`shippingFee must be 0–${PRICE_MAX}`); e.status = 400; throw e;
-  }
-
-  // Validate + normalize every line BEFORE any write.
-  const wants = lines.map((l, i) => {
+  return lines.map((l, i) => {
     const qty = parseInt(l?.quantityOrdered, 10) || 0;
     if (qty < 1 || qty > LINE_QTY_MAX) {
       const e = new Error(`Line ${i + 1}: quantityOrdered must be 1–${LINE_QTY_MAX}`); e.status = 400; throw e;
@@ -261,11 +247,12 @@ async function importOrder(req, res, user, brandId) {
     }
     return { speciesId: l?.speciesId || null, create, qty, price };
   });
+}
 
-  const nowIso = new Date().toISOString();
-
-  // Resolve species-to-create. An existing (variety, epithet) row is reused
-  // — a sheet re-sent after a failed attempt must not 409.
+// Resolve species-to-create, mutating each want's speciesId in place. An
+// existing (variety, epithet) row is reused — a sheet re-sent after a failed
+// attempt must not 409. Returns how many species were actually created.
+async function resolveSpeciesCreates(wants, brandId, user, nowIso) {
   const needCreate = wants.filter(w => !w.speciesId);
   let createdSpeciesCount = 0;
   if (needCreate.length) {
@@ -337,11 +324,13 @@ async function importOrder(req, res, user, brandId) {
       throw e;
     }
   }
+  return createdSpeciesCount;
+}
 
-  // Verify referenced species + pull wholesale prices for the null-price
-  // fallback. Chunked: 500 ~20-char ids in one PostgREST `in` would push the
-  // GET query string toward gateway URL limits.
-  const allSpeciesIds = [...new Set(wants.map(w => w.speciesId))];
+// Verify referenced species + pull wholesale prices for the null-price
+// fallback. Chunked: 500 ~20-char ids in one PostgREST `in` would push the
+// GET query string toward gateway URL limits.
+async function fetchSpeciesPrices(allSpeciesIds, brandId) {
   const priceById = new Map();
   for (let i = 0; i < allSpeciesIds.length; i += 200) {
     const { data: spRows, error: spErr } = await supabase
@@ -352,11 +341,14 @@ async function importOrder(req, res, user, brandId) {
   }
   const unknown = allSpeciesIds.find(sid => !priceById.has(sid));
   if (unknown) { const e = new Error('Unknown species on a line'); e.status = 400; throw e; }
+  return priceById;
+}
 
-  // Aggregate by species — purchase_order_lines is UNIQUE(purchaseOrderId,
-  // speciesId), so duplicates sum quantity and keep the first explicit price.
-  // The per-line qty cap must hold on the SUM too, or 500 duplicate rows at
-  // the cap would fold into one multi-million-unit line.
+// Aggregate by species — purchase_order_lines is UNIQUE(purchaseOrderId,
+// speciesId), so duplicates sum quantity and keep the first explicit price.
+// The per-line qty cap must hold on the SUM too, or 500 duplicate rows at
+// the cap would fold into one multi-million-unit line.
+function aggregateWants(wants) {
   const bySpecies = new Map();
   for (const w of wants) {
     const agg = bySpecies.get(w.speciesId);
@@ -373,6 +365,104 @@ async function importOrder(req, res, user, brandId) {
       e.status = 400; throw e;
     }
   }
+  return bySpecies;
+}
+
+// All of a PO's lines, paginated past supabase-js's silent 1000-row select
+// cap — a truncated read here would diff against (or flip on) a partial
+// order. Realistic POs are far smaller, but repeated update sheets with
+// disjoint species can grow one past any assumption.
+async function fetchAllPoLines(poId, brandId, columns) {
+  const out = [];
+  for (let from = 0; ; from += 1000) {
+    const { data: page, error } = await supabase
+      .from('purchase_order_lines')
+      .select(columns)
+      .eq('brandId', brandId)
+      .eq('purchaseOrderId', poId)
+      // id tiebreak: concurrent adds can mint duplicate sortOrders, and
+      // offset pages over ties can drop/duplicate rows at boundaries.
+      .order('sortOrder')
+      .order('id')
+      .range(from, from + 999);
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    out.push(...(page || []));
+    if (!page || page.length < 1000) break;
+  }
+  return out;
+}
+
+// One line's received count, verified to belong to the PO — shared by the
+// update-line and remove-line ordered-state guards.
+async function loadLineReceived(lineId, poId, brandId) {
+  const { data: line, error } = await supabase
+    .from('purchase_order_lines')
+    .select('"quantityReceived"')
+    .eq('id', lineId).eq('purchaseOrderId', poId).eq('brandId', brandId)
+    .maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (!line) { const e = new Error('Line not found'); e.status = 404; throw e; }
+  return line;
+}
+
+// Keep an ordered/received PO's status truthful to its lines, BOTH ways.
+// Line edits can complete an order the same way a receive can (qty lowered
+// to what arrived, the last short line removed) — but they can also UN-
+// complete one (a line added or raised just as the last receive flips the
+// PO). Without the reverse flip, those outstanding units vanish forever
+// from the packer's ordered-only receiving list. Reads the CURRENT status
+// (never the caller's possibly-stale snapshot) and writes with the status
+// re-checked in the statement, so concurrent flips can't double-apply.
+// Returns 'received', 'ordered' (un-flipped), or null (no change).
+async function syncPoReceivedStatus(poId, brandId, user, nowIso) {
+  const { data: po, error } = await supabase
+    .from('purchase_orders')
+    .select('id, status')
+    .eq('id', poId).eq('brandId', brandId).is('deletedAt', null)
+    .maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (!po || (po.status !== 'ordered' && po.status !== 'received')) return null;
+  const ls = await fetchAllPoLines(poId, brandId, '"quantityOrdered","quantityReceived"');
+  const complete = ls.length > 0 && ls.every(l => l.quantityReceived >= l.quantityOrdered);
+  if (po.status === 'ordered' && complete) {
+    const { error: fErr } = await supabase
+      .from('purchase_orders')
+      .update({ status: 'received', receivedAt: nowIso, modifiedAt: nowIso, modifiedBy: user.displayName })
+      .eq('id', poId).eq('brandId', brandId).eq('status', 'ordered');
+    if (fErr) { const e = new Error(fErr.message); e.status = 500; throw e; }
+    return 'received';
+  }
+  if (po.status === 'received' && ls.length && !complete) {
+    const { error: uErr } = await supabase
+      .from('purchase_orders')
+      .update({ status: 'ordered', receivedAt: null, modifiedAt: nowIso, modifiedBy: user.displayName })
+      .eq('id', poId).eq('brandId', brandId).eq('status', 'received');
+    if (uErr) { const e = new Error(uErr.message); e.status = 500; throw e; }
+    return 'ordered';
+  }
+  return null;
+}
+
+// One-request wholesale import: species + PO + every line land in a handful
+// of batch statements instead of one request per row (a 50-row sheet used to
+// be ~50 sequential add-line calls, each with its own loadPo overhead).
+// Admin-only, like every other order-writing action. Write order is chosen
+// so a mid-flight failure leaves nothing half-armed: species first (orphans
+// are harmless catalog entries), then a DRAFT PO, then lines, and only then
+// the flip to 'ordered' — an empty or line-less order can never reach the
+// packer's receiving screen.
+async function importOrder(req, res, user, brandId) {
+  const { supplier, shippingFee, notes, lines, markOrdered, importId } = req.body || {};
+  const wants = validateLineWants(lines);
+  const fee = parseFloat(shippingFee || 0) || 0;
+  if (!Number.isFinite(fee) || fee < 0 || fee > PRICE_MAX) {
+    const e = new Error(`shippingFee must be 0–${PRICE_MAX}`); e.status = 400; throw e;
+  }
+
+  const nowIso = new Date().toISOString();
+  const createdSpeciesCount = await resolveSpeciesCreates(wants, brandId, user, nowIso);
+  const priceById = await fetchSpeciesPrices([...new Set(wants.map(w => w.speciesId))], brandId);
+  const bySpecies = aggregateWants(wants);
 
   // Idempotency: the client sends one importId per parsed sheet, used as the
   // PO id. A retry after a lost success response (dock Wi-Fi) re-sends the
@@ -460,6 +550,167 @@ async function importOrder(req, res, user, brandId) {
   });
 }
 
+// Re-sync an EXISTING order to a revised supplier list. Same lines wire
+// shape as import-order; the diff against current lines happens here so
+// received work is never destroyed:
+//   - species already on the order   → quantity/price updated (quantity
+//     never drops below what's been received — clamped and reported)
+//   - species not on the order       → new line appended (species created
+//     on the fly, same as import)
+//   - lines missing from the list    → kept unless removeMissing is set,
+//     and even then only lines with nothing received are deleted
+// Write order: adds → updates → removes, so a mid-flight failure can lose
+// at most the tail (re-applying the same sheet converges — every step is
+// state-based, not delta-based).
+async function updateOrderLines(req, res, user, brandId) {
+  const { id, lines, removeMissing } = req.body || {};
+  const po = await loadPo(id, brandId);
+  requireStatus(po, ['draft', 'ordered']);
+  const wants = validateLineWants(lines);
+
+  const nowIso = new Date().toISOString();
+  const createdSpeciesCount = await resolveSpeciesCreates(wants, brandId, user, nowIso);
+  const priceById = await fetchSpeciesPrices([...new Set(wants.map(w => w.speciesId))], brandId);
+  const bySpecies = aggregateWants(wants);
+
+  const existing = await fetchAllPoLines(id, brandId, '*');
+  const lineBySpecies = new Map(existing.map(l => [l.speciesId, l]));
+
+  const toInsert = [];
+  const toUpdate = []; // { lineId, patch }
+  let unchangedCount = 0;
+  let clampedCount = 0;
+  let nextSort = (existing || []).reduce((m, l) => Math.max(m, l.sortOrder + 1), 0);
+  for (const [speciesId, agg] of bySpecies) {
+    const line = lineBySpecies.get(speciesId);
+    if (!line) {
+      toInsert.push({
+        id: newId(),
+        brandId,
+        purchaseOrderId: id,
+        speciesId,
+        quantityOrdered: agg.qty,
+        quantityReceived: 0,
+        unitWholesalePrice: agg.price ?? priceById.get(speciesId) ?? 0,
+        sortOrder: nextSort++,
+      });
+      continue;
+    }
+    let qty = agg.qty;
+    if (qty < line.quantityReceived) { qty = line.quantityReceived; clampedCount += 1; }
+    const patch = {};
+    if (qty !== line.quantityOrdered) patch.quantityOrdered = qty;
+    // A sheet with no price column leaves existing prices alone — only an
+    // explicit price cell overwrites what's on the line.
+    if (agg.price != null && Number(agg.price) !== Number(line.unitWholesalePrice)) {
+      patch.unitWholesalePrice = agg.price;
+    }
+    if (Object.keys(patch).length) toUpdate.push({ lineId: line.id, patch });
+    else unchangedCount += 1;
+  }
+
+  const missing = (existing || []).filter(l => !bySpecies.has(l.speciesId));
+
+  if (toInsert.length) {
+    const { error } = await supabase.from('purchase_order_lines').insert(toInsert);
+    if (error) {
+      // 23505 = a concurrent add-line/apply created one of these (PO,
+      // species) rows between our read and this insert. The row now EXISTS,
+      // so re-applying the same sheet classifies it as an update — converge
+      // with a clear 409 instead of a raw 500.
+      const e = new Error(error.code === '23505'
+        ? 'Another edit added one of these species just now — re-upload the same sheet to converge'
+        : `Line insert failed: ${error.message}`);
+      e.status = error.code === '23505' ? 409 : 500;
+      throw e;
+    }
+  }
+  // Each patch differs, so updates can't batch into one statement — chunked
+  // parallel keeps a big revision inside the function timeout. Quantity
+  // patches carry the received guard IN the statement (like the delete
+  // below): a packer receive landing between our select and this write must
+  // not leave quantityOrdered below quantityReceived. A row skipped by the
+  // guard simply stays put — re-applying the same sheet converges.
+  let updatedCount = 0;
+  for (let i = 0; i < toUpdate.length; i += 20) {
+    const results = await Promise.all(toUpdate.slice(i, i + 20).map(u => {
+      let q = supabase.from('purchase_order_lines')
+        .update(u.patch).eq('id', u.lineId).eq('purchaseOrderId', id).eq('brandId', brandId);
+      if (u.patch.quantityOrdered !== undefined) q = q.lte('quantityReceived', u.patch.quantityOrdered);
+      return q.select('id');
+    }));
+    for (const r of results) {
+      if (r.error) { const e = new Error(`Line update failed: ${r.error.message}`); e.status = 500; throw e; }
+      updatedCount += (r.data || []).length;
+    }
+  }
+  let removedCount = 0;
+  const removedIds = new Set();
+  if (removeMissing && missing.length) {
+    // Two guards on the delete. (1) quantityReceived = 0 lives IN the
+    // statement — a packer can receive between our select and this write.
+    // (2) No audit rows may exist: a receive in flight writes its audit
+    // rows BEFORE bumping the line counter, and the audit FK cascades on
+    // line delete — deleting in that window would orphan freshly minted
+    // SKUs from their audit trail (invisible to cancel-receive forever).
+    // A sub-ms residual race remains; the real fix is an RPC.
+    const candidateIds = missing.map(l => l.id);
+    const audited = new Set();
+    for (let i = 0; i < candidateIds.length; i += 200) {
+      const { data: aRows, error: aErr } = await supabase
+        .from('purchase_order_received_items')
+        .select('"lineId"')
+        .eq('brandId', brandId)
+        .in('lineId', candidateIds.slice(i, i + 200));
+      if (aErr) { const e = new Error(aErr.message); e.status = 500; throw e; }
+      for (const a of aRows || []) audited.add(a.lineId);
+    }
+    const deletable = candidateIds.filter(cid => !audited.has(cid));
+    // Chunked: delete filters travel in the query string, and a big enough
+    // id list would hit gateway URL limits (same reason the reads chunk).
+    for (let i = 0; i < deletable.length; i += 200) {
+      const { data: removed, error } = await supabase
+        .from('purchase_order_lines')
+        .delete()
+        .eq('brandId', brandId)
+        .eq('purchaseOrderId', id)
+        .in('id', deletable.slice(i, i + 200))
+        .eq('quantityReceived', 0)
+        .select('id');
+      if (error) { const e = new Error(`Line remove failed: ${error.message}`); e.status = 500; throw e; }
+      removedCount += (removed || []).length;
+      for (const r of removed || []) removedIds.add(r.id);
+    }
+  }
+  // Kept = what actually survived the guarded delete, not the pre-delete
+  // snapshot — a line received mid-flight is skipped by the guard and must
+  // show up as kept, or the summary's counts stop adding up.
+  const keptMissingSpeciesIds = removeMissing
+    ? missing.filter(l => !removedIds.has(l.id)).map(l => l.speciesId)
+    : missing.map(l => l.speciesId);
+
+  const { error: stampErr } = await supabase.from('purchase_orders')
+    .update({ modifiedAt: nowIso, modifiedBy: user.displayName })
+    .eq('id', id).eq('brandId', brandId);
+  if (stampErr) { const e = new Error(stampErr.message); e.status = 500; throw e; }
+
+  // Lowering quantities to what arrived can complete the order; adding or
+  // raising lines mid-flip can un-complete it — sync both directions.
+  const poFlippedToReceived = (await syncPoReceivedStatus(id, brandId, user, nowIso)) === 'received';
+
+  return res.status(200).json({
+    purchaseOrder: { ...po, ...(poFlippedToReceived ? { status: 'received', receivedAt: nowIso } : {}) },
+    addedCount: toInsert.length,
+    updatedCount,
+    unchangedCount,
+    removedCount,
+    keptMissingSpeciesIds,
+    clampedCount,
+    createdSpeciesCount,
+    poFlippedToReceived,
+  });
+}
+
 async function updateHeader(req, res, user, brandId) {
   const { id, supplier, shippingFee, notes } = req.body || {};
   const po = await loadPo(id, brandId);
@@ -515,10 +766,12 @@ async function softDelete(req, res, user, brandId) {
 
 // ─── lines ──────────────────────────────────────────────────────────────────
 
-async function addLine(req, res, brandId) {
+async function addLine(req, res, user, brandId) {
   const { id, speciesId, quantityOrdered, unitWholesalePrice } = req.body || {};
   const po = await loadPo(id, brandId);
-  requireStatus(po, ['draft']);
+  // 'ordered' too: suppliers revise orders after they're placed — the new
+  // line simply shows up on the packer's receiving screen with the rest.
+  requireStatus(po, ['draft', 'ordered']);
   if (!speciesId) { const e = new Error('speciesId required'); e.status = 400; throw e; }
   const qty = parseInt(quantityOrdered, 10) || 1;
   if (qty < 1) { const e = new Error('quantityOrdered must be ≥ 1'); e.status = 400; throw e; }
@@ -537,8 +790,8 @@ async function addLine(req, res, brandId) {
     if (!sp)   { const e = new Error('Unknown species'); e.status = 404; throw e; }
     price = sp.wholesalePrice ?? 0;
   }
-  if (!Number.isFinite(price) || price < 0) {
-    const e = new Error('unitWholesalePrice must be ≥ 0'); e.status = 400; throw e;
+  if (!Number.isFinite(price) || price < 0 || price > PRICE_MAX) {
+    const e = new Error(`unitWholesalePrice must be 0–${PRICE_MAX}`); e.status = 400; throw e;
   }
 
   // Upsert behavior: if a line for this (PO, species) already exists,
@@ -553,10 +806,22 @@ async function addLine(req, res, brandId) {
   if (exErr) { const e = new Error(exErr.message); e.status = 500; throw e; }
 
   if (existing) {
-    const next = { quantityOrdered: existing.quantityOrdered + qty };
+    // The per-call cap must hold on the accumulated line too — repeated adds
+    // of the same species (double-taps, retries) otherwise grow one line
+    // past the same ceiling aggregateWants enforces for sheet uploads.
+    const total = existing.quantityOrdered + qty;
+    if (total > LINE_QTY_MAX) {
+      const e = new Error(`This line would total ${total} units — max ${LINE_QTY_MAX} per species`);
+      e.status = 400; throw e;
+    }
+    const next = { quantityOrdered: total };
     const { error } = await supabase
       .from('purchase_order_lines').update(next).eq('id', existing.id).eq('brandId', brandId);
     if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    // Raising a line can un-complete a PO that flipped received mid-request
+    // — without the reverse sync the new units never reach the packer list.
+    // Drafts can't be received, so they skip the extra reads.
+    if (po.status === 'ordered') await syncPoReceivedStatus(id, brandId, user, new Date().toISOString());
     return res.status(200).json({ line: { ...existing, ...next } });
   }
 
@@ -581,13 +846,16 @@ async function addLine(req, res, brandId) {
   };
   const { error } = await supabase.from('purchase_order_lines').insert(row);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  // Same reverse-sync as the bump path: a fresh 0/N line on a PO that just
+  // flipped received must pull it back to 'ordered'.
+  if (po.status === 'ordered') await syncPoReceivedStatus(id, brandId, user, new Date().toISOString());
   return res.status(200).json({ line: row });
 }
 
-async function updateLine(req, res, brandId) {
+async function updateLine(req, res, user, brandId) {
   const { id, lineId, quantityOrdered, unitWholesalePrice } = req.body || {};
   const po = await loadPo(id, brandId);
-  requireStatus(po, ['draft']);
+  requireStatus(po, ['draft', 'ordered']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
 
   const patch = {};
@@ -596,12 +864,17 @@ async function updateLine(req, res, brandId) {
     if (!Number.isFinite(n) || n <= 0) {
       const e = new Error('quantityOrdered must be > 0 (use remove-line to drop a line)'); e.status = 400; throw e;
     }
+    if (n > LINE_QTY_MAX) {
+      const e = new Error(`quantityOrdered must be ≤ ${LINE_QTY_MAX}`); e.status = 400; throw e;
+    }
     patch.quantityOrdered = n;
   }
   if (unitWholesalePrice !== undefined) {
     const n = parseFloat(unitWholesalePrice);
-    if (!Number.isFinite(n) || n < 0) {
-      const e = new Error('unitWholesalePrice must be ≥ 0'); e.status = 400; throw e;
+    // PRICE_MAX matters more here than on the sheet path: an ordered PO's
+    // line price flows straight into minted-item grossCost at receive time.
+    if (!Number.isFinite(n) || n < 0 || n > PRICE_MAX) {
+      const e = new Error(`unitWholesalePrice must be 0–${PRICE_MAX}`); e.status = 400; throw e;
     }
     patch.unitWholesalePrice = n;
   }
@@ -609,21 +882,91 @@ async function updateLine(req, res, brandId) {
     const e = new Error('No fields to update'); e.status = 400; throw e;
   }
 
-  const { error } = await supabase
+  // On an ordered PO the received count is physical reality — the ordered
+  // quantity can't be edited below it (cancel the receive first).
+  const guardQty = po.status === 'ordered' && patch.quantityOrdered !== undefined;
+  if (guardQty) {
+    const line = await loadLineReceived(lineId, id, brandId);
+    if (patch.quantityOrdered < line.quantityReceived) {
+      const e = new Error(`${line.quantityReceived} already received on this line — quantity can't go below that (use Cancel receive first)`);
+      e.status = 409; throw e;
+    }
+  }
+
+  // The guard is re-checked IN the update (like remove-line's delete): a
+  // receive can land between the check above and this write.
+  let q = supabase
     .from('purchase_order_lines').update(patch).eq('id', lineId).eq('purchaseOrderId', id).eq('brandId', brandId);
+  if (guardQty) q = q.lte('quantityReceived', patch.quantityOrdered);
+  const { data: written, error } = await q.select('id');
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  return res.status(200).json({ ok: true });
+  if (guardQty && (!written || !written.length)) {
+    const e = new Error('Line was just received against — refresh and try again');
+    e.status = 409; throw e;
+  }
+  // Lowering the quantity to what's already received can complete the order
+  // (and raising one mid-flip can un-complete it) — a price-only patch can't
+  // do either, so skip the extra lines read.
+  const poFlippedToReceived = patch.quantityOrdered !== undefined
+    ? (await syncPoReceivedStatus(id, brandId, user, new Date().toISOString())) === 'received'
+    : false;
+  return res.status(200).json({ ok: true, poFlippedToReceived });
 }
 
-async function removeLine(req, res, brandId) {
+async function removeLine(req, res, user, brandId) {
   const { id, lineId } = req.body || {};
   const po = await loadPo(id, brandId);
-  requireStatus(po, ['draft']);
+  requireStatus(po, ['draft', 'ordered']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
-  const { error } = await supabase
-    .from('purchase_order_lines').delete().eq('id', lineId).eq('purchaseOrderId', id).eq('brandId', brandId);
+  if (po.status === 'ordered') {
+    const line = await loadLineReceived(lineId, id, brandId);
+    if (line.quantityReceived > 0) {
+      const e = new Error('This line has received items — use Cancel receive first, then remove it');
+      e.status = 409; throw e;
+    }
+    // Audit rows with a zero counter = a receive in flight (audits land
+    // before the counter bumps) or a stranded receive — either way the
+    // cascade on delete would orphan minted SKUs from their audit trail.
+    const { count: auditCount, error: acErr } = await supabase
+      .from('purchase_order_received_items')
+      .select('id', { count: 'exact', head: true })
+      .eq('brandId', brandId)
+      .eq('lineId', lineId);
+    if (acErr) { const e = new Error(acErr.message); e.status = 500; throw e; }
+    if ((auditCount || 0) > 0) {
+      const e = new Error('A receive against this line is in flight — try again in a moment');
+      e.status = 409; throw e;
+    }
+    // An ordered PO must keep at least one line — a line-less order on the
+    // packer's receiving screen is the invariant import-order dies to avoid.
+    const { count, error: cErr } = await supabase
+      .from('purchase_order_lines')
+      .select('id', { count: 'exact', head: true })
+      .eq('brandId', brandId)
+      .eq('purchaseOrderId', id);
+    if (cErr) { const e = new Error(cErr.message); e.status = 500; throw e; }
+    if ((count || 0) <= 1) {
+      const e = new Error("Can't remove the only line of an ordered PO — delete the order or add another line first");
+      e.status = 409; throw e;
+    }
+  }
+  // The received guard is re-checked IN the delete: a packer can receive
+  // against this line between the check above and this statement, and a
+  // received line must never silently vanish.
+  const { data: removed, error } = await supabase
+    .from('purchase_order_lines')
+    .delete()
+    .eq('id', lineId).eq('purchaseOrderId', id).eq('brandId', brandId)
+    .eq('quantityReceived', 0)
+    .select('id');
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  return res.status(200).json({ ok: true });
+  if (po.status === 'ordered' && (!removed || !removed.length)) {
+    const e = new Error('Line was just received against — refresh and try again');
+    e.status = 409; throw e;
+  }
+  // Removing the last incomplete line can complete the order.
+  const poFlippedToReceived = (await syncPoReceivedStatus(id, brandId, user, new Date().toISOString())) === 'received';
+  return res.status(200).json({ ok: true, poFlippedToReceived });
 }
 
 // ─── status transitions & receiving ────────────────────────────────────────
@@ -691,7 +1034,11 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
     .from('varieties').select('name, code').eq('id', species.varietyId).eq('brandId', brandId).maybeSingle();
   if (vErr) { const e = new Error(vErr.message); e.status = 500; throw e; }
 
-  // Allocate shipping per unit across ALL lines on this PO.
+  // Allocate shipping per unit across ALL lines on this PO. Known tradeoff
+  // since ordered POs became editable: the split uses the CURRENT total, so
+  // line edits mid-receiving shift the per-unit share between earlier and
+  // later receives (a removed no-show line strands its share). Exact
+  // allocation would need a snapshot at mark-ordered time.
   const { data: allLines, error: alErr } = await supabase
     .from('purchase_order_lines')
     .select('"quantityOrdered"')
@@ -898,13 +1245,10 @@ async function cancelReceiveLine(req, res, user, brandId, isAdminUser) {
     line.quantityReceived = next;
   }
 
-  if (po.status === 'received') {
-    await supabase
-      .from('purchase_orders')
-      .update({ status: 'ordered', receivedAt: null, modifiedAt: nowIso, modifiedBy: user.displayName })
-      .eq('id', id)
-      .eq('brandId', brandId);
-  }
+  // Sync from CURRENT state, not the entry snapshot — an admin edit's flip
+  // landing mid-cancel used to strand the PO at 'received' with an
+  // incomplete line, hidden from the packer's ordered-only list.
+  await syncPoReceivedStatus(id, brandId, user, nowIso);
 
   return res.status(200).json({
     deletedCount: cancelIds.length,
