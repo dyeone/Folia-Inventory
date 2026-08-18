@@ -361,6 +361,12 @@ function StaffOrAdminInventory() {
     setTimeout(() => setToast(null), 2500);
   }, []);
 
+  // One species refresh for every tab that mutates the catalog (inventory
+  // vendor prices, purchasing, wholesale imports/updates).
+  const refreshSpecies = useCallback(async () => {
+    setSpecies(await api.getSpecies());
+  }, []);
+
   // Split an /items response into active (visible) and trash (soft-deleted)
   // and update both states. Centralizes ordering + the deletedAt partition.
   const applyItemsFresh = (fresh) => {
@@ -1141,6 +1147,8 @@ function StaffOrAdminInventory() {
             acclimatedRate={acclimatedRate}
             onUpdateSpeciesRate={updateSpeciesRate}
             onDeleteVariety={deleteVariety}
+            showToast={showToast}
+            onSpeciesChanged={refreshSpecies}
             onManageVarieties={() => {
               setCatalogInitialTab('varieties');
               setShowCatalogModal(true);
@@ -1551,10 +1559,7 @@ function StaffOrAdminInventory() {
             species={species}
             showToast={showToast}
             onOpenOrders={() => setActiveTab('wholesale')}
-            onSpeciesChanged={async () => {
-              const fresh = await api.getSpecies();
-              setSpecies(fresh);
-            }}
+            onSpeciesChanged={refreshSpecies}
           />
         )}
         {/* Wholesale orders — the dedicated home for handling an incoming
@@ -1565,12 +1570,10 @@ function StaffOrAdminInventory() {
           <OrdersPane
             varieties={varieties}
             species={species}
+            isAdmin={isAdmin}
             showToast={showToast}
             setConfirmDialog={setConfirmDialog}
-            onSpeciesChanged={async () => {
-              const fresh = await api.getSpecies();
-              setSpecies(fresh);
-            }}
+            onSpeciesChanged={refreshSpecies}
             onItemsChanged={async () => {
               const fresh = await api.getItems();
               applyItemsFresh(fresh);
