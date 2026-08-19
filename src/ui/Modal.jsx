@@ -6,6 +6,9 @@ export function Modal({ title, children, onClose, size = 'md' }) {
     md: 'max-w-lg md:max-w-xl',
     lg: 'max-w-lg md:max-w-2xl',
     xl: 'max-w-lg md:max-w-3xl',
+    // Workbench dialogs (sheet matching): essentially the whole screen —
+    // height is already governed by the shared max-h-[92vh].
+    full: 'max-w-full sm:max-w-[96vw] lg:max-w-[1400px]',
   };
   return (
     <div className="fixed inset-0 z-40 bg-black/40 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>

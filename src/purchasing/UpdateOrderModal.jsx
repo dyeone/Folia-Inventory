@@ -328,7 +328,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
       onClose={applying
         ? () => showToast?.('Update in progress — hang tight')
         : onClose}
-      size="lg"
+      size="full"
     >
       <div className="space-y-3">
         <div className="text-xs text-gray-500">
@@ -430,7 +430,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                   </label>
                 )}
                 <div className="border border-gray-200 rounded-xl overflow-hidden">
-                  <div className="max-h-56 overflow-y-auto">
+                  <div className="max-h-[38vh] overflow-y-auto">
                     <table className="w-full text-xs">
                       <thead className="bg-gray-50 sticky top-0">
                         <tr className="text-left text-gray-500">
@@ -484,7 +484,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                         {unpricedReceived} received line{unpricedReceived === 1 ? '' : 's'} still {unpricedReceived === 1 ? 'has' : 'have'} no price — match {unpricedReceived === 1 ? 'it' : 'each one'} to its row in the new list so every received plant gets a cost.
                       </div>
                     )}
-                    <div className="max-h-96 overflow-y-auto space-y-1.5">
+                    <div className="max-h-[55vh] overflow-y-auto space-y-1.5">
                       {missingLines.map(l => {
                         const bound = boundRowFor(l);
                         return (
