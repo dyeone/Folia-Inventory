@@ -270,12 +270,15 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
                   key={line.id}
                   line={line}
                   species={sp ? { ...sp, varietyName: sp.varietyName || varietyNameById.get(sp.varietyId) || '' } : sp}
+                  varieties={varieties}
                   receivedItemIds={receivedItems.filter(r => r.lineId === line.id).map(r => r.inventoryItemId)}
                   poStatus={po.status}
                   poId={po.id}
+                  poItemType={po.itemType || 'plant'}
                   isAdmin={isAdmin}
                   showToast={showToast}
                   onChanged={refreshLines}
+                  onSpeciesChanged={onSpeciesChanged}
                 />
                 );
               })}

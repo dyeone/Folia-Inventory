@@ -342,6 +342,7 @@ export function ReceivingPane({ printDest, showToast, onClose, onChanged }) {
               <ReceivingLine
                 key={line.id}
                 line={line}
+                isTc={(line.itemType ?? activeDetail?.po?.itemType) === 'tc'}
                 name={lineName(line)}
                 count={countByLine[line.id]}
                 onCount={(v) => setCountByLine(prev => ({ ...prev, [line.id]: v }))}
@@ -386,7 +387,7 @@ function PaneHeader({ title, subtitle, onClose }) {
 // defaults to what's still expected, so the happy path is one tap. Setting
 // it higher than expected is the extras path; the delta is called out
 // before printing so over-receiving is always deliberate.
-function ReceivingLine({ line, name, count, onCount, busy, anyBusy, hasBatch, onReceive, onReprint, onStartOver }) {
+function ReceivingLine({ line, isTc, name, count, onCount, busy, anyBusy, hasBatch, onReceive, onReprint, onStartOver }) {
   const expected = line.quantityOrdered;
   const received = line.quantityReceived;
   const remaining = Math.max(0, expected - received);
@@ -412,7 +413,14 @@ function ReceivingLine({ line, name, count, onCount, busy, anyBusy, hasBatch, on
     }`}>
       <div className="flex items-center gap-3">
         <div className="flex-1 min-w-0">
-          <div className="font-bold text-gray-900 text-base sm:text-lg truncate">{name.epithet}</div>
+          <div className="font-bold text-gray-900 text-base sm:text-lg truncate">
+            {name.epithet}
+            {/* Per-line arrives-as override (0039) can differ from the PO
+                header chip — the bench needs the truth per line. */}
+            {isTc && (
+              <span className="ml-1.5 align-middle inline-block px-1.5 py-0.5 rounded bg-violet-100 text-violet-800 text-[11px] font-bold uppercase">TC</span>
+            )}
+          </div>
           {/* Variety only — what plants COST is the admin's business; the
               server strips price fields for non-admin callers anyway. */}
           <div className="text-xs text-gray-500 truncate">{name.variety}</div>

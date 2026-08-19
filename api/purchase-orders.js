@@ -961,12 +961,26 @@ async function addLine(req, res, user, brandId) {
 }
 
 async function updateLine(req, res, user, brandId) {
-  const { id, lineId, quantityOrdered, unitWholesalePrice } = req.body || {};
+  const { id, lineId, quantityOrdered, unitWholesalePrice, itemType } = req.body || {};
   const po = await loadPo(id, brandId);
   requireStatus(po, ['draft', 'ordered']);
   if (!lineId) { const e = new Error('lineId required'); e.status = 400; throw e; }
 
   const patch = {};
+  if (itemType !== undefined) {
+    // Per-line arrives-as override (0039). null = back to the PO default.
+    // Only before anything is received: a mid-count flip would split one
+    // physical shipment into mixed types (same freeze rule as the header).
+    if (itemType !== null && !ITEM_TYPES.has(itemType)) {
+      const e = new Error("itemType must be 'plant', 'tc', or null"); e.status = 400; throw e;
+    }
+    const line = await loadLineReceived(lineId, id, brandId);
+    if (line.quantityReceived > 0) {
+      const e = new Error('This line already has received items — its type is locked (use Cancel receive first)');
+      e.status = 409; throw e;
+    }
+    patch.itemType = itemType;
+  }
   if (quantityOrdered !== undefined) {
     const n = parseInt(quantityOrdered, 10);
     if (!Number.isFinite(n) || n <= 0) {
@@ -1007,7 +1021,13 @@ async function updateLine(req, res, user, brandId) {
     .from('purchase_order_lines').update(patch).eq('id', lineId).eq('purchaseOrderId', id).eq('brandId', brandId);
   if (guardQty) q = q.lte('quantityReceived', patch.quantityOrdered);
   const { data: written, error } = await q.select('id');
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (error) {
+    // Missing itemType column = un-migrated database; say what to run.
+    const e = (patch.itemType !== undefined && (error.code === 'PGRST204' || error.code === '42703'))
+      ? Object.assign(new Error('Per-line item type needs database migration 0039_line_item_type — run it in the Supabase SQL editor first'), { status: 500 })
+      : Object.assign(new Error(error.message), { status: 500 });
+    throw e;
+  }
   if (!written || !written.length) {
     // Zero rows = the guard rejected it (guardQty) OR the lineId isn't on
     // this PO at all. The distinction matters beyond the message: the
@@ -1175,9 +1195,10 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
   const todayDate = nowIso.slice(0, 10);
   const supplierLabel = po.supplier && po.supplier.trim() ? po.supplier.trim() : `PO #${po.id.slice(-6)}`;
 
-  // Per-PO item settings (0038). 'acclimated' only means anything for TC;
-  // absent columns (un-migrated DB) fall back to the original behavior.
-  const mintType = po.itemType === 'tc' ? 'tc' : 'plant';
+  // Per-PO item settings (0038) with the per-LINE override (0039) on top;
+  // 'acclimated' only means anything for TC; absent columns (un-migrated
+  // DB) fall back to the original behavior.
+  const mintType = (line.itemType ?? po.itemType) === 'tc' ? 'tc' : 'plant';
   const mintStatus = po.itemStatus === 'acclimated' && mintType === 'tc' ? 'acclimated' : 'available';
   const mintNotes = po.itemNotes ? String(po.itemNotes).slice(0, 500) : null;
 
