@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-react';
+import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet, X } from 'lucide-react';
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
-import { readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { norm, readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
 import { MatchPicker } from './MatchPicker.jsx';
 
 // Rows the auto-matcher couldn't bind to an existing species — every one
@@ -484,7 +484,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                         {unpricedReceived} received line{unpricedReceived === 1 ? '' : 's'} still {unpricedReceived === 1 ? 'has' : 'have'} no price — match {unpricedReceived === 1 ? 'it' : 'each one'} to its row in the new list so every received plant gets a cost.
                       </div>
                     )}
-                    <div className="max-h-56 overflow-y-auto space-y-1.5">
+                    <div className="max-h-96 overflow-y-auto space-y-1.5">
                       {missingLines.map(l => {
                         const bound = boundRowFor(l);
                         return (
@@ -527,19 +527,10 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                                   {r.species} · ${r.price.toFixed(2)}
                                 </button>
                               ))}
-                              <select
-                                value=""
-                                onChange={(e) => { if (e.target.value !== '') setLineBinds(b => ({ ...b, [l.id]: Number(e.target.value) })); }}
-                                className="text-xs border border-gray-200 rounded px-1.5 py-1 text-gray-600 max-w-[180px]"
-                                title="Every priced row in the sheet"
-                              >
-                                <option value="">all sheet rows…</option>
-                                {pricedRows.map(r => (
-                                  <option key={r.idx} value={r.idx}>
-                                    {r.species} — ${r.price.toFixed(2)} ×{r.qty}
-                                  </option>
-                                ))}
-                              </select>
+                              <RowSearchPicker
+                                rows={pricedRows}
+                                onPick={(idx) => setLineBinds(b => ({ ...b, [l.id]: idx }))}
+                              />
                             </div>
                           )}
                         </div>
@@ -593,5 +584,67 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
         )}
       </div>
     </Modal>
+  );
+}
+
+// "All sheet rows" as a real searchable panel — the native <select> renders
+// as the OS picker: cramped, unsearchable, and unusable at 70+ rows. Opens
+// inline (full width via the parent's flex-wrap), search box autofocused,
+// every priced row visible in a tall scrollable list.
+function RowSearchPicker({ rows, onPick }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const nq = norm(q);
+  const shown = nq ? rows.filter(r => norm(r.species).includes(nq)) : rows;
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="px-2 py-1 rounded border border-gray-200 text-xs text-gray-600 hover:bg-gray-50"
+      >
+        all {rows.length} sheet rows…
+      </button>
+    );
+  }
+  return (
+    <div className="w-full border border-gray-200 rounded-lg bg-white shadow-sm p-2 space-y-1.5">
+      <div className="flex items-center gap-1.5">
+        <input
+          autoFocus
+          type="text"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={`Search ${rows.length} sheet rows…`}
+          className="flex-1 px-2 py-1.5 text-xs border border-gray-200 rounded focus:outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+        />
+        <button
+          type="button"
+          onClick={() => { setOpen(false); setQ(''); }}
+          className="p-1.5 text-gray-400 hover:text-gray-700"
+          aria-label="Close"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="max-h-72 overflow-y-auto divide-y divide-gray-50 border border-gray-100 rounded">
+        {shown.map(r => (
+          <button
+            key={r.idx}
+            type="button"
+            onClick={() => { onPick(r.idx); setOpen(false); setQ(''); }}
+            className="w-full text-left px-2 py-1.5 text-xs hover:bg-sky-50 flex items-center gap-2"
+          >
+            <span className="flex-1 min-w-0 truncate text-gray-900">{r.species}</span>
+            <span className="shrink-0 tabular-nums font-semibold text-gray-900">${r.price.toFixed(2)}</span>
+            <span className="shrink-0 text-gray-400">×{r.qty}</span>
+          </button>
+        ))}
+        {shown.length === 0 && (
+          <div className="px-2 py-2 text-xs text-gray-400">No rows match “{q}”</div>
+        )}
+      </div>
+    </div>
   );
 }
