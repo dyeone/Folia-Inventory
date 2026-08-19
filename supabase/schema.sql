@@ -327,6 +327,8 @@ create table if not exists purchase_order_lines (
   "quantityReceived"    integer not null default 0 check ("quantityReceived" >= 0),
   "unitWholesalePrice"  numeric not null,
   "sortOrder"           integer not null default 0,
+  -- Per-line arrives-as override (0039); null inherits the PO's itemType.
+  "itemType"            text    check ("itemType" is null or "itemType" in ('plant', 'tc')),
   unique ("purchaseOrderId", "speciesId")
 );
 create index if not exists purchase_order_lines_po_idx

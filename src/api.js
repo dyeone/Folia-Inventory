@@ -165,8 +165,8 @@ export const api = {
     request('/purchase-orders', { method: 'POST', body: { action: 'update-header', id, supplier, shippingFee, notes, itemType, itemStatus, itemNotes } }).then(r => r.purchaseOrder),
   addPurchaseOrderLine: ({ id, speciesId, quantityOrdered, unitWholesalePrice }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'add-line', id, speciesId, quantityOrdered, unitWholesalePrice } }).then(r => r.line),
-  updatePurchaseOrderLine: ({ id, lineId, quantityOrdered, unitWholesalePrice }) =>
-    request('/purchase-orders', { method: 'POST', body: { action: 'update-line', id, lineId, quantityOrdered, unitWholesalePrice } }),
+  updatePurchaseOrderLine: ({ id, lineId, quantityOrdered, unitWholesalePrice, itemType }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'update-line', id, lineId, quantityOrdered, unitWholesalePrice, itemType } }),
   removePurchaseOrderLine: ({ id, lineId }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'remove-line', id, lineId } }),
   markPurchaseOrderOrdered: (id) =>

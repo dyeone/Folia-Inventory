@@ -9,7 +9,7 @@ import { api } from '../api.js';
 //     nothing received — suppliers revise orders after they're placed
 //   - poStatus = received → fully read-only
 
-export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poStatus, poId, isAdmin, showToast, onChanged }) {
+export function PurchaseOrderLineRow({ line, species, varieties = [], receivedItemIds = [], poStatus, poId, poItemType, isAdmin, showToast, onChanged, onSpeciesChanged }) {
   // Local form state — initialized once from props, not reset on prop
   // changes. Preserving mid-typed input across refreshes is a feature.
   // The server strips unitWholesalePrice for non-admin viewers — every
@@ -90,6 +90,33 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
     } finally { setBusy(false); }
   };
 
+  // Pre-receive knobs (admin): how this line's plants will MINT. Both are
+  // locked once anything is received — type mid-count would split one
+  // shipment into mixed items, and the SKU prefix only matters for SKUs
+  // that don't exist yet (printed labels never change).
+  const saveType = async (t) => {
+    setBusy(true);
+    try {
+      await api.updatePurchaseOrderLine({ id: poId, lineId: line.id, itemType: t });
+      onChanged?.();
+    } catch (e) {
+      showToast?.(e.message || 'Type change failed', 'error');
+    } finally { setBusy(false); }
+  };
+
+  const saveVariety = async (varietyId) => {
+    if (!species || !varietyId || varietyId === species.varietyId) return;
+    setBusy(true);
+    try {
+      await api.updateSpecies({ id: species.id, patch: { varietyId } });
+      await onSpeciesChanged?.();
+      onChanged?.();
+      showToast?.('Variety changed — plants received from now on get the new SKU prefix');
+    } catch (e) {
+      showToast?.(e.message || 'Variety change failed', 'error');
+    } finally { setBusy(false); }
+  };
+
   const remove = async () => {
     setBusy(true);
     try {
@@ -148,7 +175,42 @@ export function PurchaseOrderLineRow({ line, species, receivedItemIds = [], poSt
       <div className="flex-1 min-w-0">
         <div className="text-sm text-gray-900 truncate">
           {[species?.varietyName, species?.epithet || '(unknown)'].filter(Boolean).join(' · ')}
+          {(line.itemType ?? poItemType) === 'tc' && (
+            <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 font-semibold align-middle">TC</span>
+          )}
         </div>
+        {isAdmin && canEdit && line.quantityReceived === 0 && (
+          <div className="mt-1 flex items-center gap-2 text-xs flex-wrap">
+            <label className="flex items-center gap-1 text-gray-500">
+              arrives as
+              <select
+                value={line.itemType || ''}
+                onChange={(e) => saveType(e.target.value || null)}
+                disabled={busy}
+                className="px-1.5 py-1 text-xs border border-gray-300 rounded"
+              >
+                <option value="">Order default ({poItemType === 'tc' ? 'TC' : 'Plant'})</option>
+                <option value="plant">Plant</option>
+                <option value="tc">TC</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-1 text-gray-500">
+              SKU prefix
+              <select
+                value={species?.varietyId || ''}
+                onChange={(e) => saveVariety(e.target.value)}
+                disabled={busy || !species}
+                title="Moves this species to another variety — plants received from now on get that variety's SKU prefix. Printed labels and existing SKUs never change."
+                className="px-1.5 py-1 text-xs border border-gray-300 rounded max-w-[190px]"
+              >
+                {!species && <option value="">—</option>}
+                {(varieties || []).map(v => (
+                  <option key={v.id} value={v.id}>{v.code} — {v.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
         <div className="mt-1 flex items-center gap-2 text-xs flex-wrap">
           <span className="text-gray-500">Ordered</span>
           {canEdit ? (
