@@ -446,7 +446,7 @@ alter table shipments    enable row level security;
 -- nothing set. See migrations 0018 (note) and 0022 (packaging).
 --   boxSizeId  → a boxSizes preset id from app_settings.id='shipping'
 --   weightOz   → actual per-box weight used for rate quotes
---   serviceKey → one of the three offered services (see 0022 check)
+--   serviceKey → one of the offered services (see 0022/0040 check)
 
 create table if not exists shipment_boxes (
   id                text        primary key,            -- = shipmentBoxId on inventory_items
@@ -470,7 +470,7 @@ begin
   if not exists (select 1 from pg_constraint where conname = 'shipment_boxes_servicekey_check') then
     alter table shipment_boxes add constraint shipment_boxes_servicekey_check
       check ("serviceKey" is null or "serviceKey" in
-        ('usps_priority','ups_2nd_day_air','ups_next_day_air_saver'));
+        ('usps_priority','ups_2nd_day_air','ups_next_day_air_saver','ups_next_day_air'));
   end if;
   if not exists (select 1 from pg_constraint where conname = 'shipment_boxes_carrieroverride_check') then
     alter table shipment_boxes add constraint shipment_boxes_carrieroverride_check
