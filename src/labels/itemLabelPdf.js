@@ -6,13 +6,13 @@ import { jsPDF } from 'jspdf';
 // and the packer's burrito-wrap reprint (packerPrint.printItemLabel) — can
 // share them without LabelSheet.jsx exporting non-components.
 
-// BAE and Folia share nothing — not SKUs, varieties, or species — so a label
+// BAE and bae-gin share nothing — not SKUs, varieties, or species — so a label
 // has to say which brand it belongs to or it's ambiguous on the bench. We tag
-// any non-Folia brand with its name (BAE → "BAE"); Folia (the default) stays
-// clean. The active brand lives on <html data-brand> (set in App.jsx).
+// any non-bae-gin brand with its name (BAE → "BAE"); bae-gin (the default)
+// stays clean. The active brand lives on <html data-brand> (set in App.jsx).
 export function brandTag() {
-  const b = (document.documentElement.getAttribute('data-brand') || 'folia').toLowerCase();
-  return b && b !== 'folia' ? b.toUpperCase() : '';
+  const b = (document.documentElement.getAttribute('data-brand') || 'bae-gin').toLowerCase();
+  return b && b !== 'bae-gin' ? b.toUpperCase() : '';
 }
 
 // The plant's lineup number (lotNumber) as a display string, or '' when it isn't
@@ -216,9 +216,9 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
     if (idx > 0) pdf.addPage([LABEL_W, LABEL_H], 'landscape');
 
     // Top line: brand tag (e.g. BAE) plus, for consignment plants, the seller's
-    // name — so the bench can tell whose plant it is. BAE and Folia share no
-    // SKUs/varieties, so non-Folia labels are marked to avoid bench mix-ups;
-    // Folia (the default, no sellers) prints without a top line.
+    // name — so the bench can tell whose plant it is. BAE and bae-gin share no
+    // SKUs/varieties, so non-bae-gin labels are marked to avoid bench mix-ups;
+    // bae-gin (the default, no sellers) prints without a top line.
     const sellerName = item.sellerId && sellerNameById ? sellerNameById.get(item.sellerId) : null;
     const topTag = [tag, sellerName].filter(Boolean).join(' · ').slice(0, 28);
     const title = `${displayName(item)}${item.variety ? ` · ${item.variety}` : ''}`;

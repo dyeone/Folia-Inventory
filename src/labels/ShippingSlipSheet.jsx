@@ -53,7 +53,7 @@ const H = {
 // >= this + a few mm of breathing room.
 const LOGO_SIZE_MM = 40;
 
-// Convert public/logo.png → 1-bit black-on-transparent data URL,
+// Convert public/logo-baegin.png → 1-bit black-on-transparent data URL,
 // cached at module scope so a session of repeated prints doesn't
 // re-fetch + re-decode.
 //
@@ -100,7 +100,7 @@ function loadLogoDataUrl() {
     // Fall through with a null logo rather than blocking the print. The
     // slip is still readable without the brand mark on top.
     img.onerror = () => resolve(null);
-    img.src = '/logo.png';
+    img.src = '/logo-baegin.png';
   });
 }
 
@@ -125,7 +125,7 @@ function formatLoyaltyCode(code) {
 // React context and the box object carries no brand field.
 const LOYALTY_FETCH_TIMEOUT_MS = 8000;
 function fetchLoyalty(box) {
-  const brand = (document.documentElement.getAttribute('data-brand') || 'folia').toLowerCase();
+  const brand = (document.documentElement.getAttribute('data-brand') || 'bae-gin').toLowerCase();
   if (brand !== 'bae') return Promise.resolve(null);
   const load = (async () => {
     const loyalty = await api.getBoxLoyaltyCode(box.id);
@@ -373,7 +373,7 @@ export function ShippingSlipSheet({ box, onClose, showToast }) {
     setBusy(true);
     try {
       const pdf = await buildSlip(box);
-      pdf.save(`folia-slip-${shortBoxCode(box.id)}.pdf`);
+      pdf.save(`${document.documentElement.getAttribute('data-brand') || 'bae-gin'}-slip-${shortBoxCode(box.id)}.pdf`);
     } finally {
       setBusy(false);
     }

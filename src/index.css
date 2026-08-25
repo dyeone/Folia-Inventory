@@ -4,19 +4,21 @@
 
 /* Brand accent palette. `emerald-*` Tailwind classes resolve to these vars
    (see tailwind.config.js), so the whole UI re-themes per active brand.
-   Default = Folia green (exact Tailwind emerald scale). The data-brand
-   attribute is set on <html> from the active brand in App.jsx. */
+   Default = bae-gin chartreuse, anchored on the logo neon #DDFF00 at shade
+   400 (darker shades shift toward olive so white-on-brand text stays
+   readable). The data-brand attribute is set on <html> from the active
+   brand in App.jsx. */
 :root {
-  --brand-50: 236 253 245;
-  --brand-100: 209 250 229;
-  --brand-200: 167 243 208;
-  --brand-300: 110 231 183;
-  --brand-400: 52 211 153;
-  --brand-500: 16 185 129;
-  --brand-600: 5 150 105;
-  --brand-700: 4 120 87;
-  --brand-800: 6 95 70;
-  --brand-900: 6 78 59;
+  --brand-50: 250 254 220;
+  --brand-100: 244 253 183;
+  --brand-200: 236 252 128;
+  --brand-300: 229 251 64;
+  --brand-400: 221 255 0;
+  --brand-500: 197 227 0;
+  --brand-600: 132 153 2;
+  --brand-700: 101 117 6;
+  --brand-800: 80 92 10;
+  --brand-900: 64 73 12;
 }
 
 /* BAE — red, anchored on the logo red #F0392E at shade 500. */

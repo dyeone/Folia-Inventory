@@ -18,10 +18,10 @@ import { takeBaseline } from './FollowerTicker.jsx';
 const POLL_MS = 2_000;
 
 function goalKey(brandId) {
-  return `psFollowerGoal:${brandId || 'folia'}`;
+  return `psFollowerGoal:${brandId || 'bae-gin'}`;
 }
 
-const BRAND_LABEL = { folia: 'Folia', bae: 'BAE' };
+const BRAND_LABEL = { 'bae-gin': 'bae-gin', bae: 'BAE' };
 
 export function FollowerBoard({ brandId, brands = [], onSwitchBrand, onClose }) {
   const [followers, setFollowers] = useState(null);

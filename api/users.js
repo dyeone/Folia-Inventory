@@ -2,14 +2,14 @@ import { supabase, stripUser, requireAdmin } from './_lib/supabase.js';
 import { hashPassword } from './_lib/hash.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
-// Keep only real brand ids; fall back to ['folia'] so a user always has at
+// Keep only real brand ids; fall back to ['bae-gin'] so a user always has at
 // least one accessible brand. Validated against the brands table so an admin
 // can't grant access to a brand that doesn't exist.
 async function sanitizeBrandIds(input) {
   const { data: brands } = await supabase.from('brands').select('id');
   const valid = new Set((brands || []).map(b => b.id));
   const arr = Array.isArray(input) ? [...new Set(input.filter(b => valid.has(b)))] : [];
-  return arr.length ? arr : ['folia'];
+  return arr.length ? arr : ['bae-gin'];
 }
 
 export default wrap(async (req, res) => {

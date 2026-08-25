@@ -71,8 +71,8 @@ export function AuthScreen({ onLogin }) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-50 to-sky-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
-        <div className="bg-[#d4e9c7] px-6 py-6">
-          <img src="/logo.png" alt="Folia Society" className="h-16 w-auto mx-auto block mb-3" />
+        <div className="bg-[#f4fdb7] px-6 py-6">
+          <img src="/logo-baegin.png" alt="bae-gin" className="h-16 w-auto mx-auto block mb-3" />
           <p className="text-center text-sm text-[#2d3f5e]">
             {mode === 'register'
               ? (hasAnyUsers === false ? 'Create the first admin account' : 'Register a new staff account')

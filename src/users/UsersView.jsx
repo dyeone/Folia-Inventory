@@ -41,7 +41,7 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
   };
 
   const toggleBrand = async (user, brandId) => {
-    const current = Array.isArray(user.brandIds) && user.brandIds.length ? user.brandIds : ['folia'];
+    const current = Array.isArray(user.brandIds) && user.brandIds.length ? user.brandIds : ['bae-gin'];
     const next = current.includes(brandId) ? current.filter(b => b !== brandId) : [...current, brandId];
     if (next.length === 0) return showToast('A user needs access to at least one brand', 'error');
     try {
@@ -156,7 +156,7 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
                   <td className="px-3 py-2.5">
                     <div className="flex flex-wrap gap-1">
                       {ALL_BRANDS.map(b => {
-                        const on = (user.brandIds && user.brandIds.length ? user.brandIds : ['folia']).includes(b.id);
+                        const on = (user.brandIds && user.brandIds.length ? user.brandIds : ['bae-gin']).includes(b.id);
                         return (
                           <button
                             key={b.id}

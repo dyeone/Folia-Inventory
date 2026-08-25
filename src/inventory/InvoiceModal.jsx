@@ -112,7 +112,7 @@ export function InvoiceModal({ items, idealRate, brand, onClose }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `invoice-${(brand || 'folia')}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `invoice-${(brand || 'bae-gin')}-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

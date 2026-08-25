@@ -64,7 +64,7 @@ export function BoxLabelSheet({ boxes, onClose, showToast }) {
   const handleDownloadPdf = () => {
     const pdf = buildBoxLabelPdf(boxes);
     const stamp = new Date().toISOString().slice(0, 10);
-    pdf.save(`folia-box-labels-${stamp}.pdf`);
+    pdf.save(`${document.documentElement.getAttribute('data-brand') || 'bae-gin'}-box-labels-${stamp}.pdf`);
   };
 
   // Browser-print fallback when the bridge is offline or errors.

@@ -305,7 +305,7 @@ async function buildTestLabelPdf(destName) {
   pdf.rect(0.08, 0.08, 3.84, 5.84);
   pdf.setFont('helvetica', 'bold');
   pdf.setFontSize(22);
-  pdf.text('FOLIA PACKING', 2, 1.0, { align: 'center' });
+  pdf.text('BAE-GIN PACKING', 2, 1.0, { align: 'center' });
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(14);
   pdf.text('Printer test label', 2, 1.4, { align: 'center' });

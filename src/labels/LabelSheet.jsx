@@ -100,7 +100,7 @@ export function LabelSheet({ items, sellers, sales, onClose, showToast }) {
   const handleDownloadPdf = () => {
     const pdf = buildLabelPdf(items);
     const stamp = new Date().toISOString().slice(0, 10);
-    pdf.save(`folia-labels-${stamp}.pdf`);
+    pdf.save(`${document.documentElement.getAttribute('data-brand') || 'bae-gin'}-labels-${stamp}.pdf`);
   };
 
   // Browser-print fallback (used when the bridge is offline or errors): open
