@@ -1416,7 +1416,12 @@ async function cancelReceiveLine(req, res, user, brandId, isAdminUser) {
 // up front. Moving the items also raises the target's max SKU suffix, so
 // future mints there number PAST the migrated labels instead of into them.
 // Items that progressed beyond the bench (sold, boxed, claimed by a live)
-// are tied to the source brand's sales/boxes and block the migration.
+// are woven into the source brand's sales/boxes, so they're SKIPPED, not
+// moved: they and their receiving audit rows stay behind in the source
+// brand, keeping that brand's records whole, while the PO and everything
+// still on the bench migrates. The moved lines keep their received
+// counters (the physical units WERE received); the skipped items simply
+// aren't cancellable from the target side.
 //
 // PostgREST gives us no cross-table transaction, so writes are ordered to
 // fail safe: catalog creates first (additive), then items + their photos +
@@ -1481,17 +1486,13 @@ async function migrateBrand(req, res, user, brandId) {
     if (error) { const e = new Error(error.message); e.status = 500; throw e; }
     items.push(...(rows || []));
   }
-  const movingItems = items.filter(it => it.brandId !== target);
-
-  // Items that moved past the bench are woven into THIS brand's sales,
-  // boxes, and live lineups — stock that's already selling can't change
-  // hands without corrupting those records.
-  const entangled = movingItems.filter(it =>
-    it.saleId != null || it.shipmentBoxId != null || !['available', 'acclimated'].includes(it.status));
-  if (entangled.length) {
-    const e = new Error(`${entangled.length} received item${entangled.length === 1 ? ' is' : 's are'} already sold, packed into a box, or claimed by a live — they're tied to this brand's records, so this PO can't migrate.`);
-    e.status = 409; throw e;
-  }
+  // Items that moved past the bench (sold, boxed, claimed by a live) are
+  // woven into THIS brand's sales records — they stay behind, audit rows
+  // and all, and only the bench stock migrates.
+  const isEntangled = (it) =>
+    it.saleId != null || it.shipmentBoxId != null || !['available', 'acclimated'].includes(it.status);
+  const skippedIds = new Set(items.filter(it => it.brandId !== target && isEntangled(it)).map(it => it.id));
+  const movingItems = items.filter(it => it.brandId !== target && !skippedIds.has(it.id));
 
   // SKUs move verbatim, so every one must be free in the target brand.
   const movingSkus = movingItems.map(it => it.sku).filter(Boolean);
@@ -1662,16 +1663,20 @@ async function migrateBrand(req, res, user, brandId) {
     }
   }
 
-  // Their photos and the receiving audit trail follow the items.
-  for (let i = 0; i < itemIds.length; i += 200) {
+  // Their photos and the receiving audit trail follow the items — but only
+  // for items actually moving; a skipped item keeps its audit row in the
+  // source brand so its history stays whole there.
+  const followItemIds = itemIds.filter(iid => !skippedIds.has(iid));
+  const followAuditIds = auditRows.filter(a => !skippedIds.has(a.inventoryItemId)).map(a => a.id);
+  for (let i = 0; i < followItemIds.length; i += 200) {
     const { error } = await supabase
-      .from('item_photos').update({ brandId: target }).in('itemId', itemIds.slice(i, i + 200));
+      .from('item_photos').update({ brandId: target }).in('itemId', followItemIds.slice(i, i + 200));
     if (error) { const e = new Error(`Photo move failed: ${error.message}`); e.status = 500; throw e; }
   }
-  for (let i = 0; i < lineIds.length; i += 200) {
+  for (let i = 0; i < followAuditIds.length; i += 200) {
     const { error } = await supabase
       .from('purchase_order_received_items')
-      .update({ brandId: target }).in('lineId', lineIds.slice(i, i + 200));
+      .update({ brandId: target }).in('id', followAuditIds.slice(i, i + 200));
     if (error) { const e = new Error(`Receipt move failed: ${error.message}`); e.status = 500; throw e; }
   }
 
@@ -1704,7 +1709,8 @@ async function migrateBrand(req, res, user, brandId) {
   // Convergence sweep: a receive in flight during the move minted items in
   // the source brand after our snapshot. New receives now land in the
   // target (the header has flipped; source-side receives 404), so one pass
-  // over still-source audit rows converges the stragglers.
+  // over still-source audit rows converges the stragglers. The audits we
+  // deliberately left behind with skipped items are not stragglers.
   const stragglers = [];
   for (let i = 0; i < lineIds.length; i += 200) {
     const { data: rows, error } = await supabase
@@ -1713,7 +1719,7 @@ async function migrateBrand(req, res, user, brandId) {
       .in('lineId', lineIds.slice(i, i + 200))
       .neq('brandId', target);
     if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-    stragglers.push(...(rows || []));
+    stragglers.push(...(rows || []).filter(r => !skippedIds.has(r.inventoryItemId)));
   }
   if (stragglers.length) {
     const sIds = [...new Set(stragglers.map(s => s.inventoryItemId))];
@@ -1739,6 +1745,7 @@ async function migrateBrand(req, res, user, brandId) {
     migrated: {
       lines: lines.length,
       items: movingItems.length + stragglers.length,
+      skippedItems: skippedIds.size,
       createdVarieties,
       createdSpecies,
     },
