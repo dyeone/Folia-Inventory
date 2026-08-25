@@ -18,7 +18,7 @@ const POLL_MS = 30_000;
 const BASELINE_TTL_MS = 12 * 60 * 60 * 1000;
 
 export function baselineKey(brandId) {
-  return `psFollowerBase:${brandId || 'folia'}`;
+  return `psFollowerBase:${brandId || 'bae-gin'}`;
 }
 
 // Read (or re-arm) the session baseline for the delta display. Shared with

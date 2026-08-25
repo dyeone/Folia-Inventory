@@ -2,27 +2,31 @@
 // brands EXIST is the `brands` table; this just maps known ids to display name
 // + accent so the shell can theme the switcher without an extra API round-trip.
 // Add a new brand here when you add its row in the brands table.
+//
+// 'folia' (the original brand) was retired in migration 0041 — its rows are
+// archived in the database (brands row + brandId data kept) but it's gone from
+// this map and from every user's brandIds, so it no longer appears in the app.
 
 export const COMPANY_NAME = '3babes';
 
 export const BRANDS = {
-  folia: { name: 'Folia', accent: '#16a34a', logo: '/logo.png' },      // green
+  'bae-gin': { name: 'bae-gin', accent: '#DDFF00', logo: '/logo-baegin.png' }, // neon chartreuse (logo)
   bae: { name: 'BAE', accent: '#F0392E', logo: '/logo-bae.png', full: 'Best Anthuriums Ever' }, // red (logo)
 };
 
-export const DEFAULT_BRAND = 'folia';
+export const DEFAULT_BRAND = 'bae-gin';
 
 export function brandName(id) {
   return BRANDS[id]?.name || id;
 }
 
 export function brandAccent(id) {
-  return BRANDS[id]?.accent || '#16a34a';
+  return BRANDS[id]?.accent || '#DDFF00';
 }
 
-// Header logo (served from public/), per brand. Falls back to the Folia logo.
+// Header logo (served from public/), per brand. Falls back to the bae-gin logo.
 export function brandLogo(id) {
-  return BRANDS[id]?.logo || '/logo.png';
+  return BRANDS[id]?.logo || '/logo-baegin.png';
 }
 
 // Resolve the list of brands a user can access into [{ id, name, accent }],

@@ -69,10 +69,10 @@ export async function requireUser(userId) {
   return data;
 }
 
-// The legacy brand. All pre-multi-brand data backfills here, and any request
-// that doesn't carry a brand resolves to it — so the Folia frontend keeps
-// working unchanged until the brand switcher ships (Stage 3 of the rollout).
-export const DEFAULT_BRAND = 'folia';
+// The default brand. Any request that doesn't carry a brand resolves to it.
+// Was 'folia' until migration 0041 retired that brand (its data stays
+// archived in the database under brandId 'folia').
+export const DEFAULT_BRAND = 'bae-gin';
 
 // Pull the active brand id from a request, the same way handlers pull userId:
 // query param on GET, body field on POST/DELETE.

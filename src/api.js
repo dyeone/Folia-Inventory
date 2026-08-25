@@ -8,7 +8,7 @@ export function setAuthUserId(id) { authUserId = id; }
 
 // The active brand (3babes multi-brand). Sent with every authed call so the
 // server scopes reads/writes to it. When unset, the server defaults to the
-// legacy 'folia' brand, so older flows keep working.
+// 'bae-gin' brand, so brandless flows keep working.
 let authBrandId = null;
 export function setAuthBrandId(id) { authBrandId = id; }
 

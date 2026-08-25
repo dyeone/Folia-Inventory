@@ -549,10 +549,12 @@ create table if not exists sale_evaluations (
 );
 
 -- ─── 3babes multi-brand (migration 0029) ───────────────────────────────────────
--- One database runs multiple brands (Folia, BAE). Each brand-scoped row carries
--- a brandId; users carry a brandIds access list. Kept as idempotent ALTERs at
--- the end so the create-table blocks above stay the historical single-tenant
--- shape. Full plan: docs/3babes-multi-brand.md.
+-- One database runs multiple brands (bae-gin, BAE). Each brand-scoped row
+-- carries a brandId; users carry a brandIds access list. Kept as idempotent
+-- ALTERs at the end so the create-table blocks above stay the historical
+-- single-tenant shape. Full plan: docs/3babes-multi-brand.md.
+-- 'folia' (the original brand) was retired in 0041: its seed row stays so
+-- archived brandId='folia' data keeps its FK target, but no user has access.
 create table if not exists brands (
   id          text        primary key,
   slug        text        unique not null,
@@ -560,8 +562,9 @@ create table if not exists brands (
   "createdAt" timestamptz not null default now()
 );
 insert into brands (id, slug, name) values
-  ('folia', 'folia', 'Folia'),
-  ('bae',   'bae',   'BAE — Best Anthuriums Ever')
+  ('folia',   'folia',   'Folia'),                       -- retired/archived (0041)
+  ('bae',     'bae',     'BAE — Best Anthuriums Ever'),
+  ('bae-gin', 'bae-gin', 'bae-gin')
 on conflict (id) do nothing;
 
 alter table inventory_items add column if not exists "brandId" text references brands(id);
@@ -578,7 +581,8 @@ alter table bridge_jobs add column if not exists "brandId" text references brand
 alter table sale_evaluations add column if not exists "brandId" text references brands(id);
 alter table item_photos add column if not exists "brandId" text references brands(id);
 alter table app_settings add column if not exists "brandId" text references brands(id);
-alter table users add column if not exists "brandIds" text[] not null default array['folia']::text[];
+alter table users add column if not exists "brandIds" text[] not null default array['bae-gin']::text[];
+alter table users alter column "brandIds" set default array['bae-gin']::text[];
 
 -- SKU numbering + uniqueness are per-brand (migration 0030): each brand has its
 -- own SKU sequence and prefixes, so the unique constraint is (brandId, sku) and
