@@ -175,6 +175,8 @@ export const api = {
     request('/purchase-orders', { method: 'POST', body: { action: 'import-order', importId, supplier, shippingFee, notes, lines, markOrdered, itemType, itemStatus, itemNotes } }),
   updatePurchaseOrderLines: ({ id, lines, removeMissing }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'update-order-lines', id, lines, removeMissing } }),
+  migratePurchaseOrderBrand: ({ id, targetBrandId }) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'migrate-brand', id, targetBrandId } }),
   receivePurchaseOrderLine: ({ id, lineId, quantityReceived }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'receive-line', id, lineId, quantityReceived } }),
   cancelReceivePurchaseOrderLine: ({ id, lineId }) =>

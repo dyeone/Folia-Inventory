@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Loader2, Trash2, Check, Truck, Upload, Plus } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Trash2, Check, Truck, Upload, Plus, ArrowLeftRight } from 'lucide-react';
 import { api } from '../api.js';
+import { BRANDS, DEFAULT_BRAND, brandName } from '../brands.js';
 import { PurchaseOrderLineRow } from './PurchaseOrderLineRow.jsx';
 import { NameAutocomplete } from './NameAutocomplete.jsx';
 import { UpdateOrderModal } from './UpdateOrderModal.jsx';
@@ -300,14 +301,23 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
           {(isDraft || po.status === 'ordered') && lines && (
             <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-end gap-2">
               {isAdmin && (
-                <button
-                  type="button"
-                  onClick={() => setUpdateOpen(true)}
-                  className="mr-auto flex items-center gap-1.5 px-3 py-2 text-sm border border-emerald-600 text-emerald-700 rounded-lg hover:bg-emerald-50"
-                  title="Upload the supplier's revised list and sync this order to it"
-                >
-                  <Upload className="w-4 h-4" /> Update from list
-                </button>
+                <div className="mr-auto flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setUpdateOpen(true)}
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm border border-emerald-600 text-emerald-700 rounded-lg hover:bg-emerald-50"
+                    title="Upload the supplier's revised list and sync this order to it"
+                  >
+                    <Upload className="w-4 h-4" /> Update from list
+                  </button>
+                  <MigrateControl
+                    po={po}
+                    lines={lines}
+                    showToast={showToast}
+                    onChanged={onChanged}
+                    setConfirmDialog={setConfirmDialog}
+                  />
+                </div>
               )}
               {isDraft && (
                 <>
@@ -354,6 +364,73 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
           onSpeciesChanged={onSpeciesChanged}
         />
       )}
+    </div>
+  );
+}
+
+// "Migrate between systems": move this PO into another brand. Admin-only
+// (the footer only renders it for admins; migrate-brand is admin server-side
+// too). Targets come from the BRANDS map minus the active brand — read off
+// <html data-brand> like the label builders, so a rescue session working an
+// archived brand still sees every live brand as a destination. The server
+// re-maps each line's species into the target brand (creating missing
+// species/varieties) and refuses once any units were received, since
+// receiving mints inventory under this brand's SKUs.
+function MigrateControl({ po, lines, showToast, onChanged, setConfirmDialog }) {
+  const activeBrand = document.documentElement.getAttribute('data-brand') || DEFAULT_BRAND;
+  const targets = Object.keys(BRANDS).filter(b => b !== activeBrand);
+  const [target, setTarget] = useState(targets[0] || '');
+  const [busy, setBusy] = useState(false);
+  if (!targets.length) return null;
+
+  const hasReceived = (lines || []).some(l => l.quantityReceived > 0);
+  const lineCount = lines?.length ?? po.lineCount ?? 0;
+
+  const start = () => {
+    setConfirmDialog?.({
+      title: `Migrate to ${brandName(target)}?`,
+      message: `Moves this PO and its ${lineCount} ${lineCount === 1 ? 'line' : 'lines'} out of ${brandName(activeBrand)} into ${brandName(target)}. Species or varieties it needs are created there automatically; items received later will mint under ${brandName(target)}'s SKUs. It will disappear from this list and show up in ${brandName(target)}'s Orders.`,
+      confirmLabel: 'Migrate',
+      onConfirm: async () => {
+        setBusy(true);
+        try {
+          const r = await api.migratePurchaseOrderBrand({ id: po.id, targetBrandId: target });
+          const created = r?.migrated?.createdSpecies;
+          showToast?.(`Migrated to ${brandName(target)}${created ? ` · ${created} species created` : ''}`);
+          onChanged?.();
+        } catch (e) {
+          showToast?.(e.message || 'Migrate failed', 'error');
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  };
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {targets.length > 1 && (
+        <select
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          className="px-2 py-2 text-sm border border-gray-300 rounded-lg"
+          title="Destination brand"
+        >
+          {targets.map(b => <option key={b} value={b}>{brandName(b)}</option>)}
+        </select>
+      )}
+      <button
+        type="button"
+        onClick={start}
+        disabled={busy || hasReceived}
+        title={hasReceived
+          ? 'Units were already received — their SKUs belong to this brand, so this PO can no longer migrate'
+          : `Move this PO to ${brandName(target)}`}
+        className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+      >
+        {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowLeftRight className="w-4 h-4" />}
+        Migrate{targets.length === 1 ? ` to ${brandName(targets[0])}` : ''}
+      </button>
     </div>
   );
 }
