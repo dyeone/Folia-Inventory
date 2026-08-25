@@ -1,4 +1,4 @@
-import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, DEFAULT_BRAND } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Purchase orders. Action-dispatched. See:
@@ -85,7 +85,7 @@ export default wrap(async (req, res) => {
     // cancel-receive-line stay open to any brand member: that IS their job.
     const ADMIN_ACTIONS = new Set([
       'create', 'update-header', 'add-line', 'update-line', 'remove-line', 'delete', 'mark-ordered',
-      'import-order', 'update-order-lines',
+      'import-order', 'update-order-lines', 'migrate-brand',
     ]);
     if (ADMIN_ACTIONS.has(action)) await requireAdmin(userId);
     switch (action) {
@@ -100,6 +100,7 @@ export default wrap(async (req, res) => {
       case 'mark-ordered':        return markOrdered(req, res, user, brandId);
       case 'receive-line':        return receiveLine(req, res, user, brandId, isAdminUser);
       case 'cancel-receive-line': return cancelReceiveLine(req, res, user, brandId, isAdminUser);
+      case 'migrate-brand':       return migrateBrand(req, res, user, brandId);
       default: { const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e; }
     }
   }
@@ -1397,5 +1398,240 @@ async function cancelReceiveLine(req, res, user, brandId, isAdminUser) {
   return res.status(200).json({
     deletedCount: cancelIds.length,
     line: isAdminUser ? line : stripLineCosts(line),
+  });
+}
+
+// ─── migrate to another brand ───────────────────────────────────────────────
+// Moves a draft/ordered PO — header + every line — into another brand the
+// admin can access. Species and varieties are per-brand, so each line's
+// species is re-pointed at the target brand's row with the same
+// (variety name, epithet), created there when missing — the same
+// copy-don't-move taxonomy posture as migration 0031. Refused once ANY units
+// are received: receiving mints inventory under this brand's SKU sequence,
+// and those items (and their printed labels) belong to the brand they were
+// born in.
+//
+// PostgREST gives us no cross-table transaction, so writes are ordered to
+// fail safe: catalog creates first (additive), then lines, then the PO
+// header flip LAST — the PO only surfaces in the target brand once
+// everything under it has moved. Reads and line writes match by PO id
+// (globally unique), NOT brandId, so a run that died mid-move converges when
+// the admin retries.
+async function migrateBrand(req, res, user, brandId) {
+  const { id } = req.body || {};
+  const target = typeof req.body?.targetBrandId === 'string' ? req.body.targetBrandId.trim() : '';
+  if (!target) { const e = new Error('targetBrandId required'); e.status = 400; throw e; }
+  if (target === brandId) { const e = new Error('This PO is already in that brand'); e.status = 400; throw e; }
+
+  // Destination gets the same access posture requireBrand gives the source:
+  // a real brands row the caller is allowed into.
+  const access = Array.isArray(user.brandIds) && user.brandIds.length ? user.brandIds : [DEFAULT_BRAND];
+  if (!access.includes(target)) { const e = new Error('No access to the target brand'); e.status = 403; throw e; }
+  const { data: targetBrand, error: tbErr } = await supabase
+    .from('brands').select('id').eq('id', target).maybeSingle();
+  if (tbErr) { const e = new Error(tbErr.message); e.status = 500; throw e; }
+  if (!targetBrand) { const e = new Error('Unknown target brand'); e.status = 404; throw e; }
+
+  const po = await loadPo(id, brandId);
+  requireStatus(po, ['draft', 'ordered']);
+
+  // Every line by PO id only — a prior attempt may have moved some already.
+  const lines = [];
+  for (let from = 0; ; from += 1000) {
+    const { data: page, error } = await supabase
+      .from('purchase_order_lines')
+      .select('*')
+      .eq('purchaseOrderId', id)
+      .order('id')
+      .range(from, from + 999);
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    lines.push(...(page || []));
+    if (!page || page.length < 1000) break;
+  }
+
+  // Hard stop once anything was received. Belt: the line counters.
+  // Suspenders: the audit rows cancel-receive-line would need.
+  if (lines.some(l => l.quantityReceived > 0)) {
+    const e = new Error('This PO has received units — receiving minted items under this brand\'s SKUs, so it can\'t migrate. Cancel the receives first if it really must move.');
+    e.status = 409; throw e;
+  }
+  const lineIds = lines.map(l => l.id);
+  for (let i = 0; i < lineIds.length; i += 200) {
+    const { count, error } = await supabase
+      .from('purchase_order_received_items')
+      .select('id', { count: 'exact', head: true })
+      .in('lineId', lineIds.slice(i, i + 200));
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    if (count > 0) {
+      const e = new Error('This PO has received items on record — cancel the receives first.');
+      e.status = 409; throw e;
+    }
+  }
+
+  const nowIso = new Date().toISOString();
+
+  // Source species by id WITHOUT a brand filter: on a retry, already-moved
+  // lines point at target-brand species and simply map to themselves.
+  const speciesIds = [...new Set(lines.map(l => l.speciesId))];
+  const srcSpeciesById = new Map();
+  for (let i = 0; i < speciesIds.length; i += 200) {
+    const { data: rows, error } = await supabase
+      .from('species')
+      .select('id, "brandId", "varietyId", epithet, "commonName", notes, "imageUrl", "wholesalePrice", "idealSellingPrice", "profitRate"')
+      .in('id', speciesIds.slice(i, i + 200));
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    for (const s of rows || []) srcSpeciesById.set(s.id, s);
+  }
+  if (speciesIds.some(sid => !srcSpeciesById.has(sid))) {
+    const e = new Error('A line references a missing species'); e.status = 500; throw e;
+  }
+  const toMap = speciesIds.map(sid => srcSpeciesById.get(sid)).filter(s => s.brandId !== target);
+
+  // Map the varieties those species hang off: match by NAME in the target
+  // brand (per-brand unique since 0031), create the missing ones with the
+  // same name + SKU-prefix code. Two attempts — a concurrent create of the
+  // same name fails the batch (23505) and a fresh select resolves winners.
+  const srcVarietyIds = [...new Set(toMap.map(s => s.varietyId))];
+  const srcVarietyById = new Map();
+  const targetVarietyByName = new Map();
+  let createdVarieties = 0;
+  if (srcVarietyIds.length) {
+    for (let i = 0; i < srcVarietyIds.length; i += 200) {
+      const { data: rows, error } = await supabase
+        .from('varieties').select('id, name, code, "profitRate"')
+        .in('id', srcVarietyIds.slice(i, i + 200));
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      for (const v of rows || []) srcVarietyById.set(v.id, v);
+    }
+    if (srcVarietyIds.some(vid => !srcVarietyById.has(vid))) {
+      const e = new Error('A species references a missing variety'); e.status = 500; throw e;
+    }
+    const names = [...new Set([...srcVarietyById.values()].map(v => v.name))];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      targetVarietyByName.clear();
+      for (let i = 0; i < names.length; i += 200) {
+        const { data: rows, error } = await supabase
+          .from('varieties').select('id, name')
+          .eq('brandId', target).in('name', names.slice(i, i + 200));
+        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        for (const v of rows || []) targetVarietyByName.set(v.name, v.id);
+      }
+      const newRows = [];
+      for (const v of srcVarietyById.values()) {
+        if (targetVarietyByName.has(v.name)) continue;
+        const vid = newId();
+        targetVarietyByName.set(v.name, vid);
+        newRows.push({ id: vid, brandId: target, name: v.name, code: v.code, profitRate: v.profitRate ?? null, createdBy: user.displayName });
+      }
+      if (!newRows.length) break;
+      const { error: insErr } = await supabase.from('varieties').insert(newRows);
+      if (!insErr) { createdVarieties = newRows.length; break; }
+      if (insErr.code === '23505' && attempt === 0) continue;
+      const e = new Error(`Variety create failed: ${insErr.message}`); e.status = 500; throw e;
+    }
+  }
+
+  // Map species into the target by (mapped variety, epithet) — same
+  // case-insensitive dedup key and 23505 retry as the import's
+  // resolveSpeciesCreates, and the same paginated read past the silent
+  // 1000-row select cap.
+  const speciesIdMap = new Map(
+    speciesIds.filter(sid => srcSpeciesById.get(sid).brandId === target).map(sid => [sid, sid]),
+  );
+  let createdSpecies = 0;
+  if (toMap.length) {
+    const targetVarietyIds = [...new Set(toMap.map(s => targetVarietyByName.get(srcVarietyById.get(s.varietyId).name)))];
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const byKey = new Map();
+      for (let from = 0; ; from += 1000) {
+        const { data: page, error } = await supabase
+          .from('species').select('id, "varietyId", epithet')
+          .eq('brandId', target).in('varietyId', targetVarietyIds)
+          .range(from, from + 999);
+        if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        for (const s of page || []) byKey.set(`${s.varietyId}:${String(s.epithet).trim().toLowerCase()}`, s.id);
+        if (!page || page.length < 1000) break;
+      }
+      const newRows = [];
+      for (const s of toMap) {
+        const tvId = targetVarietyByName.get(srcVarietyById.get(s.varietyId).name);
+        const key = `${tvId}:${String(s.epithet).trim().toLowerCase()}`;
+        let tid = byKey.get(key);
+        if (!tid) {
+          tid = newId();
+          byKey.set(key, tid);
+          newRows.push({
+            id: tid,
+            brandId: target,
+            varietyId: tvId,
+            epithet: s.epithet,
+            commonName: s.commonName ?? null,
+            notes: s.notes ?? null,
+            imageUrl: s.imageUrl ?? null,
+            wholesalePrice: s.wholesalePrice ?? null,
+            idealSellingPrice: s.idealSellingPrice ?? null,
+            profitRate: s.profitRate ?? null,
+            createdAt: nowIso,
+            createdBy: user.displayName,
+          });
+        }
+        speciesIdMap.set(s.id, tid);
+      }
+      if (!newRows.length) break;
+      const { error: insErr } = await supabase.from('species').insert(newRows);
+      if (!insErr) { createdSpecies = newRows.length; break; }
+      if (insErr.code === '23505' && attempt === 0) continue;
+      const e = new Error(`Species create failed: ${insErr.message}`); e.status = 500; throw e;
+    }
+  }
+
+  // Lines are UNIQUE(purchaseOrderId, speciesId) — two source species that
+  // collapse onto one target row (case-variant epithets) would collide.
+  const targetOwner = new Map();
+  for (const [src, tgt] of speciesIdMap) {
+    const prior = targetOwner.get(tgt);
+    if (prior && prior !== src) {
+      const e = new Error('Two lines would land on the same species in the target brand (same variety + epithet) — merge those lines first.');
+      e.status = 409; throw e;
+    }
+    targetOwner.set(tgt, src);
+  }
+
+  // Move the lines. Chunked parallel like update-order-lines. The
+  // zero-received check above races a concurrent packer receive, so it's
+  // re-asserted IN each statement — a just-received line refuses to move and
+  // stops the migration before the header flips.
+  for (let i = 0; i < lines.length; i += 20) {
+    const batch = lines.slice(i, i + 20);
+    const results = await Promise.all(batch.map(l =>
+      supabase.from('purchase_order_lines')
+        .update({ brandId: target, speciesId: speciesIdMap.get(l.speciesId) })
+        .eq('id', l.id)
+        .eq('purchaseOrderId', id)
+        .eq('quantityReceived', 0)
+        .select('id'),
+    ));
+    for (const r of results) {
+      if (r.error) { const e = new Error(`Line move failed: ${r.error.message}`); e.status = 500; throw e; }
+      if (!(r.data || []).length) {
+        const e = new Error('A line was received mid-migration — nothing was lost; check the PO and retry.');
+        e.status = 409; throw e;
+      }
+    }
+  }
+
+  // Header flip last — this is the moment the PO changes hands.
+  const { data: moved, error: mvErr } = await supabase
+    .from('purchase_orders')
+    .update({ brandId: target, modifiedAt: nowIso, modifiedBy: user.displayName })
+    .eq('id', id)
+    .select('*')
+    .maybeSingle();
+  if (mvErr) { const e = new Error(mvErr.message); e.status = 500; throw e; }
+
+  return res.status(200).json({
+    purchaseOrder: moved,
+    targetBrandId: target,
+    migrated: { lines: lines.length, createdVarieties, createdSpecies },
   });
 }
