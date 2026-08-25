@@ -1402,21 +1402,30 @@ async function cancelReceiveLine(req, res, user, brandId, isAdminUser) {
 }
 
 // ─── migrate to another brand ───────────────────────────────────────────────
-// Moves a draft/ordered PO — header + every line — into another brand the
-// admin can access. Species and varieties are per-brand, so each line's
-// species is re-pointed at the target brand's row with the same
-// (variety name, epithet), created there when missing — the same
-// copy-don't-move taxonomy posture as migration 0031. Refused once ANY units
-// are received: receiving mints inventory under this brand's SKU sequence,
-// and those items (and their printed labels) belong to the brand they were
-// born in.
+// Moves a draft/ordered PO — header, every line, AND everything already
+// received off it — into another brand the admin can access. Species and
+// varieties are per-brand, so each line's (and item's) species is re-pointed
+// at the target brand's row with the same (variety name, epithet), created
+// there when missing — the same copy-don't-move taxonomy posture as
+// migration 0031.
+//
+// Received items move AS-IS: sku, name, variety text, costs, status all
+// untouched, because the SKUs are already printed on labels stuck to plants.
+// That only works if every moving SKU is free in the target brand —
+// (brandId, sku) is unique — so a collision refuses the whole migration
+// up front. Moving the items also raises the target's max SKU suffix, so
+// future mints there number PAST the migrated labels instead of into them.
+// Items that progressed beyond the bench (sold, boxed, claimed by a live)
+// are tied to the source brand's sales/boxes and block the migration.
 //
 // PostgREST gives us no cross-table transaction, so writes are ordered to
-// fail safe: catalog creates first (additive), then lines, then the PO
-// header flip LAST — the PO only surfaces in the target brand once
-// everything under it has moved. Reads and line writes match by PO id
-// (globally unique), NOT brandId, so a run that died mid-move converges when
-// the admin retries.
+// fail safe: catalog creates first (additive), then items + their photos +
+// the receiving audit trail, then lines, then the PO header flip LAST — the
+// PO only surfaces in the target brand once everything under it has moved.
+// Reads and writes match by PO/line/item ids (globally unique), NOT brandId,
+// so a run that died mid-move converges when the admin retries; a
+// post-flip sweep converges receives that landed while the move was in
+// flight.
 async function migrateBrand(req, res, user, brandId) {
   const { id } = req.body || {};
   const target = typeof req.body?.targetBrandId === 'string' ? req.body.targetBrandId.trim() : '';
@@ -1449,30 +1458,68 @@ async function migrateBrand(req, res, user, brandId) {
     if (!page || page.length < 1000) break;
   }
 
-  // Hard stop once anything was received. Belt: the line counters.
-  // Suspenders: the audit rows cancel-receive-line would need.
-  if (lines.some(l => l.quantityReceived > 0)) {
-    const e = new Error('This PO has received units — receiving minted items under this brand\'s SKUs, so it can\'t migrate. Cancel the receives first if it really must move.');
-    e.status = 409; throw e;
-  }
   const lineIds = lines.map(l => l.id);
+
+  // Everything received so far, via the audit trail — these move with the
+  // PO, SKUs untouched (labels are already on the plants).
+  const auditRows = [];
   for (let i = 0; i < lineIds.length; i += 200) {
-    const { count, error } = await supabase
+    const { data: rows, error } = await supabase
       .from('purchase_order_received_items')
-      .select('id', { count: 'exact', head: true })
+      .select('id, "lineId", "inventoryItemId"')
       .in('lineId', lineIds.slice(i, i + 200));
     if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-    if (count > 0) {
-      const e = new Error('This PO has received items on record — cancel the receives first.');
-      e.status = 409; throw e;
-    }
+    auditRows.push(...(rows || []));
+  }
+  const itemIds = [...new Set(auditRows.map(a => a.inventoryItemId))];
+  const items = [];
+  for (let i = 0; i < itemIds.length; i += 200) {
+    const { data: rows, error } = await supabase
+      .from('inventory_items')
+      .select('id, "brandId", sku, "speciesId", status, "saleId", "shipmentBoxId"')
+      .in('id', itemIds.slice(i, i + 200));
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    items.push(...(rows || []));
+  }
+  const movingItems = items.filter(it => it.brandId !== target);
+
+  // Items that moved past the bench are woven into THIS brand's sales,
+  // boxes, and live lineups — stock that's already selling can't change
+  // hands without corrupting those records.
+  const entangled = movingItems.filter(it =>
+    it.saleId != null || it.shipmentBoxId != null || !['available', 'acclimated'].includes(it.status));
+  if (entangled.length) {
+    const e = new Error(`${entangled.length} received item${entangled.length === 1 ? ' is' : 's are'} already sold, packed into a box, or claimed by a live — they're tied to this brand's records, so this PO can't migrate.`);
+    e.status = 409; throw e;
+  }
+
+  // SKUs move verbatim, so every one must be free in the target brand.
+  const movingSkus = movingItems.map(it => it.sku).filter(Boolean);
+  const takenSkus = [];
+  for (let i = 0; i < movingSkus.length; i += 200) {
+    const { data: rows, error } = await supabase
+      .from('inventory_items')
+      .select('sku')
+      .eq('brandId', target)
+      .in('sku', movingSkus.slice(i, i + 200));
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    takenSkus.push(...(rows || []).map(r => r.sku));
+  }
+  if (takenSkus.length) {
+    const e = new Error(`${takenSkus.length} SKU${takenSkus.length === 1 ? ' is' : 's are'} already in use in the target brand (${takenSkus.slice(0, 5).join(', ')}${takenSkus.length > 5 ? '…' : ''}) — the printed labels can't be kept, so this PO can't migrate there.`);
+    e.status = 409; throw e;
   }
 
   const nowIso = new Date().toISOString();
 
   // Source species by id WITHOUT a brand filter: on a retry, already-moved
-  // lines point at target-brand species and simply map to themselves.
-  const speciesIds = [...new Set(lines.map(l => l.speciesId))];
+  // lines point at target-brand species and simply map to themselves. Items
+  // are included in the union — an item can lag its line's species after an
+  // update-from-list revision swapped the line.
+  const speciesIds = [...new Set([
+    ...lines.map(l => l.speciesId),
+    ...movingItems.map(it => it.speciesId).filter(Boolean),
+  ])];
   const srcSpeciesById = new Map();
   for (let i = 0; i < speciesIds.length; i += 200) {
     const { data: rows, error } = await supabase
@@ -1597,10 +1644,40 @@ async function migrateBrand(req, res, user, brandId) {
     targetOwner.set(tgt, src);
   }
 
-  // Move the lines. Chunked parallel like update-order-lines. The
-  // zero-received check above races a concurrent packer receive, so it's
-  // re-asserted IN each statement — a just-received line refuses to move and
-  // stops the migration before the header flips.
+  // Move the minted items first — grouped by target species so a big
+  // receive is a handful of statements, not one per plant. SKU, name,
+  // variety text, costs, status: all untouched.
+  const itemGroups = new Map();
+  for (const it of movingItems) {
+    const tgtSpecies = (it.speciesId && speciesIdMap.get(it.speciesId)) || '';
+    if (!itemGroups.has(tgtSpecies)) itemGroups.set(tgtSpecies, []);
+    itemGroups.get(tgtSpecies).push(it.id);
+  }
+  for (const [tgtSpecies, ids] of itemGroups) {
+    const patch = tgtSpecies ? { brandId: target, speciesId: tgtSpecies } : { brandId: target };
+    for (let i = 0; i < ids.length; i += 200) {
+      const { error } = await supabase
+        .from('inventory_items').update(patch).in('id', ids.slice(i, i + 200));
+      if (error) { const e = new Error(`Item move failed: ${error.message}`); e.status = 500; throw e; }
+    }
+  }
+
+  // Their photos and the receiving audit trail follow the items.
+  for (let i = 0; i < itemIds.length; i += 200) {
+    const { error } = await supabase
+      .from('item_photos').update({ brandId: target }).in('itemId', itemIds.slice(i, i + 200));
+    if (error) { const e = new Error(`Photo move failed: ${error.message}`); e.status = 500; throw e; }
+  }
+  for (let i = 0; i < lineIds.length; i += 200) {
+    const { error } = await supabase
+      .from('purchase_order_received_items')
+      .update({ brandId: target }).in('lineId', lineIds.slice(i, i + 200));
+    if (error) { const e = new Error(`Receipt move failed: ${error.message}`); e.status = 500; throw e; }
+  }
+
+  // Move the lines. Chunked parallel like update-order-lines. A line that
+  // vanished mid-move (concurrent remove-line) just comes back empty —
+  // nothing to move.
   for (let i = 0; i < lines.length; i += 20) {
     const batch = lines.slice(i, i + 20);
     const results = await Promise.all(batch.map(l =>
@@ -1608,15 +1685,10 @@ async function migrateBrand(req, res, user, brandId) {
         .update({ brandId: target, speciesId: speciesIdMap.get(l.speciesId) })
         .eq('id', l.id)
         .eq('purchaseOrderId', id)
-        .eq('quantityReceived', 0)
         .select('id'),
     ));
     for (const r of results) {
       if (r.error) { const e = new Error(`Line move failed: ${r.error.message}`); e.status = 500; throw e; }
-      if (!(r.data || []).length) {
-        const e = new Error('A line was received mid-migration — nothing was lost; check the PO and retry.');
-        e.status = 409; throw e;
-      }
     }
   }
 
@@ -1629,9 +1701,46 @@ async function migrateBrand(req, res, user, brandId) {
     .maybeSingle();
   if (mvErr) { const e = new Error(mvErr.message); e.status = 500; throw e; }
 
+  // Convergence sweep: a receive in flight during the move minted items in
+  // the source brand after our snapshot. New receives now land in the
+  // target (the header has flipped; source-side receives 404), so one pass
+  // over still-source audit rows converges the stragglers.
+  const stragglers = [];
+  for (let i = 0; i < lineIds.length; i += 200) {
+    const { data: rows, error } = await supabase
+      .from('purchase_order_received_items')
+      .select('id, "inventoryItemId"')
+      .in('lineId', lineIds.slice(i, i + 200))
+      .neq('brandId', target);
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    stragglers.push(...(rows || []));
+  }
+  if (stragglers.length) {
+    const sIds = [...new Set(stragglers.map(s => s.inventoryItemId))];
+    const { data: sItems, error: sfErr } = await supabase
+      .from('inventory_items').select('id, "speciesId"').in('id', sIds);
+    if (sfErr) { const e = new Error(sfErr.message); e.status = 500; throw e; }
+    for (const it of sItems || []) {
+      const tgtSpecies = (it.speciesId && speciesIdMap.get(it.speciesId)) || null;
+      const patch = tgtSpecies ? { brandId: target, speciesId: tgtSpecies } : { brandId: target };
+      const { error } = await supabase.from('inventory_items').update(patch).eq('id', it.id);
+      if (error) { const e = new Error(`Straggler item move failed: ${error.message}`); e.status = 500; throw e; }
+    }
+    const { error: saErr } = await supabase
+      .from('purchase_order_received_items')
+      .update({ brandId: target })
+      .in('id', stragglers.map(s => s.id));
+    if (saErr) { const e = new Error(`Straggler receipt move failed: ${saErr.message}`); e.status = 500; throw e; }
+  }
+
   return res.status(200).json({
     purchaseOrder: moved,
     targetBrandId: target,
-    migrated: { lines: lines.length, createdVarieties, createdSpecies },
+    migrated: {
+      lines: lines.length,
+      items: movingItems.length + stragglers.length,
+      createdVarieties,
+      createdSpecies,
+    },
   });
 }

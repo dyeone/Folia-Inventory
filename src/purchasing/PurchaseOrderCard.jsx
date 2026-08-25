@@ -374,8 +374,9 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
 // <html data-brand> like the label builders, so a rescue session working an
 // archived brand still sees every live brand as a destination. The server
 // re-maps each line's species into the target brand (creating missing
-// species/varieties) and refuses once any units were received, since
-// receiving mints inventory under this brand's SKUs.
+// species/varieties). Received items come along AS-IS — SKUs untouched, so
+// labels already on the plants stay valid — after a collision check, and
+// only while none of them have sold, boxed, or joined a live.
 function MigrateControl({ po, lines, showToast, onChanged, setConfirmDialog }) {
   const activeBrand = document.documentElement.getAttribute('data-brand') || DEFAULT_BRAND;
   const targets = Object.keys(BRANDS).filter(b => b !== activeBrand);
@@ -383,20 +384,21 @@ function MigrateControl({ po, lines, showToast, onChanged, setConfirmDialog }) {
   const [busy, setBusy] = useState(false);
   if (!targets.length) return null;
 
-  const hasReceived = (lines || []).some(l => l.quantityReceived > 0);
+  const receivedCount = (lines || []).reduce((s, l) => s + (l.quantityReceived || 0), 0);
   const lineCount = lines?.length ?? po.lineCount ?? 0;
 
   const start = () => {
     setConfirmDialog?.({
       title: `Migrate to ${brandName(target)}?`,
-      message: `Moves this PO and its ${lineCount} ${lineCount === 1 ? 'line' : 'lines'} out of ${brandName(activeBrand)} into ${brandName(target)}. Species or varieties it needs are created there automatically; items received later will mint under ${brandName(target)}'s SKUs. It will disappear from this list and show up in ${brandName(target)}'s Orders.`,
+      message: `Moves this PO and its ${lineCount} ${lineCount === 1 ? 'line' : 'lines'} out of ${brandName(activeBrand)} into ${brandName(target)}.${receivedCount ? ` The ${receivedCount} already-received ${receivedCount === 1 ? 'item moves' : 'items move'} too, keeping their SKUs — labels already on the plants stay valid.` : ''} Species or varieties it needs are created there automatically. Pause receiving on this PO until it's done.`,
       confirmLabel: 'Migrate',
       onConfirm: async () => {
         setBusy(true);
         try {
           const r = await api.migratePurchaseOrderBrand({ id: po.id, targetBrandId: target });
+          const moved = r?.migrated?.items;
           const created = r?.migrated?.createdSpecies;
-          showToast?.(`Migrated to ${brandName(target)}${created ? ` · ${created} species created` : ''}`);
+          showToast?.(`Migrated to ${brandName(target)}${moved ? ` · ${moved} items` : ''}${created ? ` · ${created} species created` : ''}`);
           onChanged?.();
         } catch (e) {
           showToast?.(e.message || 'Migrate failed', 'error');
@@ -422,10 +424,8 @@ function MigrateControl({ po, lines, showToast, onChanged, setConfirmDialog }) {
       <button
         type="button"
         onClick={start}
-        disabled={busy || hasReceived}
-        title={hasReceived
-          ? 'Units were already received — their SKUs belong to this brand, so this PO can no longer migrate'
-          : `Move this PO to ${brandName(target)}`}
+        disabled={busy}
+        title={`Move this PO to ${brandName(target)} — received items keep their SKUs`}
         className="flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50"
       >
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowLeftRight className="w-4 h-4" />}
