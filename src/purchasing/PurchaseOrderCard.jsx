@@ -375,8 +375,8 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
 // archived brand still sees every live brand as a destination. The server
 // re-maps each line's species into the target brand (creating missing
 // species/varieties). Received items come along AS-IS — SKUs untouched, so
-// labels already on the plants stay valid — after a collision check, and
-// only while none of them have sold, boxed, or joined a live.
+// labels already on the plants stay valid — after a collision check; items
+// that already sold, boxed, or joined a live stay behind with their history.
 function MigrateControl({ po, lines, showToast, onChanged, setConfirmDialog }) {
   const activeBrand = document.documentElement.getAttribute('data-brand') || DEFAULT_BRAND;
   const targets = Object.keys(BRANDS).filter(b => b !== activeBrand);
@@ -390,15 +390,16 @@ function MigrateControl({ po, lines, showToast, onChanged, setConfirmDialog }) {
   const start = () => {
     setConfirmDialog?.({
       title: `Migrate to ${brandName(target)}?`,
-      message: `Moves this PO and its ${lineCount} ${lineCount === 1 ? 'line' : 'lines'} out of ${brandName(activeBrand)} into ${brandName(target)}.${receivedCount ? ` The ${receivedCount} already-received ${receivedCount === 1 ? 'item moves' : 'items move'} too, keeping their SKUs — labels already on the plants stay valid.` : ''} Species or varieties it needs are created there automatically. Pause receiving on this PO until it's done.`,
+      message: `Moves this PO and its ${lineCount} ${lineCount === 1 ? 'line' : 'lines'} out of ${brandName(activeBrand)} into ${brandName(target)}.${receivedCount ? ` Already-received items move too, keeping their SKUs — labels on the plants stay valid. Any that were already sold, packed, or claimed by a live stay behind in ${brandName(activeBrand)} with their history.` : ''} Species or varieties it needs are created there automatically. Pause receiving on this PO until it's done.`,
       confirmLabel: 'Migrate',
       onConfirm: async () => {
         setBusy(true);
         try {
           const r = await api.migratePurchaseOrderBrand({ id: po.id, targetBrandId: target });
           const moved = r?.migrated?.items;
+          const skipped = r?.migrated?.skippedItems;
           const created = r?.migrated?.createdSpecies;
-          showToast?.(`Migrated to ${brandName(target)}${moved ? ` · ${moved} items` : ''}${created ? ` · ${created} species created` : ''}`);
+          showToast?.(`Migrated to ${brandName(target)}${moved ? ` · ${moved} items` : ''}${skipped ? ` · ${skipped} sold/packed stayed in ${brandName(activeBrand)}` : ''}${created ? ` · ${created} species created` : ''}`);
           onChanged?.();
         } catch (e) {
           showToast?.(e.message || 'Migrate failed', 'error');
