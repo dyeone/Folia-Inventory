@@ -15,9 +15,14 @@ const POLL_MS = 1500;
 // which dollar figure fills the amount field on the phone.
 const MODES = [
   { key: 'auction',   label: 'Auction',  hint: 'Starting price = cost' },
-  { key: 'buy_now',   label: 'Buy Now',  hint: 'Price = listing price' },
-  { key: 'give_away', label: 'Giveaway', hint: 'Value = listing price' },
+  { key: 'buy_now',   label: 'Buy Now',  hint: 'Price = 2.5× cost' },
+  { key: 'give_away', label: 'Giveaway', hint: 'Value = 2.5× cost' },
 ];
+
+// Live-scan pricing: the listing price pushed to Palmstreet is this many
+// times the plant's landed cost — scan = list it at margin, no per-item
+// pricing pass.
+const PRICE_COST_MULTIPLIER = 2.5;
 const MODE_LABEL = Object.fromEntries(MODES.map(m => [m.key, m.label]));
 
 // Mirror the bridge's per-mode amount so each row shows the figure that
@@ -100,7 +105,12 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     return () => { cancelled = true; clearInterval(id); };
   }, [entries]);
 
+  // 2.5× cost, rounded up to a whole dollar. Items with no recorded cost
+  // fall back to the old chain (explicit listing price, then the
+  // cultivar/global rate) so they can still list.
   const resolvePrice = (item) => {
+    const cost = Number(item.grossCost);
+    if (Number.isFinite(cost) && cost > 0) return Math.ceil(cost * PRICE_COST_MULTIPLIER);
     const listing = parseFloat(item.listingPrice);
     if (Number.isFinite(listing) && listing > 0) return listing;
     const ideal = computeIdealPrice(item, idealRate, lookups);
@@ -152,7 +162,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     }
     const price = resolvePrice(item);
     if (price == null) {
-      setError(`${sku} has no listing price and no cultivar/global rate to fall back on.`);
+      setError(`${sku} has no cost, listing price, or cultivar/global rate to price from.`);
       return;
     }
     pushItem(item);
