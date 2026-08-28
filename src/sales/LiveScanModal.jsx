@@ -14,7 +14,7 @@ const POLL_MS = 1500;
 // on (matches MODE_CONFIG in bridge/index.js); `hint` tells the operator
 // which dollar figure fills the amount field on the phone.
 const MODES = [
-  { key: 'auction',   label: 'Auction',  hint: 'Starting price = cost' },
+  { key: 'auction',   label: 'Auction',  hint: 'Starting price = 2.5× cost' },
   { key: 'buy_now',   label: 'Buy Now',  hint: 'Price = 2.5× cost' },
   { key: 'give_away', label: 'Giveaway', hint: 'Value = 2.5× cost' },
 ];
@@ -26,13 +26,9 @@ const PRICE_COST_MULTIPLIER = 2.5;
 const MODE_LABEL = Object.fromEntries(MODES.map(m => [m.key, m.label]));
 
 // Mirror the bridge's per-mode amount so each row shows the figure that
-// actually gets typed: auction uses the gross-cost floor (rounded up),
-// the other two use the resolved listing price.
+// actually gets typed. All three modes now carry the resolved 2.5×-cost
+// price — the auction floor included (see the payload note in pushItem).
 function displayAmount(mode, item, price) {
-  if (mode === 'auction') {
-    const c = Number(item.grossCost);
-    return Number.isFinite(c) && c > 0 ? Math.ceil(c) : null;
-  }
   return Number.isFinite(price) && price > 0 ? price : null;
 }
 
@@ -135,9 +131,13 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
         payload: {
           sku: item.sku,
           name: item.name,
-          price,                      // bridge uses this for buy_now / give_away
-          grossCost: item.grossCost,  // bridge uses this for the auction floor
-          mode: m,                    // 'auction' | 'buy_now' | 'give_away'
+          price,             // bridge uses this for buy_now / give_away
+          // The bridge types ceil(grossCost) as the auction starting price.
+          // Auctions now start at 2.5× cost like the other modes, so feed the
+          // resolved price through this field — the deployed bridge keeps its
+          // contract and types the new figure without a Mac-app republish.
+          grossCost: price,
+          mode: m,           // 'auction' | 'buy_now' | 'give_away'
           forced,
         },
       });
