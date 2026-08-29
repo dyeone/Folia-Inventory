@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   Plus, Calendar, Layers, Download, Trash2, Edit2, PackageOpen,
   Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock, Radio, Tag,
-  BarChart3, FileText, Users, Coins, Video,
+  BarChart3, FileText, Users, Coins, Video, Music2,
 } from 'lucide-react';
 import { PreSaleTab } from './PreSaleTab.jsx';
 import { hasEval } from './saleEval.js';
@@ -30,7 +30,7 @@ function formatStart(sale) {
 
 export function SalesView({
   sales, items, onCreate, onEdit, onDelete, onBuildLineup, onExportCsv,
-  onSendToPacking, onGoLive, onValidateSales, onStartLiveScan, isAdmin,
+  onSendToPacking, onGoLive, onValidateSales, onValidateTikTok, onStartLiveScan, isAdmin,
   onStageItems, onItemsChanged, showToast,
   onEvaluateSale, onViewReport, evalVersion, evalSaleIds,
   activeBrand, sellers = [], varieties = [], species = [],
@@ -81,6 +81,15 @@ export function SalesView({
               className="flex items-center gap-1.5 px-4 py-2.5 bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 text-sm font-medium rounded-lg"
             >
               <Upload className="w-4 h-4" /> Validate Sales
+            </button>
+          )}
+          {onValidateTikTok && (
+            <button
+              onClick={onValidateTikTok}
+              title='Match a TikTok Seller Center "To Ship" export against inventory, then create TikTok boxes — kept separate from Palmstreet boxes'
+              className="flex items-center gap-1.5 px-4 py-2.5 bg-black border border-black text-white hover:bg-gray-800 active:bg-gray-900 text-sm font-medium rounded-lg"
+            >
+              <Music2 className="w-4 h-4 text-cyan-300" /> TikTok Orders
             </button>
           )}
           {isBae && (
