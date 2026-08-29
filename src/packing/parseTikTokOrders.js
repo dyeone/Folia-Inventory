@@ -73,7 +73,10 @@ export function parseTikTokOrders(rows, inventoryItems) {
     const city = String(pick(row, 'City')).trim();
     const state = String(pick(row, 'State')).trim();
     const zip = String(pick(row, 'Zipcode')).trim();
-    const country = String(pick(row, 'Country')).trim();
+    // TikTok spells the country out ("United States") — store the ISO code
+    // carriers want; the server normalizes again at buy time regardless.
+    const countryRaw = String(pick(row, 'Country')).trim();
+    const country = /^(united states|usa|u\.s\.a?\.?|america)$/i.test(countryRaw) ? 'US' : countryRaw;
     const username = String(pick(row, 'Buyer Username', 'Buyer Nickname')).trim();
 
     // "08/25/2026 9:29:53 AM" — US-style, Date() parses it directly.

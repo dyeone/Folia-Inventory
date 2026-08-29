@@ -30,3 +30,21 @@ export function normalizeUsState(raw) {
   if (/^[A-Za-z]{2}$/.test(s)) return s.toUpperCase();
   return STATE_CODES[s.toLowerCase().replace(/\s+/g, ' ')] || s;
 }
+
+// Country name → ISO-2 code, same posture as states: carriers want "US",
+// but addresses arrive with whatever the source wrote — TikTok's order
+// export says "United States" (which made ShipStation createlabel return
+// "The request is invalid"), manual entries say "USA". 2-letter inputs
+// pass through uppercased; unknown names return trimmed as-is.
+const COUNTRY_CODES = {
+  'united states': 'US', 'united states of america': 'US', usa: 'US',
+  'u.s.': 'US', 'u.s.a.': 'US', america: 'US',
+  canada: 'CA', mexico: 'MX',
+};
+
+export function normalizeCountry(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return s;
+  if (/^[A-Za-z]{2}$/.test(s)) return s.toUpperCase();
+  return COUNTRY_CODES[s.toLowerCase().replace(/\s+/g, ' ')] || s;
+}
