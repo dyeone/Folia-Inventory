@@ -288,6 +288,8 @@ function StaffOrAdminInventory() {
   const [lineupSale, setLineupSale] = useState(null);
   // Validate Sales modal — global, not per-sale-event. Boolean toggle.
   const [showValidateSales, setShowValidateSales] = useState(false);
+  // Same modal in TikTok mode — TikTok "To Ship" export → separate tt… boxes.
+  const [showValidateTikTok, setShowValidateTikTok] = useState(false);
   const [showLiveScan, setShowLiveScan] = useState(false);
   const [liveSale, setLiveSale] = useState(null);
   // { sale, mode: 'evaluate' | 'report' } for the read-only sales evaluation
@@ -1314,6 +1316,7 @@ function StaffOrAdminInventory() {
               }
             }}
             onValidateSales={() => setShowValidateSales(true)}
+            onValidateTikTok={() => setShowValidateTikTok(true)}
             onStartLiveScan={() => setShowLiveScan(true)}
             onGoLive={(sale) => setLiveSale(sale)}
             onEvaluateSale={(sale) => setSaleEval({ sale, mode: 'evaluate' })}
@@ -1820,6 +1823,24 @@ function StaffOrAdminInventory() {
             }
           }}
           onClose={() => setShowValidateSales(false)}
+        />
+      )}
+      {showValidateTikTok && (
+        <SalesUploadModal
+          platform="tiktok"
+          items={items}
+          onApply={async (updates) => {
+            try {
+              await api.upsertItems(updates);
+              const fresh = await api.getItems();
+              applyItemsFresh(fresh);
+              showToast(`Marked ${updates.length} ${updates.length === 1 ? 'item' : 'items'} sold`);
+              setShowValidateTikTok(false);
+            } catch (e) {
+              showToast(e.message || 'Apply failed', 'error');
+            }
+          }}
+          onClose={() => setShowValidateTikTok(false)}
         />
       )}
       {saleEval && (

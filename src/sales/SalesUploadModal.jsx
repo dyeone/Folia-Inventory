@@ -4,6 +4,8 @@ import {
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
+import { parseTikTokOrders } from '../packing/parseTikTokOrders.js';
+import { isTikTokBoxId } from '../packing/platform.js';
 import { matchInventory } from '../packing/matchInventory.js';
 import { normalizeSku } from '../labels/boxCode.js';
 import { BoxesList, SummaryStat } from '../packing/PackingView.jsx';
@@ -78,7 +80,13 @@ function classifyLine(box, it, match) {
   return 'topup';
 }
 
-export function SalesUploadModal({ items, onApply, onClose }) {
+// platform: 'palmstreet' (default) or 'tiktok'. Same pipeline end to end —
+// only the parser, the merge scope (a TikTok order only ever merges into an
+// open TikTok box, never a Palmstreet one for the same client, and vice
+// versa), and the copy differ. TikTok box ids carry a `tt` prefix that marks
+// them for life (badges, future merges).
+export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstreet' }) {
+  const isTikTok = platform === 'tiktok';
   const [fileName, setFileName] = useState('');
   const [boxes, setBoxes] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -93,7 +101,7 @@ export function SalesUploadModal({ items, onApply, onClose }) {
       const wb = XLSX.read(buf, { type: 'array' });
       const sheet = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      const parsed = parsePalmstreetOrders(rows);
+      const parsed = isTikTok ? parseTikTokOrders(rows, items) : parsePalmstreetOrders(rows);
       if (parsed.length === 0) {
         setErr('No shippable items found in this file.');
         setBoxes(null);
@@ -159,12 +167,16 @@ export function SalesUploadModal({ items, onApply, onClose }) {
       if (!item.shipmentBoxId) continue;
       if (item.deletedAt) continue;
       if (item.status !== 'sold') continue;
+      // Platform fence: a TikTok upload only ever merges into open TikTok
+      // (tt…) boxes, a Palmstreet upload only into non-TikTok ones. Same
+      // client on both platforms = two separate boxes, by design.
+      if (isTikTokBoxId(item.shipmentBoxId) !== isTikTok) continue;
       const addr = item.buyerAddress || {};
       const key = groupKeyFor(item.buyer, addr.street1, addr.city, addr.state, addr.zip);
       if (!m.has(key)) m.set(key, item.shipmentBoxId);
     }
     return m;
-  }, [items]);
+  }, [items, isTikTok]);
 
   // Orders that are FULLY shipped — every item with that order number is
   // shipped/delivered and none is still 'sold'. Re-validating a file that
@@ -379,10 +391,12 @@ export function SalesUploadModal({ items, onApply, onClose }) {
           <div className="min-w-0 flex-1">
             <h3 className="font-semibold text-gray-900 text-base sm:text-lg flex items-center gap-2">
               <Upload className="w-5 h-5 text-emerald-600" />
-              Validate Sales
+              {isTikTok ? 'Validate TikTok Orders' : 'Validate Sales'}
             </h3>
             <p className="text-xs text-gray-500 mt-0.5">
-              Match each Palmstreet order to inventory by exact SKU. New lines for a buyer with an open box merge into it; lines whose SKU is already in any box (open or shipped) are updated in place — order date, shipping fee, and any missing details are filled in without duplicating or moving the box.
+              {isTikTok
+                ? 'Match each TikTok order to inventory by the label number in the product name. New lines for a buyer with an open TikTok box merge into it — TikTok boxes are never combined with the same client\'s Palmstreet boxes, and carry their own TikTok mark in Shipping.'
+                : 'Match each Palmstreet order to inventory by exact SKU. New lines for a buyer with an open box merge into it; lines whose SKU is already in any box (open or shipped) are updated in place — order date, shipping fee, and any missing details are filled in without duplicating or moving the box.'}
             </p>
           </div>
           <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2" aria-label="Close">
@@ -397,9 +411,11 @@ export function SalesUploadModal({ items, onApply, onClose }) {
                 <div className="border-2 border-dashed border-gray-300 rounded-xl p-12 sm:p-16 text-center hover:border-emerald-400 hover:bg-emerald-50/50 active:bg-emerald-50 cursor-pointer transition">
                   <Upload className="w-10 h-10 text-gray-400 mx-auto mb-3" />
                   <div className="text-base font-medium text-gray-900">
-                    {loading ? 'Reading file...' : 'Upload Palmstreet sales report'}
+                    {loading ? 'Reading file...' : (isTikTok ? 'Upload TikTok "To Ship" orders export' : 'Upload Palmstreet sales report')}
                   </div>
-                  <div className="text-sm text-gray-500 mt-1">.xlsx, .xls or .csv</div>
+                  <div className="text-sm text-gray-500 mt-1">
+                    {isTikTok ? 'Seller Center → Orders → Export (.xlsx)' : '.xlsx, .xls or .csv'}
+                  </div>
                   <input
                     type="file"
                     accept=".xlsx,.xls,.csv"
