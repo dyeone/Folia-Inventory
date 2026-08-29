@@ -13,7 +13,7 @@ import {
   refund as shippoRefund, shippoConfigured, isTestToken as shippoIsTest,
 } from './_lib/shippo.js';
 import { SHIPPING_SERVICES } from './_lib/services.js';
-import { normalizeUsState } from './_lib/usState.js';
+import { normalizeUsState, normalizeCountry } from './_lib/usState.js';
 
 export default wrap(async (req, res) => {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
@@ -78,8 +78,10 @@ async function getRatesHandler(req, res, brandId) {
     const e = new Error('Buyer address incomplete on this box'); e.status = 422; throw e;
   }
   // "Florida" → "FL": a spelled-out state 500s ShipStation's whole getrates
-  // call and drops Shippo's UPS rates.
+  // call and drops Shippo's UPS rates. Same for "United States" → "US"
+  // (TikTok-import addresses spell the country out).
   to.state = normalizeUsState(to.state);
+  to.country = normalizeCountry(to.country) || 'US';
 
   // ── ShipStation: one getrates call per distinct carrier needed ──────────
   const neededCarriers = [...new Set(wanted.map(s => s.provider))];
@@ -264,7 +266,7 @@ async function buyLabel(req, res, userId, brandId) {
     city: shipFrom.city,
     state: normalizeUsState(shipFrom.state),
     zip: shipFrom.zip,
-    country: shipFrom.country,
+    country: normalizeCountry(shipFrom.country),
     phone: shipFrom.phone || undefined,
   };
   const shipToAddr = {
@@ -275,7 +277,9 @@ async function buyLabel(req, res, userId, brandId) {
     // "Florida" → "FL": carriers reject spelled-out states at purchase time.
     state: normalizeUsState(buyerAddr.state),
     zip: buyerAddr.zip,
-    country: buyerAddr.country || 'US',
+    // "United States" → "US": TikTok-import addresses spell the country out,
+    // and ShipStation answers with a bare "The request is invalid."
+    country: normalizeCountry(buyerAddr.country) || 'US',
     phone: buyerAddr.phone || undefined,
   };
 
