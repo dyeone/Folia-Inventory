@@ -3,9 +3,10 @@ import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
   Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin, Clock,
-  ShoppingCart, Combine,
+  ShoppingCart, Combine, Leaf, FileText,
 } from 'lucide-react';
 import { api } from '../api.js';
+import { openUsdaStickerPdf, openUsdaSlipPdf } from '../labels/usdaDocs.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -2796,6 +2797,29 @@ function BoxRow({
                 <Receipt className="w-3 h-3" /> Print slip
               </button>
             )}
+            {/* USDA / CA nursery-stock compliance documents — needed when a
+                box routes through agricultural inspection (rural counties).
+                Not action-gated: shipped boxes can reprint them too. */}
+            <button
+              onClick={(e) => {
+                stop(e);
+                openUsdaStickerPdf(box).catch(err => showToast?.(err.message || 'Sticker failed', 'error'));
+              }}
+              title='Print the "LIVE NURSERY STOCK" sticker (CA F&A §6501) — goes on the outside of the box'
+              className="text-xs font-medium px-2.5 py-1 rounded-md border border-red-300 text-red-700 bg-white hover:bg-red-50 active:bg-red-100 flex items-center gap-1"
+            >
+              <Leaf className="w-3 h-3" /> USDA sticker
+            </button>
+            <button
+              onClick={(e) => {
+                stop(e);
+                openUsdaSlipPdf(box, liveShipment).catch(err => showToast?.(err.message || 'Slip failed', 'error'));
+              }}
+              title="Print the nursery-stock packing slip with the §6501(c) declaration — goes inside the box"
+              className="text-xs font-medium px-2.5 py-1 rounded-md border border-red-300 text-red-700 bg-white hover:bg-red-50 active:bg-red-100 flex items-center gap-1"
+            >
+              <FileText className="w-3 h-3" /> USDA slip
+            </button>
             {onOpen && (
               <button
                 onClick={(e) => { stop(e); onOpen(); }}
