@@ -32,6 +32,26 @@ function displayAmount(mode, item, price) {
   return Number.isFinite(price) && price > 0 ? price : null;
 }
 
+// The bridge types the title on the phone with adb `input text`, which only
+// handles printable ASCII — "monstera Creme Brûlée" and curly quotes made it
+// throw and the quick-listing title stayed EMPTY. Transliterate accents
+// (é → e via NFKD + strip combining marks) and typographic punctuation, drop
+// whatever's left, and fall back to the SKU so the field is never blank.
+// Sanitizing here (not in the bridge) means no Mac-app republish.
+function asciiTitle(name, sku) {
+  const out = String(name || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[‘’‛]/g, "'")
+    .replace(/[“”„]/g, '"')
+    .replace(/[–—]/g, '-')
+    .replace(/×/g, 'x')
+    .replace(/[^\x20-\x7E]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return out || String(sku || 'Plant');
+}
+
 // Live Scan Mode — keep the input autofocused; every barcode scan
 // resolves the SKU locally and enqueues a Palmstreet listing job.
 // No per-scan confirmation: scan = list it.
@@ -130,7 +150,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
         jobAction: 'listing',
         payload: {
           sku: item.sku,
-          name: item.name,
+          name: asciiTitle(item.name, item.sku),
           price,             // bridge uses this for buy_now / give_away
           // The bridge types ceil(grossCost) as the auction starting price.
           // Auctions now start at 2.5× cost like the other modes, so feed the
