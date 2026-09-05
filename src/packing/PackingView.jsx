@@ -748,10 +748,16 @@ export function PackingView({
     if (shortBoxCode(box.id).toLowerCase().includes(searchLower)) return true;
     if (box.buyer && box.buyer.toLowerCase().includes(searchLower)) return true;
     if (box.buyerUsername && box.buyerUsername.toLowerCase().includes(searchLower)) return true;
+    // The operator's box note (the yellow seller-note panel) — lets a search
+    // like "extra insulation" or "keychain" find the box it was written on.
+    const note = boxNotesByBox?.[box.id]?.note;
+    if (note && note.toLowerCase().includes(searchLower)) return true;
     for (const i of box.items) {
       if (i.sku && i.sku.toLowerCase().includes(searchLower)) return true;
       if (i.name && i.name.toLowerCase().includes(searchLower)) return true;
       if (i.variety && i.variety.toLowerCase().includes(searchLower)) return true;
+      // Per-item "Seller: … / Buyer: …" notes from the order imports.
+      if (i.notes && i.notes.toLowerCase().includes(searchLower)) return true;
       // Lineup number — exact match only (substring would flood short #s).
       // Lowercased to match the query normalization (manual lots can carry
       // letters).
