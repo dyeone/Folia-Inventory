@@ -99,8 +99,15 @@ export function MatchPicker({ row, override, species, varietyById, defaultLabel,
 // picks, the row becomes a manual override and the normal reviewable path
 // takes over (bound state + undo), so this renders only while un-overridden.
 // Suggestions are computed on open — matched rows don't carry them.
-export function MatchedRowEditor({ row, species, varietyById, suggestIndex, onOverride }) {
+//
+// When onRefileVariety is provided, the open state also offers "filed
+// under [variety]" for the MATCHED SPECIES ITSELF — the right match can be
+// sitting in the wrong genus (a Philodendron filed under Anthurium), and
+// re-filing is a catalog edit (species.varietyId), not a row override:
+// future SKUs mint under the new variety's prefix.
+export function MatchedRowEditor({ row, species, varieties, varietyById, suggestIndex, onOverride, onRefileVariety }) {
   const [open, setOpen] = useState(false);
+  const [refiling, setRefiling] = useState(false);
   const sp = (species || []).find(s => s.id === row.speciesId);
   const vName = sp && varietyById.get(sp.varietyId)?.name;
   return (
@@ -111,13 +118,36 @@ export function MatchedRowEditor({ row, species, varietyById, suggestIndex, onOv
           type="button"
           onClick={() => setOpen(o => !o)}
           className="text-sky-700 font-medium hover:underline px-1"
-          title="Bind this row to a different species, or skip it"
+          title="Bind this row to a different species, re-file its variety, or skip it"
         >
           {open ? 'close' : 'change'}
         </button>
       </span>
       {open && (
-        <div className="mt-1">
+        <div className="mt-1 space-y-1">
+          {onRefileVariety && sp && (
+            <label className="flex items-center gap-1 text-gray-500">
+              <span className="shrink-0">filed under</span>
+              <select
+                value={sp.varietyId || ''}
+                disabled={refiling}
+                onChange={async (e) => {
+                  const varietyId = e.target.value;
+                  if (!varietyId || varietyId === sp.varietyId) return;
+                  setRefiling(true);
+                  try { await onRefileVariety(sp, varietyId); }
+                  finally { setRefiling(false); }
+                }}
+                className="px-1 py-0.5 text-[11px] border border-gray-300 bg-white rounded max-w-[11rem] disabled:opacity-60"
+                title="Re-file this species under another variety — a catalog edit; future SKUs use the new prefix"
+              >
+                {(varieties || []).map(v => (
+                  <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
+                ))}
+              </select>
+              <span className="text-gray-400 shrink-0">catalog edit</span>
+            </label>
+          )}
           <MatchPicker
             row={{ ...row, suggestions: suggest(row.species, suggestIndex) }}
             override={null}

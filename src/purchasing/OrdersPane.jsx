@@ -124,6 +124,7 @@ export function OrdersPane({ varieties, species, isAdmin, showToast, setConfirmD
           species={species}
           varieties={varieties}
           showToast={showToast}
+          onSpeciesChanged={onSpeciesChanged}
           onClose={() => setImportOpen(false)}
           onCreated={() => {
             // A sent-to-receiving PO is 'ordered'; make sure that filter is

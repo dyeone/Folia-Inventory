@@ -30,7 +30,7 @@ const REVIEWABLE = new Set(['create', 'ambiguous', 'unknown-variety', 'unmatched
 // Parsing plumbing (charset-safe CSV decode, header aliases incl. Chinese,
 // size rails) is shared with VendorPriceModal — see sheetParsing.js.
 
-export function ImportOrderModal({ species, varieties, showToast, onClose, onCreated }) {
+export function ImportOrderModal({ species, varieties, showToast, onClose, onCreated, onSpeciesChanged }) {
   const [fileName, setFileName] = useState('');
   const [baseRows, setBaseRows] = useState(null); // parsed rows, pre-matching
   const [parseErr, setParseErr] = useState('');
@@ -217,6 +217,19 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     }
   };
 
+  // Re-file a matched row's SPECIES under another variety — a catalog edit
+  // (admin-gated server-side), used when the right match sits in the wrong
+  // genus. The catalog refresh flows back down as new props.
+  const refileVariety = async (sp, varietyId) => {
+    try {
+      await api.updateSpecies({ id: sp.id, patch: { varietyId } });
+      showToast?.(`${sp.epithet} re-filed`);
+      onSpeciesChanged?.();
+    } catch (e) {
+      showToast?.(e.message || 'Re-file failed', 'error');
+    }
+  };
+
   const statusChip = (r) => {
     switch (r.status) {
       case 'matched':   return <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">matched</span>;
@@ -400,8 +413,10 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
                             <MatchedRowEditor
                               row={r}
                               species={species}
+                              varieties={varieties}
                               varietyById={varietyById}
                               suggestIndex={suggestIndex}
+                              onRefileVariety={refileVariety}
                               onOverride={(ov) => {
                                 importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
                                 setOverrides(o => ({ ...o, [r.idx]: ov }));
