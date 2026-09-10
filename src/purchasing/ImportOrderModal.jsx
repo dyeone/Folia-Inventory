@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
 import { readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
-import { MatchPicker } from './MatchPicker.jsx';
+import { MatchPicker, RowVarietySelect } from './MatchPicker.jsx';
 
 // Rows the auto-matcher couldn't bind to an existing species — each gets a
 // manual-match picker so a near-miss name lands on the right species
@@ -108,6 +108,12 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
       } else if (REVIEWABLE.has(row.status)) {
         row.suggestions = suggest(row.species, suggestIndex);
         row.reviewable = true;
+      }
+      // Per-row variety pick (the select on a "new species" chip) — re-files
+      // this row's create under its own variety; the modal-wide default and
+      // the sheet's variety column only apply to rows without one.
+      if (ov?.varietyId && row.status === 'create') {
+        row = { ...row, varietyId: ov.varietyId, viaDefault: false };
       }
       row.idx = i;
       return row;
@@ -214,14 +220,22 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   const statusChip = (r) => {
     switch (r.status) {
       case 'matched':   return <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">matched</span>;
-      case 'create': {
-        const vName = varietyById.get(r.varietyId)?.name || '?';
+      case 'create':
         return (
-          <span className="text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={r.viaDefault ? 'Not in the catalog and no variety column — created under the genus chosen below' : 'Created under the variety named on this row'}>
-            new species → {vName}
+          <span className="inline-flex items-center text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={r.viaDefault ? 'Not in the catalog and no variety column — files under the default genus until you pick one here' : 'Created as a new species under the variety picked here'}>
+            new species →
+            <RowVarietySelect
+              value={r.varietyId}
+              varieties={varieties}
+              onChange={(varietyId) => {
+                // Same re-mint rule as the genus select and manual matches: a
+                // different filing is a different import.
+                importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+                setOverrides(o => ({ ...o, [r.idx]: { varietyId } }));
+              }}
+            />
           </span>
         );
-      }
       case 'skipped-manual': return <span className="text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">skipped</span>;
       case 'ambiguous': return <span className="text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title="This name exists in more than one variety (and not the default one) — match it below or add a variety column">ambiguous</span>;
       case 'duplicate': return (
@@ -356,7 +370,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
                     <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
                   ))}
                 </select>
-                <span className="text-gray-500 shrink-0 hidden sm:inline">rows with their own variety column keep it</span>
+                <span className="text-gray-500 shrink-0 hidden sm:inline">the default — each row has its own picker too</span>
               </label>
             )}
             <div className="border border-gray-200 rounded-xl overflow-hidden">

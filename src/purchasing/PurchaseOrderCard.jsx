@@ -292,8 +292,10 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
             <AddLineRow
               poId={po.id}
               species={species}
+              varieties={varieties}
               showToast={showToast}
               onAdded={refreshLines}
+              onSpeciesChanged={onSpeciesChanged}
             />
           )}
 
@@ -436,26 +438,50 @@ function MigrateControl({ po, lines, showToast, onChanged, setConfirmDialog }) {
   );
 }
 
-// Inline add-a-line form: type a species name, pick from the catalog, set
-// qty (+ price — blank uses the species' saved wholesale price). Admin-only:
-// add-line is an admin action server-side.
-function AddLineRow({ poId, species, showToast, onAdded }) {
+// Inline add-a-line form: type a species name, pick from the catalog — or
+// type a NEW name and pick the variety it files under: the species is
+// created in the catalog and the line added in one go (typed prices become
+// the new species' wholesale price). An exact-name catalog match is reused
+// instead of duplicated, mirroring the sheet-import posture. Admin-only:
+// add-line and species-create are admin actions server-side.
+function AddLineRow({ poId, species, varieties, showToast, onAdded, onSpeciesChanged }) {
   const [name, setName] = useState('');
   const [picked, setPicked] = useState(null);
   const [qty, setQty] = useState('1');
   const [price, setPrice] = useState('');
+  const [newVarietyId, setNewVarietyId] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // Typed a name but didn't pick a suggestion → this is a create, unless the
+  // text exactly matches a catalog species (then we quietly use that one).
+  const typed = name.trim();
+  const exactMatch = useMemo(() => {
+    if (!typed) return null;
+    const t = typed.toLowerCase();
+    return (species || []).find(s => String(s.epithet).trim().toLowerCase() === t) || null;
+  }, [typed, species]);
+  const isCreate = !!typed && !picked && !exactMatch;
 
   const add = async () => {
     if (busy) return;
-    if (!picked) { showToast?.('Pick a species from the suggestions first', 'error'); return; }
+    let target = picked || exactMatch;
+    if (!target && !typed) { showToast?.('Type a species name first', 'error'); return; }
     const n = parseInt(qty, 10);
     if (!Number.isFinite(n) || n < 1) { showToast?.('Quantity must be at least 1', 'error'); return; }
+    if (!target && !newVarietyId) { showToast?.('Pick a variety for the new species', 'error'); return; }
     setBusy(true);
     try {
+      if (!target) {
+        target = await api.createSpecies({
+          varietyId: newVarietyId,
+          epithet: typed,
+          wholesalePrice: price === '' ? undefined : parseFloat(price),
+        });
+        onSpeciesChanged?.();
+      }
       await api.addPurchaseOrderLine({
         id: poId,
-        speciesId: picked.id,
+        speciesId: target.id,
         quantityOrdered: n,
         unitWholesalePrice: price === '' ? undefined : parseFloat(price),
       });
@@ -487,6 +513,22 @@ function AddLineRow({ poId, species, showToast, onAdded }) {
           }}
         />
       </div>
+      {isCreate && (
+        <label className="flex items-center gap-1 text-[11px] text-sky-700 font-medium">
+          new species under
+          <select
+            value={newVarietyId}
+            onChange={(e) => setNewVarietyId(e.target.value)}
+            className="px-1.5 py-1.5 text-xs border border-sky-300 bg-sky-50 text-sky-800 rounded max-w-[10rem]"
+            title="Variety the new species files under"
+          >
+            <option value="">variety…</option>
+            {(varieties || []).map(v => (
+              <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
+            ))}
+          </select>
+        </label>
+      )}
       <input
         type="number"
         min={1}
@@ -509,11 +551,12 @@ function AddLineRow({ poId, species, showToast, onAdded }) {
       <button
         type="button"
         onClick={add}
-        disabled={busy || !picked}
+        disabled={busy || (!picked && !exactMatch && !(isCreate && newVarietyId))}
+        title={isCreate ? 'Create this species in the catalog and add it to the order' : 'Add this species to the order'}
         className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium bg-emerald-600 hover:bg-emerald-700 text-white rounded disabled:opacity-50"
       >
         {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
-        Add
+        {isCreate ? 'Create & add' : 'Add'}
       </button>
     </div>
   );

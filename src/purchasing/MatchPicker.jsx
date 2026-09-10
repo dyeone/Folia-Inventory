@@ -11,7 +11,9 @@ import { norm } from './sheetParsing.js';
 //
 // The parent owns the override value; search text is local (each row's
 // picker is its own instance, so state resets naturally on unmount).
-//   override: { speciesId } | { skip: true } | null
+//   override: { speciesId } | { skip: true } | { varietyId } | null
+//   ({ varietyId } comes from RowVarietySelect below, not this picker —
+//    it re-files a new-species row without binding it to an existing one.)
 export function MatchPicker({ row, override, species, varietyById, defaultLabel, onOverride }) {
   const [search, setSearch] = useState('');
 
@@ -88,5 +90,27 @@ export function MatchPicker({ row, override, species, varietyById, defaultLabel,
         </div>
       )}
     </div>
+  );
+}
+
+// Per-row variety picker for a "new species" sheet row (Import / Update-
+// from-list modals). Each create row files under its own variety instead of
+// one modal-wide genus: the select starts on whatever the matcher chose
+// (the row's variety column, else the modal default) and a change is stored
+// as a { varietyId } override so later default-genus changes can't clobber
+// an explicit per-row pick.
+export function RowVarietySelect({ value, varieties, onChange }) {
+  return (
+    <select
+      value={value || ''}
+      onChange={(e) => onChange(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      title="Variety this new species is filed under"
+      className="ml-1 px-1 py-0.5 text-[11px] border border-sky-200 bg-white text-sky-800 rounded max-w-[11rem]"
+    >
+      {(varieties || []).map(v => (
+        <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
+      ))}
+    </select>
   );
 }
