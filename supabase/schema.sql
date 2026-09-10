@@ -67,6 +67,9 @@ create table if not exists inventory_items (
   "modifiedBy"          text,
   "soldAt"              timestamptz
 );
+-- When the plant was staged onto its current sale (0042) — un-numbered
+-- staged rows sort by this so the scan order survives reloads.
+alter table inventory_items add column if not exists "stagedAt" timestamptz;
 
 -- ─── Sales Events ─────────────────────────────────────────────────────────────
 
