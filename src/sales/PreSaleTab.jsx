@@ -323,7 +323,16 @@ export function PreSaleTab({
         stagedAt: toSaleId ? new Date().toISOString() : null,
         ...extra,
       };
-      await patchItem(it.id, patch, toSaleId);
+      try {
+        await patchItem(it.id, patch, toSaleId);
+      } catch (e) {
+        // Graceful degrade on an un-migrated DB (0042 not applied yet):
+        // staging must never break for lack of the ordering column — retry
+        // without it; the order just won't persist until the migration runs.
+        if (!/stagedAt/i.test(e?.message || '')) throw e;
+        const { stagedAt, ...withoutStagedAt } = patch;
+        await patchItem(it.id, withoutStagedAt, toSaleId);
+      }
       return true;
     } catch (e) {
       setOverride(p => ({ ...p, [it.id]: it.saleId })); // rollback
@@ -399,8 +408,17 @@ export function PreSaleTab({
     setOverride(p => { const n = { ...p }; for (const it of rows) n[it.id] = null; return n; });
     try {
       const patches = rows.map(it => ({ id: it.id, saleId: null, lotKind: 'sale', lotNumber: null, stagedAt: null }));
-      if (onStageItems) await onStageItems(patches);
-      else { await api.upsertItems(patches); onItemsChanged?.(); }
+      const saveAll = async (ps) => {
+        if (onStageItems) await onStageItems(ps);
+        else { await api.upsertItems(ps); onItemsChanged?.(); }
+      };
+      try {
+        await saveAll(patches);
+      } catch (e) {
+        // Same un-migrated-DB degrade as assign(): drop stagedAt and retry.
+        if (!/stagedAt/i.test(e?.message || '')) throw e;
+        await saveAll(patches.map(({ stagedAt, ...p }) => p));
+      }
       setAddedOrder([]);
       setOpenId(null);
       flash('ok', `Removed ${rows.length} ${rows.length === 1 ? 'item' : 'items'}`);
