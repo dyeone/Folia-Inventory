@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
 import { norm, readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
-import { MatchPicker, RowVarietySelect } from './MatchPicker.jsx';
+import { MatchPicker, MatchedRowEditor, RowVarietySelect } from './MatchPicker.jsx';
 
 // Rows the auto-matcher couldn't bind to an existing species — every one
 // gets a manual-match picker (chips + full catalog search) so a near-miss
@@ -459,6 +459,15 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                             <td className="px-2.5 py-1.5 text-right tabular-nums">{priceCell(r)}</td>
                             <td className="px-2.5 py-1.5">
                               {changeChip(r)}
+                              {r.status === 'matched' && !r.reviewable && (
+                                <MatchedRowEditor
+                                  row={r}
+                                  species={species}
+                                  varietyById={varietyById}
+                                  suggestIndex={suggestIndex}
+                                  onOverride={(ov) => setOverrides(o => ({ ...o, [r.idx]: ov }))}
+                                />
+                              )}
                               {r.reviewable && (
                                 <div className="mt-1">
                                   <MatchPicker

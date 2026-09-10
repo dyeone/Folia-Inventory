@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, X } from 'lucide-react';
-import { norm } from './sheetParsing.js';
+import { norm, suggest } from './sheetParsing.js';
 
 // Manual-match control for one unmatched sheet row (Import / Update-from-
 // list modals): the top fuzzy suggestions as one-tap chips, a searchable
@@ -87,6 +87,45 @@ export function MatchPicker({ row, override, species, varietyById, defaultLabel,
               {label(s)}
             </button>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Editor for an AUTO-matched sheet row: shows which catalog species the
+// matcher bound it to (the bare "matched" chip hid this) and a "change"
+// toggle that opens the full MatchPicker to re-bind or skip. Once the user
+// picks, the row becomes a manual override and the normal reviewable path
+// takes over (bound state + undo), so this renders only while un-overridden.
+// Suggestions are computed on open — matched rows don't carry them.
+export function MatchedRowEditor({ row, species, varietyById, suggestIndex, onOverride }) {
+  const [open, setOpen] = useState(false);
+  const sp = (species || []).find(s => s.id === row.speciesId);
+  const vName = sp && varietyById.get(sp.varietyId)?.name;
+  return (
+    <div className="mt-1 text-[11px]">
+      <span className="inline-flex items-center gap-1 text-gray-500">
+        → {sp ? `${sp.epithet}${vName ? ` (${vName})` : ''}` : row.speciesId}
+        <button
+          type="button"
+          onClick={() => setOpen(o => !o)}
+          className="text-sky-700 font-medium hover:underline px-1"
+          title="Bind this row to a different species, or skip it"
+        >
+          {open ? 'close' : 'change'}
+        </button>
+      </span>
+      {open && (
+        <div className="mt-1">
+          <MatchPicker
+            row={{ ...row, suggestions: suggest(row.species, suggestIndex) }}
+            override={null}
+            species={species}
+            varietyById={varietyById}
+            defaultLabel={null}
+            onOverride={onOverride}
+          />
         </div>
       )}
     </div>
