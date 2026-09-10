@@ -253,6 +253,19 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
     onClose();
   };
 
+  // Re-file a matched row's SPECIES under another variety — a catalog edit
+  // (admin-gated server-side), used when the right match sits in the wrong
+  // genus. The catalog refresh flows back down as new props.
+  const refileVariety = async (sp, varietyId) => {
+    try {
+      await api.updateSpecies({ id: sp.id, patch: { varietyId } });
+      showToast?.(`${sp.epithet} re-filed`);
+      onSpeciesChanged?.();
+    } catch (e) {
+      showToast?.(e.message || 'Re-file failed', 'error');
+    }
+  };
+
   const changeChip = (r) => {
     switch (r.change) {
       case 'add':
@@ -463,8 +476,10 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                                 <MatchedRowEditor
                                   row={r}
                                   species={species}
+                                  varieties={varieties}
                                   varietyById={varietyById}
                                   suggestIndex={suggestIndex}
+                                  onRefileVariety={refileVariety}
                                   onOverride={(ov) => setOverrides(o => ({ ...o, [r.idx]: ov }))}
                                 />
                               )}
