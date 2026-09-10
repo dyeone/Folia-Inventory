@@ -63,7 +63,28 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   // Catalog lookups + row matching + duplicate folding live in
   // sheetParsing.js, shared with UpdateOrderModal — a supplier sheet must
   // parse and match identically whichever door it comes in.
-  const matchCtx = useMemo(() => buildMatchContext(species, varieties), [species, varieties]);
+  // Varieties minted inline from a row's "+ New variety" form — appended to
+  // the prop list so the new genus is selectable (and matchable) immediately,
+  // before App's catalog refresh lands.
+  const [mintedVarieties, setMintedVarieties] = useState([]);
+  const allVarieties = useMemo(() => {
+    const seen = new Set((varieties || []).map(v => v.id));
+    return [...(varieties || []), ...mintedVarieties.filter(v => !seen.has(v.id))];
+  }, [varieties, mintedVarieties]);
+
+  const createVarietyInline = async ({ name, code }) => {
+    try {
+      const v = await api.createVariety({ name, code });
+      setMintedVarieties(m => [...m, v]);
+      onSpeciesChanged?.();
+      return v;
+    } catch (e) {
+      showToast?.(e.message || 'Variety create failed', 'error');
+      return null;
+    }
+  };
+
+  const matchCtx = useMemo(() => buildMatchContext(species, allVarieties), [species, allVarieties]);
   const { varietyById } = matchCtx;
 
   const [noQtyColumn, setNoQtyColumn] = useState(false);
@@ -239,7 +260,8 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
             new species →
             <RowVarietySelect
               value={r.varietyId}
-              varieties={varieties}
+              varieties={allVarieties}
+              onCreateVariety={createVarietyInline}
               onChange={(varietyId) => {
                 // Same re-mint rule as the genus select and manual matches: a
                 // different filing is a different import.
@@ -379,7 +401,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
                   }}
                   className="input !py-1.5 text-sm flex-1"
                 >
-                  {(varieties || []).map(v => (
+                  {(allVarieties || []).map(v => (
                     <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
                   ))}
                 </select>
@@ -413,7 +435,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
                             <MatchedRowEditor
                               row={r}
                               species={species}
-                              varieties={varieties}
+                              varieties={allVarieties}
                               varietyById={varietyById}
                               suggestIndex={suggestIndex}
                               onRefileVariety={refileVariety}
