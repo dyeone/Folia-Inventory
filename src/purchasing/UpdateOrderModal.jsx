@@ -57,7 +57,28 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
     return () => { cancelled = true; };
   }, [po.id]);
 
-  const matchCtx = useMemo(() => buildMatchContext(species, varieties), [species, varieties]);
+  // Varieties minted inline from a row's "+ New variety" form — appended to
+  // the prop list so the new genus is selectable (and matchable) immediately,
+  // before App's catalog refresh lands.
+  const [mintedVarieties, setMintedVarieties] = useState([]);
+  const allVarieties = useMemo(() => {
+    const seen = new Set((varieties || []).map(v => v.id));
+    return [...(varieties || []), ...mintedVarieties.filter(v => !seen.has(v.id))];
+  }, [varieties, mintedVarieties]);
+
+  const createVarietyInline = async ({ name, code }) => {
+    try {
+      const v = await api.createVariety({ name, code });
+      setMintedVarieties(m => [...m, v]);
+      onSpeciesChanged?.();
+      return v;
+    } catch (e) {
+      showToast?.(e.message || 'Variety create failed', 'error');
+      return null;
+    }
+  };
+
+  const matchCtx = useMemo(() => buildMatchContext(species, allVarieties), [species, allVarieties]);
   const { varietyById } = matchCtx;
   const speciesById = useMemo(() => new Map((species || []).map(s => [s.id, s])), [species]);
   const lineBySpecies = useMemo(
@@ -275,7 +296,8 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
               add · new species →
               <RowVarietySelect
                 value={r.varietyId}
-                varieties={varieties}
+                varieties={allVarieties}
+                onCreateVariety={createVarietyInline}
                 onChange={(varietyId) => setOverrides(o => ({ ...o, [r.idx]: { varietyId } }))}
               />
             </span>
@@ -446,7 +468,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                       onChange={(e) => setDefaultVarietyId(e.target.value)}
                       className="input !py-1.5 text-sm flex-1"
                     >
-                      {(varieties || []).map(v => (
+                      {(allVarieties || []).map(v => (
                         <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
                       ))}
                     </select>
@@ -476,7 +498,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                                 <MatchedRowEditor
                                   row={r}
                                   species={species}
-                                  varieties={varieties}
+                                  varieties={allVarieties}
                                   varietyById={varietyById}
                                   suggestIndex={suggestIndex}
                                   onRefileVariety={refileVariety}

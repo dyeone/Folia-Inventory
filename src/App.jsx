@@ -363,10 +363,14 @@ function StaffOrAdminInventory() {
     setTimeout(() => setToast(null), 2500);
   }, []);
 
-  // One species refresh for every tab that mutates the catalog (inventory
-  // vendor prices, purchasing, wholesale imports/updates).
+  // One catalog refresh for every tab that mutates it (inventory vendor
+  // prices, purchasing, wholesale imports/updates). Varieties ride along:
+  // the sheet modals can mint a new variety inline, and species rows
+  // re-filed there need the variety list current too.
   const refreshSpecies = useCallback(async () => {
-    setSpecies(await api.getSpecies());
+    const [sp, vs] = await Promise.all([api.getSpecies(), api.getVarieties()]);
+    setSpecies(sp);
+    setVarieties(vs);
   }, []);
 
   // Split an /items response into active (visible) and trash (soft-deleted)

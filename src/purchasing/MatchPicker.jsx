@@ -168,11 +168,72 @@ export function MatchedRowEditor({ row, species, varieties, varietyById, suggest
 // (the row's variety column, else the modal default) and a change is stored
 // as a { varietyId } override so later default-genus changes can't clobber
 // an explicit per-row pick.
-export function RowVarietySelect({ value, varieties, onChange }) {
+// When onCreateVariety is provided, the select also offers "+ New variety…"
+// which swaps into an inline name + CODE form — the sheet can name a genus
+// the catalog doesn't have yet (Ginger, Hoya, …), and leaving the modal to
+// add it would lose the whole matching session. onCreateVariety resolves to
+// the created variety (or null on failure — the form stays open to retry).
+export function RowVarietySelect({ value, varieties, onChange, onCreateVariety }) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  if (creating) {
+    const codeOk = /^[A-Z]{2,6}$/.test(code);
+    return (
+      <span className="inline-flex items-center gap-1 ml-1" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Variety name"
+          className="px-1 py-0.5 text-[11px] border border-sky-300 rounded w-24 bg-white text-gray-900"
+        />
+        <input
+          type="text"
+          value={code}
+          onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z]/g, ''))}
+          placeholder="CODE"
+          maxLength={6}
+          title="2–6 letter SKU prefix (GIN, HOY, …)"
+          className="px-1 py-0.5 text-[11px] border border-sky-300 rounded w-14 bg-white font-mono text-gray-900"
+        />
+        <button
+          type="button"
+          disabled={busy || !name.trim() || !codeOk}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const v = await onCreateVariety({ name: name.trim(), code });
+              if (v) { onChange(v.id); setCreating(false); setName(''); setCode(''); }
+            } finally { setBusy(false); }
+          }}
+          title={codeOk ? 'Create this variety and file the species under it' : 'Code must be 2–6 letters'}
+          className="p-0.5 text-emerald-700 hover:bg-emerald-50 rounded disabled:opacity-40"
+          aria-label="Create variety"
+        >
+          <Check className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={() => { setCreating(false); setName(''); setCode(''); }}
+          className="p-0.5 text-gray-400 hover:text-gray-700 rounded"
+          aria-label="Cancel new variety"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </span>
+    );
+  }
+
   return (
     <select
       value={value || ''}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(e) => {
+        if (e.target.value === '__new__') { setCreating(true); return; }
+        onChange(e.target.value);
+      }}
       onClick={(e) => e.stopPropagation()}
       title="Variety this new species is filed under"
       className="ml-1 px-1 py-0.5 text-[11px] border border-sky-200 bg-white text-sky-800 rounded max-w-[11rem]"
@@ -180,6 +241,7 @@ export function RowVarietySelect({ value, varieties, onChange }) {
       {(varieties || []).map(v => (
         <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
       ))}
+      {onCreateVariety && <option value="__new__">＋ New variety…</option>}
     </select>
   );
 }
