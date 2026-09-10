@@ -220,11 +220,11 @@ export function PreSaleTab({
   const staged = useMemo(() => {
     if (!saleId) return [];
     // Fixed lineup order: plants with a lot number come first in numeric order
-    // (that's the live lineup — 1..N). Un-numbered plants collect below:
-    // first anything staged before this session (intake batches, earlier
-    // sessions) in SKU order (numeric-aware, so -999 sorts before -5545),
-    // then this session's adds at the very bottom in scan order — the same
-    // placement whether Quick add is on or off.
+    // (that's the live lineup — 1..N). Un-numbered plants collect below in
+    // STAGING order — stagedAt (0042) persists the scan sequence across
+    // sessions and devices; rows staged before the column existed read as
+    // epoch and keep the old placement (session rank, then numeric-aware SKU
+    // order). Same placement whether Quick add is on or off.
     const rank = (id) => addedOrder.indexOf(id); // -1 = staged before this session
     return items
       .filter(it => (it.id in override ? override[it.id] : it.saleId) === saleId)
@@ -234,6 +234,9 @@ export function PreSaleTab({
         if (la != null && lb != null) return la - lb;
         if (la != null) return -1;
         if (lb != null) return 1;
+        const ta = a.stagedAt ? Date.parse(a.stagedAt) : 0;
+        const tb = b.stagedAt ? Date.parse(b.stagedAt) : 0;
+        if (ta !== tb) return ta - tb;
         const ra = rank(a.id), rb = rank(b.id);
         if (ra !== rb) return ra - rb;
         return (a.sku || '').localeCompare(b.sku || '', undefined, { numeric: true });
@@ -309,9 +312,27 @@ export function PreSaleTab({
     try {
       // Always reset lotNumber: staging must start un-numbered (a stale
       // number from an old lineup would drop the plant mid-lineup), and
-      // un-staging must not leave one behind.
-      const patch = { saleId: toSaleId, lotKind: 'sale', lotNumber: null, ...extra };
-      await patchItem(it.id, patch, toSaleId);
+      // un-staging must not leave one behind. stagedAt persists the scan
+      // order (0042): un-numbered rows sort by it, so the receipt order
+      // survives tab switches, reloads, and other devices — component
+      // state alone silently collapsed it into SKU order on remount.
+      const patch = {
+        saleId: toSaleId,
+        lotKind: 'sale',
+        lotNumber: null,
+        stagedAt: toSaleId ? new Date().toISOString() : null,
+        ...extra,
+      };
+      try {
+        await patchItem(it.id, patch, toSaleId);
+      } catch (e) {
+        // Graceful degrade on an un-migrated DB (0042 not applied yet):
+        // staging must never break for lack of the ordering column — retry
+        // without it; the order just won't persist until the migration runs.
+        if (!/stagedAt/i.test(e?.message || '')) throw e;
+        const { stagedAt, ...withoutStagedAt } = patch;
+        await patchItem(it.id, withoutStagedAt, toSaleId);
+      }
       return true;
     } catch (e) {
       setOverride(p => ({ ...p, [it.id]: it.saleId })); // rollback
@@ -386,9 +407,18 @@ export function PreSaleTab({
     setBusy(true);
     setOverride(p => { const n = { ...p }; for (const it of rows) n[it.id] = null; return n; });
     try {
-      const patches = rows.map(it => ({ id: it.id, saleId: null, lotKind: 'sale', lotNumber: null }));
-      if (onStageItems) await onStageItems(patches);
-      else { await api.upsertItems(patches); onItemsChanged?.(); }
+      const patches = rows.map(it => ({ id: it.id, saleId: null, lotKind: 'sale', lotNumber: null, stagedAt: null }));
+      const saveAll = async (ps) => {
+        if (onStageItems) await onStageItems(ps);
+        else { await api.upsertItems(ps); onItemsChanged?.(); }
+      };
+      try {
+        await saveAll(patches);
+      } catch (e) {
+        // Same un-migrated-DB degrade as assign(): drop stagedAt and retry.
+        if (!/stagedAt/i.test(e?.message || '')) throw e;
+        await saveAll(patches.map(({ stagedAt, ...p }) => p));
+      }
       setAddedOrder([]);
       setOpenId(null);
       flash('ok', `Removed ${rows.length} ${rows.length === 1 ? 'item' : 'items'}`);
