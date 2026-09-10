@@ -23,6 +23,10 @@ const MODES = [
 // times the plant's landed cost — scan = list it at margin, no per-item
 // pricing pass.
 const PRICE_COST_MULTIPLIER = 2.5;
+
+// Flat fallback for items with no cost, listing price, or cultivar/global
+// rate — they list at this instead of erroring out of the scan flow.
+const DEFAULT_PRICE = 5;
 const MODE_LABEL = Object.fromEntries(MODES.map(m => [m.key, m.label]));
 
 // Mirror the bridge's per-mode amount so each row shows the figure that
@@ -123,7 +127,8 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
 
   // 2.5× cost, rounded up to a whole dollar. Items with no recorded cost
   // fall back to the old chain (explicit listing price, then the
-  // cultivar/global rate) so they can still list.
+  // cultivar/global rate), and anything still unpriced lists at a flat $5 —
+  // a scan must never bounce for lack of a price.
   const resolvePrice = (item) => {
     const cost = Number(item.grossCost);
     if (Number.isFinite(cost) && cost > 0) return Math.ceil(cost * PRICE_COST_MULTIPLIER);
@@ -131,7 +136,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     if (Number.isFinite(listing) && listing > 0) return listing;
     const ideal = computeIdealPrice(item, idealRate, lookups);
     if (Number.isFinite(ideal) && ideal > 0) return Math.round(ideal * 100) / 100;
-    return null;
+    return DEFAULT_PRICE;
   };
 
   const pushItem = async (item, { forced = false, mode: chosenMode } = {}) => {
@@ -178,11 +183,6 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     }
     if (SOLD_STATUSES.has(item.status)) {
       setForcePush({ sku, item });
-      return;
-    }
-    const price = resolvePrice(item);
-    if (price == null) {
-      setError(`${sku} has no cost, listing price, or cultivar/global rate to price from.`);
       return;
     }
     pushItem(item);
