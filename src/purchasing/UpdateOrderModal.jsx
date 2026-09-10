@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
 import { norm, readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
-import { MatchPicker } from './MatchPicker.jsx';
+import { MatchPicker, RowVarietySelect } from './MatchPicker.jsx';
 
 // Rows the auto-matcher couldn't bind to an existing species — every one
 // gets a manual-match picker (chips + full catalog search) so a near-miss
@@ -103,6 +103,12 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
       } else if (REVIEWABLE.has(row.status)) {
         row.suggestions = suggest(row.species, suggestIndex);
         row.reviewable = true;
+      }
+      // Per-row variety pick (the select on a "new species" chip) — re-files
+      // this row's create under its own variety; the modal-wide default and
+      // the sheet's variety column only apply to rows without one.
+      if (ov?.varietyId && row.status === 'create') {
+        row = { ...row, varietyId: ov.varietyId, viaDefault: false };
       }
       row.idx = i;
       return row;
@@ -252,8 +258,13 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
       case 'add':
         return r.status === 'create'
           ? (
-            <span className="text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={r.viaDefault ? 'Not in the catalog and no variety column — created under the genus chosen below' : 'Created under the variety named on this row'}>
-              add · new species → {varietyById.get(r.varietyId)?.name || '?'}
+            <span className="inline-flex items-center text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded text-[11px] font-semibold" title={r.viaDefault ? 'Not in the catalog and no variety column — files under the default genus until you pick one here' : 'Created as a new species under the variety picked here'}>
+              add · new species →
+              <RowVarietySelect
+                value={r.varietyId}
+                varieties={varieties}
+                onChange={(varietyId) => setOverrides(o => ({ ...o, [r.idx]: { varietyId } }))}
+              />
             </span>
           )
           : <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded text-[11px] font-semibold">add line</span>;
@@ -426,7 +437,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
                         <option key={v.id} value={v.id}>{v.name} ({v.code})</option>
                       ))}
                     </select>
-                    <span className="text-gray-500 shrink-0 hidden sm:inline">rows with their own variety column keep it</span>
+                    <span className="text-gray-500 shrink-0 hidden sm:inline">the default — each row has its own picker too</span>
                   </label>
                 )}
                 <div className="border border-gray-200 rounded-xl overflow-hidden">
