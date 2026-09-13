@@ -7,7 +7,15 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 //     → all shipments for a sale (PackingView reads on mount)
 //   GET  /api/shipments?action=label-url&id=BOX&kind=label|slip
 //     → 5-min signed URL for the label PDF (kind=label, default) or the
-//       packing slip PDF (kind=slip).
+//       packing slip PDF (kind=slip). A slip is looked up on the shipments
+//       row first (Palmstreet flow), then on the box's shipment_boxes row
+//       (Nigel slip import, 0043) — those boxes have no shipments row
+//       until a label is bought.
+//   POST /api/shipments  body: { action: 'set-box-slip', shipmentBoxId,
+//                                 slipPdfBase64 }
+//     → stores the box's order slip PDF (Nigel / BoyGardening import) in
+//       the shipping-labels bucket and points shipment_boxes.slipStoragePath
+//       at it. Any brand member (the desk imports; a packer prints).
 //   GET  /api/shipments?action=pending&carrier=usps&saleId=X
 //     → boxes that don't have a non-voided shipments row yet, joined with
 //       buyer + items + sale name. Used by the Chrome extension to build
@@ -53,6 +61,7 @@ export default wrap(async (req, res) => {
       if (action === 'set-box-packaging') return setBoxPackaging(req, res, userId, brandId);
       if (action === 'set-box-hold') return setBoxHold(req, res, userId, brandId);
       if (action === 'set-box-insulation') return setBoxInsulation(req, res, userId, brandId);
+      if (action === 'set-box-slip') return setBoxSlip(req, res, userId, brandId);
       if (action === 'reset-hold-sweep') return resetHoldSweep(req, res, userId, brandId);
       if (action === 'set-heat-flags') return setHeatFlags(req, res, userId, brandId);
       if (action === 'send-to-phone') return sendToPhone(req, res, userId);
@@ -88,9 +97,24 @@ async function labelUrl(req, res, brandId) {
     .eq('brandId', brandId)
     .maybeSingle();
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  if (!row) { const e = new Error('Shipment not found'); e.status = 404; throw e; }
+  if (!row && kind !== 'slip') { const e = new Error('Shipment not found'); e.status = 404; throw e; }
 
-  const path = kind === 'slip' ? row.shippingSlipStoragePath : row.labelStoragePath;
+  let path = kind === 'slip' ? row?.shippingSlipStoragePath : row?.labelStoragePath;
+
+  // Slip fallback: a Nigel box's imported order slip lives on the lazy
+  // shipment_boxes row (0043), not on a shipments row — the box may never
+  // get one if the label is bought elsewhere. Pre-migration the column is
+  // missing and the select errors; treat that as "no slip" so label
+  // lookups for every other box keep working.
+  if (kind === 'slip' && !path) {
+    const { data: box } = await supabase
+      .from('shipment_boxes')
+      .select('"slipStoragePath"')
+      .eq('id', id)
+      .eq('brandId', brandId)
+      .maybeSingle();
+    path = box?.slipStoragePath || null;
+  }
 
   if (path) {
     const { data: signed, error: sErr } = await supabase
@@ -597,6 +621,9 @@ async function boxNotes(req, res, brandId) {
     carrierOverride: r.carrierOverride ?? null,
     holdUntil: r.holdUntil ?? null,
     extraInsulation: r.extraInsulation ?? null,
+    // Stored order slip PDF (0043) — the packer's "Print slip" button and
+    // the Shipping tab's slip chip key on its presence, never its value.
+    slipStoragePath: r.slipStoragePath ?? null,
     updatedAt: r.updatedAt,
     updatedBy: r.updatedBy,
   }]));
@@ -640,6 +667,64 @@ async function setHeatFlags(req, res, userId, brandId) {
     .upsert({ id: `heat-check:${brandId}`, data: { checkedAt, byBox }, updatedAt: checkedAt, updatedBy: userId });
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return res.status(200).json({ checkedAt, count: Object.keys(byBox).length });
+}
+
+// POST /api/shipments  body: { action:'set-box-slip', shipmentBoxId, slipPdfBase64 }
+// Store a box's order slip PDF (Nigel / BoyGardening slip import). The PDF
+// goes to the private shipping-labels bucket under slips/<brand>/<box>.pdf
+// (upsert — a re-import or a merge into an existing box replaces it; the
+// client prepends the pages it already had) and the path is written to the
+// lazy shipment_boxes row so it rides the box-notes poll to every device.
+// Unlike record-tracking's soft-fail upload, a failed upload here IS the
+// error: there's nothing else to save, and a box marked "has slip" with no
+// PDF behind it would strand the packer at print time.
+const SLIP_PDF_MAX_BASE64 = 12_000_000; // ~9 MB decoded — several vector A4 pages
+async function setBoxSlip(req, res, userId, brandId) {
+  const { shipmentBoxId, slipPdfBase64 } = req.body || {};
+  if (!shipmentBoxId || typeof shipmentBoxId !== 'string') {
+    const e = new Error('shipmentBoxId required'); e.status = 400; throw e;
+  }
+  if (!slipPdfBase64 || typeof slipPdfBase64 !== 'string') {
+    const e = new Error('slipPdfBase64 required'); e.status = 400; throw e;
+  }
+  if (slipPdfBase64.length > SLIP_PDF_MAX_BASE64) {
+    const e = new Error('Slip PDF too large'); e.status = 413; throw e;
+  }
+  const buf = Buffer.from(slipPdfBase64, 'base64');
+  if (buf.length < 5 || buf.subarray(0, 5).toString('latin1') !== '%PDF-') {
+    const e = new Error('slipPdfBase64 is not a PDF'); e.status = 400; throw e;
+  }
+  // Composite box ids carry "|" and spaces — same key sanitizing as
+  // record-tracking so the Storage path is always valid.
+  const key = shipmentBoxId.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const path = `slips/${brandId}/${key}.pdf`;
+  const { error: upErr } = await supabase
+    .storage
+    .from(STORAGE_BUCKET)
+    .upload(path, buf, { contentType: 'application/pdf', upsert: true });
+  if (upErr) { const e = new Error(`Slip upload failed: ${upErr.message}`); e.status = 500; throw e; }
+
+  const payload = {
+    id: shipmentBoxId,
+    brandId,
+    slipStoragePath: path,
+    updatedAt: new Date().toISOString(),
+    updatedBy: userId,
+  };
+  const { data, error } = await supabase
+    .from('shipment_boxes')
+    .upsert(payload, { onConflict: 'id' })
+    .select('id, "slipStoragePath", "updatedAt", "updatedBy"')
+    .single();
+  if (error) {
+    const missing = /slipStoragePath/i.test(error.message || '');
+    const e = new Error(missing
+      ? 'slipStoragePath column missing — apply migration 0043_box_slip_storage first'
+      : error.message);
+    e.status = missing ? 400 : 500;
+    throw e;
+  }
+  return res.status(200).json({ box: data });
 }
 
 // POST /api/shipments  body: { action:'reset-hold-sweep' }

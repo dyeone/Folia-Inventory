@@ -7,6 +7,8 @@ import { api } from '../api.js';
 import { shortBoxCode } from './boxCode.js';
 import { PrintControls, AutoPrintOverlay } from './PrintControls.jsx';
 import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
+import { buildNigelSlipPdf } from './nigelSlipPdf.js';
+import { isNigelBoxId } from '../packing/platform.js';
 
 // Per-box shipping slip — what goes inside the package so the customer
 // sees a manifest of what they ordered.
@@ -306,9 +308,15 @@ export function ShippingSlipSheet({ box, onClose, showToast }) {
   // promise exists before useAutoBridgePrint's mount effect fires the first
   // print — every PDF build below awaits it. Idempotent server-side, so the
   // dev-mode double render is harmless.
+  // Nigel's (BoyGardening) boxes get his shop's slip — order #, his product
+  // lines, his customer — never our brand mark or the BAE loyalty block.
+  const nigel = isNigelBoxId(box.id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const loyaltyPromise = useMemo(() => fetchLoyalty(box), [box.id]);
-  const buildSlip = useCallback(async (b) => buildPdf(b, await loyaltyPromise), [loyaltyPromise]);
+  const loyaltyPromise = useMemo(() => (nigel ? Promise.resolve(null) : fetchLoyalty(box)), [box.id]);
+  const buildSlip = useCallback(
+    async (b) => (nigel ? buildNigelSlipPdf(b) : buildPdf(b, await loyaltyPromise)),
+    [loyaltyPromise, nigel],
+  );
 
   // Print directly on open when the printer's ready — skip the preview; fall
   // back to the preview only when the bridge is offline or the print fails.

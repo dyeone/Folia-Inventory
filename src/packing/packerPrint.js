@@ -28,12 +28,23 @@ const DEST_KEYS = {
   shipping: 'folia.packerPrintDest.shipping',   // 4×6 carrier labels
   boxtag: 'folia.packerPrintDest.boxtag',       // 2×1 B-XXXXXX tags
   itemlabel: 'folia.packerPrintDest.itemlabel', // 2×1 plant labels (burrito wrap)
+  slip: 'folia.packerPrintDest.slip',           // order slips (Nigel's boxes)
 };
 
-function readDest(key, fallback) {
+// Slips have a third destination: 'document' = the desk's letter-size
+// document printer via the bridge, which prints the ORIGINAL slip page
+// rather than the 80mm receipt layout the slip printer gets.
+const DEST_VALUES = {
+  shipping: ['bridge', 'ipad'],
+  boxtag: ['bridge', 'ipad'],
+  itemlabel: ['bridge', 'ipad'],
+  slip: ['bridge', 'document', 'ipad'],
+};
+
+function readDest(key, fallback, allowed = ['bridge', 'ipad']) {
   try {
     const v = localStorage.getItem(key);
-    return v === 'bridge' || v === 'ipad' ? v : fallback;
+    return allowed.includes(v) ? v : fallback;
   } catch {
     return fallback;
   }
@@ -50,13 +61,17 @@ export function getPrintDests() {
     // Plant labels default to the bridge for the same reason as box tags —
     // the desk's item-label printer is the only known 2×1 device.
     itemlabel: readDest(DEST_KEYS.itemlabel, 'bridge'),
+    // Order slips default to the desk's 80mm slip printer — the same
+    // printer every other slip at the desk comes out of.
+    slip: readDest(DEST_KEYS.slip, 'bridge', DEST_VALUES.slip),
   };
 }
 
 export function savePrintDest(kind, dest) {
   const key = DEST_KEYS[kind];
   if (!key) return;
-  try { localStorage.setItem(key, dest === 'bridge' ? 'bridge' : 'ipad'); } catch { /* private mode */ }
+  const allowed = DEST_VALUES[kind] || ['bridge', 'ipad'];
+  try { localStorage.setItem(key, allowed.includes(dest) ? dest : 'ipad'); } catch { /* private mode */ }
 }
 
 // ── burrito wrap flow preference (per device, like the destinations) ───────
@@ -205,6 +220,75 @@ export async function printBoxLabel(boxId, dest, showToast) {
     showToast?.(e.message || 'Could not print the label', 4500);
     return false;
   }
+}
+
+// ── order slip (Nigel's BoyGardening boxes) ────────────────────────────────
+
+// Print the slip that goes inside one of Nigel's boxes. Three destinations:
+//   'bridge'   → the desk's 80mm slip printer (role 'slip'). The stored
+//                original is a letter/A4 page — unreadable scaled onto a
+//                receipt roll — so this path prints an 80mm receipt layout
+//                built from the box's order lines (nigelSlipPdf.js).
+//   'document' → the desk's letter document printer (role 'document'):
+//                the original slip page(s) as imported.
+//   'ipad'     → the OS print sheet with the original page(s).
+// When no original is stored (upload failed at import), the letter paths
+// fall back to the receipt layout so the packer still gets a slip.
+async function fetchStoredSlipBytes(boxId) {
+  try {
+    return await urlToBytes(await api.getLabelUrl(boxId, 'slip'));
+  } catch {
+    return null;
+  }
+}
+
+async function receiptSlipBytes(box) {
+  // Lazy: keeps jspdf out of the packer's initial chunk.
+  const { buildNigelSlipPdf } = await import('../labels/nigelSlipPdf.js');
+  return new Uint8Array(buildNigelSlipPdf(box).output('arraybuffer'));
+}
+
+export async function printBoxSlip(box, dest, showToast) {
+  try {
+    if (dest === 'bridge' || dest === 'document') {
+      if (!(await bridgeOnlineNow())) {
+        showToast?.('Shipping desk printer is offline — is the Mac app running? (Or switch slips to "This iPad".)', 5000);
+        return false;
+      }
+      let bytes = null;
+      let role = 'slip';
+      if (dest === 'document') {
+        bytes = await fetchStoredSlipBytes(box.id);
+        if (bytes) role = 'document';
+      }
+      if (!bytes) bytes = await receiptSlipBytes(box);
+      const res = await printPdfViaBridge({ pdfBase64: bytesToBase64(bytes), role });
+      showToast?.(`Sent slip to ${res?.printer || 'the shipping desk printer'}`);
+      return true;
+    }
+    const bytes = (await fetchStoredSlipBytes(box.id)) || (await receiptSlipBytes(box));
+    await printImagesViaOsSheet(await pdfToPageImages(bytes), { pageSize: 'auto' });
+    return true;
+  } catch (e) {
+    showToast?.(e.message || 'Could not print the slip', 4500);
+    return false;
+  }
+}
+
+// Settings-sheet test: a sample box through the exact slip pipeline. The
+// sample id has no stored slip, so every destination prints the receipt
+// layout — which is what proves the printer + role wiring.
+export function printTestSlip(dest, showToast) {
+  const sample = {
+    id: 'ng-test|sample',
+    buyer: 'Test Customer',
+    carrier: 'usps',
+    buyerAddress: { street1: '123 Sample St', city: 'San Francisco', state: 'CA', zip: '94127', shipmentMethod: 'Test print' },
+    items: [
+      { name: '"Test Seedling" (Spring)', quantity: 1, orderId: '00000', orderDate: new Date().toISOString(), notes: '# of Seedlings: 1-Pack' },
+    ],
+  };
+  return printBoxSlip(sample, dest, showToast);
 }
 
 // ── box tag (2×1 B-XXXXXX barcode label) ───────────────────────────────────

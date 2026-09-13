@@ -5,7 +5,7 @@ import {
 import * as XLSX from 'xlsx';
 import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
 import { parseTikTokOrders } from '../packing/parseTikTokOrders.js';
-import { isTikTokBoxId } from '../packing/platform.js';
+import { boxPlatform } from '../packing/platform.js';
 import { matchInventory } from '../packing/matchInventory.js';
 import { normalizeSku } from '../labels/boxCode.js';
 import { BoxesList, SummaryStat } from '../packing/PackingView.jsx';
@@ -168,9 +168,10 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
       if (item.deletedAt) continue;
       if (item.status !== 'sold') continue;
       // Platform fence: a TikTok upload only ever merges into open TikTok
-      // (tt…) boxes, a Palmstreet upload only into non-TikTok ones. Same
-      // client on both platforms = two separate boxes, by design.
-      if (isTikTokBoxId(item.shipmentBoxId) !== isTikTok) continue;
+      // (tt…) boxes, a Palmstreet upload only into Palmstreet ones. Same
+      // client on both platforms = two separate boxes, by design. Nigel's
+      // slip-imported boxes (ng…) are a third platform neither may touch.
+      if (boxPlatform(item.shipmentBoxId) !== (isTikTok ? 'tiktok' : 'palmstreet')) continue;
       const addr = item.buyerAddress || {};
       const key = groupKeyFor(item.buyer, addr.street1, addr.city, addr.state, addr.zip);
       if (!m.has(key)) m.set(key, item.shipmentBoxId);

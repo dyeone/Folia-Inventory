@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen,
+  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
@@ -17,7 +17,8 @@ import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
-import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
+import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printBoxSlip, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
+import { isNigelBoxId } from './platform.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { ReceivingPane } from './ReceivingPane.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
@@ -286,7 +287,7 @@ export function PackerView({ onLogout }) {
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
   };
-  // One busy flag across print jobs ('label' | 'tag' | 'itemlabel' | null):
+  // One busy flag across print jobs ('label' | 'tag' | 'itemlabel' | 'slip' | null):
   // on the iPad path all flows share the in-page print root, so they must
   // never run concurrently (the second purge would eat the first job's
   // pages). Bridge-destined wrap prints skip it — see startWrap.
@@ -298,6 +299,9 @@ export function PackerView({ onLogout }) {
   // Which boxes have a printable label PDF (shipmentBoxId → true). Distinct
   // from trackingByBox: a manually recorded tracking number has no PDF.
   const [labelByBox, setLabelByBox] = useState({});
+  // Which boxes have a stored order slip PDF (shipmentBoxId → true) — the
+  // Nigel slip import stores one per box; rides the box-notes poll.
+  const [slipByBox, setSlipByBox] = useState({});
 
   const [scanValue, setScanValue] = useState('');
   const scanRef = useRef(null);
@@ -395,6 +399,11 @@ export function PackerView({ onLogout }) {
           Object.entries(notes || {}).map(([id, v]) => [id, !!v?.extraInsulation]),
         ),
       );
+      setSlipByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, !!v?.slipStoragePath]),
+        ),
+      );
       setCarrierOverrideByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.carrierOverride || null]),
@@ -472,6 +481,9 @@ export function PackerView({ onLogout }) {
         );
         setInsulationByBox(
           Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, !!v?.extraInsulation])),
+        );
+        setSlipByBox(
+          Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, !!v?.slipStoragePath])),
         );
         setCarrierOverrideByBox(
           Object.fromEntries(Object.entries(notes || {}).map(([id, v]) => [id, v?.carrierOverride || null])),
@@ -694,6 +706,11 @@ export function PackerView({ onLogout }) {
           Object.entries(notes || {}).map(([id, v]) => [id, !!v?.extraInsulation]),
         ),
       );
+      setSlipByBox(
+        Object.fromEntries(
+          Object.entries(notes || {}).map(([id, v]) => [id, !!v?.slipStoragePath]),
+        ),
+      );
       setCarrierOverrideByBox(
         Object.fromEntries(
           Object.entries(notes || {}).map(([id, v]) => [id, v?.carrierOverride || null]),
@@ -714,6 +731,19 @@ export function PackerView({ onLogout }) {
     setPrinting('label');
     try {
       await printBoxLabel(activeBox.id, printDests.shipping, showToast);
+    } finally {
+      setPrinting(null);
+    }
+  };
+
+  // Print the open box's order slip (Nigel's boxes) — goes inside the box
+  // with the plants. Destination per device: desk slip printer (receipt
+  // layout), desk document printer or this iPad (original slip page).
+  const printActiveSlip = async () => {
+    if (!activeBox || printing) return;
+    setPrinting('slip');
+    try {
+      await printBoxSlip(activeBox, printDests.slip, showToast);
     } finally {
       setPrinting(null);
     }
@@ -1339,6 +1369,8 @@ export function PackerView({ onLogout }) {
             onSendToPhone={isMobile ? null : () => sendToPhone(activeBox)}
             onPrintLabel={labelByBox[activeBox.id] ? printActiveLabel : null}
             onPrintTag={printActiveTag}
+            onPrintSlip={isNigelBoxId(activeBox.id) ? printActiveSlip : null}
+            slipStored={!!slipByBox[activeBox.id]}
             printing={printing}
             onDone={() => goToBox(null)}
           />
@@ -2132,6 +2164,9 @@ function LandingGrid({ boxes, boxSizes, boxSizeByBox, trackingByBox, holdByBox, 
 }
 
 function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, note, heatTemp, insulate, onOpen }) {
+  // Nigel's (BoyGardening) box — hot pink wins the card colour so the packer
+  // spots whose order it is from across the table; hold/pickup still badge.
+  const isNigel = isNigelBoxId(box.id);
   const sold = box.items.filter(i => i.status === 'sold');
   const packed = sold.filter(i => i.packedAt).length;
   const total = sold.length;
@@ -2145,7 +2180,9 @@ function BoxCard({ box, sizeName, hasLabel, holdState, isPickup, note, heatTemp,
       type="button"
       onClick={onOpen}
       className={`text-left rounded-2xl border-2 p-4 transition active:scale-[0.99] ${
-        onHold
+        isNigel
+          ? 'border-[#ff69b4] bg-pink-50 hover:border-[#ff1493] hover:shadow-sm'
+          : onHold
           ? 'border-amber-400 bg-amber-100 hover:border-amber-500'
           : isPickup
           ? 'border-violet-400 bg-violet-100 hover:border-violet-500'
@@ -2248,7 +2285,8 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, printing, onDone }) {
+function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, onPrintSlip, slipStored, printing, onDone }) {
+  const isNigel = isNigelBoxId(box.id);
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
   const total = unpacked.length + packed.length;
@@ -2277,6 +2315,32 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
         </div>
       </div>
 
+
+      {/* Nigel's box — hot-pink banner so the packer knows whose order this
+          is and that the order slip goes in the box with the plants. */}
+      {isNigel && (
+        <div className="flex-shrink-0 px-4 sm:px-5 py-2.5 bg-[#ff69b4] border-b border-[#ff1493]">
+          <div className="max-w-5xl mx-auto flex items-center gap-3 text-white flex-wrap">
+            <Store className="w-5 h-5 shrink-0" />
+            <span className="text-base font-extrabold tracking-wide">NIGEL'S ORDER (BoyGardening) — print the order slip and pack it in the box</span>
+            {onPrintSlip && (
+              <button
+                type="button"
+                onClick={onPrintSlip}
+                disabled={!!printing}
+                className="ml-auto inline-flex items-center gap-2 px-3.5 py-2 text-sm font-bold bg-white text-[#c0106b] rounded-lg active:bg-pink-100 disabled:opacity-60"
+              >
+                {printing === 'slip' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-4 h-4" />} Print slip
+              </button>
+            )}
+            {!slipStored && (
+              <span className="text-xs font-semibold bg-white/20 px-2 py-0.5 rounded" title="No original slip page stored — the slip printer still gets a receipt built from the order lines">
+                original slip not stored
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Desk's manual insulation mark — a loud sky banner where the packing
           happens, like the heat and note strips. */}
@@ -2310,6 +2374,7 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
               onScanLabel={onScanLabel}
               onPrintLabel={onPrintLabel}
               onPrintTag={onPrintTag}
+              onPrintSlip={onPrintSlip}
               printing={printing}
               onDone={onDone}
             />
@@ -2321,8 +2386,8 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} onPrintPlantLabel={onPrintPlantLabel} dupeLots={dupeLots} />)}
-                  {packed.map(item => <ItemCard key={item.id} item={item} />)}
+                  {unpacked.map(item => <ItemCard key={item.id} item={item} onMarkPacked={onMarkPacked} onPrintPlantLabel={isNigel ? null : onPrintPlantLabel} dupeLots={dupeLots} nigel={isNigel} />)}
+                  {packed.map(item => <ItemCard key={item.id} item={item} nigel={isNigel} />)}
                 </div>
               )}
             </>
@@ -2360,6 +2425,17 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
                 {printing === 'tag' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Tag className="w-5 h-5" />} Print tag
               </button>
             )}
+            {/* Nigel's boxes: the order slip that goes inside the box. */}
+            {onPrintSlip && (
+              <button
+                type="button"
+                onClick={onPrintSlip}
+                disabled={!!printing}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-[#ff69b4] text-[#c0106b] rounded-xl active:bg-pink-50 disabled:opacity-60"
+              >
+                {printing === 'slip' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Receipt className="w-5 h-5" />} Print slip
+              </button>
+            )}
             {/* Print this box's shipping label at the packing table — only
                 offered once the label exists (imported at the shipping desk). */}
             {onPrintLabel && (
@@ -2388,13 +2464,24 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
 
 // Shown once every item is packed: the final step is scanning the shipping
 // label. A correct scan triggers the "Good job" screen (see handleScanLabel).
-function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, onPrintTag, printing, onDone }) {
+function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, onPrintTag, onPrintSlip, printing, onDone }) {
   return (
     <div className="text-center max-w-md mx-auto pt-2">
       <div className="flex items-center justify-center gap-2.5 mb-1.5">
         <PackageCheck className="w-9 h-9 text-emerald-600" />
         <h2 className="text-2xl font-bold text-gray-900">All items packed!</h2>
       </div>
+      {/* Nigel's boxes: the order slip goes in before the box is sealed. */}
+      {onPrintSlip && (
+        <button
+          type="button"
+          onClick={onPrintSlip}
+          disabled={!!printing}
+          className="w-full flex items-center justify-center gap-2 px-4 py-4 mb-4 text-lg font-semibold bg-[#ff69b4] text-white rounded-xl active:bg-[#ff1493] disabled:opacity-60"
+        >
+          {printing === 'slip' ? <Loader2 className="w-6 h-6 animate-spin" /> : <Receipt className="w-6 h-6" />} Print order slip
+        </button>
+      )}
       {assignedTracking ? (
         <>
           <p className="text-lg text-gray-600 mb-6">
@@ -2497,7 +2584,7 @@ function CarrierBadge({ carrier, size = 'md' }) {
   );
 }
 
-function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots }) {
+function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots, nigel = false }) {
   const isPacked = !!item.packedAt;
   const isUnmatched = item.lotKind === 'unmatched';
   const name = (item.name || '').trim();
@@ -2507,9 +2594,13 @@ function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots }) {
   // trusted, only the label's wk tag can.
   const isDupe = !isPacked && !!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10));
 
-  const family = isUnmatched
-    ? { bg: isPacked ? 'bg-purple-100' : 'bg-purple-50', border: 'border-purple-200', accent: 'text-purple-700', icon: 'text-purple-600', ring: 'border-purple-300' }
-    : { bg: isPacked ? 'bg-emerald-100' : 'bg-emerald-50', border: 'border-emerald-200', accent: 'text-emerald-700', icon: 'text-emerald-600', ring: 'border-emerald-300' };
+  // Nigel's order lines are placeholders by design (his products aren't in
+  // our inventory): hot pink, not the purple "unmatched" flag.
+  const family = nigel
+    ? { bg: isPacked ? 'bg-pink-100' : 'bg-pink-50', border: 'border-pink-300', accent: 'text-[#c0106b]', icon: 'text-[#ff1493]', ring: 'border-[#ff69b4]', pack: 'bg-[#ff69b4] hover:bg-[#ff1493] active:bg-[#e0117f]' }
+    : isUnmatched
+    ? { bg: isPacked ? 'bg-purple-100' : 'bg-purple-50', border: 'border-purple-200', accent: 'text-purple-700', icon: 'text-purple-600', ring: 'border-purple-300', pack: 'bg-purple-600 hover:bg-purple-700 active:bg-purple-800' }
+    : { bg: isPacked ? 'bg-emerald-100' : 'bg-emerald-50', border: 'border-emerald-200', accent: 'text-emerald-700', icon: 'text-emerald-600', ring: 'border-emerald-300', pack: 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800' };
 
   return (
     <div className={`px-3 py-3 rounded-xl border-2 ${family.bg} ${family.border}`}>
@@ -2553,7 +2644,7 @@ function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots }) {
           <button
             type="button"
             onClick={() => onMarkPacked(item)}
-            className="shrink-0 text-sm font-semibold px-3 py-2 rounded-lg bg-purple-600 text-white hover:bg-purple-700 active:bg-purple-800 flex items-center gap-1"
+            className={`shrink-0 text-sm font-semibold px-3 py-2 rounded-lg text-white flex items-center gap-1 ${family.pack}`}
             title="No scannable barcode — mark packed manually"
           >
             <Check className="w-4 h-4" /> Pack

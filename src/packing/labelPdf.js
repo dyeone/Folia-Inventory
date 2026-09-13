@@ -135,6 +135,25 @@ export async function openLabelPdf(shipment, kind, showToast) {
   }
 }
 
+// Open a box's STORED order slip (Nigel / BoyGardening slip import) in a
+// new tab for the desk to read or print from the browser. Deliberately no
+// bridge path: the stored slip is the original letter/A4 page and the
+// desk's 'slip' role is an 80mm receipt printer — scaled to fit it would
+// be unreadable. (The packer prints a receipt-layout version of the same
+// data via packerPrint.printBoxSlip.) The tab is opened synchronously so
+// the click's user gesture carries through Safari's pop-up rules.
+export async function openBoxSlipPdf(boxId, showToast) {
+  const win = window.open('', '_blank');
+  try {
+    const url = await api.getLabelUrl(boxId, 'slip');
+    if (win) win.location.href = url;
+    else window.open(url, '_blank', 'noopener');
+  } catch (e) {
+    win?.close();
+    showToast?.(e.message || 'Could not open the slip');
+  }
+}
+
 // Print many saved shipping-label PDFs as a single document — one print
 // dialog for the whole batch instead of one per label. Fetches each label's
 // PDF, merges them with pdf-lib (lossless page copy, so barcodes stay crisp

@@ -468,6 +468,7 @@ alter table shipment_boxes add column if not exists "serviceKey" text;
 alter table shipment_boxes add column if not exists "carrierOverride" text;
 alter table shipment_boxes add column if not exists "holdUntil" timestamptz;
 alter table shipment_boxes add column if not exists "extraInsulation" boolean;
+alter table shipment_boxes add column if not exists "slipStoragePath" text;   -- stored order slip PDF (0043, Nigel slip import)
 do $$
 begin
   if not exists (select 1 from pg_constraint where conname = 'shipment_boxes_servicekey_check') then

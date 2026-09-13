@@ -322,6 +322,11 @@ export const api = {
     }).then(r => r.shipment),
   clearPalmstreetTracking: (shipmentBoxId) =>
     request('/shipments', { method: 'POST', body: { action: 'clear-tracking', shipmentBoxId } }),
+  // Nigel / BoyGardening slip import: store a box's order slip PDF (base64)
+  // so the packer can print it at pack time. Lands on shipment_boxes
+  // .slipStoragePath (0043); read back via getLabelUrl(boxId, 'slip').
+  saveBoxSlip: (shipmentBoxId, slipPdfBase64) =>
+    request('/shipments', { method: 'POST', body: { action: 'set-box-slip', shipmentBoxId, slipPdfBase64 } }).then(r => r.box),
   // Per-box notes (lazy `shipment_boxes` rows). Internal operator
   // memos shown only in the ShipBoxCard drill-down.
   getBoxNotes: (saleId) =>
