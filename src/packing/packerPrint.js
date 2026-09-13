@@ -194,7 +194,10 @@ async function osPrintNow(dataUrls, { pageSize = '4in 6in' } = {}) {
 
 // ── printing ───────────────────────────────────────────────────────────────
 
-async function printPdfBytes(bytes, dest, showToast) {
+// 4×6 PDF → the packer's shipping-label destination: the desk's 4×6 printer
+// via the bridge (role 'shipping'), or the iPad print sheet. `what` names
+// the document in the toast.
+async function printPdfBytes(bytes, dest, showToast, what = 'label') {
   if (dest === 'bridge') {
     if (!(await bridgeOnlineNow())) {
       showToast?.('Shipping desk printer is offline — is the Mac app running? (Or switch the printer to "This iPad".)', 5000);
@@ -203,11 +206,40 @@ async function printPdfBytes(bytes, dest, showToast) {
     const res = await printPdfViaBridge({
       pdfBase64: bytesToBase64(bytes), role: 'shipping', media: 'Custom.4x6in',
     });
-    showToast?.(`Sent label to ${res?.printer || 'the shipping desk printer'}`);
+    showToast?.(`Sent ${what} to ${res?.printer || 'the shipping desk printer'}`);
     return true;
   }
   await printImagesViaOsSheet(await pdfToPageImages(bytes));
   return true;
+}
+
+// ── USDA / CA nursery-stock documents (4×6, same printer as the label) ────
+
+// The "LIVE NURSERY STOCK · FRAGILE" sticker for the outside of the box and
+// the 4×6 packing slip with the §6501(c) declaration for the inside — both
+// built by labels/usdaDocs.js and printed on the packer's shipping-label
+// destination, exactly like the carrier label. The packer's box object
+// (buyer / buyerAddress / items) is what the builders expect.
+export async function printPackerUsdaSticker(box, dest, showToast) {
+  try {
+    const { buildUsdaStickerPdf } = await import('../labels/usdaDocs.js');
+    const pdf = await buildUsdaStickerPdf(box);
+    return await printPdfBytes(new Uint8Array(pdf.output('arraybuffer')), dest, showToast, 'USDA sticker');
+  } catch (e) {
+    showToast?.(e.message || 'Could not print the USDA sticker', 4500);
+    return false;
+  }
+}
+
+export async function printPackerUsdaSlip(box, trackingNumber, dest, showToast) {
+  try {
+    const { buildUsdaSlipPdf } = await import('../labels/usdaDocs.js');
+    const pdf = await buildUsdaSlipPdf(box, trackingNumber ? { trackingNumber } : null);
+    return await printPdfBytes(new Uint8Array(pdf.output('arraybuffer')), dest, showToast, 'USDA slip');
+  } catch (e) {
+    showToast?.(e.message || 'Could not print the USDA slip', 4500);
+    return false;
+  }
 }
 
 // Print the shipping label already imported/bought for a box. Resolves to true

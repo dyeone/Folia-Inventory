@@ -374,8 +374,12 @@ export async function buildUsdaSlipPdf(box, shipment) {
     y += rowH;
   }
 
-  // Totals — right-aligned stack.
-  const shipTotal = parseFloat(box.shippingFeeCollected) || 0;
+  // Totals — right-aligned stack. The Shipping tab's grouped box carries
+  // shippingFeeCollected; the packer's box doesn't, so fall back to the
+  // per-item order fees (same sum the Shipping tab makes).
+  const shipTotal = box.shippingFeeCollected != null
+    ? (parseFloat(box.shippingFeeCollected) || 0)
+    : rows.reduce((sum, i) => sum + (parseFloat(i.orderShippingFee) || 0), 0);
   y += 0.04;
   const totX = 2.05;
   const totRow = (label, value, dark) => {
