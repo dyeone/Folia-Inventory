@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Printer, X, Loader2, Tablet, Monitor, Check, Tag } from 'lucide-react';
+import { Printer, X, Loader2, Tablet, Monitor, Check, Tag, Receipt, FileText } from 'lucide-react';
 import { useBridgePrint } from '../labels/useBridgePrint.js';
-import { printTestLabel, printTestTag } from './packerPrint.js';
+import { printTestLabel, printTestTag, printTestSlip } from './packerPrint.js';
 
 // Bottom sheet where the packer picks where each label type prints, with a
 // test print per type. Three independent destinations:
 //   Shipping labels (4×6)  — carrier labels
 //   Box tags (2×1)         — B-XXXXXX barcode tags
 //   Plant labels (2×1)     — burrito-wrap reprints of a plant's own label
+//   Order slips            — Nigel's (BoyGardening) boxes; also offers the
+//                            desk's letter document printer (original page)
 // Each can go to:
 //   'ipad'   → the printer plugged into this iPad (USB) or on Wi-Fi
 //              (AirPrint). Printing opens the iPadOS print sheet; the actual
@@ -29,6 +31,7 @@ export function PrinterSettingsSheet({ dests, onDestChange, wrapFlow, onWrapFlow
     setTesting(kind);
     try {
       if (kind === 'shipping') await printTestLabel(dests.shipping, showToast, () => unmountedRef.current);
+      else if (kind === 'slip') await printTestSlip(dests.slip, showToast);
       // Plant labels share the box tags' 2×1 pipeline (same role + media), so
       // the tag test print exercises exactly what a wrap reprint will do.
       else await printTestTag(dests[kind], showToast, () => unmountedRef.current);
@@ -37,7 +40,7 @@ export function PrinterSettingsSheet({ dests, onDestChange, wrapFlow, onWrapFlow
     }
   };
 
-  const anyIpad = dests.shipping === 'ipad' || dests.boxtag === 'ipad' || dests.itemlabel === 'ipad';
+  const anyIpad = dests.shipping === 'ipad' || dests.boxtag === 'ipad' || dests.itemlabel === 'ipad' || dests.slip === 'ipad';
 
   return (
     <div
@@ -100,6 +103,25 @@ export function PrinterSettingsSheet({ dests, onDestChange, wrapFlow, onWrapFlow
           testLabel="Print test label (2×1)"
         />
 
+        <DestSection
+          icon={Receipt}
+          title="Order slips · Nigel's boxes"
+          kind="slip"
+          dest={dests.slip}
+          bridgeSubtitle="80mm slip printer at the shipping desk (receipt layout)"
+          bridgeOnline={bridgeOnline}
+          onDestChange={onDestChange}
+          onTest={() => runTest('slip')}
+          testing={testing}
+          testLabel="Print test slip"
+          extraDest={{
+            value: 'document',
+            icon: FileText,
+            title: 'Desk document printer',
+            subtitle: 'Letter printer at the shipping desk — prints the original slip page',
+          }}
+        />
+
         <div className="mt-5">
           <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-gray-500 mb-2">
             🌯 Burrito wrap flow
@@ -138,7 +160,7 @@ export function PrinterSettingsSheet({ dests, onDestChange, wrapFlow, onWrapFlow
 
 function DestSection({
   icon: sectionIcon, title, kind, dest, bridgeSubtitle, bridgeOnline,
-  onDestChange, onTest, testing, testLabel,
+  onDestChange, onTest, testing, testLabel, extraDest,
 }) {
   const SectionIcon = sectionIcon;
   const busy = testing === kind;
@@ -163,6 +185,17 @@ function DestSection({
           subtitle={bridgeSubtitle}
           status={bridgeOnline === null ? null : bridgeOnline ? 'online' : 'offline'}
         />
+        {/* Optional third destination (slips: the desk's letter printer). */}
+        {extraDest && (
+          <DestCard
+            active={dest === extraDest.value}
+            onSelect={() => onDestChange(kind, extraDest.value)}
+            icon={extraDest.icon}
+            title={extraDest.title}
+            subtitle={extraDest.subtitle}
+            status={bridgeOnline === null ? null : bridgeOnline ? 'online' : 'offline'}
+          />
+        )}
       </div>
       <button
         type="button"

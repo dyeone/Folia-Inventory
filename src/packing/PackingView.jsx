@@ -3,7 +3,7 @@ import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
   Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin, Clock,
-  ShoppingCart, Combine, Leaf, FileText,
+  ShoppingCart, Combine, Leaf, FileText, Store,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { openUsdaStickerPdf, openUsdaSlipPdf } from '../labels/usdaDocs.js';
@@ -18,7 +18,7 @@ import { PrintListButton } from './PrintListButton.jsx';
 import { BoxNotePanel, InsulationStrip, InsulationChip } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 import { ShippingMarginNote } from './ShippingMarginNote.jsx';
-import { openLabelPdf, copyText, printShippingLabels } from './labelPdf.js';
+import { openLabelPdf, openBoxSlipPdf, copyText, printShippingLabels } from './labelPdf.js';
 import { SummaryStat } from './SummaryStat.jsx';
 import { shippingRollup, fmt$2 } from '../financial/financialHelpers.js';
 import { CameraScanner } from './CameraScanner.jsx';
@@ -26,6 +26,8 @@ import { NewBoxModal } from './NewBoxModal.jsx';
 import { EditBoxItemsModal } from './EditBoxItemsModal.jsx';
 import { EditBoxAddressModal } from './EditBoxAddressModal.jsx';
 import { ImportLabelsModal } from './ImportLabelsModal.jsx';
+import { ImportNigelSlipsModal } from './ImportNigelSlipsModal.jsx';
+import { isNigelBoxId } from './platform.js';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
@@ -90,6 +92,12 @@ export function PackingView({
   // the recipient, auto-match it to an open box, and (on confirm) store the
   // tracking number + label PDF on each box.
   const [importOpen, setImportOpen] = useState(false);
+
+  // Import Nigel's order slips modal. The desk uploads the PDF of order
+  // slips from Nigel's BoyGardening shop; each order is OCR'd, reviewed,
+  // then becomes an open (hot-pink, ng…) box of placeholder items with the
+  // slip page stored on the box for the packer to print.
+  const [nigelImportOpen, setNigelImportOpen] = useState(false);
 
   // Admin-only modal for editing items in an existing open box: scan
   // to add, trash icon per row to remove. State holds the box being
@@ -238,7 +246,7 @@ export function PackingView({
   // mirrors the overlay state so a click that opens a modal doesn't yank
   // focus back to the (now-hidden) scan box. preventScroll keeps the page
   // from jumping to the top when refocusing after a click further down.
-  const overlayOpen = !!(buyingFor || bulkBuyOpen || combineOpen || importOpen || editingBox || editingAddressBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
+  const overlayOpen = !!(buyingFor || bulkBuyOpen || combineOpen || importOpen || nigelImportOpen || editingBox || editingAddressBox || slipBox || newBoxOpen || scannerMode || activeSaleId);
   const overlayOpenRef = useRef(overlayOpen);
   useEffect(() => { overlayOpenRef.current = overlayOpen; }, [overlayOpen]);
   useEffect(() => {
@@ -928,6 +936,16 @@ export function PackingView({
             className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-emerald-600 text-emerald-700 bg-white hover:bg-emerald-50 active:bg-emerald-100"
           >
             <Upload className="w-4 h-4" /> Import labels
+          </button>
+          {/* Upload Nigel's (BoyGardening) order-slip PDF → one open box per
+              order, slip saved on the box, hot pink everywhere. */}
+          <button
+            type="button"
+            onClick={() => setNigelImportOpen(true)}
+            title="Import Nigel's order slips (BoyGardening PDF) — creates a hot-pink box per order and saves each slip for the packer"
+            className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-[#ff69b4] text-[#c0106b] bg-white hover:bg-pink-50 active:bg-pink-100"
+          >
+            <Store className="w-4 h-4 text-[#ff69b4]" /> Nigel slips
           </button>
           {/* Print the boxes currently on screen (current sub-tab + filter) as
               a packing-list table, straight to the document printer. */}
@@ -1670,6 +1688,20 @@ export function PackingView({
         />
       )}
 
+      {nigelImportOpen && (
+        <ImportNigelSlipsModal
+          openBoxes={groups.flatMap(g => g.boxes)}
+          inventoryItems={inventoryItems}
+          boxNotesByBox={boxNotesByBox}
+          onClose={() => setNigelImportOpen(false)}
+          onDone={async () => {
+            await onRefreshItems?.();
+            await refreshShipments();
+          }}
+          showToast={showToast}
+        />
+      )}
+
       {scannerMode && isMobile && (
         <CameraScanner
           onScan={(text) => {
@@ -2047,6 +2079,10 @@ function BoxItemsList({ box, salesById, onTogglePacked, dupeLots, findDupeLotBox
   // about what's left to pack. Shipped boxes (every item is shipped)
   // skip the filter so the archive view still shows the full contents.
   const isOpenBox = box.items.some(i => i.status === 'sold');
+  // Nigel's boxes are made of placeholder lines by design (his products
+  // aren't in our inventory) — show them hot pink as "Nigel" lines, not as
+  // purple "unmatched" flags the operator would try to resolve.
+  const isNigel = isNigelBoxId(box.id);
   const sortedItems = useMemo(() => {
     let copy = [...box.items];
     if (isOpenBox) {
@@ -2082,7 +2118,9 @@ function BoxItemsList({ box, salesById, onTogglePacked, dupeLots, findDupeLotBox
         // placeholders get a purple accent so they stand out for the
         // operator (they're a flag — the order line couldn't be linked
         // to real inventory at apply time).
-        const rowBg = isUnmatched
+        const rowBg = isUnmatched && isNigel
+          ? 'bg-pink-50 border-l-2 border-[#ff69b4]'
+          : isUnmatched
           ? 'bg-purple-50 border-l-2 border-purple-300'
           : 'bg-emerald-50 border-l-2 border-emerald-300';
 
@@ -2165,9 +2203,15 @@ function BoxItemsList({ box, salesById, onTogglePacked, dupeLots, findDupeLotBox
                   </span>
                 )}
                 {isUnmatched && !shippedAlready && (
-                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 no-underline">
-                    unmatched
-                  </span>
+                  isNigel ? (
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-[#ff69b4] text-white no-underline" title="Line from Nigel's order slip (not in our inventory)">
+                      Nigel
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 no-underline">
+                      unmatched
+                    </span>
+                  )
                 )}
                 {isPacked && !shippedAlready && (
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 no-underline">
@@ -2381,6 +2425,11 @@ function BoxRow({
   // Local pickup (seller note / item says "pickup") — a separate "do not ship"
   // flag with its own violet colour.
   const isPickup = !allShipped && boxIsLocalPickup(box.note, box.items);
+  // Nigel's (BoyGardening) slip-imported box — hot pink so the desk and the
+  // packer both see whose order it is. `slipStoragePath` rides in from the
+  // merged box-notes row: the stored original slip page(s).
+  const isNigel = isNigelBoxId(box.id);
+  const hasSlip = !!box.slipStoragePath;
 
   const handleSaveTracking = async (e) => {
     e?.stopPropagation();
@@ -2476,6 +2525,8 @@ function BoxRow({
     <div className={`rounded-lg border transition ${
       isSelected
         ? 'border-emerald-500 ring-1 ring-emerald-200'
+        : isNigel
+        ? 'border-[#ff69b4] bg-pink-50/60 ring-1 ring-pink-200'
         : onHold
         ? 'border-amber-300 bg-amber-50/60'
         : isPickup
@@ -2551,6 +2602,28 @@ function BoxRow({
           <span className="font-mono text-[11px] text-gray-600 shrink-0">
             {shortBoxCode(box.id)}
           </span>
+          {/* Nigel box with its imported order slip stored — click opens the
+              original slip page(s) in a new tab (browser print from there;
+              the packer prints it at pack time). */}
+          {isNigel && hasSlip && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); openBoxSlipPdf(box.id, showToast); }}
+              onKeyDown={(e) => e.stopPropagation()}
+              title="Open the imported order slip (PDF)"
+              className="inline-flex items-center gap-1 text-[10px] font-medium text-[#c0106b] bg-pink-100 ring-1 ring-pink-300 px-1.5 py-0.5 rounded shrink-0 hover:bg-pink-200"
+            >
+              <FileText className="w-3 h-3" /> Slip
+            </button>
+          )}
+          {isNigel && !hasSlip && (
+            <span
+              title="No slip stored for this box — re-import the order PDF to attach it"
+              className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-800 bg-amber-100 ring-1 ring-amber-300 px-1.5 py-0.5 rounded shrink-0"
+            >
+              <AlertCircle className="w-3 h-3" /> No slip
+            </span>
+          )}
           {/* Label-ready mark — a shipping label has been added/bought for
               this open box. Hidden once shipped (the shipped status says it). */}
           {hasLabel && !allShipped && (
