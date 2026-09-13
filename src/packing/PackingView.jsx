@@ -2892,14 +2892,14 @@ function BoxRow({
             >
               <Leaf className="w-3 h-3" /> USDA sticker
             </button>
-            {/* Letter-size → the desk's document printer via the bridge (set
-                the "Docs" printer in the Mac app), browser print otherwise. */}
+            {/* 4×6 label(s) on the shipping-label printer, like the sticker;
+                browser print when the bridge is offline. */}
             <button
               onClick={(e) => {
                 stop(e);
                 printUsdaSlip(box, liveShipment, showToast).catch(err => showToast?.(err.message || 'Slip failed', 'error'));
               }}
-              title="Print the nursery-stock packing slip with the §6501(c) declaration on the document printer — goes inside the box"
+              title="Print the nursery-stock packing slip with the §6501(c) declaration on the 4×6 shipping-label printer — goes inside the box"
               className="text-xs font-medium px-2.5 py-1 rounded-md border border-red-300 text-red-700 bg-white hover:bg-red-50 active:bg-red-100 flex items-center gap-1"
             >
               <FileText className="w-3 h-3" /> USDA slip
