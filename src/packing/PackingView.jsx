@@ -6,7 +6,7 @@ import {
   ShoppingCart, Combine, Leaf, FileText, Store,
 } from 'lucide-react';
 import { api } from '../api.js';
-import { openUsdaStickerPdf, openUsdaSlipPdf } from '../labels/usdaDocs.js';
+import { printUsdaSticker, printUsdaSlip } from '../labels/usdaDocs.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
@@ -2878,23 +2878,28 @@ function BoxRow({
             )}
             {/* USDA / CA nursery-stock compliance documents — needed when a
                 box routes through agricultural inspection (rural counties).
-                Not action-gated: shipped boxes can reprint them too. */}
+                Not action-gated: shipped boxes can reprint them too. The
+                sticker prints straight to the 4×6 shipping-label printer
+                (black & white, with the FRAGILE block) next to the carrier
+                label; browser print when the bridge is offline. */}
             <button
               onClick={(e) => {
                 stop(e);
-                openUsdaStickerPdf(box).catch(err => showToast?.(err.message || 'Sticker failed', 'error'));
+                printUsdaSticker(box, showToast).catch(err => showToast?.(err.message || 'Sticker failed', 'error'));
               }}
-              title='Print the "LIVE NURSERY STOCK" sticker (CA F&A §6501) — goes on the outside of the box'
+              title='Print the "LIVE NURSERY STOCK · FRAGILE" sticker (CA F&A §6501) on the 4×6 shipping-label printer — goes on the outside of the box'
               className="text-xs font-medium px-2.5 py-1 rounded-md border border-red-300 text-red-700 bg-white hover:bg-red-50 active:bg-red-100 flex items-center gap-1"
             >
               <Leaf className="w-3 h-3" /> USDA sticker
             </button>
+            {/* Letter-size → the desk's document printer via the bridge (set
+                the "Docs" printer in the Mac app), browser print otherwise. */}
             <button
               onClick={(e) => {
                 stop(e);
-                openUsdaSlipPdf(box, liveShipment).catch(err => showToast?.(err.message || 'Slip failed', 'error'));
+                printUsdaSlip(box, liveShipment, showToast).catch(err => showToast?.(err.message || 'Slip failed', 'error'));
               }}
-              title="Print the nursery-stock packing slip with the §6501(c) declaration — goes inside the box"
+              title="Print the nursery-stock packing slip with the §6501(c) declaration on the document printer — goes inside the box"
               className="text-xs font-medium px-2.5 py-1 rounded-md border border-red-300 text-red-700 bg-white hover:bg-red-50 active:bg-red-100 flex items-center gap-1"
             >
               <FileText className="w-3 h-3" /> USDA slip

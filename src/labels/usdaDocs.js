@@ -1,22 +1,30 @@
 // USDA / CA nursery-stock compliance documents, printed per box for
 // shipments that route through agricultural inspection (rural counties):
 //
-//   • Sticker — 6×4 "LIVE NURSERY STOCK" label (CA F&A Code §6501) with
-//     county-where-grown, from/to, and a statement of contents. Prints on
-//     the 4×6 label stock (landscape).
+//   • Sticker — 4×6 portrait "LIVE NURSERY STOCK" label (CA F&A Code §6501)
+//     with county-where-grown, from/to, a statement of contents and a big
+//     FRAGILE · LIVE PLANTS · PLEASE HANDLE WITH CARE block. Prints on the
+//     4×6 shipping-label printer next to the carrier label (bridge role
+//     'shipping', media Custom.4x6in) — a 1-bit thermal printer, so the
+//     sticker is pure black on white: solid bands and text, no red, no
+//     greys (they dither into mud on thermal stock).
 //   • Slip — letter-size packing slip with shipper/consignee panels, an
-//     item table, and the §6501(c) nursery stock declaration summary.
-//     Goes inside the box on plain paper.
+//     item table, the §6501(c) nursery stock declaration summary and the
+//     same FRAGILE line. Goes inside the box on plain paper: prints to the
+//     desk's document printer (bridge role 'document', like Print list),
+//     browser dialog when the bridge is offline. Same black-on-white
+//     treatment as the sticker so a mono laser or thermal prints it clean.
 //
-// Both are drawn with jsPDF primitives in the BAE house style (red band,
-// black blocks, mono accents). Business/grower facts live in USDA_CONFIG
-// below — edit there when the license, grow site, or addresses change.
+// Business/grower facts live in USDA_CONFIG below — edit there when the
+// license, grow site, or addresses change.
 
 import { shortBoxCode } from './boxCode.js';
+import { printGeneratedPdf } from '../packing/labelPdf.js';
 
-const RED = [240, 57, 46];
-const BLACK = [17, 17, 17];
-const CREAM = [244, 239, 220];
+// Pure black / pure white only — both documents may land on a 1-bit
+// thermal printer, where any grey or colour dithers into mud.
+const INK = [0, 0, 0];
+const PAPER = [255, 255, 255];
 
 const BASE_CONFIG = {
   code: 'CA F&A CODE §6501',
@@ -73,7 +81,28 @@ function openPdf(pdf) {
   window.open(pdf.output('bloburl'), '_blank');
 }
 
-// ── Sticker: 6×4 landscape (prints on the 4×6 label stock) ────────────────
+// Boxes reach these builders in two shapes: the Ready/Shipped rows carry
+// `buyer` / `buyerAddress` (the grouped box), the per-sale drill-down
+// `recipientName` / `address`. Accept both so the sticker never prints a
+// blank consignee.
+function recipientOf(box) {
+  return String(box?.recipientName || box?.buyer || 'Recipient');
+}
+function addressOf(box) {
+  return box?.address || box?.buyerAddress || {};
+}
+
+// ── Sticker: 4×6 portrait, black & white, for the shipping-label printer ──
+
+// Print the sticker on the desk's 4×6 shipping-label printer (bridge role
+// 'shipping', same media as the carrier label) — browser print when the
+// bridge is offline.
+export async function printUsdaSticker(box, showToast) {
+  const pdf = await buildUsdaStickerPdf(box);
+  return printGeneratedPdf(pdf, { role: 'shipping', media: 'Custom.4x6in', what: 'USDA sticker' }, showToast);
+}
+
+// Kept for callers that want the PDF in a tab (preview / manual print).
 export async function openUsdaStickerPdf(box) {
   openPdf(await buildUsdaStickerPdf(box));
 }
@@ -81,76 +110,119 @@ export async function openUsdaStickerPdf(box) {
 export async function buildUsdaStickerPdf(box) {
   const cfg = usdaConfig();
   const { jsPDF } = await import('jspdf');
-  const pdf = new jsPDF({ unit: 'in', format: [4, 6], orientation: 'landscape' });
-  const W = 6, M = 0.28;
+  const pdf = new jsPDF({ unit: 'in', format: [4, 6], orientation: 'portrait' });
+  const W = 4, H = 6, M = 0.24;
+  const INNER = W - 2 * M;
+
+  // Vertical budget (worst case: a 3-line consignee address + a 3-line
+  // contents statement) ends ~0.25in above the FRAGILE block, which is
+  // anchored to the bottom. Keep the step sizes below if you add a line.
+  const spaced = (t) => t.split('').join(' ');
+  const rule = (y, w = 0.014) => { pdf.setDrawColor(...INK); pdf.setLineWidth(w); pdf.line(M, y, W - M, y); };
+  const caption = (t, y) => {
+    pdf.setTextColor(...INK); pdf.setFont('courier', 'bold'); pdf.setFontSize(7.5);
+    pdf.text(spaced(t), M, y);
+  };
 
   // Outer frame
-  pdf.setDrawColor(...BLACK); pdf.setLineWidth(0.03);
-  pdf.rect(0.06, 0.06, W - 0.12, 4 - 0.12);
+  pdf.setDrawColor(...INK); pdf.setLineWidth(0.03);
+  pdf.rect(0.06, 0.06, W - 0.12, H - 0.12);
 
-  // Red header band
-  pdf.setFillColor(...RED);
-  pdf.rect(0.06, 0.06, W - 0.12, 0.62, 'F');
-  pdf.setTextColor(...BLACK);
-  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(23);
-  pdf.text('LIVE NURSERY STOCK', M, 0.51);
-  pdf.setFont('courier', 'bold'); pdf.setFontSize(10);
-  pdf.text(cfg.code, W - M, 0.42, { align: 'right' });
+  // Header band — solid black, knocked-out title (thermal-safe).
+  const bandH = 0.72;
+  pdf.setFillColor(...INK);
+  pdf.rect(0.06, 0.06, W - 0.12, bandH, 'F');
+  pdf.setTextColor(...PAPER);
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(21);
+  pdf.text('LIVE NURSERY STOCK', W / 2, 0.44, { align: 'center' });
+  pdf.setFont('courier', 'bold'); pdf.setFontSize(8);
+  pdf.text(cfg.code, W / 2, 0.66, { align: 'center' });
 
   // County where grown
-  let y = 1.02;
-  pdf.setTextColor(...RED);
-  pdf.setFont('courier', 'bold'); pdf.setFontSize(8.5);
-  pdf.text('C O U N T Y   W H E R E   G R O W N', M, y);
-  y += 0.3;
-  pdf.setTextColor(...BLACK);
-  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(21);
+  let y = 0.06 + bandH + 0.26;
+  caption('COUNTY WHERE GROWN', y);
+  y += 0.25;
+  pdf.setTextColor(...INK);
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(16);
   pdf.text(`${cfg.grownAt.county}, ${cfg.grownAt.state}`.toUpperCase(), M, y);
-  y += 0.24;
-  pdf.setFont('courier', 'normal'); pdf.setFontSize(9.5);
-  pdf.text(`${cfg.grownAt.line} · Lic. ${cfg.license}`, M, y);
-
-  // From / To
   y += 0.18;
-  pdf.setLineWidth(0.014); pdf.line(M, y, W - M, y);
-  y += 0.26;
-  const col2 = W / 2 + 0.1;
-  pdf.setTextColor(...RED); pdf.setFont('courier', 'bold'); pdf.setFontSize(8.5);
-  pdf.text('F R O M', M, y);
-  pdf.text('T O', col2, y);
-  pdf.setTextColor(...BLACK);
-  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(12);
-  pdf.text(cfg.shipFrom.name, M, y + 0.22);
-  pdf.text(String(box.recipientName || 'Recipient'), col2, y + 0.22);
-  pdf.setFont('courier', 'normal'); pdf.setFontSize(9.5);
-  const from = addrLines(cfg.shipFrom);
-  const to = addrLines(box.address || {});
-  from.forEach((l, i) => pdf.text(l, M, y + 0.42 + i * 0.17));
-  to.forEach((l, i) => pdf.text(l, col2, y + 0.42 + i * 0.17));
-  y += 0.42 + Math.max(from.length, to.length, 2) * 0.17;
+  pdf.setFont('courier', 'normal'); pdf.setFontSize(8);
+  pdf.text(cfg.grownAt.line, M, y);
+  y += 0.14;
+  pdf.text(`Lic. ${cfg.license}`, M, y);
+
+  // From / To — stacked (portrait is too narrow for two address columns).
+  y += 0.13;
+  rule(y);
+  y += 0.22;
+  const block = (label, name, lines, nameSize) => {
+    caption(label, y);
+    y += 0.18;
+    pdf.setTextColor(...INK);
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(nameSize);
+    pdf.text(pdf.splitTextToSize(name, INNER)[0] || '', M, y);
+    pdf.setFont('courier', 'normal'); pdf.setFontSize(8.5);
+    for (const l of lines) {
+      for (const w of pdf.splitTextToSize(l, INNER)) { y += 0.14; pdf.text(w, M, y); }
+    }
+  };
+  block('FROM', cfg.shipFrom.name, addrLines(cfg.shipFrom), 10.5);
+  y += 0.18;
+  block('TO', recipientOf(box), addrLines(addressOf(box)).slice(0, 3), 12);
 
   // Contents
-  pdf.setLineWidth(0.014); pdf.line(M, y, W - M, y);
-  y += 0.26;
-  pdf.setTextColor(...RED); pdf.setFont('courier', 'bold'); pdf.setFontSize(8.5);
-  pdf.text('C O N T E N T S', M, y);
+  y += 0.14;
+  rule(y);
   y += 0.22;
-  pdf.setTextColor(...BLACK); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11.5);
-  pdf.text(pdf.splitTextToSize(contentsStatement(box), W - 2 * M), M, y);
+  caption('CONTENTS', y);
+  y += 0.17;
+  pdf.setTextColor(...INK); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(9.5);
+  const contents = pdf.splitTextToSize(contentsStatement(box), INNER).slice(0, 3);
+  pdf.text(contents, M, y);
 
-  // Footer band
-  pdf.setFillColor(...BLACK);
-  pdf.rect(0.06, 4 - 0.06 - 0.4, W - 0.12, 0.4, 'F');
-  pdf.setTextColor(...CREAM);
-  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(13);
-  pdf.text(cfg.short, M, 4 - 0.2);
-  pdf.setFont('courier', 'bold'); pdf.setFontSize(8.5);
-  pdf.text(cfg.wordmark.split('').join(' '), W - M, 4 - 0.21, { align: 'right' });
+  // FRAGILE block — anchored to the bottom so it never gets squeezed; the
+  // handler's eye should land on it first. Solid band + knocked-out word,
+  // then the plain-language line underneath.
+  const footH = 0.28;
+  const fragH = 1.15;
+  const fragY = H - 0.06 - footH - 0.1 - fragH;
+  pdf.setDrawColor(...INK); pdf.setLineWidth(0.03);
+  pdf.rect(M, fragY, INNER, fragH);
+  pdf.setFillColor(...INK);
+  pdf.rect(M, fragY, INNER, 0.56, 'F');
+  pdf.setTextColor(...PAPER);
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(36);
+  pdf.text('FRAGILE', W / 2, fragY + 0.45, { align: 'center' });
+  pdf.setTextColor(...INK);
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(14);
+  pdf.text('LIVE PLANTS', W / 2, fragY + 0.83, { align: 'center' });
+  pdf.setFontSize(11);
+  pdf.text('PLEASE HANDLE WITH CARE', W / 2, fragY + 1.04, { align: 'center' });
+
+  // Footer — brand on the left, box code on the right so the sticker can
+  // be matched to its box at the desk.
+  const footY = H - 0.06 - footH;
+  rule(footY, 0.02);
+  pdf.setTextColor(...INK);
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(10);
+  pdf.text(cfg.short, M, footY + 0.19);
+  pdf.setFont('courier', 'bold'); pdf.setFontSize(8);
+  pdf.text(shortBoxCode(box?.id || ''), W - M, footY + 0.19, { align: 'right' });
 
   return pdf;
 }
 
 // ── Slip: letter-size nursery-stock packing slip (goes inside the box) ────
+
+// Print the slip on the desk's document printer (bridge role 'document';
+// no media override — the Docs queue's own default is letter), browser
+// print when the bridge is offline.
+export async function printUsdaSlip(box, shipment, showToast) {
+  const pdf = await buildUsdaSlipPdf(box, shipment);
+  return printGeneratedPdf(pdf, { role: 'document', media: null, what: 'USDA slip' }, showToast);
+}
+
+// Kept for callers that want the PDF in a tab (preview / manual print).
 export async function openUsdaSlipPdf(box, shipment) {
   openPdf(await buildUsdaSlipPdf(box, shipment));
 }
@@ -160,15 +232,16 @@ export async function buildUsdaSlipPdf(box, shipment) {
   const { jsPDF } = await import('jspdf');
   const pdf = new jsPDF({ unit: 'in', format: 'letter' });
   const W = 8.5, M = 0.6;
-  const a = box.address || {};
+  const a = addressOf(box);
+  const recipient = recipientOf(box);
 
   // Header
-  pdf.setTextColor(...BLACK);
+  pdf.setTextColor(...INK);
   pdf.setFont('helvetica', 'bold'); pdf.setFontSize(30);
   pdf.text(cfg.short, M, 1.0);
-  pdf.setTextColor(...RED); pdf.setFont('courier', 'bold'); pdf.setFontSize(9);
+  pdf.setTextColor(...INK); pdf.setFont('courier', 'bold'); pdf.setFontSize(9);
   pdf.text(`+ ${cfg.wordmark.split('').join(' ')}`, M + pdf.getTextWidth(cfg.short) / 4 + 1.15, 0.97);
-  pdf.setTextColor(...BLACK);
+  pdf.setTextColor(...INK);
   pdf.setFont('helvetica', 'bold'); pdf.setFontSize(16);
   pdf.text('PACKING SLIP', M, 1.42);
 
@@ -181,15 +254,15 @@ export async function buildUsdaSlipPdf(box, shipment) {
   ];
   metaRight.forEach(([k, v], i) => {
     const yy = 0.78 + i * 0.2;
-    pdf.setTextColor(120, 120, 120);
+    pdf.setTextColor(...INK);
     pdf.text(k, W - M - pdf.getTextWidth(v) - 0.12, yy, { align: 'right' });
-    pdf.setTextColor(...BLACK);
+    pdf.setTextColor(...INK);
     pdf.setFont('courier', k === 'LIC' ? 'bold' : 'normal');
     pdf.text(v, W - M, yy, { align: 'right' });
     pdf.setFont('courier', 'normal');
   });
 
-  pdf.setDrawColor(...BLACK); pdf.setLineWidth(0.03);
+  pdf.setDrawColor(...INK); pdf.setLineWidth(0.03);
   pdf.line(M, 1.62, W - M, 1.62);
 
   // Ship-from / deliver-to panels
@@ -197,9 +270,9 @@ export async function buildUsdaSlipPdf(box, shipment) {
   const drawPanel = (x, caption, name, lines, subCaption, subLines) => {
     pdf.setLineWidth(0.016);
     pdf.rect(x, panelY, panelW, panelH);
-    pdf.setTextColor(...RED); pdf.setFont('courier', 'bold'); pdf.setFontSize(8);
+    pdf.setTextColor(...INK); pdf.setFont('courier', 'bold'); pdf.setFontSize(8);
     pdf.text(caption, x + 0.18, panelY + 0.28);
-    pdf.setTextColor(...BLACK); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(13);
+    pdf.setTextColor(...INK); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(13);
     pdf.text(name, x + 0.18, panelY + 0.55);
     pdf.setFont('courier', 'normal'); pdf.setFontSize(9.5);
     lines.forEach((l, i) => pdf.text(l, x + 0.18, panelY + 0.78 + i * 0.19));
@@ -208,9 +281,9 @@ export async function buildUsdaSlipPdf(box, shipment) {
     pdf.setLineWidth(0.008);
     pdf.line(x + 0.18, subY, x + panelW - 0.18, subY);
     pdf.setLineDashPattern([], 0);
-    pdf.setTextColor(120, 120, 120); pdf.setFontSize(8.5);
+    pdf.setTextColor(...INK); pdf.setFontSize(8.5);
     pdf.text(subCaption, x + 0.18, subY + 0.2);
-    pdf.setTextColor(...BLACK); pdf.setFontSize(9);
+    pdf.setTextColor(...INK); pdf.setFontSize(9);
     subLines.forEach((l, i) => pdf.text(l, x + 0.18, subY + 0.38 + i * 0.17));
   };
   const orderCount = new Set((box.items || []).map(i => i.orderId).filter(Boolean)).size || 1;
@@ -223,8 +296,8 @@ export async function buildUsdaSlipPdf(box, shipment) {
   );
   drawPanel(
     M + panelW + 0.3, 'DELIVER TO · CONSIGNEE',
-    String(box.recipientName || 'Recipient').toUpperCase(),
-    [box.username ? `@${String(box.username).replace(/^@/, '')}` : '', ...addrLines(a)].filter(Boolean),
+    recipient.toUpperCase(),
+    [(box.username || box.buyerUsername) ? `@${String(box.username || box.buyerUsername).replace(/^@/, '')}` : '', ...addrLines(a)].filter(Boolean),
     'ORDER GROUP',
     [`${orderCount} ORDER${orderCount === 1 ? '' : 'S'}`, [a.city, a.state].filter(Boolean).join(', ').toUpperCase()],
   );
@@ -232,9 +305,9 @@ export async function buildUsdaSlipPdf(box, shipment) {
   // Item table
   let y = panelY + panelH + 0.3;
   const cols = { item: M + 0.15, sku: 4.7, qty: 5.9, ship: 6.7, price: W - M - 0.15 };
-  pdf.setFillColor(...BLACK);
+  pdf.setFillColor(...INK);
   pdf.rect(M, y, W - 2 * M, 0.32, 'F');
-  pdf.setTextColor(...CREAM); pdf.setFont('courier', 'bold'); pdf.setFontSize(9);
+  pdf.setTextColor(...PAPER); pdf.setFont('courier', 'bold'); pdf.setFontSize(9);
   pdf.text('ITEM', cols.item, y + 0.21);
   pdf.text('SKU', cols.sku, y + 0.21);
   pdf.text('QTY', cols.qty, y + 0.21, { align: 'right' });
@@ -245,7 +318,7 @@ export async function buildUsdaSlipPdf(box, shipment) {
   const money = (v) => `$${(parseFloat(v) || 0).toFixed(2)}`;
   let subtotal = 0;
   const rows = (box.items || []);
-  pdf.setTextColor(...BLACK);
+  pdf.setTextColor(...INK);
   for (const it of rows) {
     const price = parseFloat(it.salePrice) || 0;
     subtotal += price;
@@ -259,7 +332,7 @@ export async function buildUsdaSlipPdf(box, shipment) {
     pdf.text(it.orderShippingFee != null ? money(it.orderShippingFee) : '—', cols.ship + 0.5, y + 0.22, { align: 'right' });
     pdf.text(money(price), cols.price, y + 0.22, { align: 'right' });
     y += 0.3;
-    pdf.setDrawColor(220, 220, 220); pdf.setLineWidth(0.008);
+    pdf.setDrawColor(...INK); pdf.setLineWidth(0.006);
     pdf.line(M, y, W - M, y);
     if (y > 8.3) break; // keep one page; overflow boxes list the first ~15
   }
@@ -267,32 +340,32 @@ export async function buildUsdaSlipPdf(box, shipment) {
   // Totals
   const shipTotal = parseFloat(box.shippingFeeCollected) || 0;
   const totX = 5.4;
-  pdf.setDrawColor(...BLACK); pdf.setLineWidth(0.016);
+  pdf.setDrawColor(...INK); pdf.setLineWidth(0.016);
   const totRow = (label, value, dark) => {
     if (dark) {
-      pdf.setFillColor(...BLACK);
+      pdf.setFillColor(...INK);
       pdf.rect(totX, y, W - M - totX, 0.36, 'F');
-      pdf.setTextColor(...CREAM);
+      pdf.setTextColor(...PAPER);
     } else {
       pdf.rect(totX, y, W - M - totX, 0.32);
-      pdf.setTextColor(120, 120, 120);
+      pdf.setTextColor(...INK);
     }
     pdf.setFont('courier', dark ? 'bold' : 'normal'); pdf.setFontSize(dark ? 11 : 9.5);
     pdf.text(label, totX + 0.15, y + (dark ? 0.245 : 0.215));
-    if (!dark) pdf.setTextColor(...BLACK);
+    if (!dark) pdf.setTextColor(...INK);
     pdf.text(value, W - M - 0.15, y + (dark ? 0.245 : 0.215), { align: 'right' });
     y += dark ? 0.36 : 0.32;
   };
   totRow('SUBTOTAL', money(subtotal), false);
   totRow('SHIPPING', money(shipTotal), false);
   totRow('TOTAL', money(subtotal + shipTotal), true);
-  pdf.setTextColor(...BLACK);
+  pdf.setTextColor(...INK);
 
   // Declaration block
   y += 0.3;
-  pdf.setFillColor(...BLACK);
+  pdf.setFillColor(...INK);
   pdf.rect(M, y, W - 2 * M, 0.36, 'F');
-  pdf.setTextColor(...CREAM);
+  pdf.setTextColor(...PAPER);
   pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11);
   pdf.text('NURSERY STOCK DECLARATION — SUMMARY', M + 0.15, y + 0.25);
   pdf.setFont('courier', 'normal'); pdf.setFontSize(8);
@@ -300,11 +373,11 @@ export async function buildUsdaSlipPdf(box, shipment) {
   y += 0.36;
   const cellW = (W - 2 * M) / 2, cellH = 0.95;
   const cell = (cx, cy, num, caption, text, bold) => {
-    pdf.setDrawColor(...BLACK); pdf.setLineWidth(0.012);
+    pdf.setDrawColor(...INK); pdf.setLineWidth(0.012);
     pdf.rect(M + cx * cellW, y + cy * cellH, cellW, cellH);
-    pdf.setTextColor(120, 120, 120); pdf.setFont('courier', 'normal'); pdf.setFontSize(8);
+    pdf.setTextColor(...INK); pdf.setFont('courier', 'normal'); pdf.setFontSize(8);
     pdf.text(`(${num}) ${caption}`, M + cx * cellW + 0.15, y + cy * cellH + 0.22);
-    pdf.setTextColor(...BLACK);
+    pdf.setTextColor(...INK);
     pdf.setFont('helvetica', bold ? 'bold' : 'normal'); pdf.setFontSize(9.5);
     pdf.text(
       pdf.splitTextToSize(text, cellW - 0.3),
@@ -315,16 +388,25 @@ export async function buildUsdaSlipPdf(box, shipment) {
   cell(0, 0, 1, 'SHIPPER / OWNER',
     `${cfg.shipFrom.name} — ${addrLines(cfg.shipFrom).join(', ')}`, false);
   cell(1, 0, 2, 'SHIPPED TO',
-    `${box.recipientName || 'Recipient'} — ${addrLines(a).join(', ')}`, false);
+    `${recipient} — ${addrLines(a).join(', ')}`, false);
   cell(0, 1, 3, 'COUNTY WHERE GROWN',
     `${cfg.grownAt.county}, ${cfg.grownAt.state === 'CA' ? 'California' : cfg.grownAt.state}\n${cfg.grownAt.line} · Lic. ${cfg.license}`, true);
   cell(1, 1, 4, 'STATEMENT OF CONTENTS', contentsStatement(box), false);
   y += 2 * cellH;
 
+  // FRAGILE strip — same wording as the sticker, so the two documents read
+  // as a pair. Sits just above the footer, clear of the declaration grid.
+  const stripY = 9.62, stripH = 0.5;
+  pdf.setFillColor(...INK);
+  pdf.rect(M, stripY, W - 2 * M, stripH, 'F');
+  pdf.setTextColor(...PAPER);
+  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(15);
+  pdf.text('FRAGILE  ·  LIVE PLANTS  ·  PLEASE HANDLE WITH CARE', W / 2, stripY + 0.33, { align: 'center' });
+
   // Footer
-  pdf.setDrawColor(...BLACK); pdf.setLineWidth(0.02);
+  pdf.setDrawColor(...INK); pdf.setLineWidth(0.02);
   pdf.line(M, 10.3, W - M, 10.3);
-  pdf.setTextColor(120, 120, 120); pdf.setFont('courier', 'normal'); pdf.setFontSize(8);
+  pdf.setTextColor(...INK); pdf.setFont('courier', 'normal'); pdf.setFontSize(8);
   pdf.text(cfg.footer, M, 10.52);
   pdf.text('SHEET 1 OF 1 · ENCLOSE IN BOX', W - M, 10.52, { align: 'right' });
 
