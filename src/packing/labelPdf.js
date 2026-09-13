@@ -1,5 +1,5 @@
 import { api } from '../api.js';
-import { bridgeOnlineNow, printPdfViaBridge, bytesToBase64 } from '../labels/useBridgePrint.js';
+import { bridgeOnlineNow, printPdfViaBridge, bytesToBase64, pdfToBase64 } from '../labels/useBridgePrint.js';
 
 // Safari (desktop + iOS) blocks silent scripted printing: window.print()
 // pops a "do you want to print this webpage?" confirmation and targets the
@@ -132,6 +132,40 @@ export async function openLabelPdf(shipment, kind, showToast) {
   } catch (e) {
     win?.close();
     showToast?.(e.message || `Could not open ${kind}`);
+  }
+}
+
+// Print a PDF we just BUILT (jsPDF doc) the same way openLabelPdf prints a
+// stored one: bridge first (role + media pick the desk printer — 'shipping'
+// + Custom.4x6in for anything that goes on the box next to the carrier
+// label), then the browser fallback (hidden-iframe print on Chromium/
+// Firefox, a tab on Safari). `what` names the document in toasts.
+export async function printGeneratedPdf(pdf, { role = 'shipping', media = 'Custom.4x6in', what = 'label' } = {}, showToast) {
+  const safari = isSafari();
+  const win = safari ? window.open('', '_blank') : null;
+  try {
+    if (await bridgeOnlineNow()) {
+      try {
+        const res = await printPdfViaBridge({ pdfBase64: pdfToBase64(pdf), role, media });
+        win?.close();
+        showToast?.(`Sent ${what} to ${res?.printer || 'printer'}`);
+        return true;
+      } catch (e) {
+        showToast?.(`Printer error — using browser (${e.message})`);
+      }
+    }
+    const blobUrl = pdf.output('bloburl');
+    if (safari) {
+      if (!win) { showToast?.(`Allow pop-ups to print the ${what}`); return false; }
+      win.location.href = blobUrl;
+      return true;
+    }
+    printPdfBlob(blobUrl);
+    return true;
+  } catch (e) {
+    win?.close();
+    showToast?.(e.message || `Could not print the ${what}`);
+    return false;
   }
 }
 
