@@ -2,7 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store,
+  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
@@ -17,7 +17,7 @@ import { findDupeLots } from './dupeLots.js';
 import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
-import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printBoxSlip, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
+import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printBoxSlip, printPackerUsdaSticker, printPackerUsdaSlip, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
 import { isNigelBoxId } from './platform.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { ReceivingPane } from './ReceivingPane.jsx';
@@ -287,7 +287,7 @@ export function PackerView({ onLogout }) {
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
   };
-  // One busy flag across print jobs ('label' | 'tag' | 'itemlabel' | 'slip' | null):
+  // One busy flag across print jobs ('label' | 'tag' | 'itemlabel' | 'slip' | 'usda-sticker' | 'usda-slip' | null):
   // on the iPad path all flows share the in-page print root, so they must
   // never run concurrently (the second purge would eat the first job's
   // pages). Bridge-destined wrap prints skip it — see startWrap.
@@ -744,6 +744,29 @@ export function PackerView({ onLogout }) {
     setPrinting('slip');
     try {
       await printBoxSlip(activeBox, printDests.slip, showToast);
+    } finally {
+      setPrinting(null);
+    }
+  };
+
+  // USDA / CA nursery-stock documents for boxes that route through
+  // agricultural inspection: the sticker goes on the outside next to the
+  // carrier label, the slip inside. Both are 4×6 and follow the packer's
+  // shipping-label destination.
+  const printActiveUsdaSticker = async () => {
+    if (!activeBox || printing) return;
+    setPrinting('usda-sticker');
+    try {
+      await printPackerUsdaSticker(activeBox, printDests.shipping, showToast);
+    } finally {
+      setPrinting(null);
+    }
+  };
+  const printActiveUsdaSlip = async () => {
+    if (!activeBox || printing) return;
+    setPrinting('usda-slip');
+    try {
+      await printPackerUsdaSlip(activeBox, trackingByBox[activeBox.id] || null, printDests.shipping, showToast);
     } finally {
       setPrinting(null);
     }
@@ -1371,6 +1394,8 @@ export function PackerView({ onLogout }) {
             onPrintTag={printActiveTag}
             onPrintSlip={isNigelBoxId(activeBox.id) ? printActiveSlip : null}
             slipStored={!!slipByBox[activeBox.id]}
+            onPrintUsdaSticker={printActiveUsdaSticker}
+            onPrintUsdaSlip={printActiveUsdaSlip}
             printing={printing}
             onDone={() => goToBox(null)}
           />
@@ -2285,7 +2310,7 @@ function ShipTo({ box }) {
   );
 }
 
-function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, onPrintSlip, slipStored, printing, onDone }) {
+function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked, onPrintPlantLabel, onCamera, onScanLabel, onSendToPhone, onPrintLabel, onPrintTag, onPrintSlip, slipStored, onPrintUsdaSticker, onPrintUsdaSlip, printing, onDone }) {
   const isNigel = isNigelBoxId(box.id);
   const unpacked = box.items.filter(i => i.status === 'sold' && !i.packedAt);
   const packed = box.items.filter(i => i.status === 'sold' && !!i.packedAt);
@@ -2375,6 +2400,8 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
               onPrintLabel={onPrintLabel}
               onPrintTag={onPrintTag}
               onPrintSlip={onPrintSlip}
+              onPrintUsdaSticker={onPrintUsdaSticker}
+              onPrintUsdaSlip={onPrintUsdaSlip}
               printing={printing}
               onDone={onDone}
             />
@@ -2448,6 +2475,31 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
                 {printing === 'label' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Printer className="w-5 h-5" />} Print label
               </button>
             )}
+            {/* USDA / CA nursery-stock documents — for boxes routed through
+                agricultural inspection. Sticker outside, slip inside; both
+                4×6 on the shipping-label printer. */}
+            {onPrintUsdaSticker && (
+              <button
+                type="button"
+                onClick={onPrintUsdaSticker}
+                disabled={!!printing}
+                title="LIVE NURSERY STOCK · FRAGILE sticker (CA F&A §6501) — goes on the outside of the box"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-red-300 text-red-700 rounded-xl active:bg-red-50 disabled:opacity-60"
+              >
+                {printing === 'usda-sticker' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Leaf className="w-5 h-5" />} USDA sticker
+              </button>
+            )}
+            {onPrintUsdaSlip && (
+              <button
+                type="button"
+                onClick={onPrintUsdaSlip}
+                disabled={!!printing}
+                title="Nursery-stock packing slip with the §6501(c) declaration — goes inside the box"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 text-base font-semibold bg-white border-2 border-red-300 text-red-700 rounded-xl active:bg-red-50 disabled:opacity-60"
+              >
+                {printing === 'usda-slip' ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5" />} USDA slip
+              </button>
+            )}
             <button
               type="button"
               onClick={onCamera}
@@ -2464,7 +2516,7 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
 
 // Shown once every item is packed: the final step is scanning the shipping
 // label. A correct scan triggers the "Good job" screen (see handleScanLabel).
-function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, onPrintTag, onPrintSlip, printing, onDone }) {
+function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, onPrintTag, onPrintSlip, onPrintUsdaSticker, onPrintUsdaSlip, printing, onDone }) {
   return (
     <div className="text-center max-w-md mx-auto pt-2">
       <div className="flex items-center justify-center gap-2.5 mb-1.5">
@@ -2534,6 +2586,35 @@ function FinalStep({ assignedTracking, onScanLabel, onPrintLabel, onPrintTag, on
         >
           {printing === 'tag' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Tag className="w-5 h-5" />} Print box tag
         </button>
+      )}
+      {/* USDA / CA nursery-stock documents — boxes routed through agricultural
+          inspection get the sticker on the outside (next to the carrier
+          label) and the slip inside before sealing. Same 4×6 printer. */}
+      {(onPrintUsdaSticker || onPrintUsdaSlip) && (
+        <div className="mt-3 flex gap-3">
+          {onPrintUsdaSticker && (
+            <button
+              type="button"
+              onClick={onPrintUsdaSticker}
+              disabled={!!printing}
+              title="LIVE NURSERY STOCK · FRAGILE sticker (CA F&A §6501) — goes on the outside of the box"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-white border-2 border-red-300 text-red-700 rounded-xl active:bg-red-50 disabled:opacity-60"
+            >
+              {printing === 'usda-sticker' ? <Loader2 className="w-5 h-5 animate-spin" /> : <Leaf className="w-5 h-5" />} USDA sticker
+            </button>
+          )}
+          {onPrintUsdaSlip && (
+            <button
+              type="button"
+              onClick={onPrintUsdaSlip}
+              disabled={!!printing}
+              title="Nursery-stock packing slip with the §6501(c) declaration — goes inside the box"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-white border-2 border-red-300 text-red-700 rounded-xl active:bg-red-50 disabled:opacity-60"
+            >
+              {printing === 'usda-slip' ? <Loader2 className="w-5 h-5 animate-spin" /> : <FileText className="w-5 h-5" />} USDA slip
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
