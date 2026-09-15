@@ -3,7 +3,7 @@ import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
   Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin, Clock,
-  ShoppingCart, Combine, Leaf, FileText, Store,
+  ShoppingCart, Combine, Leaf, FileText, Store, Download,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { printUsdaSticker, printUsdaSlip } from '../labels/usdaDocs.js';
@@ -28,6 +28,7 @@ import { EditBoxAddressModal } from './EditBoxAddressModal.jsx';
 import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ImportNigelSlipsModal } from './ImportNigelSlipsModal.jsx';
 import { isNigelBoxId } from './platform.js';
+import { buildNigelShippingRows, downloadNigelShippingCsv } from './nigelExport.js';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
@@ -946,6 +947,23 @@ export function PackingView({
             className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-[#ff69b4] text-[#c0106b] bg-white hover:bg-pink-50 active:bg-pink-100"
           >
             <Store className="w-4 h-4 text-[#ff69b4]" /> Nigel slips
+          </button>
+          {/* CSV of every Nigel box (open + shipped): one row per order with
+              customer, ship-to, items, carrier + tracking, dates, status —
+              what Nigel needs to push tracking back into his own shop. */}
+          <button
+            type="button"
+            onClick={() => {
+              const rows = buildNigelShippingRows(inventoryItems, shipmentsByBox);
+              if (rows.length === 0) { showToast("No Nigel boxes to export yet"); return; }
+              downloadNigelShippingCsv(rows);
+              const withTracking = rows.filter(r => r.trackingNumber).length;
+              showToast(`Exported ${rows.length} order${rows.length === 1 ? '' : 's'} (${withTracking} with tracking)`);
+            }}
+            title="Download a CSV of Nigel's boxes — one row per order with customer, address, items, carrier, tracking number and link, label/ship dates and status"
+            className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-[#ff69b4] text-[#c0106b] bg-white hover:bg-pink-50 active:bg-pink-100"
+          >
+            <Download className="w-4 h-4 text-[#ff69b4]" /> Export Nigel
           </button>
           {/* Print the boxes currently on screen (current sub-tab + filter) as
               a packing-list table, straight to the document printer. */}
