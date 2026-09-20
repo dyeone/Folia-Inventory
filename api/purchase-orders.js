@@ -1,5 +1,6 @@
 import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, DEFAULT_BRAND } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { installDomMatrixPolyfill } from './_lib/domMatrix.js';
 
 // Purchase orders. Action-dispatched. See:
 //   docs/superpowers/specs/2026-05-22-purchasing-catalog-and-receive-design.md
@@ -534,7 +535,11 @@ async function syncPoReceivedStatus(poId, brandId, user, nowIso) {
 // The worker module is imported with a literal specifier so Vercel's file
 // tracing bundles it, and registered on globalThis.pdfjsWorker — the hook
 // pdf.js checks before trying to load a worker by path (verified: with a
-// bogus workerSrc, extraction still runs off the preloaded module).
+// bogus workerSrc, extraction still runs off the preloaded module). The
+// Node build also needs a DOMMatrix global at import time; it takes one
+// from @napi-rs/canvas, which the function bundle doesn't have, so a small
+// 2D polyfill goes in first (_lib/domMatrix.js) — text extraction never
+// renders, so that's all it touches.
 const PDF_TEXT_MAX_BASE64 = 14_000_000; // ~10 MB decoded
 const PDF_TEXT_MAX_PAGES = 40;
 async function pdfText(req, res) {
@@ -544,6 +549,7 @@ async function pdfText(req, res) {
   const buf = Buffer.from(pdfBase64, 'base64');
   if (buf.length < 5 || buf.subarray(0, 5).toString('latin1') !== '%PDF-') { const e = new Error('That file is not a PDF'); e.status = 400; throw e; }
 
+  installDomMatrixPolyfill();
   const [pdfjs, workerMod] = await Promise.all([
     import('pdfjs-dist/legacy/build/pdf.mjs'),
     import('pdfjs-dist/legacy/build/pdf.worker.mjs'),
