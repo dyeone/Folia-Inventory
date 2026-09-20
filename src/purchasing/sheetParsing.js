@@ -71,10 +71,25 @@ export function decodeCsvBytes(bytes) {
   return new TextDecoder('windows-1252').decode(bytes);
 }
 
+export const isPdfFile = (file) => /\.pdf$/i.test(file?.name || '') || /pdf/i.test(file?.type || '');
+
+// Vendor invoice PDF → { grid, meta }. The grid is the same Item / Quantity
+// / Price shape a spreadsheet yields, so callers that only want rows can use
+// readSheetGrid; ImportOrderModal takes the meta too (vendor, invoice no /
+// date, shipping & tax, totals) to prefill the order header. pdf.js and the
+// parser are lazy — only invoices pay for them.
+export async function readInvoicePdf(file) {
+  const { parseInvoicePdf, invoiceToGrid } = await import('./invoicePdf.js');
+  const meta = await parseInvoicePdf(file);
+  return { grid: invoiceToGrid(meta), meta };
+}
+
 // File → non-empty grid rows (array-of-arrays). CSVs go through our own
 // charset detection; xlsx/xls carry their encoding internally and stay on
-// the array path. xlsx itself is lazy-loaded (~140KB gzip).
+// the array path; a vendor invoice PDF is read by text position and shaped
+// into the same grid. xlsx itself is lazy-loaded (~140KB gzip).
 export async function readSheetGrid(file) {
+  if (isPdfFile(file)) return (await readInvoicePdf(file)).grid;
   const XLSX = await import('xlsx');
   const buf = await file.arrayBuffer();
   const isCsv = /\.(csv|txt)$/i.test(file.name || '') || /csv/i.test(file.type || '');
