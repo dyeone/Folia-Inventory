@@ -3,7 +3,7 @@ import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-rea
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
-import { readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { readSheetGrid, readInvoicePdf, isPdfFile, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
 import { MatchPicker, MatchedRowEditor, RowVarietySelect } from './MatchPicker.jsx';
 
 // Rows the auto-matcher couldn't bind to an existing species — each gets a
@@ -89,17 +89,35 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
 
   const [noQtyColumn, setNoQtyColumn] = useState(false);
   const [overrides, setOverrides] = useState({}); // baseRow index → {speciesId}|{skip:true}
+  // Vendor invoice PDF facts (invoice no/date, shipping & tax, totals, sum
+  // check warnings) — shown above the rows and used to prefill the header.
+  const [invoiceMeta, setInvoiceMeta] = useState(null);
 
   const handleFile = async (file) => {
     setParseErr('');
     setBaseRows(null);
     setNoQtyColumn(false);
     setOverrides({});
+    setInvoiceMeta(null);
     importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     if (!file) return;
     setFileName(file.name);
     try {
-      const { rows: parsed, noQtyColumn: noQty } = parseOrderRows(await readSheetGrid(file));
+      let grid;
+      if (isPdfFile(file)) {
+        // The invoice PDF: same grid as a sheet, plus the header facts. The
+        // vendor name and shipping & tax only fill EMPTY fields — a value
+        // the operator already typed wins.
+        const { grid: g, meta } = await readInvoicePdf(file);
+        grid = g;
+        setInvoiceMeta(meta);
+        setSupplier((cur) => cur.trim() ? cur : (meta.supplier || ''));
+        setShippingFee((cur) => String(cur).trim() ? cur : (meta.shippingFee != null ? meta.shippingFee.toFixed(2) : ''));
+        setNotes((cur) => cur.trim() ? cur : [meta.invoiceNo ? `Invoice ${meta.invoiceNo}` : '', meta.invoiceDate].filter(Boolean).join(' · '));
+      } else {
+        grid = await readSheetGrid(file);
+      }
+      const { rows: parsed, noQtyColumn: noQty } = parseOrderRows(grid);
       setNoQtyColumn(noQty);
       setBaseRows(parsed);
     } catch (e) {
@@ -324,7 +342,7 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
           <input
             ref={fileRef}
             type="file"
-            accept=".xlsx,.xls,.csv"
+            accept=".xlsx,.xls,.csv,.pdf"
             className="hidden"
             onChange={(e) => {
               handleFile(e.target.files?.[0]);
@@ -342,11 +360,28 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
           ) : (
             <div className="text-sm text-gray-600">
               <Upload className="w-6 h-6 mx-auto mb-1 text-gray-400" />
-              Drop the supplier's list here (.xlsx / .csv)
-              <div className="text-xs text-gray-400 mt-1">Columns: species (required) · variety · qty · price</div>
+              Drop the supplier's list here (.xlsx / .csv) or their invoice PDF
+              <div className="text-xs text-gray-400 mt-1">Sheet columns: species (required) · variety · qty · price · Invoice PDF: item · price · qty · amount</div>
             </div>
           )}
         </div>
+
+        {invoiceMeta && !parseErr && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+              <span className="font-semibold">Invoice {invoiceMeta.invoiceNo || '—'}</span>
+              {invoiceMeta.invoiceDate && <span>{invoiceMeta.invoiceDate}</span>}
+              <span>{invoiceMeta.rows.length} lines · {invoiceMeta.sumQty.toLocaleString()} pcs</span>
+              {invoiceMeta.totalAmount != null && <span>total ${invoiceMeta.totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>}
+              {invoiceMeta.shippingFee != null && <span>incl. ${invoiceMeta.shippingFee.toFixed(2)} shipping &amp; tax → shipping fee</span>}
+            </div>
+            {invoiceMeta.warnings.length > 0 && (
+              <ul className="text-amber-800 list-disc pl-4">
+                {invoiceMeta.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
 
         {parseErr && (
           <div className="flex items-center gap-2 bg-red-50 text-red-700 text-xs px-3 py-2 rounded-lg">

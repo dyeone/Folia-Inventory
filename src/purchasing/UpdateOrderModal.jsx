@@ -405,7 +405,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
               <input
                 ref={fileRef}
                 type="file"
-                accept=".xlsx,.xls,.csv"
+                accept=".xlsx,.xls,.csv,.pdf"
                 className="hidden"
                 onChange={(e) => {
                   handleFile(e.target.files?.[0]);
@@ -421,7 +421,7 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
               ) : (
                 <div className="text-sm text-gray-600">
                   <Upload className="w-6 h-6 mx-auto mb-1 text-gray-400" />
-                  Drop the revised list here (.xlsx / .csv)
+                  Drop the revised list here (.xlsx / .csv) or the invoice PDF
                   <div className="text-xs text-gray-400 mt-1">Columns: species (required) · variety · qty · price</div>
                 </div>
               )}
