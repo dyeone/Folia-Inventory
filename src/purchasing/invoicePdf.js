@@ -1,5 +1,3 @@
-import { getPdfjs } from '../packing/pdfjsLoader.js';
-
 // Vendor invoice PDF → order rows for the wholesale Import list.
 //
 // Brighten's "Proforma Invoice" is an Excel-generated PDF with a real text
@@ -9,7 +7,9 @@ import { getPdfjs } from '../packing/pdfjsLoader.js';
 // pdf.js hands us each item with its x/y, so a row is simply the text
 // items sharing a baseline, classified by column: the "$" tokens are price
 // and amount, the integer between them is the quantity, the rest is the
-// name. No OCR, no layout guessing.
+// name. No OCR, no layout guessing. The text items come from the server
+// (api/purchase-orders.js pdf-text — pdf.js 6 needs a newer Safari than
+// the desk has); this module is pure and runs the same in Node tests.
 //
 // The parsed lines are turned into the same grid shape a supplier
 // spreadsheet produces (header Item / Quantity / Price) so the rest of the
@@ -149,36 +149,11 @@ export function invoiceToGrid(parsed) {
   ];
 }
 
-// File → positioned text per page via pdf.js (browser path).
-export async function readInvoicePdfPages(file) {
-  const pdfjs = await getPdfjs();
-  const buf = await file.arrayBuffer();
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
-  const pages = [];
-  try {
-    for (let p = 1; p <= doc.numPages; p++) {
-      const page = await doc.getPage(p);
-      const tc = await page.getTextContent();
-      pages.push({
-        items: tc.items
-          .filter((it) => 'str' in it)
-          .map((it) => ({ str: it.str, x: it.transform[4], y: it.transform[5] })),
-      });
-    }
-  } finally {
-    try { await doc.destroy(); } catch { /* best effort */ }
-  }
-  return pages;
-}
-
-export async function parseInvoicePdf(file) {
-  const pages = await readInvoicePdfPages(file);
-  const parsed = parseInvoicePages(pages);
-  if (parsed.rows.length === 0) {
-    const hasText = pages.some((p) => p.items.some((it) => String(it.str || '').trim()));
-    throw new Error(hasText
-      ? 'No priced item lines found in that PDF — is it the vendor invoice (item · price · qty · amount)?'
-      : 'That PDF has no text layer (a scan). Export the invoice from Excel/PDF, or upload the .xlsx instead.');
-  }
-  return parsed;
+// Message for an invoice that parsed to nothing, or null when rows exist.
+export function invoiceRowsError(parsed, pages) {
+  if (parsed.rows.length > 0) return null;
+  const hasText = (pages || []).some((p) => (p.items || []).some((it) => String(it.str || '').trim()));
+  return hasText
+    ? 'No priced item lines found in that PDF — is it the vendor invoice (item · price · qty · amount)?'
+    : 'That PDF has no text layer (a scan). Export the invoice from Excel/PDF, or upload the .xlsx instead.';
 }

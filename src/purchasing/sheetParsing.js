@@ -76,11 +76,21 @@ export const isPdfFile = (file) => /\.pdf$/i.test(file?.name || '') || /pdf/i.te
 // Vendor invoice PDF → { grid, meta }. The grid is the same Item / Quantity
 // / Price shape a spreadsheet yields, so callers that only want rows can use
 // readSheetGrid; ImportOrderModal takes the meta too (vendor, invoice no /
-// date, shipping & tax, totals) to prefill the order header. pdf.js and the
-// parser are lazy — only invoices pay for them.
+// date, shipping & tax, totals) to prefill the order header. The PDF's text
+// is extracted server-side (api/purchase-orders.js pdf-text — the desk's
+// Safari can't run pdf.js 6); the parser runs here and is lazy-loaded.
+const INVOICE_PDF_MAX_BYTES = 10 * 1024 * 1024;
 export async function readInvoicePdf(file) {
-  const { parseInvoicePdf, invoiceToGrid } = await import('./invoicePdf.js');
-  const meta = await parseInvoicePdf(file);
+  if (file.size > INVOICE_PDF_MAX_BYTES) throw new Error('That PDF is over 10 MB — export a smaller invoice.');
+  const [{ api }, { bytesToBase64 }, { parseInvoicePages, invoiceToGrid, invoiceRowsError }] = await Promise.all([
+    import('../api.js'),
+    import('../labels/useBridgePrint.js'),
+    import('./invoicePdf.js'),
+  ]);
+  const pages = await api.pdfText(bytesToBase64(new Uint8Array(await file.arrayBuffer())));
+  const meta = parseInvoicePages(pages);
+  const err = invoiceRowsError(meta, pages);
+  if (err) throw new Error(err);
   return { grid: invoiceToGrid(meta), meta };
 }
 

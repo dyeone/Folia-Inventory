@@ -173,6 +173,10 @@ export const api = {
     request('/purchase-orders', { method: 'POST', body: { action: 'mark-ordered', id } }).then(r => r.purchaseOrder),
   importPurchaseOrder: ({ importId, supplier, shippingFee, notes, lines, markOrdered, itemType, itemStatus, itemNotes }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'import-order', importId, supplier, shippingFee, notes, lines, markOrdered, itemType, itemStatus, itemNotes } }),
+  // Positioned text of a vendor PDF (wholesale invoice import) — extracted
+  // server-side; see api/purchase-orders.js pdf-text for why.
+  pdfText: (pdfBase64) =>
+    request('/purchase-orders', { method: 'POST', body: { action: 'pdf-text', pdfBase64 } }).then(r => r.pages || []),
   updatePurchaseOrderLines: ({ id, lines, removeMissing }) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'update-order-lines', id, lines, removeMissing } }),
   migratePurchaseOrderBrand: ({ id, targetBrandId }) =>
