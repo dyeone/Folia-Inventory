@@ -85,10 +85,11 @@ export default wrap(async (req, res) => {
     // cancel-receive-line stay open to any brand member: that IS their job.
     const ADMIN_ACTIONS = new Set([
       'create', 'update-header', 'add-line', 'update-line', 'remove-line', 'delete', 'mark-ordered',
-      'import-order', 'update-order-lines', 'migrate-brand',
+      'import-order', 'update-order-lines', 'migrate-brand', 'pdf-text',
     ]);
     if (ADMIN_ACTIONS.has(action)) await requireAdmin(userId);
     switch (action) {
+      case 'pdf-text':            return pdfText(req, res);
       case 'import-order':        return importOrder(req, res, user, brandId);
       case 'update-order-lines':  return updateOrderLines(req, res, user, brandId);
       case 'create':              return create(req, res, user, brandId);
@@ -520,6 +521,67 @@ async function syncPoReceivedStatus(poId, brandId, user, nowIso) {
     return 'ordered';
   }
   return null;
+}
+
+// POST { action: 'pdf-text', pdfBase64 } → { pages: [{ items: [{ str, x, y }] }] }
+//
+// Positioned text of a vendor PDF (the wholesale invoice import). Extracted
+// HERE rather than in the browser on purpose: pdf.js 6 leans on language
+// features only the newest Safari has (Promise.try, iterator helpers,
+// Float16Array), and the desk's Safari threw "undefined is not a function"
+// deep inside it. Node runs pdf.js reliably, so the server hands back the
+// raw text items and the client keeps the invoice parsing (invoicePdf.js).
+// The worker module is imported with a literal specifier so Vercel's file
+// tracing bundles it, and registered on globalThis.pdfjsWorker — the hook
+// pdf.js checks before trying to load a worker by path (verified: with a
+// bogus workerSrc, extraction still runs off the preloaded module).
+const PDF_TEXT_MAX_BASE64 = 14_000_000; // ~10 MB decoded
+const PDF_TEXT_MAX_PAGES = 40;
+async function pdfText(req, res) {
+  const { pdfBase64 } = req.body || {};
+  if (!pdfBase64 || typeof pdfBase64 !== 'string') { const e = new Error('pdfBase64 required'); e.status = 400; throw e; }
+  if (pdfBase64.length > PDF_TEXT_MAX_BASE64) { const e = new Error('PDF too large (10 MB max)'); e.status = 413; throw e; }
+  const buf = Buffer.from(pdfBase64, 'base64');
+  if (buf.length < 5 || buf.subarray(0, 5).toString('latin1') !== '%PDF-') { const e = new Error('That file is not a PDF'); e.status = 400; throw e; }
+
+  const [pdfjs, workerMod] = await Promise.all([
+    import('pdfjs-dist/legacy/build/pdf.mjs'),
+    import('pdfjs-dist/legacy/build/pdf.worker.mjs'),
+  ]);
+  globalThis.pdfjsWorker = workerMod.WorkerMessageHandler ? workerMod : (workerMod.default || workerMod);
+
+  // The loading task owns the document; destroying it (not the document
+  // proxy, which has no destroy() in the Node build) frees the parsed PDF.
+  const task = pdfjs.getDocument({
+    data: new Uint8Array(buf),
+    isEvalSupported: false,
+    disableFontFace: true,
+    useSystemFonts: false,
+  });
+  let doc;
+  try {
+    doc = await task.promise;
+  } catch (err) {
+    try { await task.destroy(); } catch { /* best effort */ }
+    const e = new Error(`Could not open that PDF: ${err?.message || 'unknown error'}`); e.status = 400; throw e;
+  }
+  const pages = [];
+  const numPages = doc.numPages;
+  try {
+    const n = Math.min(numPages, PDF_TEXT_MAX_PAGES);
+    for (let p = 1; p <= n; p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      pages.push({
+        items: tc.items
+          .filter((it) => typeof it.str === 'string' && it.str.trim())
+          .map((it) => ({ str: it.str, x: Math.round(it.transform[4] * 10) / 10, y: Math.round(it.transform[5] * 10) / 10 })),
+      });
+    }
+  } finally {
+    try { await task.destroy(); } catch { /* best effort */ }
+  }
+  return res.status(200).json({ pages, numPages });
 }
 
 // One-request wholesale import: species + PO + every line land in a handful
