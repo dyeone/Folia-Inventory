@@ -176,6 +176,35 @@
 
     <section class="card">
       <div class="card-head">
+        <h2>Chrome extension</h2>
+        <span id="ext-pill" class="pill pill-gray">checking…</span>
+      </div>
+      <div class="muted small">
+        Folia Label Helper runs inside Chrome on the Palmstreet seller dashboard:
+        label buying, show tracking, and the live overlay with VIP alerts. This
+        app keeps a copy of it at a fixed folder; Chrome loads it from there
+        (“unpacked”). That's one click, once — after that every app update
+        refreshes the folder and the extension reloads itself between lives.
+      </div>
+      <div class="cfg-view">
+        <div class="kv"><div class="k">Version</div><div class="v" id="ext-version">—</div></div>
+        <div class="kv"><div class="k">Folder</div><div class="v" id="ext-dir" style="font-family: ui-monospace, Menlo, monospace; word-break: break-all">—</div></div>
+      </div>
+      <ol class="muted small" style="margin: 8px 0 0; padding-left: 18px; line-height: 1.5">
+        <li><b>Install in Chrome</b> opens Chrome's extensions page and shows the folder in Finder.</li>
+        <li>In Chrome: turn on <b>Developer mode</b> (top right) → <b>Load unpacked</b> → drag the folder from Finder into the picker (or ⌘⇧G and paste the path).</li>
+        <li>Click the extension's icon → ⚙︎ Settings → enter the API URL, your user ID, and the brand.</li>
+      </ol>
+      <div class="actions" style="margin-top: 10px">
+        <button id="btn-ext-install" class="btn btn-primary">Install in Chrome</button>
+        <button id="btn-ext-reveal" class="btn">Show folder</button>
+        <button id="btn-ext-copy" class="btn">Copy path</button>
+      </div>
+      <div id="ext-result" class="small muted" style="margin-top: 6px"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
         <h2>Show monitor</h2>
         <span id="show-pill" class="pill pill-gray">no show</span>
       </div>

@@ -42,12 +42,36 @@ ones are skipped so the flow fits Palmstreet's actual UI.
 
 ## Install
 
+**With the Folia Bridge Mac app (recommended on the streaming Mac).** The
+app ships a copy of this folder and mirrors it to
+`~/Library/Application Support/Folia Bridge/chrome-extension` on every
+launch. In the app's **Chrome extension** card click **Install in Chrome**:
+Chrome opens its extensions page and Finder shows the folder. Turn on
+**Developer mode** (top right) → **Load unpacked** → drag that folder into
+the picker. That's the only manual step, ever: each app update refreshes
+the folder and the extension reloads itself (see *Self-reload* below).
+
+**From the repo (dev).**
+
 1. Clone this repo so the `extension/` folder is on disk.
 2. `chrome://extensions` → toggle **Developer mode** (top right) → **Load unpacked** → pick the `extension/` folder.
 3. Pin the leaf icon to your toolbar.
 
-Re-load the extension after edits via the refresh icon on its card on
-the extensions page.
+### Self-reload
+
+Chrome keeps running the files it loaded until the extension reloads, so a
+`git pull` (or a Mac app update) alone changes nothing. The background
+worker checks the on-disk `manifest.json` once a minute and calls
+`chrome.runtime.reload()` when its `version` differs from the running one —
+so **bump `version` in `manifest.json` on every change**, or the reload
+never fires. It waits until live activity has been quiet for 3 minutes (a
+reload mid-show would orphan the dashboard tab's scripts), then re-injects
+the content scripts into any open Palmstreet tab; the scripts detect an
+orphaned earlier instance and replace it, so an already-open dashboard
+picks up the new code without a page reload. Chrome disables an extension
+that reloads more than a few times in ten minutes, which is why it keys
+off the version rather than file timestamps. The manual refresh icon on
+the extension's card still works too.
 
 ## First-time setup
 

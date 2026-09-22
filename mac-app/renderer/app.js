@@ -695,3 +695,54 @@ window.app.onUpdateStatus((result) => applyUpdate(result));
   els.versionLabel.textContent = baseVersionLabel;
   checkForUpdates();  // silent on launch — only the banner speaks up
 })();
+
+// ── Chrome extension card ──────────────────────────────────────────────
+// The app can't press Chrome's "Load unpacked" for the operator; it keeps
+// the folder current and gets them to the right place. Status is read on
+// load and after every action.
+const extEls = {
+  pill: $('ext-pill'), version: $('ext-version'), dir: $('ext-dir'), result: $('ext-result'),
+  install: $('btn-ext-install'), reveal: $('btn-ext-reveal'), copy: $('btn-ext-copy'),
+};
+
+async function refreshExtension() {
+  if (!window.chromeExt || !extEls.pill) return;
+  let s = null;
+  try { s = await window.chromeExt.getStatus(); } catch { s = null; }
+  if (!s) { extEls.pill.textContent = 'unavailable'; extEls.pill.className = 'pill pill-gray'; return; }
+  extEls.version.textContent = s.bundledVersion ? `v${s.bundledVersion}` : '—';
+  extEls.dir.textContent = s.installDir || '—';
+  if (s.error) {
+    extEls.pill.textContent = 'copy failed';
+    extEls.pill.className = 'pill pill-red';
+    extEls.result.textContent = s.error;
+  } else if (s.upToDate) {
+    extEls.pill.textContent = `v${s.installedVersion} in folder`;
+    extEls.pill.className = 'pill pill-emerald';
+  } else {
+    extEls.pill.textContent = s.installedVersion ? `folder has v${s.installedVersion}` : 'not copied yet';
+    extEls.pill.className = 'pill pill-gray';
+  }
+}
+
+extEls.install?.addEventListener('click', async () => {
+  extEls.result.textContent = 'Preparing…';
+  try {
+    const r = await window.chromeExt.install();
+    if (!r?.ok) { extEls.result.textContent = r?.error || 'Could not prepare the extension folder.'; }
+    else if (!r.opened) {
+      extEls.result.textContent = 'Folder is ready (shown in Finder), but Google Chrome could not be opened — open chrome://extensions yourself, turn on Developer mode, and Load unpacked → that folder.';
+    } else {
+      extEls.result.textContent = 'Chrome is open on its extensions page and Finder shows the folder. Turn on Developer mode → Load unpacked → pick that folder. Already loaded? Nothing to do — it reloads itself.';
+    }
+  } catch (e) {
+    extEls.result.textContent = e?.message || String(e);
+  }
+  refreshExtension();
+});
+extEls.reveal?.addEventListener('click', () => { window.chromeExt.reveal().catch(() => {}); });
+extEls.copy?.addEventListener('click', async () => {
+  try { const p = await window.chromeExt.copyPath(); extEls.result.textContent = p ? `Copied: ${p}` : 'Nothing to copy yet.'; }
+  catch (e) { extEls.result.textContent = e?.message || String(e); }
+});
+refreshExtension();

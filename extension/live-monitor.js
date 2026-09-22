@@ -17,6 +17,19 @@
 // Every pass also emits one `folia:live-tick` DOM event (snapshot + show
 // state + the events first seen on this pass) for live-overlay.js, the
 // on-page streamer widget. The overlay only reads; it never touches the blob.
+//
+// Wrapped in an IIFE with a liveness guard: after the extension self-reloads
+// (background.js), Chrome re-injects this file into the open dashboard tab.
+// A still-live earlier instance wins; an orphaned one (its extension context
+// invalidated by the reload) is stopped and replaced.
+
+(() => {
+const prevMonitor = window.__foliaLiveMonitor;
+if (prevMonitor) {
+  if (prevMonitor.alive()) return;
+  try { prevMonitor.stop(); } catch { /* already gone */ }
+}
+const liveAlive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
 
 const LIVE_TICK_MS = 1500;      // parse cadence
 const LIVE_SAVE_MS = 4000;      // min gap between saves (sold events save sooner)
@@ -305,5 +318,19 @@ async function liveTick() {
 }
 
 // Self-activating: ticks are near-free off the dashboard (two regex tests on
-// page text), so just run everywhere the manifest matches.
-setInterval(() => { liveTick().catch(() => { /* keep the loop alive */ }); }, LIVE_TICK_MS);
+// page text), so just run everywhere the manifest matches. When this
+// instance's extension context dies (self-reload), stop ticking and tell the
+// overlay so the re-injected pair can take over cleanly.
+let liveTimer = null;
+function liveStop() {
+  if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
+  if (window.__foliaLiveMonitor === liveSelf) delete window.__foliaLiveMonitor;
+  try { document.dispatchEvent(new CustomEvent('folia:live-dead')); } catch { /* ignore */ }
+}
+const liveSelf = { alive: liveAlive, stop: liveStop };
+window.__foliaLiveMonitor = liveSelf;
+liveTimer = setInterval(() => {
+  if (!liveAlive()) { liveStop(); return; }
+  liveTick().catch(() => { /* keep the loop alive */ });
+}, LIVE_TICK_MS);
+})();
