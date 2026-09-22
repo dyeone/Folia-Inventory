@@ -17,7 +17,10 @@
 // refreshes every 10 minutes.
 //
 // Lives in a shadow root so Palmstreet's CSS can't restyle it and ours
-// can't leak out. Position / collapsed / muted persist in storage.local.
+// can't leak out. Drag the header to move it, drag the bottom-right corner
+// to resize it — text scales with the width so a bigger panel reads from
+// across the room. Position / size / collapsed / muted persist in
+// storage.local.
 
 (() => {
   // Re-injection guard (see live-monitor.js): a live earlier instance wins,
@@ -38,11 +41,13 @@
   const FEED_MAX = 14;
   const VIP_LIST_MAX = 8;
   const HIDE_AFTER_MS = 8_000;       // no dashboard tick for this long → hide
-  const PANEL_W = 300;
+  const PANEL_W = 300;               // default width; the operator can resize
+  const PANEL_MIN_W = 240, PANEL_MIN_H = 160;
+  const FONT_MIN = 11, FONT_MAX = 22;   // base font follows width: ~1px per 25px
 
   let host = null, root = null;
   const el = {};
-  let prefs = { x: null, y: null, collapsed: false, muted: false };
+  let prefs = { x: null, y: null, w: null, h: null, collapsed: false, muted: false };
   let settings = null;               // chrome.storage.sync snapshot
   let buyers = null;                 // lowercase username → { tier, spent, items, boxes, openBoxes, lastAt }
   let buyersAt = 0, buyersErr = null, buyersLoading = false;
@@ -112,57 +117,72 @@
   const CSS = `
     :host { all: initial; }
     * { box-sizing: border-box; }
+    .wrap { position: fixed; z-index: 2147483647; }
     .panel {
-      position: fixed; z-index: 2147483647; width: ${PANEL_W}px;
-      font: 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --fs: 12px;
+      position: relative; width: ${PANEL_W}px; min-width: ${PANEL_MIN_W}px; min-height: ${PANEL_MIN_H}px;
+      max-width: 92vw; max-height: 92vh;
+      display: flex; flex-direction: column;
+      resize: both; overflow: hidden;
+      font: var(--fs)/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       color: #e5e7eb; background: rgba(9, 12, 20, 0.94); border: 1px solid #1f2937;
       border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.45); user-select: none;
       backdrop-filter: blur(8px);
     }
-    .head { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: grab; border-bottom: 1px solid #1f2937; }
+    .panel.collapsed { resize: none; min-height: 0; height: auto !important; }
+    .panel::after {
+      /* visible grip over the native resize corner */
+      content: ""; position: absolute; right: 3px; bottom: 3px; width: 10px; height: 10px; pointer-events: none;
+      background: linear-gradient(135deg, transparent 50%, #4b5563 50%, #4b5563 60%, transparent 60%, transparent 75%, #4b5563 75%, #4b5563 85%, transparent 85%);
+      border-bottom-right-radius: 8px; opacity: .8;
+    }
+    .panel.collapsed::after { display: none; }
+    .head { display: flex; align-items: center; gap: .65em; padding: .65em .85em; cursor: grab; border-bottom: 1px solid #1f2937; flex-shrink: 0; }
     .head:active { cursor: grabbing; }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 0 rgba(239,68,68,.6); animation: pulse 1.6s infinite; flex-shrink: 0; }
-    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,.6); } 70% { box-shadow: 0 0 0 7px rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
-    .title { font-weight: 700; letter-spacing: .02em; color: #9ca3af; font-size: 11px; text-transform: uppercase; }
-    .viewers { margin-left: auto; display: flex; align-items: baseline; gap: 4px; }
-    .viewers b { font-size: 18px; font-variant-numeric: tabular-nums; }
-    .viewers small { color: #6b7280; font-size: 10px; }
-    .head button, .lot button { all: unset; cursor: pointer; color: #9ca3af; padding: 2px 5px; border-radius: 6px; font-size: 13px; line-height: 1; }
+    .dot { width: .65em; height: .65em; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 0 rgba(239,68,68,.6); animation: pulse 1.6s infinite; flex-shrink: 0; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,.6); } 70% { box-shadow: 0 0 0 .55em rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
+    .title { font-weight: 700; letter-spacing: .02em; color: #9ca3af; font-size: .9em; text-transform: uppercase; white-space: nowrap; }
+    .viewers { margin-left: auto; display: flex; align-items: baseline; gap: .3em; }
+    .viewers b { font-size: 1.5em; font-variant-numeric: tabular-nums; }
+    .viewers small { color: #6b7280; font-size: .8em; }
+    .head button { all: unset; cursor: pointer; color: #9ca3af; padding: .15em .4em; border-radius: 6px; font-size: 1.05em; line-height: 1; }
     .head button:hover { background: #1f2937; color: #fff; }
-    .body { padding: 8px 10px 6px; }
-    .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-    .tile { background: #111827; border-radius: 8px; padding: 6px 7px; min-width: 0; }
-    .tile small { display: block; color: #6b7280; font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
-    .tile b { display: block; font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .lot { margin-top: 8px; background: #111827; border-radius: 8px; padding: 7px 9px; display: flex; align-items: baseline; gap: 8px; min-height: 34px; }
-    .lot .num { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+    .body { padding: .65em .85em .5em; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5em; flex-shrink: 0; }
+    .tile { background: #111827; border-radius: 8px; padding: .5em .6em; min-width: 0; }
+    .tile small { display: block; color: #6b7280; font-size: .8em; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile b { display: block; font-size: 1.15em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .lot { margin-top: .65em; background: #111827; border-radius: 8px; padding: .55em .75em; display: flex; flex-wrap: wrap; align-items: baseline; gap: .65em; min-height: 2.8em; flex-shrink: 0; }
+    .lot .num { font-size: 1.35em; font-weight: 800; font-variant-numeric: tabular-nums; }
     .lot .name { color: #d1d5db; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
-    .lot .price { margin-left: auto; font-size: 16px; font-weight: 800; color: #60a5fa; font-variant-numeric: tabular-nums; }
-    .lot .sub { flex-basis: 100%; color: #9ca3af; font-size: 11px; margin-top: -2px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-    .lot { flex-wrap: wrap; }
-    .section { margin-top: 8px; }
-    .section > small { display: flex; justify-content: space-between; color: #6b7280; font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 3px; }
-    .list { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow-y: auto; }
+    .lot .price { margin-left: auto; font-size: 1.35em; font-weight: 800; color: #60a5fa; font-variant-numeric: tabular-nums; }
+    .lot .sub { flex-basis: 100%; color: #9ca3af; font-size: .92em; margin-top: -.15em; display: flex; gap: .5em; align-items: center; flex-wrap: wrap; }
+    .section { margin-top: .65em; display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
+    .section.grow { flex: 1; }
+    .section > small { display: flex; justify-content: space-between; color: #6b7280; font-size: .8em; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25em; flex-shrink: 0; }
+    .list { display: flex; flex-direction: column; gap: .15em; overflow-y: auto; min-height: 0; }
+    .section.vips .list { max-height: 9.5em; }
+    .section.grow .list { flex: 1; }
     .list::-webkit-scrollbar { width: 6px; } .list::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
-    .row { display: flex; align-items: center; gap: 6px; padding: 3px 5px; border-radius: 6px; cursor: pointer; min-width: 0; }
+    .row { display: flex; align-items: center; gap: .5em; padding: .25em .4em; border-radius: 6px; cursor: pointer; min-width: 0; flex-shrink: 0; }
     .row:hover { background: #1f2937; }
-    .row .t { color: #4b5563; font-size: 10px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
-    .row .k { flex-shrink: 0; width: 14px; text-align: center; }
+    .row .t { color: #4b5563; font-size: .85em; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .row .k { flex-shrink: 0; width: 1.2em; text-align: center; }
     .row .u { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; max-width: 46%; }
-    .row .x { color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 0; min-width: 24px; }
-    .b { display: inline-flex; align-items: center; gap: 3px; border-radius: 999px; padding: 1px 6px; font-size: 10px; font-weight: 700; white-space: nowrap; flex-shrink: 0; margin-left: auto; }
+    .row .x { color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 0; min-width: 2em; }
+    .b { display: inline-flex; align-items: center; gap: .25em; border-radius: 999px; padding: .1em .5em; font-size: .85em; font-weight: 700; white-space: nowrap; flex-shrink: 0; margin-left: auto; }
     .b.vip { background: rgba(245,158,11,.16); color: #fbbf24; }
     .b.repeat { background: rgba(14,165,233,.16); color: #7dd3fc; }
     .b.open { background: rgba(244,63,94,.16); color: #fda4af; margin-left: 0; }
-    .empty { color: #4b5563; font-size: 11px; padding: 3px 5px; }
-    .foot { margin-top: 6px; color: #4b5563; font-size: 10px; display: flex; justify-content: space-between; gap: 8px; }
+    .empty { color: #4b5563; font-size: .92em; padding: .25em .4em; }
+    .foot { margin-top: .5em; color: #4b5563; font-size: .85em; display: flex; justify-content: space-between; gap: .65em; flex-shrink: 0; }
     .foot .err { color: #f87171; }
-    .toasts { position: absolute; left: 0; right: 0; bottom: 100%; display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; }
-    .toast { background: #111827; border: 1px solid #374151; border-left: 4px solid #fbbf24; border-radius: 10px; padding: 8px 10px; box-shadow: 0 8px 24px rgba(0,0,0,.4); cursor: pointer; animation: rise .18s ease-out; }
+    .toasts { position: absolute; left: 0; right: 0; bottom: 100%; display: flex; flex-direction: column; gap: .5em; padding-bottom: .65em; font-size: var(--fs); }
+    .toast { background: #111827; border: 1px solid #374151; border-left: 4px solid #fbbf24; border-radius: 10px; padding: .65em .85em; box-shadow: 0 8px 24px rgba(0,0,0,.4); cursor: pointer; animation: rise .18s ease-out; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     .toast.repeat { border-left-color: #7dd3fc; }
     .toast.info { border-left-color: #6b7280; }
-    .toast b { display: block; font-size: 13px; }
-    .toast span { color: #d1d5db; font-size: 11px; }
+    .toast b { display: block; font-size: 1.08em; }
+    .toast span { color: #d1d5db; font-size: .92em; }
     @keyframes rise { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
     .panel.collapsed .body { display: none; }
     .muted .dot { animation: none; background: #6b7280; box-shadow: none; }
@@ -175,11 +195,12 @@
     root = host.attachShadow({ mode: 'open' });
     root.innerHTML = `
       <style>${CSS}</style>
+      <div class="wrap" id="wrap">
+      <div class="toasts" id="toasts"></div>
       <div class="panel" id="panel">
-        <div class="toasts" id="toasts"></div>
         <div class="head" id="head">
           <span class="dot"></span>
-          <span class="title">Folia live</span>
+          <span class="title">BAE live</span>
           <span class="viewers" title="Viewers now / peak this show"><b id="viewers">—</b><small id="peak"></small></span>
           <button id="mute" title="Mute alerts">🔔</button>
           <button id="collapse" title="Collapse">–</button>
@@ -192,18 +213,19 @@
             <div class="tile" title="Since the last sale"><small>Last sale</small><b id="lastSale">—</b></div>
           </div>
           <div class="lot" id="lot"><span class="empty">No lot on the block</span></div>
-          <div class="section">
+          <div class="section vips">
             <small><span>VIPs in the room</span><span id="vipCount">0</span></small>
             <div class="list" id="vips"><div class="empty">Nobody badged yet</div></div>
           </div>
-          <div class="section">
+          <div class="section grow">
             <small><span>Activity</span><span id="entries"></span></small>
             <div class="list" id="feed"><div class="empty">Waiting for the room…</div></div>
           </div>
           <div class="foot"><span id="foot">loading history…</span><span id="brand"></span></div>
         </div>
+      </div>
       </div>`;
-    for (const id of ['panel', 'toasts', 'head', 'viewers', 'peak', 'mute', 'collapse', 'gross', 'orders', 'pace',
+    for (const id of ['wrap', 'panel', 'toasts', 'head', 'viewers', 'peak', 'mute', 'collapse', 'gross', 'orders', 'pace',
       'lastSale', 'lot', 'vipCount', 'vips', 'entries', 'feed', 'foot', 'brand']) {
       el[id] = root.getElementById(id);
     }
@@ -215,7 +237,34 @@
     el.vips.addEventListener('click', onRowClick);
     el.feed.addEventListener('click', onRowClick);
     wireDrag();
+    wireResize();
     window.addEventListener('resize', () => { applyPrefs(); });
+  }
+
+  // Base font follows the panel width (about 1px per 25px, clamped), so
+  // dragging the corner scales everything, not just the empty space.
+  function applyScale() {
+    const w = el.panel.offsetWidth || PANEL_W;
+    const fs = Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round(w / 25)));
+    el.panel.style.setProperty('--fs', `${fs}px`);
+  }
+
+  // The native CSS resize handle sets inline width/height on the panel;
+  // watch it, rescale, keep it on-screen, and remember the size.
+  function wireResize() {
+    let saveTimer = null;
+    let last = { w: 0, h: 0 };
+    const ro = new ResizeObserver(() => {
+      if (!host || host.hidden || prefs.collapsed) return;
+      const w = el.panel.offsetWidth, h = el.panel.offsetHeight;
+      if (w === last.w && h === last.h) return;
+      last = { w, h };
+      applyScale();
+      prefs.w = w; prefs.h = h;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(() => { applyPrefs(); savePrefs(); }, 250);
+    });
+    ro.observe(el.panel);
   }
 
   function onRowClick(e) {
@@ -233,13 +282,21 @@
     el.collapse.title = prefs.collapsed ? 'Expand' : 'Collapse';
     el.mute.textContent = prefs.muted ? '🔕' : '🔔';
     el.mute.title = prefs.muted ? 'Alerts muted — click to unmute' : 'Mute alerts';
+    if (prefs.w) el.panel.style.width = `${Math.max(PANEL_MIN_W, prefs.w)}px`;
+    if (!prefs.collapsed) {
+      if (prefs.h) el.panel.style.height = `${Math.max(PANEL_MIN_H, prefs.h)}px`;
+    } else {
+      el.panel.style.height = '';   // collapsed: shrink to the header
+    }
+    applyScale();
     const vw = window.innerWidth, vh = window.innerHeight;
+    const w = el.panel.offsetWidth || prefs.w || PANEL_W;
     let x = prefs.x, y = prefs.y;
-    if (x == null || y == null) { x = vw - PANEL_W - 16; y = 72; }
-    x = Math.min(Math.max(0, x), Math.max(0, vw - PANEL_W));
+    if (x == null || y == null) { x = vw - w - 16; y = 72; }
+    x = Math.min(Math.max(0, x), Math.max(0, vw - w));
     y = Math.min(Math.max(0, y), Math.max(0, vh - 48));
-    el.panel.style.left = `${x}px`;
-    el.panel.style.top = `${y}px`;
+    el.wrap.style.left = `${x}px`;
+    el.wrap.style.top = `${y}px`;
   }
 
   async function loadPrefs() {
@@ -256,7 +313,7 @@
     let drag = null;
     el.head.addEventListener('mousedown', (e) => {
       if (e.button !== 0 || e.target.closest('button')) return;
-      const r = el.panel.getBoundingClientRect();
+      const r = el.wrap.getBoundingClientRect();
       drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
       e.preventDefault();
     });

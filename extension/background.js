@@ -71,7 +71,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     chrome.notifications.create('', {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('icon128.png'),
-      title: String(msg.title || 'Folia live').slice(0, 80),
+      title: String(msg.title || 'BAE live').slice(0, 80),
       message: String(msg.message || '').slice(0, 200),
       priority: 2,
       silent: !!msg.silent,

@@ -165,8 +165,11 @@ After purchase, the box on Folia's Packing tab shows tracking + a
 
 ## Live overlay (streamer widget)
 
-While a live is running, the extension draws a small draggable panel on the
-Palmstreet **seller dashboard** tab (the one OBS streams from). It reads
+While a live is running, the extension draws a small panel titled **BAE
+live** on the Palmstreet **seller dashboard** tab (the one OBS streams from).
+Drag its header to move it and drag its bottom-right corner to resize it —
+the text scales with the width, so pull it wider to read it from across the
+room. Position and size are remembered. It reads
 the same page scrape that feeds the Show board and the Mac app, so it costs
 nothing extra:
 
@@ -198,8 +201,8 @@ group into *Viewer count pattern* in the options page (for example
 
 Buyer history comes from `/api/settings?action=live-show-buyers` (any active
 brand user; only badged buyers and their lifetime totals are returned) and
-refreshes every 10 minutes. Position, collapsed state, and mute persist per
-Chrome profile.
+refreshes every 10 minutes. Position, size, collapsed state, and mute persist
+per Chrome profile.
 
 ## How tracking lands in Folia
 
