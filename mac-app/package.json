@@ -1,6 +1,6 @@
 {
   "name": "folia-bridge-mac",
-  "version": "0.2.23",
+  "version": "0.2.24",
   "private": true,
   "description": "macOS helper app \u2014 wraps the Folia Bridge Node service in a window UI and manages the ADB connection to the operator's Android phone.",
   "main": "main.js",
