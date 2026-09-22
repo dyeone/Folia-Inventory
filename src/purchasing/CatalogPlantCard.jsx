@@ -56,7 +56,7 @@ export function CatalogPlantCard({ plant, onOpenDetail, onAddToDraft, adding }) 
           </div>
           <div className="grid grid-cols-3 gap-1 text-[11px]">
             <Stat label="Wholesale" value={fmt$(ws)} />
-            <Stat label="Ideal"     value={fmt$(ideal)} />
+            <Stat label="List"      value={fmt$(ideal)} />
             <Stat label="Margin"    value={margin != null ? `${margin.toFixed(0)}%` : '—'} />
           </div>
         </div>

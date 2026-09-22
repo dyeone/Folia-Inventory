@@ -47,7 +47,14 @@ export function EmptyHint({ message }) {
 }
 
 export function CurrentItemCard(props) {
-  const { item, onSold, onRequeue, bridgeReady, pushed, onPush } = props;
+  const { item, species, onSold, onRequeue, bridgeReady, pushed, onPush } = props;
+  // Listing price on the item wins (set in Pre Sale / stamped at receive);
+  // the species list price is the recommendation when nobody priced the lot.
+  const listPrice = parseFloat(species?.idealSellingPrice);
+  const hasListing = parseFloat(item.listingPrice) > 0;
+  const shownPrice = hasListing ? parseFloat(item.listingPrice)
+    : (Number.isFinite(listPrice) && listPrice > 0 ? listPrice : 0);
+  const sellNote = (species?.sellNote || '').trim();
   return (
     <div className="bg-red-600 text-white rounded-xl p-5 sm:p-6 shadow-lg">
       <div className="flex items-start gap-4 flex-wrap">
@@ -69,12 +76,20 @@ export function CurrentItemCard(props) {
           <div className="text-xs text-red-200 font-mono mt-1">{item.sku}</div>
         </div>
         <div className="text-right">
-          <div className="text-[11px] uppercase tracking-wide text-red-200">Listing</div>
+          <div className="text-[11px] uppercase tracking-wide text-red-200">{hasListing ? 'Listing' : 'Recommended'}</div>
           <div className="text-3xl sm:text-4xl font-bold tabular-nums">
-            ${parseFloat(item.listingPrice || 0).toFixed(0)}
+            ${shownPrice.toFixed(0)}
           </div>
+          {hasListing && Number.isFinite(listPrice) && listPrice > 0 && listPrice !== shownPrice && (
+            <div className="text-xs text-red-200 mt-0.5">list ${listPrice.toFixed(0)}</div>
+          )}
         </div>
       </div>
+      {sellNote && (
+        <div className="mt-3 text-base sm:text-lg leading-snug text-white bg-red-800/70 rounded-lg px-3 py-2 whitespace-pre-wrap">
+          {sellNote}
+        </div>
+      )}
       {item.notes && (
         <div className="mt-3 text-sm text-red-50 bg-red-700/60 rounded-lg px-3 py-2">
           {item.notes}

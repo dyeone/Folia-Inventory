@@ -12,7 +12,10 @@ import {
 } from './LiveModalParts.jsx';
 import { FollowerTicker } from './FollowerTicker.jsx';
 
-export function LiveModal({ sale, items, onClose, setConfirmDialog, isAdmin, activeBrand, showToast }) {
+export function LiveModal({ sale, items, species = [], onClose, setConfirmDialog, isAdmin, activeBrand, showToast }) {
+  // Species list price + sell note for the Now Live card (looked up live, not
+  // stamped — an edit on the wholesale order line shows on the next lot).
+  const speciesById = useMemo(() => new Map((species || []).map(sp => [sp.id, sp])), [species]);
   const saleItems = useMemo(
     () => items.filter(i => i.saleId === sale.id),
     [items, sale.id]
@@ -319,6 +322,7 @@ export function LiveModal({ sale, items, onClose, setConfirmDialog, isAdmin, act
             {currentItem ? (
               <CurrentItemCard
                 item={currentItem}
+                species={currentItem?.speciesId ? speciesById.get(currentItem.speciesId) : null}
                 onSold={() => setStatus(currentItem.id, 'done')}
                 onRequeue={() => setStatus(currentItem.id, 'queued')}
                 bridgeReady={bridge.status === 'connected'}

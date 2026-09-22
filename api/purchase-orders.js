@@ -1296,6 +1296,11 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
         quantity: 1,
         grossCost: Number(line.unitWholesalePrice) + perUnitShipping,
         idealPrice: species.idealSellingPrice ?? null,
+        // The species LIST price is the plant's starting listing price — the
+        // live scan / lineup / TikTok surfaces all read listingPrice. A later
+        // list-price edit re-stamps it while it's still this value
+        // (api/species.js restampListPrice); a hand-set price sticks.
+        listingPrice: species.idealSellingPrice ?? null,
         status: mintStatus,
         lotKind: 'sale',
         source: supplierLabel,

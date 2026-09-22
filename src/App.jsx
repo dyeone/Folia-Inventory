@@ -1793,6 +1793,7 @@ function StaffOrAdminInventory() {
         <LiveModal
           sale={liveSale}
           items={items}
+          species={species}
           onClose={() => setLiveSale(null)}
           setConfirmDialog={setConfirmDialog}
           isAdmin={isAdmin}

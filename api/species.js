@@ -11,6 +11,36 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 const PRICE_MAX = 100000;
 const BULK_PRICE_MAX_ROWS = 500;
 
+// The species list price (idealSellingPrice) → its plants. idealPrice always
+// follows the species; listingPrice follows only where nobody priced the item
+// by hand (null, or still equal to the OLD list price), so a per-item price set
+// in Pre Sale survives. Sold/shipped stock is history and never moves.
+// Soft-deleted rows are included on purpose, like the PO cost restamp — an
+// undelete must not resurrect a stale price.
+// PostgREST reports an unknown column in a request BODY as PGRST204 (schema
+// cache miss); Postgres itself says 42703 when it's referenced in a filter or
+// select. Both mean "migration 0044 isn't applied here yet".
+const isMissingColumn = (err) => !!err && (err.code === 'PGRST204' || err.code === '42703');
+
+const SOLD_LIKE = '(sold,shipped,delivered,converted)';
+async function restampListPrice(speciesId, brandId, oldPrice, newPrice, user) {
+  const stamp = { modifiedAt: new Date().toISOString(), modifiedBy: user.displayName || user.id };
+  const { count: ideal, error: e1 } = await supabase
+    .from('inventory_items')
+    .update({ idealPrice: newPrice, ...stamp }, { count: 'exact' })
+    .eq('speciesId', speciesId).eq('brandId', brandId)
+    .not('status', 'in', SOLD_LIKE);
+  if (e1) { const e = new Error(e1.message); e.status = 500; throw e; }
+  const { count: listing, error: e2 } = await supabase
+    .from('inventory_items')
+    .update({ listingPrice: newPrice, ...stamp }, { count: 'exact' })
+    .eq('speciesId', speciesId).eq('brandId', brandId)
+    .not('status', 'in', SOLD_LIKE)
+    .or(oldPrice == null ? 'listingPrice.is.null' : `listingPrice.is.null,listingPrice.eq.${Number(oldPrice)}`);
+  if (e2) { const e = new Error(e2.message); e.status = 500; throw e; }
+  return { ideal: ideal || 0, listing: listing || 0 };
+}
+
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
@@ -117,7 +147,7 @@ export default wrap(async (req, res) => {
 
     case 'POST': {
       const { varietyId, epithet, commonName, notes, imageUrl,
-              wholesalePrice, idealSellingPrice } = req.body || {};
+              wholesalePrice, idealSellingPrice, sellNote } = req.body || {};
       if (!varietyId) { const e = new Error('varietyId required'); e.status = 400; throw e; }
       // Length caps match the purchase-orders pattern — species now also get
       // created from uploaded supplier spreadsheets, so cells can't become
@@ -147,10 +177,17 @@ export default wrap(async (req, res) => {
         imageUrl: imageUrl ? String(imageUrl).trim().slice(0, 1000) : null,
         wholesalePrice: parseMoney(wholesalePrice, 'wholesalePrice'),
         idealSellingPrice: parseMoney(idealSellingPrice, 'idealSellingPrice'),
+        sellNote: sellNote ? String(sellNote).slice(0, 1000) : null,
         createdAt: new Date().toISOString(),
         createdBy: user.displayName,
       };
-      const { error } = await supabase.from('species').insert(row);
+      let { error } = await supabase.from('species').insert(row);
+      if (isMissingColumn(error) && row.sellNote == null) {
+        // Migration 0044 not applied yet — the column is the only new thing.
+        const rest = { ...row };
+        delete rest.sellNote;
+        ({ error } = await supabase.from('species').insert(rest));
+      }
       if (error) {
         if (error.code === '23505') {
           const e = new Error(`Species "${cleanEpithet}" already exists in this variety`); e.status = 409; throw e;
@@ -162,10 +199,11 @@ export default wrap(async (req, res) => {
 
     case 'PATCH': {
       const { id, varietyId, epithet, commonName, notes, imageUrl, profitRate,
-              wholesalePrice, idealSellingPrice, primaryPhotoId } = req.body || {};
+              wholesalePrice, idealSellingPrice, primaryPhotoId, sellNote } = req.body || {};
       if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
-      // Renames / reparenting are structural and need admin; pricing +
-      // photo selection are operational and any active user can change.
+      // Renames / reparenting are structural and need admin; pricing, the
+      // sell note + photo selection are operational and any active user can
+      // change them (the streamer edits list price + note from the PO line).
       const wantsStructural = varietyId !== undefined || epithet !== undefined
         || commonName !== undefined || notes !== undefined || imageUrl !== undefined;
       if (wantsStructural) await requireAdmin(userId);
@@ -205,11 +243,29 @@ export default wrap(async (req, res) => {
       if (wholesalePrice    !== undefined) patch.wholesalePrice    = parseMoneyOrNull(wholesalePrice,    'wholesalePrice');
       if (idealSellingPrice !== undefined) patch.idealSellingPrice = parseMoneyOrNull(idealSellingPrice, 'idealSellingPrice');
       if (primaryPhotoId    !== undefined) patch.primaryPhotoId    = primaryPhotoId || null;
+      if (sellNote          !== undefined) patch.sellNote          = sellNote ? String(sellNote).slice(0, 1000) : null;
       if (Object.keys(patch).length === 0) {
         const e = new Error('No fields to update'); e.status = 400; throw e;
       }
 
-      const { error } = await supabase.from('species').update(patch).eq('id', id).eq('brandId', brandId);
+      // The list price restamp needs the OLD value (see restampListPrice).
+      let prevListPrice;
+      if (patch.idealSellingPrice !== undefined) {
+        const { data: prev } = await supabase
+          .from('species').select('"idealSellingPrice"').eq('id', id).eq('brandId', brandId).maybeSingle();
+        prevListPrice = prev?.idealSellingPrice ?? null;
+      }
+
+      let { error } = await supabase.from('species').update(patch).eq('id', id).eq('brandId', brandId);
+      let sellNoteUnsupported = false;
+      if (isMissingColumn(error) && patch.sellNote !== undefined) {
+        // Migration 0044 not applied yet: save everything else, tell the UI.
+        sellNoteUnsupported = true;
+        const rest = { ...patch };
+        delete rest.sellNote;
+        error = null;
+        if (Object.keys(rest).length) ({ error } = await supabase.from('species').update(rest).eq('id', id).eq('brandId', brandId));
+      }
       if (error) {
         // A duplicate (varietyId, epithet) means another species already has
         // this name — the UI offers to combine them; surface a clear message
@@ -238,7 +294,12 @@ export default wrap(async (req, res) => {
           }
         }
       }
-      return res.status(200).json({ ok: true });
+
+      let restamped = null;
+      if (patch.idealSellingPrice !== undefined && Number(patch.idealSellingPrice) !== Number(prevListPrice)) {
+        restamped = await restampListPrice(id, brandId, prevListPrice, patch.idealSellingPrice, user);
+      }
+      return res.status(200).json({ ok: true, restamped, sellNoteUnsupported });
     }
 
     case 'DELETE': {
