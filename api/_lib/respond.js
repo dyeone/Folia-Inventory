@@ -14,9 +14,31 @@ function noCache(res) {
   res.setHeader('Cache-Control', 'no-store, max-age=0');
 }
 
+// The Chrome extension's background worker calls the API from a
+// chrome-extension:// origin. Its manifest lists the API host, which lets
+// Chrome skip CORS; this is the fallback for an install whose manifest
+// doesn't (a custom API domain, an older copy). Only extension origins are
+// echoed — never `*` — and the preflight is answered here so POST bodies
+// (JSON) get through. Auth is the userId in the request, not a cookie, so
+// this widens nothing a plain HTTP client couldn't already do.
+function extensionCors(req, res) {
+  const origin = req.headers?.origin;
+  if (typeof origin !== 'string' || !origin.startsWith('chrome-extension://')) return false;
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Max-Age', '600');
+  return true;
+}
+
 export function wrap(handler) {
   return async (req, res) => {
     noCache(res);
+    if (extensionCors(req, res) && req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
     try {
       await handler(req, res);
     } catch (e) {
