@@ -20,8 +20,16 @@
 // can't leak out. Position / collapsed / muted persist in storage.local.
 
 (() => {
-  if (window.__foliaLiveOverlay) return;
-  window.__foliaLiveOverlay = true;
+  // Re-injection guard (see live-monitor.js): a live earlier instance wins,
+  // an orphaned one is torn down and replaced.
+  const alive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
+  const prevOverlay = window.__foliaLiveOverlay;
+  if (prevOverlay) {
+    if (prevOverlay.alive()) return;
+    try { prevOverlay.teardown(); } catch { /* already gone */ }
+  }
+  const overlaySelf = { alive, teardown };
+  window.__foliaLiveOverlay = overlaySelf;
 
   const PREFS_KEY = 'liveOverlayPrefs';
   const BUYERS_REFRESH_MS = 10 * 60 * 1000;
@@ -346,7 +354,21 @@
     }
   }
 
+  // The scraper announces its own death (extension context invalidated by a
+  // self-reload); the re-injected pair takes over.
+  function onDead() { teardown(); }
+
+  function teardown() {
+    document.removeEventListener('folia:live-tick', onTick);
+    document.removeEventListener('folia:live-dead', onDead);
+    if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    host?.remove(); host = null;
+    if (window.__foliaLiveOverlay === overlaySelf) delete window.__foliaLiveOverlay;
+  }
+
   function onTick(e) {
+    if (!alive()) { teardown(); return; }
     const d = e.detail || {};
     if (!d.snap || !d.show) {
       if (host && !host.hidden && Date.now() - lastTickAt > HIDE_AFTER_MS) host.hidden = true;
@@ -481,17 +503,14 @@
     build();
     applyPrefs();
     document.addEventListener('folia:live-tick', onTick);
+    document.addEventListener('folia:live-dead', onDead);
     // Relative clocks ("last sale 4m ago", history age) drift without a tick.
     clockTimer = setInterval(() => { if (last && host && !host.hidden) scheduleRender(); }, 5000);
     try {
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'sync') return;
         loadSettings().then(() => {
-          if (settings?.liveOverlay === false && host) {
-            document.removeEventListener('folia:live-tick', onTick);
-            clearInterval(clockTimer);
-            host.remove(); host = null;
-          }
+          if (settings?.liveOverlay === false && host) teardown();
           if (changes.apiBase || changes.userId || changes.brandId) { buyers = null; buyersErr = null; buyersAt = 0; ensureBuyers(true); }
         });
       });

@@ -15,6 +15,16 @@
 //
 // All selectors come from chrome.storage.sync; each step has its own
 // timeout. Failures abort cleanly with a clear error.
+//
+// Wrapped in an IIFE with a liveness guard: after the extension self-reloads
+// (background.js), this file is re-injected into open Palmstreet tabs. A
+// still-live earlier instance wins; an orphaned one (extension context
+// invalidated — its message listener is dead) is simply superseded.
+
+(() => {
+const contentAlive = () => { try { return !!chrome.runtime?.id; } catch { return false; } };
+if (window.__foliaContent?.alive()) return;
+window.__foliaContent = { alive: contentAlive };
 
 const POLL_INTERVAL_MS = 200;
 
@@ -296,3 +306,4 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   })();
   return true;
 });
+})();

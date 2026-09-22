@@ -1,6 +1,7 @@
 // Background service worker. Centralizes Folia API calls so the
 // extension's auth (userId) and the API base URL aren't repeated
-// across pages.
+// across pages. Also keeps an UNPACKED install current: see the
+// self-reload section at the bottom.
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg?.type?.startsWith('api:')) return false;
@@ -25,10 +26,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           break;
         case 'api:liveShowGet':
           // Re-seed the live monitor after a mid-show page reload.
+          noteLiveActivity();
           resp = await get(settings, '/api/settings?action=live-show-get');
           sendResponse({ ok: true, show: resp.show || null, updatedAt: resp.updatedAt || null });
           break;
         case 'api:liveShowSave':
+          noteLiveActivity();
           await post(settings, '/api/settings', { action: 'live-show-save', show: msg.show });
           sendResponse({ ok: true });
           break;
@@ -103,3 +106,64 @@ async function post(settings, path, body) {
   if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
   return data;
 }
+
+// ── Self-reload for the unpacked install ─────────────────────────────
+// The Mac app (or a git pull) refreshes the extension folder on disk, but
+// Chrome keeps running the old files until the extension reloads. Once a
+// minute compare the manifest version on disk with the running one and
+// reload when it changes — but only after live activity has been quiet for
+// a few minutes, because a reload orphans the dashboard tab's content
+// scripts mid-show. On every (re)load the content scripts are re-injected
+// into open Palmstreet tabs, so an already-open dashboard picks up the new
+// code; the scripts themselves stop an orphaned earlier instance first.
+// Packed (Web Store) installs never see a version change here, so this is
+// inert for them.
+
+const RELOAD_ALARM = 'folia-reload-check';
+const LIVE_QUIET_MS = 3 * 60 * 1000;
+const CONTENT_SCRIPTS = ['content.js', 'live-monitor.js', 'live-overlay.js'];
+const PALMSTREET_URLS = ['https://*.palmstreet.app/*', 'https://*.palmstreet.com/*'];
+
+// storage.session survives service-worker restarts (in-memory, per browser
+// session) — a plain variable would read 0 after every idle unload.
+function noteLiveActivity() {
+  try { chrome.storage.session.set({ lastLiveActivity: Date.now() }); } catch { /* pre-102 Chrome */ }
+}
+async function lastLiveActivity() {
+  try { return (await chrome.storage.session.get({ lastLiveActivity: 0 })).lastLiveActivity || 0; }
+  catch { return 0; }
+}
+
+async function diskManifestVersion() {
+  const res = await fetch(chrome.runtime.getURL('manifest.json'), { cache: 'no-store' });
+  const m = await res.json();
+  return m?.version || null;
+}
+
+async function checkForNewFiles() {
+  try {
+    const running = chrome.runtime.getManifest().version;
+    const disk = await diskManifestVersion();
+    if (!disk || disk === running) return;
+    if (Date.now() - (await lastLiveActivity()) < LIVE_QUIET_MS) return; // mid-show: next minute
+    chrome.runtime.reload();
+  } catch { /* unreadable manifest (mid-copy?) — try again next minute */ }
+}
+
+chrome.alarms.get(RELOAD_ALARM, (a) => {
+  if (!a) chrome.alarms.create(RELOAD_ALARM, { periodInMinutes: 1 });
+});
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === RELOAD_ALARM) checkForNewFiles(); });
+
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason !== 'install' && details.reason !== 'update') return;
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: PALMSTREET_URLS }); } catch { return; }
+  for (const t of tabs) {
+    if (!t.id) continue;
+    chrome.scripting.executeScript({ target: { tabId: t.id }, files: CONTENT_SCRIPTS }).catch(() => {
+      // e.g. a chrome-error page or a tab that's discarded — the next
+      // navigation injects normally.
+    });
+  }
+});

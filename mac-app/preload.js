@@ -49,6 +49,13 @@ contextBridge.exposeInMainWorld('desktopWidget', {
   onState: (cb) => ipcRenderer.on('widget:state', (_e, s) => cb(s)),
 });
 
+contextBridge.exposeInMainWorld('chromeExt', {
+  getStatus: () => ipcRenderer.invoke('extension:get-status'),
+  install:   () => ipcRenderer.invoke('extension:install'),
+  reveal:    () => ipcRenderer.invoke('extension:reveal'),
+  copyPath:  () => ipcRenderer.invoke('extension:copy-path'),
+});
+
 contextBridge.exposeInMainWorld('app', {
   openBridgeFolder: () => ipcRenderer.invoke('app:open-bridge-folder'),
   openLogFile:      () => ipcRenderer.invoke('app:open-log-file'),

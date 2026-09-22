@@ -59,6 +59,25 @@ Developer ID and the `electron-builder` mac signing config.
   `~/Library/Logs/folia-bridge/bridge.log` for diagnosis after the
   fact.
 
+## Chrome extension
+
+The Folia Label Helper Chrome extension (`../extension`) is bundled into the
+app (`extraResources` → `Resources/extension`) and mirrored on every launch
+to `~/Library/Application Support/Folia Bridge/chrome-extension`
+(`extension-sync.js`: atomic temp-dir + rename swap, no-op when the manifest
+version already matches). The **Chrome extension** card shows the bundled
+version, the folder, and an **Install in Chrome** button that opens
+`chrome://extensions` in Google Chrome and reveals the folder in Finder —
+Chrome's *Load unpacked* click itself can't be automated (Chrome 137+ has
+no `--load-extension` for branded builds, sideloaded CRX files are refused,
+and force-install policies need an MDM-managed Mac). After that one click
+the extension keeps itself current: its background worker reloads when the
+on-disk manifest version changes (see `extension/README.md`, *Self-reload*).
+
+So a new extension version reaches the streaming Mac by shipping a new app
+build: bump `extension/manifest.json` `version`, bump this package's
+version, and publish as below.
+
 ## Updates
 
 The app checks for a newer build on launch, every 6h while open, and on

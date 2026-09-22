@@ -8,7 +8,7 @@
 // streamed line-by-line to the renderer; renderer doesn't get raw
 // access to the child process.
 
-const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage, screen, clipboard } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -17,6 +17,7 @@ const { promisify } = require('node:util');
 const { BridgeRunner } = require('./bridge-runner.js');
 const { checkForUpdate } = require('./updater.js');
 const { downloadAndInstall } = require('./installer.js');
+const { readManifestVersion, syncExtension } = require('./extension-sync.js');
 
 const execFileP = promisify(execFile);
 
@@ -366,6 +367,54 @@ function locateBridgeDir() {
   return path.resolve(__dirname, 'bridge');
 }
 
+// ─── Chrome extension (Folia Label Helper) ────────────────────────────
+// The extension ships inside the app (extraResources → Resources/extension)
+// and is mirrored to a stable folder under userData that Chrome loads as an
+// unpacked extension. One "Load unpacked" click, once; afterwards each app
+// update refreshes the folder and the extension reloads itself.
+function locateExtensionSrc() {
+  const packaged = path.join(process.resourcesPath || '', 'extension');
+  if (fs.existsSync(path.join(packaged, 'manifest.json'))) return packaged;
+  return path.resolve(__dirname, '..', 'extension');   // dev: the repo folder
+}
+
+let extensionInstallDir = null;   // set in whenReady (needs app.getPath)
+let extensionSyncError = null;
+
+function syncExtensionNow(force = false) {
+  extensionSyncError = null;
+  try {
+    return syncExtension({ srcDir: locateExtensionSrc(), destDir: extensionInstallDir, force });
+  } catch (e) {
+    extensionSyncError = e?.message || String(e);
+    console.error('[extension] sync failed:', extensionSyncError);
+    return null;
+  }
+}
+
+function extensionStatus() {
+  const bundledVersion = readManifestVersion(locateExtensionSrc());
+  const installedVersion = extensionInstallDir ? readManifestVersion(extensionInstallDir) : null;
+  return {
+    bundledVersion,
+    installedVersion,
+    installDir: extensionInstallDir,
+    upToDate: !!installedVersion && installedVersion === bundledVersion,
+    error: extensionSyncError,
+  };
+}
+
+// `open -a "Google Chrome" chrome://extensions` — shell.openExternal would
+// hand a chrome:// URL to the DEFAULT browser, which may not be Chrome.
+async function openChromeExtensionsPage() {
+  try {
+    await execFileP('open', ['-a', 'Google Chrome', 'chrome://extensions']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 let mainWindow = null;
 let runner = null;
 let tray = null;
@@ -466,6 +515,11 @@ app.whenReady().then(() => {
   const configPath = path.join(app.getPath('userData'), 'bridge.env');
   widgetStatePath = path.join(app.getPath('userData'), 'widget-state.json');
   runner = new BridgeRunner({ bridgeDir, configPath });
+
+  // Mirror the bundled Chrome extension to its stable load path. Runs every
+  // launch; a no-op unless this build carries a newer extension.
+  extensionInstallDir = path.join(app.getPath('userData'), 'chrome-extension');
+  syncExtensionNow();
 
   // Stream every line of bridge stdout/stderr to the renderer. Renderer
   // owns the scrollback buffer + autoscroll.
@@ -586,6 +640,22 @@ ipcMain.handle('app:open-log-file', async () => {
 
 ipcMain.handle('app:get-version', () => app.getVersion());
 ipcMain.handle('app:check-for-updates', () => runUpdateCheck());
+
+// Chrome extension card. `install` can't press Chrome's "Load unpacked"
+// button for the operator, so it does everything around it: refresh the
+// folder, open chrome://extensions in Chrome, and reveal the folder in
+// Finder to drag into the picker.
+ipcMain.handle('extension:get-status', () => extensionStatus());
+ipcMain.handle('extension:install', async () => {
+  syncExtensionNow();
+  const status = extensionStatus();
+  if (status.error) return { ok: false, error: status.error, status };
+  const opened = await openChromeExtensionsPage();
+  shell.showItemInFolder(extensionInstallDir);
+  return { ok: true, opened, status };
+});
+ipcMain.handle('extension:reveal', () => { shell.showItemInFolder(extensionInstallDir); });
+ipcMain.handle('extension:copy-path', () => { clipboard.writeText(extensionInstallDir || ''); return extensionInstallDir; });
 
 // Manual fallback: just open the DMG URL in the browser (the old behavior).
 // The URL is our own API's payload, but openExternal hands whatever it's
