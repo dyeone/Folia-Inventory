@@ -32,6 +32,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           await post(settings, '/api/settings', { action: 'live-show-save', show: msg.show });
           sendResponse({ ok: true });
           break;
+        case 'api:liveShowBuyers':
+          // Lifetime buyer tiers (VIP / repeat) for the live overlay's alerts.
+          resp = await get(settings, '/api/settings?action=live-show-buyers');
+          sendResponse({ ok: true, buyers: resp.buyers || {}, count: resp.count || 0, generatedAt: resp.generatedAt || null });
+          break;
         case 'api:recordTracking':
           resp = await post(settings, '/api/shipments', {
             action: 'record-tracking',
@@ -52,6 +57,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
   })();
 
+  return true;
+});
+
+// Desktop notifications for the live overlay. Content scripts can't call
+// chrome.notifications themselves, so the overlay asks the worker.
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type !== 'notify') return false;
+  try {
+    chrome.notifications.create('', {
+      type: 'basic',
+      iconUrl: chrome.runtime.getURL('icon128.png'),
+      title: String(msg.title || 'Folia live').slice(0, 80),
+      message: String(msg.message || '').slice(0, 200),
+      priority: 2,
+      silent: !!msg.silent,
+    }, () => {
+      const err = chrome.runtime.lastError;
+      sendResponse(err ? { ok: false, error: err.message } : { ok: true });
+    });
+  } catch (e) {
+    sendResponse({ ok: false, error: e?.message || 'notify failed' });
+  }
   return true;
 });
 

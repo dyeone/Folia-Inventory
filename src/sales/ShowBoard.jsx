@@ -3,7 +3,8 @@ import { Crown, Maximize, Star, X } from 'lucide-react';
 import { api } from '../api.js';
 
 // Streamer-facing show board — a full-screen dark dashboard for a second
-// monitor during a live. Reached via #show-board=<brand> (mirrors the
+// monitor during a live. (The extension also draws a compact version of
+// this straight onto the Palmstreet dashboard tab: extension/live-overlay.js.) Reached via #show-board=<brand> (mirrors the
 // audience FollowerBoard route). Data comes from the Chrome extension's
 // dashboard scraper (live_show blob, polled every 3s):
 //
@@ -307,8 +308,13 @@ export function ShowBoard({ brandId, brands = [], onSwitchBrand, onClose }) {
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-3 gap-4 px-5 pb-5">
           <div className="lg:col-span-2 flex flex-col gap-4 min-h-0">
             {/* stat tiles */}
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 flex-shrink-0">
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 flex-shrink-0">
               {[
+                // Viewers come from the extension's dashboard scrape (now / peak);
+                // '—' until the viewer pattern is calibrated for this dashboard.
+                ['Viewers', show.viewers?.now != null
+                  ? `${show.viewers.now}${show.viewers.peak > show.viewers.now ? ` / ${show.viewers.peak}` : ''}`
+                  : '—'],
                 ['Gross', fmtMoney(show.totals?.gross)],
                 ['Orders', show.totals?.orders ?? '—'],
                 ['Sold', sold.length],

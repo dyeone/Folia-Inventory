@@ -118,7 +118,7 @@ export default wrap(async (req, res) => {
 // Live show monitor — one brand-scoped row (id `live_show:<brandId>`) holding
 // the current/most-recent show as one JSON blob:
 //   { showId, title, startedAt, totals: { gross, net, orders, entries },
-//     current: { lot, title, price, bids: [{t, price}] },
+//     viewers: { now, peak }, current: { lot, title, price, bids: [{t, price}] },
 //     sold: [{ at, lot, title, price, buyer, startedAt, bids }], raw }
 // The Chrome extension (live-monitor.js) is the ONLY writer and owns the
 // whole state, so save is a full replace — no server-side merge to get wrong;
@@ -131,6 +131,73 @@ const LIVE_SHOW_MAX_SOLD = 800;
 const LIVE_SHOW_MAX_BIDS = 80;
 const LIVE_SHOW_MAX_RAW = 4000;
 const LIVE_SHOW_MAX_EVENTS = 400;   // joins / bid attributions
+
+// Buyer tiers from lifetime shipping history — the SAME thresholds the Show
+// board uses (src/sales/ShowBoard.jsx buyerTier), kept here so the Chrome
+// overlay and the board never disagree about who is a VIP.
+const LIVE_VIP_SPEND = 500;
+const LIVE_VIP_BOXES = 5;
+const LIVE_REPEAT_SPEND = 100;
+const LIVE_REPEAT_BOXES = 2;
+const LIVE_BUYERS_CACHE_S = 600;   // browser cache hint; history barely moves mid-show
+
+// Supabase caps un-ranged selects at 1000 rows; the items table is well past
+// that, so page through (same shape as api/items.js fetchAll).
+async function fetchAllRows(buildQuery) {
+  const PAGE = 1000;
+  const all = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await buildQuery().range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
+// buyerUsername (lowercase) → lifetime stats for one brand. Spend counts
+// sold/shipped/delivered items at salePrice (else listingPrice); boxes are
+// distinct shipmentBoxIds; openBoxes are boxes still holding 'sold' (not yet
+// shipped) items — what the streamer wants to know when that buyer bids again.
+async function liveShowBuyers(brandId) {
+  const rows = await fetchAllRows(() => supabase
+    .from('inventory_items')
+    .select('"buyerUsername", status, "salePrice", "listingPrice", "shipmentBoxId", "soldAt", "shippedAt"')
+    .eq('brandId', brandId)
+    .in('status', ['sold', 'shipped', 'delivered'])
+    .not('buyerUsername', 'is', null));
+  const acc = new Map();
+  for (const it of rows) {
+    const u = String(it.buyerUsername || '').trim().toLowerCase();
+    if (!u) continue;
+    let s = acc.get(u);
+    if (!s) { s = { spent: 0, items: 0, boxes: new Set(), open: new Set(), lastAt: null }; acc.set(u, s); }
+    s.items += 1;
+    s.spent += parseFloat(it.salePrice) || parseFloat(it.listingPrice) || 0;
+    if (it.shipmentBoxId) {
+      s.boxes.add(it.shipmentBoxId);
+      if (it.status === 'sold') s.open.add(it.shipmentBoxId);
+    }
+    const t = it.soldAt || it.shippedAt || null;
+    if (t && (!s.lastAt || t > s.lastAt)) s.lastAt = t;
+  }
+  const buyers = {};
+  for (const [u, s] of acc) {
+    const spent = Math.round(s.spent * 100) / 100;
+    const boxes = s.boxes.size;
+    const tier = (spent >= LIVE_VIP_SPEND || boxes >= LIVE_VIP_BOXES) ? 'vip'
+      : (spent >= LIVE_REPEAT_SPEND || boxes >= LIVE_REPEAT_BOXES) ? 'repeat'
+      : null;
+    // Only buyers who earn a badge ship to the extension — the rest of the
+    // map is dead weight on every show start.
+    if (!tier) continue;
+    buyers[u] = { tier, spent, items: s.items, boxes, openBoxes: s.open.size, lastAt: s.lastAt };
+  }
+  return buyers;
+}
 
 function cappedBids(list) {
   return (Array.isArray(list) ? list : []).slice(-LIVE_SHOW_MAX_BIDS);
@@ -145,6 +212,23 @@ async function handleLiveShow(action, req, res, user, brandId) {
         .from('app_settings').select('data, "updatedAt"').eq('id', id).maybeSingle();
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ show: data?.data || null, updatedAt: data?.updatedAt || null });
+    }
+    case 'live-show-buyers': {
+      // Lifetime buyer tiers for the live overlay's VIP alerts. Any active
+      // brand user may read it (the streamer is rarely an admin); lifetime
+      // spend is the only figure exposed, and only for badged buyers.
+      if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+      const buyers = await liveShowBuyers(brandId);
+      res.setHeader('Cache-Control', `private, max-age=${LIVE_BUYERS_CACHE_S}`);
+      return res.status(200).json({
+        buyers,
+        count: Object.keys(buyers).length,
+        thresholds: {
+          vip: { spend: LIVE_VIP_SPEND, boxes: LIVE_VIP_BOXES },
+          repeat: { spend: LIVE_REPEAT_SPEND, boxes: LIVE_REPEAT_BOXES },
+        },
+        generatedAt: new Date().toISOString(),
+      });
     }
     case 'live-show-save': {
       if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);

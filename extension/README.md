@@ -132,6 +132,44 @@ tracking number Folia already stored).
 After purchase, the box on Folia's Packing tab shows tracking + a
 **Label** download button (signed URL to Storage) + a **Slip** button.
 
+## Live overlay (streamer widget)
+
+While a live is running, the extension draws a small draggable panel on the
+Palmstreet **seller dashboard** tab (the one OBS streams from). It reads
+the same page scrape that feeds the Show board and the Mac app, so it costs
+nothing extra:
+
+- **Viewers** now / peak this show (see calibration below)
+- **Gross**, **orders**, **pace** (gross per hour · lots per hour), and time
+  since the **last sale**
+- The **lot on the block**: number, title, price, bid count, high bidder
+- **VIPs in the room** — every username seen joining, bidding, or winning,
+  checked against this brand's shipping history and badged 👑 VIP (≥ $500
+  lifetime or ≥ 5 boxes) or ⭐ repeat (≥ $100 or ≥ 2 boxes), with lifetime
+  spend, box count, and a 📦 badge when a box is still waiting to ship
+- An **activity feed** of joins, bids, and wins; click any row to copy the
+  username
+
+**Alerts.** When a VIP (or repeat buyer, if enabled) joins or first bids, and
+whenever a VIP wins, the panel shows a toast and plays a short chime. Turn
+on *Desktop notification* in the options page to also get a system
+notification (useful when OBS is in front). The 🔔 button on the panel mutes
+sound + notifications for the session; toasts still show. The first scrape
+of a show never alerts, so installing mid-show doesn't fire the whole chat
+backlog at once.
+
+**Viewer count calibration.** Palmstreet's dashboard wording for the viewer
+count isn't known until seen on a real broadcast. If the panel shows “—”
+for viewers, open the Show board (`#show-board=<brand>` in Folia), find the
+number in the `raw` sample, and paste a matching pattern with one capture
+group into *Viewer count pattern* in the options page (for example
+`(\d+)\s*watching`). No reload needed.
+
+Buyer history comes from `/api/settings?action=live-show-buyers` (any active
+brand user; only badged buyers and their lifetime totals are returned) and
+refreshes every 10 minutes. Position, collapsed state, and mute persist per
+Chrome profile.
+
 ## How tracking lands in Folia
 
 ```
