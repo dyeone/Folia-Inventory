@@ -83,6 +83,13 @@ groups: API, selectors, scale.
 | Field | What |
 |---|---|
 | API base URL | e.g. `https://your-app.vercel.app` (no trailing slash) |
+
+The API host must be covered by `host_permissions` in `manifest.json`
+(production `folia-inventory.vercel.app` and `*.vercel.app` previews are).
+Chrome CORS-checks any fetch from the background worker to a host outside
+that list, and every call then fails with a bare "Failed to fetch". If the
+API ever moves to a custom domain, add it there and bump the version. The
+API also answers CORS for `chrome-extension://` origins as a fallback.
 | User ID | From the Folia app: DevTools → Application → Local Storage → `session-current-user` → copy `id` |
 
 ### Palmstreet selectors
