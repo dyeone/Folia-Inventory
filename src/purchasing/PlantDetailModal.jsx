@@ -36,6 +36,7 @@ export function PlantDetailModal({ initial, varieties, existingSpecies, onClose,
     initial?.profitRate != null ? String(initial.profitRate) : ''
   );
   const [notes, setNotes] = useState(initial?.notes || '');
+  const [sellNote, setSellNote] = useState(initial?.sellNote || '');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
@@ -157,6 +158,7 @@ export function PlantDetailModal({ initial, varieties, existingSpecies, onClose,
         wholesalePrice: wholesalePrice === '' ? null : parseFloat(wholesalePrice),
         idealSellingPrice: idealSellingPrice === '' ? null : parseFloat(idealSellingPrice),
         notes: notes || null,
+        sellNote: sellNote.trim() || null,
       };
       let saved;
       if (effective) {
@@ -293,7 +295,7 @@ export function PlantDetailModal({ initial, varieties, existingSpecies, onClose,
                 onChange={(e) => setWholesalePrice(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg" />
             </Field>
-            <Field label="Ideal sell ($)">
+            <Field label="List price ($)">
               <input type="number" step="0.01" value={idealSellingPrice}
                 onChange={(e) => setIdealSellingPrice(e.target.value)}
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg" />
@@ -306,7 +308,13 @@ export function PlantDetailModal({ initial, varieties, existingSpecies, onClose,
                 className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg" />
             </Field>
           )}
-          <Field label="Notes">
+          <Field label="Sell note (shown to the streamer on scan)">
+            <textarea value={sellNote} onChange={(e) => setSellNote(e.target.value)}
+              rows={2} maxLength={1000}
+              placeholder="Selling points, care hints, what to say on the live…"
+              className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg resize-y" />
+          </Field>
+          <Field label="Notes (internal)">
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
               rows={3}
               className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg resize-y" />

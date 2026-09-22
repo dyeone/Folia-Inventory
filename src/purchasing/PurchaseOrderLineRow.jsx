@@ -21,6 +21,17 @@ export function PurchaseOrderLineRow({ line, species, varieties = [], receivedIt
   const [busy, setBusy]   = useState(false);
   const [photoUrl, setPhotoUrl] = useState(null);
 
+  // Species-level selling fields, edited right here on the order line: the
+  // LIST price (species.idealSellingPrice — what the streamer should sell at,
+  // shown on scan and used as the buy-now price) and the SELL NOTE (what to
+  // say about it). They belong to the species, not the PO, so they're
+  // editable in any PO status by any active user; the server strips prices
+  // for packers, in which case the price input is simply not rendered.
+  // Initialized once like qty/price above (mid-typed input survives refreshes).
+  const hasListPrice = species ? species.idealSellingPrice !== undefined : false;
+  const [listPrice, setListPrice] = useState(species?.idealSellingPrice != null ? String(species.idealSellingPrice) : '');
+  const [sellNote, setSellNote]   = useState(species?.sellNote || '');
+
   // Resolve a thumbnail signed URL.
   const primaryPhotoId = (() => {
     const photos = species?.photos || [];
@@ -114,6 +125,49 @@ export function PurchaseOrderLineRow({ line, species, varieties = [], receivedIt
       showToast?.('Variety changed — plants received from now on get the new SKU prefix');
     } catch (e) {
       showToast?.(e.message || 'Variety change failed', 'error');
+    } finally { setBusy(false); }
+  };
+
+  const saveListPrice = async () => {
+    if (!species) return;
+    const raw = listPrice.trim();
+    const v = raw === '' ? null : parseFloat(raw);
+    if (v !== null && (!Number.isFinite(v) || v < 0)) {
+      setListPrice(species.idealSellingPrice != null ? String(species.idealSellingPrice) : '');
+      return;
+    }
+    const cur = species.idealSellingPrice ?? null;
+    if ((v === null && cur === null) || (v !== null && cur !== null && Number(v) === Number(cur))) return;
+    setBusy(true);
+    try {
+      const r = await api.updateSpecies({ id: species.id, patch: { idealSellingPrice: v } });
+      const n = r?.restamped?.listing || 0;
+      showToast?.(v === null
+        ? 'List price cleared'
+        : `List price $${v.toFixed(2)} saved${n ? ` · ${n} unsold plant${n === 1 ? '' : 's'} repriced` : ''}`);
+      await onSpeciesChanged?.();
+    } catch (e) {
+      showToast?.(e.message || 'List price save failed', 'error');
+      setListPrice(cur != null ? String(cur) : '');
+    } finally { setBusy(false); }
+  };
+
+  const saveSellNote = async () => {
+    if (!species) return;
+    const v = sellNote.trim();
+    if (v === (species.sellNote || '')) return;
+    setBusy(true);
+    try {
+      const r = await api.updateSpecies({ id: species.id, patch: { sellNote: v || null } });
+      if (r?.sellNoteUnsupported) {
+        showToast?.('Sell notes need migration 0044 on the database — ask an admin to apply it', 'error');
+      } else {
+        showToast?.(v ? 'Sell note saved' : 'Sell note cleared');
+      }
+      await onSpeciesChanged?.();
+    } catch (e) {
+      showToast?.(e.message || 'Sell note save failed', 'error');
+      setSellNote(species.sellNote || '');
     } finally { setBusy(false); }
   };
 
@@ -289,6 +343,39 @@ export function PurchaseOrderLineRow({ line, species, varieties = [], receivedIt
             </span>
           )}
         </div>
+        {species && (
+          <div className="mt-1.5 flex items-center gap-2 text-xs flex-wrap">
+            {hasListPrice && (
+              <label className="flex items-center gap-1 text-gray-500" title="List price — the recommended selling price for this species. Shown to the streamer on every scan and used as the buy-now price; changing it reprices this species' unsold plants that still carry the old price.">
+                List $
+                <input
+                  type="number"
+                  step="0.01"
+                  min={0}
+                  value={listPrice}
+                  onChange={(e) => setListPrice(e.target.value)}
+                  onBlur={saveListPrice}
+                  disabled={busy}
+                  placeholder="—"
+                  className="w-20 px-2 py-1 text-xs border border-emerald-300 bg-emerald-50/40 rounded"
+                />
+              </label>
+            )}
+            <label className="flex items-center gap-1 text-gray-500 flex-1 min-w-[220px]" title="Sell note — what the streamer should say about this species. Shown on every scan.">
+              Sell note
+              <input
+                type="text"
+                value={sellNote}
+                onChange={(e) => setSellNote(e.target.value)}
+                onBlur={saveSellNote}
+                disabled={busy}
+                maxLength={1000}
+                placeholder="What to say on the live…"
+                className="flex-1 min-w-0 px-2 py-1 text-xs border border-gray-300 rounded"
+              />
+            </label>
+          </div>
+        )}
       </div>
       {canRemove && (
         <button

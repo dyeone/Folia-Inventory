@@ -270,7 +270,8 @@ where i."speciesId" is null
 
 -- ─── Purchasing: catalog fields, photos, POs, lines, received-items audit ──
 alter table species add column if not exists "wholesalePrice"    numeric;
-alter table species add column if not exists "idealSellingPrice" numeric;
+alter table species add column if not exists "idealSellingPrice" numeric;   -- the species LIST price (UI label); flows to items at receive
+alter table species add column if not exists "sellNote"          text;      -- streamer-facing selling note (0044)
 alter table species add column if not exists "primaryPhotoId"    text;
 
 create table if not exists species_photos (

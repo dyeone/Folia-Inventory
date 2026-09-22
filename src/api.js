@@ -143,8 +143,8 @@ export const api = {
   // then deletes fromId. Refused if fromId has purchase-order history.
   mergeSpecies: ({ fromId, intoId }) =>
     request('/species', { method: 'POST', body: { action: 'merge', fromId, intoId } }),
-  createSpecies: ({ varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice }) =>
-    request('/species', { method: 'POST', body: { varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice } }).then(r => r.species),
+  createSpecies: ({ varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice, sellNote }) =>
+    request('/species', { method: 'POST', body: { varietyId, epithet, commonName, notes, imageUrl, wholesalePrice, idealSellingPrice, sellNote } }).then(r => r.species),
   bulkSpeciesPrices: (prices) =>
     request('/species', { method: 'POST', body: { action: 'bulk-price', prices } }).then(r => r.updated),
   updateSpecies: ({ id, patch }) =>

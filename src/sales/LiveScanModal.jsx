@@ -14,14 +14,18 @@ const POLL_MS = 1500;
 // on (matches MODE_CONFIG in bridge/index.js); `hint` tells the operator
 // which dollar figure fills the amount field on the phone.
 const MODES = [
-  { key: 'auction',   label: 'Auction',  hint: 'Starting price = 2.5× cost' },
-  { key: 'buy_now',   label: 'Buy Now',  hint: 'Price = 2.5× cost' },
-  { key: 'give_away', label: 'Giveaway', hint: 'Value = 2.5× cost' },
+  { key: 'auction',   label: 'Auction',  hint: 'Starts at 2.5× cost (never above the list price)' },
+  { key: 'buy_now',   label: 'Buy Now',  hint: 'Price = list price, else 2.5× cost' },
+  { key: 'give_away', label: 'Giveaway', hint: 'Value = list price, else 2.5× cost' },
 ];
 
-// Live-scan pricing: the listing price pushed to Palmstreet is this many
-// times the plant's landed cost — scan = list it at margin, no per-item
-// pricing pass.
+// Live-scan pricing. The species LIST price (species.idealSellingPrice, set
+// on the wholesale order line or in the catalog) is the recommended selling
+// price: buy-now and giveaway list AT it, and it's shown big on every scan
+// as the target. Auctions still start at cost × this multiplier — the
+// floor the room bids up from — capped at the list price so a cheap plant
+// never opens above its own target. No list price → the old cost-based
+// chain, so scan = list it at margin with no per-item pricing pass.
 const PRICE_COST_MULTIPLIER = 2.5;
 
 // Flat fallback for items with no cost, listing price, or cultivar/global
@@ -66,6 +70,14 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     for (const i of items) if (i.sku) m.set(normalizeSku(i.sku), i);
     return m;
   }, [items]);
+  // Species list price + sell note, looked up live by speciesId so an edit on
+  // the order line shows on the very next scan (nothing is stamped).
+  const speciesById = useMemo(() => new Map((species || []).map(sp => [sp.id, sp])), [species]);
+  const speciesFor = (item) => (item?.speciesId ? speciesById.get(item.speciesId) : null) || null;
+  const listPriceFor = (item) => {
+    const v = parseFloat(speciesFor(item)?.idealSellingPrice);
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
 
   // `entries` is what the operator sees; latest first. Each entry tracks
   // its own bridge job id (if it got that far) and a status for the badge.
@@ -125,13 +137,18 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     return () => { cancelled = true; clearInterval(id); };
   }, [entries]);
 
-  // 2.5× cost, rounded up to a whole dollar. Items with no recorded cost
-  // fall back to the old chain (explicit listing price, then the
-  // cultivar/global rate), and anything still unpriced lists at a flat $5 —
-  // a scan must never bounce for lack of a price.
-  const resolvePrice = (item) => {
+  // See the pricing note above MODES. Returns the figure typed on the phone
+  // for this mode. Items with no list price and no recorded cost fall back
+  // to the old chain (explicit listing price, then the cultivar/global
+  // rate), and anything still unpriced lists at a flat $5 — a scan must
+  // never bounce for lack of a price.
+  const resolvePrice = (item, m) => {
+    const list = listPriceFor(item);
     const cost = Number(item.grossCost);
-    if (Number.isFinite(cost) && cost > 0) return Math.ceil(cost * PRICE_COST_MULTIPLIER);
+    const costPrice = Number.isFinite(cost) && cost > 0 ? Math.ceil(cost * PRICE_COST_MULTIPLIER) : null;
+    if (list != null && m !== 'auction') return list;
+    if (costPrice != null) return list != null ? Math.min(costPrice, list) : costPrice;
+    if (list != null) return list;
     const listing = parseFloat(item.listingPrice);
     if (Number.isFinite(listing) && listing > 0) return listing;
     const ideal = computeIdealPrice(item, idealRate, lookups);
@@ -143,11 +160,14 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     // Capture the mode at scan time so a retry re-lists in the same mode
     // even if the operator has since flipped the toggle.
     const m = chosenMode || mode;
-    const price = resolvePrice(item);
+    const price = resolvePrice(item, m);
     const amount = displayAmount(m, item, price);
+    const sp = speciesFor(item);
+    const listPrice = listPriceFor(item);
+    const sellNote = (sp?.sellNote || '').trim() || null;
     const tempId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     setEntries(prev => [
-      { tempId, sku: item.sku, name: item.name, variety: item.variety, price, amount, mode: m, state: 'queued', jobId: null, scannedAt: new Date().toISOString(), forced },
+      { tempId, sku: item.sku, name: item.name, variety: item.variety, price, amount, mode: m, state: 'queued', jobId: null, scannedAt: new Date().toISOString(), forced, listPrice, sellNote },
       ...prev,
     ].slice(0, 50));
     try {
@@ -313,6 +333,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          {entries[0] && <NowScanningCard entry={entries[0]} />}
           <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
             Recently pushed
           </h4>
@@ -367,8 +388,45 @@ function BridgeBadge({ status }) {
   );
 }
 
+// The last scan, big: what the streamer is holding up right now. List price
+// as the recommended price and the species sell note as the talking points.
+function NowScanningCard({ entry }) {
+  const { name, variety, sku, amount, price, mode, listPrice, sellNote } = entry;
+  const shown = amount != null ? amount : price;
+  return (
+    <div className="mb-4 rounded-xl bg-emerald-700 text-white p-4 sm:p-5 shadow">
+      <div className="flex items-start gap-4 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <div className="text-[11px] uppercase tracking-wider text-emerald-200 mb-1">Just scanned</div>
+          <div className="text-2xl sm:text-3xl font-bold leading-tight break-words">{name}</div>
+          <div className="text-sm text-emerald-100 mt-0.5">
+            {variety ? `${variety} · ` : ''}<span className="font-mono">{sku}</span>
+            {mode && <span className="ml-2 px-1.5 py-0.5 rounded bg-emerald-800/70 text-[10px] font-semibold uppercase tracking-wide">{MODE_LABEL[mode] || mode}</span>}
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-[11px] uppercase tracking-wide text-emerald-200">Recommended</div>
+          <div className="text-3xl sm:text-4xl font-bold tabular-nums">
+            {listPrice != null ? `$${Number(listPrice).toFixed(0)}` : '—'}
+          </div>
+          <div className="text-xs text-emerald-200 mt-0.5">
+            {listPrice == null ? 'no list price on this species' : shown != null && Number(shown) !== Number(listPrice) ? `typed: $${Number(shown).toFixed(2)}` : 'listed at this price'}
+          </div>
+        </div>
+      </div>
+      {sellNote ? (
+        <div className="mt-3 text-base sm:text-lg leading-snug bg-emerald-800/60 rounded-lg px-3 py-2 whitespace-pre-wrap">
+          {sellNote}
+        </div>
+      ) : (
+        <div className="mt-3 text-xs text-emerald-200">No sell note — add one on the wholesale order line or in the catalog.</div>
+      )}
+    </div>
+  );
+}
+
 function EntryRow({ entry, onRetry }) {
-  const { sku, name, variety, price, amount, mode, state, errorMsg, forced } = entry;
+  const { sku, name, variety, price, amount, mode, state, errorMsg, forced, listPrice, sellNote } = entry;
   // Show the figure actually typed on the phone (auction = cost floor),
   // falling back to the resolved price for older entries without `amount`.
   const shown = amount != null ? amount : price;
@@ -388,7 +446,13 @@ function EntryRow({ entry, onRetry }) {
                 {MODE_LABEL[mode] || mode}
               </span>
             )}
+            {listPrice != null && (
+              <span className="text-emerald-700 font-semibold" title="Species list price (recommended)">list ${Number(listPrice).toFixed(0)}</span>
+            )}
           </div>
+          {sellNote && (
+            <div className="text-xs text-gray-600 truncate mt-0.5" title={sellNote}>{sellNote}</div>
+          )}
         </div>
         <div className="text-sm font-semibold text-gray-900 tabular-nums">
           {shown != null ? `$${Number(shown).toFixed(2)}` : '—'}
