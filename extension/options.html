@@ -178,6 +178,37 @@
       </label>
     </section>
 
+    <section>
+      <h2>Live overlay</h2>
+      <p class="hint">During a live, a small draggable widget on the Palmstreet seller dashboard shows viewers, sales pace, the lot on the block, and who in the room is a VIP (from this brand's shipping history). Reload the dashboard tab after changing these.</p>
+
+      <label class="row">
+        <input id="liveOverlay" type="checkbox" checked />
+        <span>Show the overlay on the seller dashboard</span>
+      </label>
+
+      <label class="row">
+        <input id="liveAlertSound" type="checkbox" checked />
+        <span>Chime when a VIP joins, bids, or wins</span>
+      </label>
+
+      <label class="row">
+        <input id="liveAlertRepeat" type="checkbox" checked />
+        <span>Also alert for repeat buyers (not just VIPs)</span>
+      </label>
+
+      <label class="row">
+        <input id="liveDesktopNotify" type="checkbox" />
+        <span>Desktop notification too (shows even when Chrome isn't in front)</span>
+      </label>
+
+      <label>
+        <span>Viewer count pattern (optional)</span>
+        <input id="liveViewerRegex" type="text" placeholder="(\d+)\s*watching" />
+        <small>Only if the overlay shows “—” for viewers. A regex with one capture group for the number, tried against the dashboard's text before the built-in patterns. Copy the wording from the <code>raw</code> sample on the Show board.</small>
+      </label>
+    </section>
+
     <div class="actions">
       <button id="save" class="primary">Save</button>
       <span id="status"></span>

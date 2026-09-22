@@ -29,6 +29,15 @@ const DEFAULTS = {
   delayMin: 800,
   delayMax: 2000,
   stepTimeoutMs: 20000,
+  // Live overlay (live-overlay.js) — the streamer widget on the seller
+  // dashboard. Alerts fire for VIP buyers; `liveAlertRepeat` widens them to
+  // repeat buyers. `liveViewerRegex` calibrates the viewer count against a
+  // real broadcast (one capture group) when the built-in patterns miss.
+  liveOverlay: true,
+  liveAlertSound: true,
+  liveAlertRepeat: true,
+  liveDesktopNotify: false,
+  liveViewerRegex: '',
 };
 
 const FIELDS = Object.keys(DEFAULTS);

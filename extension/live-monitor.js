@@ -13,6 +13,10 @@
 // Single-writer contract: this script owns the entire blob (the server does
 // a full replace on save). On a mid-show page reload it re-seeds from
 // live-show-get first, so nothing already recorded is lost.
+//
+// Every pass also emits one `folia:live-tick` DOM event (snapshot + show
+// state + the events first seen on this pass) for live-overlay.js, the
+// on-page streamer widget. The overlay only reads; it never touches the blob.
 
 const LIVE_TICK_MS = 1500;      // parse cadence
 const LIVE_SAVE_MS = 4000;      // min gap between saves (sold events save sooner)
@@ -32,6 +36,37 @@ const money = (s) => {
   const n = parseFloat(String(s || '').replace(/,/g, ''));
   return Number.isFinite(n) ? n : null;
 };
+
+// Viewer count. Palmstreet's exact rendering is only knowable from a real
+// broadcast (the blob's raw sample exists for that), so try the common
+// phrasings and let the operator override with a pattern from the options
+// page (`liveViewerRegex`, one capture group) without a code change.
+const VIEWER_PATTERNS = [
+  /(\d[\d,]*)\s*(?:viewers?|watching|people watching|in the room)\b/i,
+  /\bViewers?\s*:?\s*\n?\s*(\d[\d,]*)\b/i,
+  /(?:👁|👀)\s*(\d[\d,]*)/u,
+];
+let liveViewerRe = null;   // compiled operator override, refreshed from storage
+function setViewerRegex(src) {
+  liveViewerRe = null;
+  if (!src) return;
+  try { liveViewerRe = new RegExp(src, 'im'); } catch { /* bad pattern → built-ins only */ }
+}
+function parseViewers(txt) {
+  for (const re of liveViewerRe ? [liveViewerRe, ...VIEWER_PATTERNS] : VIEWER_PATTERNS) {
+    const r = re.exec(txt);
+    if (!r || r[1] == null) continue;
+    const n = parseInt(String(r[1]).replace(/,/g, ''), 10);
+    if (Number.isFinite(n) && n >= 0 && n < 1_000_000) return n;
+  }
+  return null;
+}
+try {
+  chrome.storage.sync.get({ liveViewerRegex: '' }).then(v => setViewerRegex(v.liveViewerRegex)).catch(() => {});
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.liveViewerRegex) setViewerRegex(changes.liveViewerRegex.newValue);
+  });
+} catch { /* not in an extension context */ }
 
 // One pass over the page text → everything we can see right now. Every
 // pattern is best-effort: a miss yields null, never a throw.
@@ -69,6 +104,7 @@ function parseLivePage() {
     title: title?.[1]?.trim() || null,
     joins,
     bidders,
+    viewers: parseViewers(txt),
     streaming: streaming?.[1]?.trim() || null,
     totals: {
       gross: gross ? money(gross[1]) : null,
@@ -138,9 +174,18 @@ async function seedFromServer(showId) {
   return null;
 }
 
+function emitTick(snap, fresh) {
+  try {
+    document.dispatchEvent(new CustomEvent('folia:live-tick', {
+      detail: { snap, show: liveState, fresh },
+    }));
+  } catch { /* overlay absent — nothing to do */ }
+}
+
 async function liveTick() {
   const snap = parseLivePage();
-  if (!snap) return; // not the live dashboard (or the show ended)
+  if (!snap) { emitTick(null, null); return; } // not the live dashboard (or the show ended)
+  const fresh = { joins: [], bidders: [], sold: [] };
 
   const showId = showIdFor(snap);
   if (!liveState || liveState.showId !== showId) {
@@ -154,6 +199,7 @@ async function liveTick() {
       sold: [],
       joins: [],
       bidders: [],
+      viewers: { now: null, peak: null },
       raw: '',
     };
     if (!adopted) {
@@ -174,6 +220,14 @@ async function liveTick() {
     if (v != null && liveState.totals[k] !== v) { liveState.totals[k] = v; dirty = true; }
   }
   if (snap.streaming) liveState.streaming = snap.streaming;
+
+  // Viewers: current reading + the show's peak (a miss keeps the last value).
+  if (snap.viewers != null) {
+    const v = liveState.viewers && typeof liveState.viewers === 'object' ? liveState.viewers : { now: null, peak: null };
+    if (v.now !== snap.viewers) { v.now = snap.viewers; dirty = true; }
+    if (v.peak == null || snap.viewers > v.peak) { v.peak = snap.viewers; dirty = true; }
+    liveState.viewers = v;
+  }
 
   // Current lot + bid trail: a new lot number opens a fresh record; a price
   // change on the same lot is a bid step.
@@ -204,7 +258,7 @@ async function liveTick() {
     const key = `${lotNum}|${snap.winner}|${price}`;
     if (lotNum != null && !liveSeenSold.has(key)) {
       liveSeenSold.add(key);
-      liveState.sold.push({
+      const rec = {
         at: snap.at,
         lot: lotNum,
         title: snap.lot?.title ?? cur?.title ?? '',
@@ -212,7 +266,9 @@ async function liveTick() {
         buyer: snap.winner,
         startedAt: cur?.startedAt || null,
         bids: cur?.bids?.slice() || [],
-      });
+      };
+      liveState.sold.push(rec);
+      fresh.sold.push(rec);
       dirty = true;
       soldNow = true;
     }
@@ -224,6 +280,7 @@ async function liveTick() {
     if (liveSeenJoins.has(user)) continue;
     liveSeenJoins.add(user);
     liveState.joins.push({ t: snap.at, user });
+    fresh.joins.push({ t: snap.at, user });
     if (liveState.joins.length > LIVE_MAX_EVENTS) liveState.joins.splice(0, liveState.joins.length - LIVE_MAX_EVENTS);
     dirty = true;
   }
@@ -232,6 +289,7 @@ async function liveTick() {
     if (liveSeenBids.has(key)) continue;
     liveSeenBids.add(key);
     liveState.bidders.push({ t: snap.at, user: b.user, price: b.price });
+    fresh.bidders.push({ t: snap.at, user: b.user, price: b.price });
     if (liveState.bidders.length > LIVE_MAX_EVENTS) liveState.bidders.splice(0, liveState.bidders.length - LIVE_MAX_EVENTS);
     dirty = true;
   }
@@ -242,6 +300,7 @@ async function liveTick() {
     liveLastRaw = Date.now();
   }
 
+  emitTick(snap, fresh);
   if (dirty) await saveLiveState(soldNow);
 }
 
