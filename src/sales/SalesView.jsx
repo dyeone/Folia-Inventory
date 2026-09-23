@@ -1,12 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Plus, Calendar, Layers, Download, Trash2, Edit2, PackageOpen,
   Archive, Clock, Gift, CheckCircle2, Upload, Check, Lock, Radio, Tag,
   BarChart3, FileText, Users, Coins, Video, Music2,
 } from 'lucide-react';
 import { PreSaleTab } from './PreSaleTab.jsx';
+import { api } from '../api.js';
 import { hasEval } from './saleEval.js';
 import { TikTokLiveModal } from './TikTokLiveModal.jsx';
+import { Modal } from '../ui/Modal.jsx';
+import { LiveReport } from './LiveReport.jsx';
 const STATUS_META = {
   ongoing:  { label: 'Ongoing',  cls: 'bg-emerald-100 text-emerald-800', icon: Clock },
   packing:  { label: 'Packing',  cls: 'bg-blue-100 text-blue-800',       icon: PackageOpen },
@@ -40,6 +43,15 @@ export function SalesView({
   const [tab, setTab] = useState('active');
   // TikTok live setup modal (bulk-load TC per PO + Seller Center export).
   const [tiktokSale, setTiktokSale] = useState(null);
+  // Sales with a recorded live (the BAE live widget archives the show into
+  // its sale event) get a "Live report" button.
+  const [liveSaleIds, setLiveSaleIds] = useState(() => new Set());
+  const [liveReportSale, setLiveReportSale] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.getLiveShowArchived().then(ids => { if (alive) setLiveSaleIds(new Set(ids)); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const speciesById = useMemo(() => new Map((species || []).map(s => [s.id, s])), [species]);
   // Consignment (seller sections + settlement) is a BAE-only workflow.
   const isBae = activeBrand === 'bae';
@@ -180,9 +192,16 @@ export function SalesView({
               onTikTok={() => setTiktokSale(sale)}
               evalVersion={evalVersion}
               hasDbEval={!!evalSaleIds && evalSaleIds.has(sale.id)}
+              hasLiveReport={liveSaleIds.has(sale.id)}
+              onLiveReport={() => setLiveReportSale(sale)}
             />
           ))}
         </div>
+      )}
+      {liveReportSale && (
+        <Modal title={`Live report · ${liveReportSale.name || ''}`} onClose={() => setLiveReportSale(null)} size="xl">
+          <LiveReport saleId={liveReportSale.id} sale={liveReportSale} showBuyers />
+        </Modal>
       )}
       {tiktokSale && (
         <TikTokLiveModal
@@ -203,6 +222,7 @@ function SaleCard({
   sale, items, isAdmin, isBae,
   onBuildLineup, onExportCsv, onSendToPacking, onGoLive, onEdit, onDelete,
   onEvaluateSale, onViewReport, onSellerSettlement, onTikTok, evalVersion, hasDbEval,
+  hasLiveReport, onLiveReport,
 }) {
   // TikTok lives sell TC: inventory loads in bulk per purchase order and
   // exports as Seller Center's bulk-listing file — its own setup flow.
@@ -355,6 +375,15 @@ function SaleCard({
         >
           <BarChart3 className="w-3.5 h-3.5" /> Evaluate Sales
         </button>
+        {hasLiveReport && (
+          <button
+            onClick={onLiveReport}
+            title="The live as it was recorded by the BAE live widget — selling pace, gross over time, audience, every lot sold"
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg bg-white border border-red-300 text-red-700 hover:bg-red-50 active:bg-red-100"
+          >
+            <Radio className="w-3.5 h-3.5" /> Live Report
+          </button>
+        )}
         {reportReady && (
           <button
             onClick={onViewReport}

@@ -128,6 +128,19 @@ export default wrap(async (req, res) => {
 
 const LIVE_SHOW_NS = 'live_show:';
 const LIVE_SCAN_NS = 'live_scan:';   // last scan from the scan screen, for the overlay
+// Every live is recorded into its SALE EVENT (the sales row), so a show has
+// a report afterwards. `live_show_link:<brand>` maps the extension's showId
+// to a saleId; `live_show_sale:<saleId>` holds the archived show plus a
+// once-a-minute time series (viewers, gross, lots sold). A show links to the
+// brand's ongoing Palmstreet sale for that day; brands in
+// LIVE_AUTO_CREATE_BRANDS get a sale created for them when none exists.
+const LIVE_LINK_NS = 'live_show_link:';
+const LIVE_ARCHIVE_NS = 'live_show_sale:';
+const LIVE_AUTO_CREATE_BRANDS = new Set(['bae-gin']);
+const LIVE_SERIES_GAP_MS = 60_000;      // one time-series point per minute
+const LIVE_SERIES_MAX = 720;            // 12 hours of points
+const LIVE_ARCHIVE_GAP_MS = 20_000;     // otherwise-idle archive writes, at most this often
+const LIVE_SALE_LINK_WINDOW_MS = 18 * 3600_000;   // an "ongoing" sale older than this isn't today's
 const LIVE_SHOW_MAX_SOLD = 800;
 const LIVE_SHOW_MAX_BIDS = 80;
 const LIVE_SHOW_MAX_RAW = 4000;
@@ -202,6 +215,127 @@ async function liveShowBuyers(brandId) {
 
 function cappedBids(list) {
   return (Array.isArray(list) ? list : []).slice(-LIVE_SHOW_MAX_BIDS);
+}
+
+async function readSetting(id) {
+  const { data, error } = await supabase.from('app_settings').select('data, "updatedAt"').eq('id', id).maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return data || null;
+}
+async function writeSetting(id, data, user) {
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ id, data, updatedAt: new Date().toISOString(), updatedBy: user?.id || null });
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+}
+
+// Which sale event a show belongs to: the brand's ongoing Palmstreet sale for
+// that day (by sale date, else created within the link window). Returns
+// { saleId, created } or null when nothing fits and the brand doesn't
+// auto-create.
+async function resolveSaleForShow(show, brandId, user) {
+  const showDate = String(show.showId || '').slice(0, 10);   // showId = YYYY-MM-DD:slug
+  const { data: ongoing, error } = await supabase
+    .from('sales')
+    .select('id, name, date, platform, status, "createdAt"')
+    .eq('brandId', brandId)
+    .eq('status', 'ongoing')
+    .order('createdAt', { ascending: false })
+    .limit(20);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const palm = (ongoing || []).filter(sl => !sl.platform || /palmstreet/i.test(sl.platform));
+  const now = Date.now();
+  const pick = palm.find(sl => sl.date && String(sl.date).slice(0, 10) === showDate)
+    || palm.find(sl => sl.createdAt && now - new Date(sl.createdAt).getTime() < LIVE_SALE_LINK_WINDOW_MS);
+  if (pick) return { saleId: pick.id, created: false };
+  if (!LIVE_AUTO_CREATE_BRANDS.has(brandId)) return null;
+  const row = {
+    id: newId(),
+    brandId,
+    name: (show.title && String(show.title).trim().slice(0, 120)) || `Live ${showDate || new Date().toISOString().slice(0, 10)}`,
+    date: showDate || new Date().toISOString().slice(0, 10),
+    platform: 'Palmstreet',
+    status: 'ongoing',
+    notes: 'Created automatically when the live widget started recording',
+    createdAt: new Date().toISOString(),
+    createdBy: user.displayName || user.id,
+  };
+  const { error: insErr } = await supabase.from('sales').insert(row);
+  if (insErr) { const e = new Error(insErr.message); e.status = 500; throw e; }
+  return { saleId: row.id, created: true };
+}
+
+// Record the show into its sale: link once per showId, then keep the archive
+// row current (full show state + an appended time series). Throttled so a
+// quiet show doesn't rewrite the row every 4 s; a new sale always writes.
+async function archiveLiveShow(show, brandId, user) {
+  if (!show?.showId) return null;
+  const linkId = LIVE_LINK_NS + brandId;
+  const linkRow = await readSetting(linkId);
+  const links = (linkRow?.data && typeof linkRow.data === 'object' && linkRow.data.links) || {};
+  let saleId = links[show.showId] || null;
+  let created = false;
+  if (!saleId) {
+    const r = await resolveSaleForShow(show, brandId, user);
+    if (!r) return null;
+    saleId = r.saleId; created = r.created;
+    const keep = Object.entries(links).slice(-50);   // bounded: showIds are per day
+    await writeSetting(linkId, { links: Object.fromEntries([...keep, [show.showId, saleId]]) }, user);
+  }
+
+  const archId = LIVE_ARCHIVE_NS + saleId;
+  const prevRow = await readSetting(archId);
+  const prev = prevRow?.data && typeof prevRow.data === 'object' ? prevRow.data : null;
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+
+  // Sold lots: union with what's archived (a restarted stream gets a new
+  // showId but the same sale); dedupe on lot|buyer|price like the scraper.
+  const key = (x) => `${x.lot}|${x.buyer}|${x.price}`;
+  const sold = [];
+  const seen = new Set();
+  for (const x of [...(prev?.sold || []), ...(show.sold || [])]) {
+    if (!x || seen.has(key(x))) continue;
+    seen.add(key(x)); sold.push(x);
+  }
+  sold.sort((a, b) => new Date(a.at || 0) - new Date(b.at || 0));
+  const soldGrew = sold.length > (prev?.sold?.length || 0);
+
+  const series = Array.isArray(prev?.series) ? prev.series.slice() : [];
+  const lastT = series.length ? new Date(series[series.length - 1].t).getTime() : 0;
+  let seriesGrew = false;
+  if (now - lastT >= LIVE_SERIES_GAP_MS) {
+    series.push({
+      t: nowIso,
+      viewers: show.viewers && typeof show.viewers === 'object' && Number.isFinite(Number(show.viewers.now)) && show.viewers.now !== null ? Number(show.viewers.now) : null,
+      gross: Number.isFinite(Number(show.totals?.gross)) && show.totals?.gross != null ? Number(show.totals.gross) : null,
+      orders: Number.isFinite(Number(show.totals?.orders)) && show.totals?.orders != null ? Number(show.totals.orders) : null,
+      sold: sold.length,
+      joins: (show.joins || []).length,
+    });
+    seriesGrew = true;
+  }
+  const lastWrite = prev?.lastSeenAt ? new Date(prev.lastSeenAt).getTime() : 0;
+  if (prev && !created && !soldGrew && !seriesGrew && now - lastWrite < LIVE_ARCHIVE_GAP_MS) {
+    return { saleId, created: false, wrote: false };
+  }
+  const next = {
+    saleId,
+    showId: show.showId,
+    showIds: Array.from(new Set([...(prev?.showIds || []), show.showId])).slice(-10),
+    title: show.title || prev?.title || null,
+    streaming: show.streaming || prev?.streaming || null,
+    startedAt: prev?.startedAt || show.startedAt || nowIso,
+    lastSeenAt: nowIso,
+    totals: show.totals || prev?.totals || {},
+    viewers: show.viewers && typeof show.viewers === 'object' ? show.viewers : (prev?.viewers || null),
+    sold: sold.slice(-LIVE_SHOW_MAX_SOLD),
+    joins: (show.joins || []).slice(-LIVE_SHOW_MAX_EVENTS),
+    bidders: (show.bidders || []).slice(-LIVE_SHOW_MAX_EVENTS),
+    series: series.slice(-LIVE_SERIES_MAX),
+  };
+  await writeSetting(archId, next, user);
+  return { saleId, created, wrote: true };
 }
 
 async function handleLiveShow(action, req, res, user, brandId) {
@@ -290,7 +424,40 @@ async function handleLiveShow(action, req, res, user, brandId) {
         .from('app_settings')
         .upsert({ id, data: clean, updatedAt: new Date().toISOString(), updatedBy: user.id });
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-      return res.status(200).json({ ok: true });
+      // Record the show into its sale event. Best effort: the live blob is
+      // saved above regardless, so a hiccup here never stalls the scraper.
+      let linked = null;
+      try {
+        linked = await archiveLiveShow(clean, brandId, user);
+      } catch (e) {
+        console.error('[live-show] archive failed:', e?.message || e);
+      }
+      return res.status(200).json({ ok: true, saleId: linked?.saleId || null, saleCreated: !!linked?.created });
+    }
+    case 'live-show-report': {
+      // The archived show for one sale event (+ series) — the post-live report.
+      if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+      const saleId = String(req.query?.saleId || '');
+      if (!saleId) { const e = new Error('saleId required'); e.status = 400; throw e; }
+      const row = await readSetting(LIVE_ARCHIVE_NS + saleId);
+      const live = row?.updatedAt ? (Date.now() - new Date(row.updatedAt).getTime()) < 60_000 : false;
+      return res.status(200).json({ report: row?.data || null, updatedAt: row?.updatedAt || null, live });
+    }
+    case 'live-show-archived': {
+      // Which of the brand's sale events have a recorded live.
+      if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+      const { data, error } = await supabase
+        .from('app_settings').select('id').like('id', `${LIVE_ARCHIVE_NS}%`);
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      const ids = (data || []).map(r => r.id.slice(LIVE_ARCHIVE_NS.length));
+      let owned = new Set();
+      if (ids.length) {
+        const { data: sales, error: sErr } = await supabase
+          .from('sales').select('id').eq('brandId', brandId).in('id', ids.slice(0, 500));
+        if (sErr) { const e = new Error(sErr.message); e.status = 500; throw e; }
+        owned = new Set((sales || []).map(x => x.id));
+      }
+      return res.status(200).json({ saleIds: ids.filter(x => owned.has(x)) });
     }
     default: {
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;

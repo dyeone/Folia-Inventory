@@ -2,6 +2,7 @@ import { useContext, useEffect, useMemo, useState } from 'react';
 import { ArrowLeft, LogOut, ClipboardList, Check, Loader2, Search, ChevronRight, Tag, Radio, Boxes, ChevronDown } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
+import { LiveReport } from '../sales/LiveReport.jsx';
 
 // Consultant screen — a phone-first pricing workspace over three tabs.
 //
@@ -561,16 +562,18 @@ function SaleBoard({ sale, summary, speciesById, showToast }) {
       </div>
 
       <div className="mt-3 flex rounded-xl border border-gray-200 bg-gray-200/60 p-1" role="group" aria-label="View">
-        {[['plants', `By plant (${plants.length})`], ['items', `Every plant (${count})`]].map(([id, label]) => (
+        {[['plants', `By plant (${plants.length})`], ['items', `Every plant (${count})`], ['live', 'Live report']].map(([id, label]) => (
           <button key={id} type="button" onClick={() => setView(id)} aria-pressed={view === id}
             className={`flex-1 h-10 text-sm font-semibold rounded-lg ${view === id ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-600'}`}>
             {label}
           </button>
         ))}
       </div>
-      {items.length > 8 && <div className="mt-2"><SearchBox value={q} onChange={setQ} placeholder="Find a plant, SKU, or lot…" /></div>}
+      {view !== 'live' && items.length > 8 && <div className="mt-2"><SearchBox value={q} onChange={setQ} placeholder="Find a plant, SKU, or lot…" /></div>}
 
-      {items.length === 0 ? (
+      {view === 'live' ? (
+        <div className="mt-2"><LiveReport saleId={sale.id} sale={sale} showBuyers={false} compact /></div>
+      ) : items.length === 0 ? (
         <div className="py-12 text-center text-gray-500 text-sm">Nothing sold in this sale yet.</div>
       ) : view === 'plants' ? (
         <div className="mt-2 bg-white rounded-2xl border border-gray-200 divide-y divide-gray-100">
