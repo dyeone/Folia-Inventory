@@ -41,6 +41,20 @@ async function restampListPrice(speciesId, brandId, oldPrice, newPrice, user) {
   return { ideal: ideal || 0, listing: listing || 0 };
 }
 
+// Supabase caps un-ranged selects at 1000 rows; page through for the
+// brand-wide stats pass (same shape as api/items.js fetchAll).
+async function fetchAllRows(buildQuery) {
+  const PAGE = 1000;
+  const all = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await buildQuery().range(from, from + PAGE - 1);
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    all.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  return all;
+}
+
 export default wrap(async (req, res) => {
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
   const { user, brandId } = await requireBrand(userId, brandIdFromReq(req));
@@ -55,6 +69,60 @@ export default wrap(async (req, res) => {
   // Bulk wholesale-price update (vendor sent a new price list). Admin-only:
   // prices are the admin's domain, same posture as PO editing. Runs the
   // updates in parallel chunks so a 300-row list doesn't take a minute.
+  // Stock + sales per species, no costs: what a plant sells for and how many
+  // are on hand. Built for the consultant's pricing screen; any brand member
+  // may read it. One pass over the brand's items (paginated), aggregated here.
+  if (req.method === 'GET' && req.query?.action === 'stats') {
+    const rows = await fetchAllRows(() => supabase
+      .from('inventory_items')
+      .select('"speciesId", status, quantity, "salePrice", "soldAt"')
+      .eq('brandId', brandId)
+      .is('deletedAt', null));
+    const cutoff30 = Date.now() - 30 * 86400e3;
+    const fresh = () => ({ inStock: 0, sold: 0, sold30d: 0, revenue: 0, revenue30d: 0, priced: 0, priced30d: 0, lastSoldAt: null, lastSalePrice: null });
+    const totals = fresh();
+    const bySpecies = new Map();
+    for (const it of rows) {
+      const q = Math.max(1, parseInt(it.quantity, 10) || 1);
+      const price = parseFloat(it.salePrice);
+      const soldAt = it.soldAt ? new Date(it.soldAt).getTime() : NaN;
+      const targets = [totals];
+      if (it.speciesId) {
+        if (!bySpecies.has(it.speciesId)) bySpecies.set(it.speciesId, fresh());
+        targets.push(bySpecies.get(it.speciesId));
+      }
+      for (const t of targets) {
+        if (it.status === 'available' || it.status === 'listed' || it.status === 'acclimated') t.inStock += q;
+        if (it.status === 'sold' || it.status === 'shipped' || it.status === 'delivered') {
+          t.sold += q;
+          if (Number.isFinite(price) && price > 0) { t.revenue += price * q; t.priced += q; }
+          if (Number.isFinite(soldAt) && soldAt >= cutoff30) {
+            t.sold30d += q;
+            if (Number.isFinite(price) && price > 0) { t.revenue30d += price * q; t.priced30d += q; }
+          }
+          // "Last sale" is the latest PRICED sale, so the price and date shown
+          // together always belong to the same plant.
+          if (Number.isFinite(soldAt) && Number.isFinite(price) && price > 0 && (!t.lastSoldAt || soldAt > t.lastSoldAt)) {
+            t.lastSoldAt = soldAt;
+            t.lastSalePrice = price;
+          }
+        }
+      }
+    }
+    const finish = (t) => ({
+      inStock: t.inStock,
+      sold: t.sold,
+      sold30d: t.sold30d,
+      avgSalePrice: t.priced ? Math.round((t.revenue / t.priced) * 100) / 100 : null,
+      avgSalePrice30d: t.priced30d ? Math.round((t.revenue30d / t.priced30d) * 100) / 100 : null,
+      lastSalePrice: t.lastSalePrice,
+      lastSoldAt: t.lastSoldAt ? new Date(t.lastSoldAt).toISOString() : null,
+    });
+    const out = {};
+    for (const [id, t] of bySpecies) out[id] = finish(t);
+    return res.status(200).json({ totals: finish(totals), bySpecies: out, generatedAt: new Date().toISOString() });
+  }
+
   if (req.method === 'POST' && req.body?.action === 'bulk-price') {
     await requireAdmin(userId);
     const { prices } = req.body || {};
