@@ -19,8 +19,8 @@
 // Lives in a shadow root so Palmstreet's CSS can't restyle it and ours
 // can't leak out. Drag the header to move it, drag the bottom-right corner
 // to resize it — text scales with the width so a bigger panel reads from
-// across the room. Position / size / collapsed / muted persist in
-// storage.local.
+// across the room — and A−/A+ in the header bump the text on top of that.
+// Position / size / text scale / collapsed / muted persist in storage.local.
 
 (() => {
   // Re-injection guard (see live-monitor.js): a live earlier instance wins,
@@ -41,13 +41,14 @@
   const FEED_MAX = 14;
   const VIP_LIST_MAX = 8;
   const HIDE_AFTER_MS = 8_000;       // no dashboard tick for this long → hide
-  const PANEL_W = 300;               // default width; the operator can resize
+  const PANEL_W = 340;               // default width; the operator can resize
   const PANEL_MIN_W = 240, PANEL_MIN_H = 160;
-  const FONT_MIN = 11, FONT_MAX = 22;   // base font follows width: ~1px per 25px
+  const FONT_MIN = 12, FONT_MAX = 28;   // base font follows width (~1px per 22px) × the A−/A+ scale
+  const SCALE_STEPS = [0.85, 1, 1.15, 1.3, 1.45, 1.6];
 
   let host = null, root = null;
   const el = {};
-  let prefs = { x: null, y: null, w: null, h: null, collapsed: false, muted: false };
+  let prefs = { x: null, y: null, w: null, h: null, scale: 1, collapsed: false, muted: false };
   let settings = null;               // chrome.storage.sync snapshot
   let buyers = null;                 // lowercase username → { tier, spent, items, boxes, openBoxes, lastAt }
   let buyersAt = 0, buyersErr = null, buyersLoading = false;
@@ -125,7 +126,7 @@
       display: flex; flex-direction: column;
       resize: both; overflow: hidden;
       font: var(--fs)/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      color: #e5e7eb; background: rgba(9, 12, 20, 0.94); border: 1px solid #1f2937;
+      color: #f3f4f6; background: rgba(9, 12, 20, 0.97); border: 1px solid #1f2937;
       border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.45); user-select: none;
       backdrop-filter: blur(8px);
     }
@@ -141,51 +142,58 @@
     .head:active { cursor: grabbing; }
     .dot { width: .65em; height: .65em; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 0 rgba(239,68,68,.6); animation: pulse 1.6s infinite; flex-shrink: 0; }
     @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(239,68,68,.6); } 70% { box-shadow: 0 0 0 .55em rgba(239,68,68,0); } 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); } }
-    .title { font-weight: 700; letter-spacing: .02em; color: #9ca3af; font-size: .9em; text-transform: uppercase; white-space: nowrap; }
+    .title { font-weight: 700; letter-spacing: .02em; color: #d1d5db; font-size: .9em; text-transform: uppercase; white-space: nowrap; }
     .viewers { margin-left: auto; display: flex; align-items: baseline; gap: .3em; }
     .viewers b { font-size: 1.5em; font-variant-numeric: tabular-nums; }
-    .viewers small { color: #6b7280; font-size: .8em; }
-    .head button { all: unset; cursor: pointer; color: #9ca3af; padding: .15em .4em; border-radius: 6px; font-size: 1.05em; line-height: 1; }
+    .viewers small { color: #9ca3af; font-size: .8em; }
+    .head button { all: unset; cursor: pointer; color: #d1d5db; padding: .15em .4em; border-radius: 6px; font-size: 1.05em; line-height: 1; }
     .head button:hover { background: #1f2937; color: #fff; }
+    .head button.tsz { font-size: .8em; font-weight: 700; letter-spacing: -.02em; }
     .body { padding: .65em .85em .5em; flex: 1; min-height: 0; display: flex; flex-direction: column; }
     .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5em; flex-shrink: 0; }
     .tile { background: #111827; border-radius: 8px; padding: .5em .6em; min-width: 0; }
-    .tile small { display: block; color: #6b7280; font-size: .8em; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .tile b { display: block; font-size: 1.15em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile small { display: block; color: #a3a9b5; font-size: .8em; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile b { display: block; font-size: 1.2em; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .lot { margin-top: .65em; background: #111827; border-radius: 8px; padding: .55em .75em; display: flex; flex-wrap: wrap; align-items: baseline; gap: .65em; min-height: 2.8em; flex-shrink: 0; }
     .lot .num { font-size: 1.35em; font-weight: 800; font-variant-numeric: tabular-nums; }
-    .lot .name { color: #d1d5db; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+    .lot .name { color: #e5e7eb; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
     .lot .price { margin-left: auto; font-size: 1.35em; font-weight: 800; color: #60a5fa; font-variant-numeric: tabular-nums; }
-    .lot .sub { flex-basis: 100%; color: #9ca3af; font-size: .92em; margin-top: -.15em; display: flex; gap: .5em; align-items: center; flex-wrap: wrap; }
+    .lot .sub { flex-basis: 100%; color: #c3c8d2; font-size: .92em; margin-top: -.15em; display: flex; gap: .5em; align-items: center; flex-wrap: wrap; }
     .section { margin-top: .65em; display: flex; flex-direction: column; min-height: 0; flex-shrink: 0; }
     .section.grow { flex: 1; }
-    .section > small { display: flex; justify-content: space-between; color: #6b7280; font-size: .8em; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25em; flex-shrink: 0; }
+    .section > small { display: flex; justify-content: space-between; color: #a3a9b5; font-weight: 600; font-size: .8em; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25em; flex-shrink: 0; }
     .list { display: flex; flex-direction: column; gap: .15em; overflow-y: auto; min-height: 0; }
     .section.vips .list { max-height: 9.5em; }
     .section.grow .list { flex: 1; }
     .list::-webkit-scrollbar { width: 6px; } .list::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
     .row { display: flex; align-items: center; gap: .5em; padding: .25em .4em; border-radius: 6px; cursor: pointer; min-width: 0; flex-shrink: 0; }
     .row:hover { background: #1f2937; }
-    .row .t { color: #4b5563; font-size: .85em; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .row .t { color: #8b93a3; font-size: .85em; font-variant-numeric: tabular-nums; flex-shrink: 0; }
     .row .k { flex-shrink: 0; width: 1.2em; text-align: center; }
     .row .u { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; max-width: 46%; }
-    .row .x { color: #9ca3af; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 0; min-width: 2em; }
+    .row .x { color: #c3c8d2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 0; min-width: 2em; }
     .b { display: inline-flex; align-items: center; gap: .25em; border-radius: 999px; padding: .1em .5em; font-size: .85em; font-weight: 700; white-space: nowrap; flex-shrink: 0; margin-left: auto; }
     .b.vip { background: rgba(245,158,11,.16); color: #fbbf24; }
     .b.repeat { background: rgba(14,165,233,.16); color: #7dd3fc; }
     .b.open { background: rgba(244,63,94,.16); color: #fda4af; margin-left: 0; }
-    .empty { color: #4b5563; font-size: .92em; padding: .25em .4em; }
-    .foot { margin-top: .5em; color: #4b5563; font-size: .85em; display: flex; justify-content: space-between; gap: .65em; flex-shrink: 0; }
+    .empty { color: #8b93a3; font-size: .92em; padding: .25em .4em; }
+    .foot { margin-top: .5em; color: #8b93a3; font-size: .85em; display: flex; justify-content: space-between; gap: .65em; flex-shrink: 0; }
     .foot .err { color: #f87171; }
     .toasts { position: absolute; left: 0; right: 0; bottom: 100%; display: flex; flex-direction: column; gap: .5em; padding-bottom: .65em; font-size: var(--fs); }
     .toast { background: #111827; border: 1px solid #374151; border-left: 4px solid #fbbf24; border-radius: 10px; padding: .65em .85em; box-shadow: 0 8px 24px rgba(0,0,0,.4); cursor: pointer; animation: rise .18s ease-out; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
     .toast.repeat { border-left-color: #7dd3fc; }
     .toast.info { border-left-color: #6b7280; }
     .toast b { display: block; font-size: 1.08em; }
-    .toast span { color: #d1d5db; font-size: .92em; }
+    .toast span { color: #e5e7eb; font-size: .92em; }
     @keyframes rise { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
     .panel.collapsed .body { display: none; }
     .muted .dot { animation: none; background: #6b7280; box-shadow: none; }
+    /* Narrow = fewer than ~20 characters across at the current text size:
+       drop the title word, tighten the header, and stack the tiles 2×2 so
+       big text on a small panel still reads instead of truncating. */
+    .panel.narrow .title { display: none; }
+    .panel.narrow .head { gap: .4em; padding-left: .6em; padding-right: .6em; }
+    .panel.narrow .tiles { grid-template-columns: repeat(2, 1fr); }
   `;
 
   function build() {
@@ -202,6 +210,8 @@
           <span class="dot"></span>
           <span class="title">BAE live</span>
           <span class="viewers" title="Viewers now / peak this show"><b id="viewers">—</b><small id="peak"></small></span>
+          <button id="smaller" title="Smaller text" class="tsz">A−</button>
+          <button id="bigger" title="Bigger text" class="tsz">A+</button>
           <button id="mute" title="Mute alerts">🔔</button>
           <button id="collapse" title="Collapse">–</button>
         </div>
@@ -225,7 +235,7 @@
         </div>
       </div>
       </div>`;
-    for (const id of ['wrap', 'panel', 'toasts', 'head', 'viewers', 'peak', 'mute', 'collapse', 'gross', 'orders', 'pace',
+    for (const id of ['wrap', 'panel', 'toasts', 'head', 'viewers', 'peak', 'smaller', 'bigger', 'mute', 'collapse', 'gross', 'orders', 'pace',
       'lastSale', 'lot', 'vipCount', 'vips', 'entries', 'feed', 'foot', 'brand']) {
       el[id] = root.getElementById(id);
     }
@@ -233,6 +243,14 @@
 
     el.collapse.addEventListener('click', (e) => { e.stopPropagation(); prefs.collapsed = !prefs.collapsed; applyPrefs(); savePrefs(); });
     el.mute.addEventListener('click', (e) => { e.stopPropagation(); prefs.muted = !prefs.muted; applyPrefs(); savePrefs(); });
+    const stepScale = (dir) => {
+      const i = SCALE_STEPS.indexOf(prefs.scale);
+      const cur = i >= 0 ? i : SCALE_STEPS.indexOf(1);
+      prefs.scale = SCALE_STEPS[Math.max(0, Math.min(SCALE_STEPS.length - 1, cur + dir))];
+      applyPrefs(); savePrefs();
+    };
+    el.smaller.addEventListener('click', (e) => { e.stopPropagation(); stepScale(-1); });
+    el.bigger.addEventListener('click', (e) => { e.stopPropagation(); stepScale(1); });
     el.panel.addEventListener('click', () => { resumeAudio(); });
     el.vips.addEventListener('click', onRowClick);
     el.feed.addEventListener('click', onRowClick);
@@ -241,12 +259,19 @@
     window.addEventListener('resize', () => { applyPrefs(); });
   }
 
-  // Base font follows the panel width (about 1px per 25px, clamped), so
-  // dragging the corner scales everything, not just the empty space.
+  // Base font follows the panel width (about 1px per 22px, clamped) times
+  // the A−/A+ scale, so dragging the corner scales everything, not just the
+  // empty space, and the buttons bump it further without a wider panel.
   function applyScale() {
     const w = el.panel.offsetWidth || PANEL_W;
-    const fs = Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round(w / 25)));
+    const scale = SCALE_STEPS.includes(prefs.scale) ? prefs.scale : 1;
+    const fs = Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round((w / 22) * scale)));
     el.panel.style.setProperty('--fs', `${fs}px`);
+    el.panel.classList.toggle('narrow', w / fs < 20);
+    el.smaller.disabled = scale === SCALE_STEPS[0];
+    el.bigger.disabled = scale === SCALE_STEPS[SCALE_STEPS.length - 1];
+    el.bigger.title = `Bigger text (${Math.round(scale * 100)}%)`;
+    el.smaller.title = `Smaller text (${Math.round(scale * 100)}%)`;
   }
 
   // The native CSS resize handle sets inline width/height on the panel;

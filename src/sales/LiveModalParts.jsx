@@ -86,8 +86,9 @@ export function CurrentItemCard(props) {
         </div>
       </div>
       {sellNote && (
-        <div className="mt-3 text-base sm:text-lg leading-snug text-white bg-red-800/70 rounded-lg px-3 py-2 whitespace-pre-wrap">
-          {sellNote}
+        <div className="mt-3 rounded-lg bg-amber-300 text-gray-900 border-l-8 border-amber-500 px-4 py-3 shadow-inner">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-amber-900/80 mb-0.5">Say this</div>
+          <div className="text-xl sm:text-2xl font-semibold leading-snug whitespace-pre-wrap">{sellNote}</div>
         </div>
       )}
       {item.notes && (
