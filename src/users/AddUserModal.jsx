@@ -58,6 +58,7 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
             <option value="staff">Staff — view/edit inventory</option>
             <option value="admin">Admin — full access</option>
             <option value="packer">Packer — Shipping tab only, pack workflow</option>
+            <option value="consultant">Consultant — wholesale pricing only (list price + seller note, mobile)</option>
           </select>
         </Field>
         <Field label="Brand access *">
