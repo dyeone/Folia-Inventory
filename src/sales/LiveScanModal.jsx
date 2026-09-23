@@ -186,10 +186,15 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     const listPrice = listPriceFor(item);
     const sellNote = (sp?.sellNote || '').trim() || null;
     const tempId = `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const scannedAt = new Date().toISOString();
     setEntries(prev => [
-      { tempId, sku: item.sku, name: item.name, variety: item.variety, price, amount, mode: m, state: 'queued', jobId: null, scannedAt: new Date().toISOString(), forced, listPrice, sellNote },
+      { tempId, sku: item.sku, name: item.name, variety: item.variety, price, amount, mode: m, state: 'queued', jobId: null, scannedAt, forced, listPrice, sellNote },
       ...prev,
     ].slice(0, 50));
+    // Tell the on-page overlay (Palmstreet tab) what was just scanned. Best
+    // effort — the listing push below must not wait on it or fail with it.
+    api.liveScanSave({ at: scannedAt, sku: item.sku, name: item.name, variety: item.variety, mode: m, price: amount ?? price, listPrice, sellNote, forced })
+      .catch(() => { /* overlay just shows the previous scan a little longer */ });
     try {
       const job = await api.bridgeEnqueue({
         jobAction: 'listing',

@@ -174,6 +174,10 @@ Position, size, and text size are remembered. It reads
 the same page scrape that feeds the Show board and the Mac app, so it costs
 nothing extra:
 
+- **Just scanned** — the last plant scanned in the web app's Live Scan Mode,
+  with the species **list price as the recommended price** and the **sell
+  note** as a "Say this" callout, so the streamer never has to look at the
+  scanning window (polled every 2 s from `live-show-scan-get`)
 - **Viewers** now / peak this show (see calibration below)
 - **Gross**, **orders**, **pace** (gross per hour · lots per hour), and time
   since the **last sale**

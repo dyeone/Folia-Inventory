@@ -9,6 +9,12 @@
 // against lifetime shipping history (live-show-buyers: 👑 VIP / ⭐ repeat,
 // lifetime $, boxes, and any box still waiting to ship).
 //
+// It also polls the last scan from the web app's Live Scan Mode
+// (live-show-scan-get, every 2 s while on the dashboard) and shows it at
+// the top: the plant, the species LIST price as the recommendation, and the
+// sell note as a "Say this" callout — the streamer's eyes are on this tab,
+// not on the scanning window.
+//
 // Alerts (toast + chime + optional desktop notification) fire once per show
 // per buyer for a VIP (or repeat, if enabled) join and first bid, and on
 // every VIP win. The first pass of a show seeds the feed from the show
@@ -45,6 +51,8 @@
   const PANEL_MIN_W = 240, PANEL_MIN_H = 160;
   const FONT_MIN = 12, FONT_MAX = 28;   // base font follows width (~1px per 22px) × the A−/A+ scale
   const SCALE_STEPS = [0.85, 1, 1.15, 1.3, 1.45, 1.6];
+  const SCAN_POLL_MS = 2000;
+  const SCAN_STALE_MS = 45 * 60 * 1000;   // an old scan is history, not "just scanned"
 
   let host = null, root = null;
   const el = {};
@@ -60,6 +68,9 @@
   let rafId = 0;
   let audioCtx = null;
   let clockTimer = null;
+  let scan = null;                   // last scan from the scan screen
+  let scanTimer = null;
+  let scanPolling = false;
 
   const lc = (s) => String(s || '').trim().toLowerCase();
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
@@ -149,7 +160,8 @@
     .head button { all: unset; cursor: pointer; color: #d1d5db; padding: .15em .4em; border-radius: 6px; font-size: 1.05em; line-height: 1; }
     .head button:hover { background: #1f2937; color: #fff; }
     .head button.tsz { font-size: .8em; font-weight: 700; letter-spacing: -.02em; }
-    .body { padding: .65em .85em .5em; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .body { padding: .65em .85em .5em; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; }
+    .body::-webkit-scrollbar { width: 6px; } .body::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
     .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: .5em; flex-shrink: 0; }
     .tile { background: #111827; border-radius: 8px; padding: .5em .6em; min-width: 0; }
     .tile small { display: block; color: #a3a9b5; font-size: .8em; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -164,7 +176,7 @@
     .section > small { display: flex; justify-content: space-between; color: #a3a9b5; font-weight: 600; font-size: .8em; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25em; flex-shrink: 0; }
     .list { display: flex; flex-direction: column; gap: .15em; overflow-y: auto; min-height: 0; }
     .section.vips .list { max-height: 9.5em; }
-    .section.grow .list { flex: 1; }
+    .section.grow .list { flex: 1; min-height: 4.5em; }
     .list::-webkit-scrollbar { width: 6px; } .list::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
     .row { display: flex; align-items: center; gap: .5em; padding: .25em .4em; border-radius: 6px; cursor: pointer; min-width: 0; flex-shrink: 0; }
     .row:hover { background: #1f2937; }
@@ -186,6 +198,20 @@
     .toast b { display: block; font-size: 1.08em; }
     .toast span { color: #e5e7eb; font-size: .92em; }
     @keyframes rise { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+    .scan { margin-bottom: .65em; background: #14532d; border: 1px solid #166534; border-radius: 10px; padding: .6em .8em; flex-shrink: 0; }
+    .scan .k { display: flex; justify-content: space-between; align-items: baseline; gap: .5em; color: #86efac; font-size: .8em; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    .scan .k .age { font-weight: 500; text-transform: none; letter-spacing: 0; color: #4ade80; }
+    .scan .top { display: flex; align-items: flex-start; gap: .6em; margin-top: .15em; }
+    .scan .name { font-size: 1.35em; font-weight: 800; line-height: 1.15; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .scan .meta { color: #bbf7d0; font-size: .9em; margin-top: .1em; }
+    .scan .rec { text-align: right; flex-shrink: 0; }
+    .scan .rec small { display: block; color: #86efac; font-size: .75em; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+    .scan .rec b { display: block; font-size: 1.9em; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+    .scan .rec i { display: block; font-style: normal; color: #bbf7d0; font-size: .8em; margin-top: .15em; }
+    .scan .say { margin-top: .5em; background: #fcd34d; color: #111827; border-left: .4em solid #f59e0b; border-radius: 8px; padding: .5em .7em; }
+    .scan .say small { display: block; color: #92400e; font-size: .72em; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+    .scan .say div { font-size: 1.15em; font-weight: 600; line-height: 1.3; white-space: pre-wrap; }
+    .scan .none { margin-top: .4em; color: #86efac; font-size: .85em; }
     .panel.collapsed .body { display: none; }
     .muted .dot { animation: none; background: #6b7280; box-shadow: none; }
     /* Narrow = fewer than ~20 characters across at the current text size:
@@ -216,6 +242,7 @@
           <button id="collapse" title="Collapse">–</button>
         </div>
         <div class="body">
+          <div class="scan" id="scan" hidden></div>
           <div class="tiles">
             <div class="tile"><small>Gross</small><b id="gross">—</b></div>
             <div class="tile"><small>Orders</small><b id="orders">—</b></div>
@@ -235,7 +262,7 @@
         </div>
       </div>
       </div>`;
-    for (const id of ['wrap', 'panel', 'toasts', 'head', 'viewers', 'peak', 'smaller', 'bigger', 'mute', 'collapse', 'gross', 'orders', 'pace',
+    for (const id of ['wrap', 'panel', 'toasts', 'head', 'scan', 'viewers', 'peak', 'smaller', 'bigger', 'mute', 'collapse', 'gross', 'orders', 'pace',
       'lastSale', 'lot', 'vipCount', 'vips', 'entries', 'feed', 'foot', 'brand']) {
       el[id] = root.getElementById(id);
     }
@@ -275,16 +302,27 @@
   }
 
   // The native CSS resize handle sets inline width/height on the panel;
-  // watch it, rescale, keep it on-screen, and remember the size.
+  // watch it, rescale, keep it on-screen, and remember the size. Only a
+  // real corner drag counts as a resize: content growing (the scan card
+  // appearing, a longer feed) must NOT pin the height, or it clips.
   function wireResize() {
     let saveTimer = null;
     let last = { w: 0, h: 0 };
+    let dragging = false;
+    el.panel.addEventListener('pointerdown', (e) => {
+      // Anywhere in the panel's bottom-right corner region = the grip.
+      const r = el.panel.getBoundingClientRect();
+      dragging = e.clientX > r.right - 24 && e.clientY > r.bottom - 24;
+    });
+    document.addEventListener('pointerup', () => { dragging = false; }, true);
+    document.addEventListener('pointercancel', () => { dragging = false; }, true);
     const ro = new ResizeObserver(() => {
       if (!host || host.hidden || prefs.collapsed) return;
       const w = el.panel.offsetWidth, h = el.panel.offsetHeight;
       if (w === last.w && h === last.h) return;
       last = { w, h };
       applyScale();
+      if (!dragging) return;          // content reflow, not the operator
       prefs.w = w; prefs.h = h;
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => { applyPrefs(); savePrefs(); }, 250);
@@ -411,6 +449,45 @@
     if (settings?.liveDesktopNotify) sendBg({ type: 'notify', title, message: line, silent: sound });
   }
 
+  // ── last scan (from the web app's scan screen) ───────────────────────
+  async function pollScan() {
+    if (scanPolling || !host || host.hidden) return;
+    if (!settings?.apiBase || !settings?.userId) return;
+    scanPolling = true;
+    try {
+      const resp = await sendBg({ type: 'api:liveScanGet', settings });
+      if (resp?.ok) {
+        const next = resp.scan && resp.scan.sku ? resp.scan : null;
+        const changed = (next?.at || null) !== (scan?.at || null) || (next?.sku || null) !== (scan?.sku || null);
+        scan = next;
+        if (changed) renderScan();
+      }
+    } catch { /* keep the last one */ }
+    finally { scanPolling = false; }
+  }
+
+  function renderScan() {
+    if (!host) return;
+    const age = scan?.at ? Date.now() - new Date(scan.at).getTime() : Infinity;
+    if (!scan || !(age < SCAN_STALE_MS)) { el.scan.hidden = true; el.scan.innerHTML = ''; return; }
+    const list = Number.isFinite(Number(scan.listPrice)) && Number(scan.listPrice) > 0 ? Number(scan.listPrice) : null;
+    const typed = Number.isFinite(Number(scan.price)) && Number(scan.price) > 0 ? Number(scan.price) : null;
+    const rec = list ?? typed;
+    const sub = list == null ? (typed != null ? 'no list price · typed' : 'no price') : typed != null && typed !== list ? `typed ${fmtMoney(typed)}` : 'listed at this';
+    const modeLabel = { auction: 'Auction', buy_now: 'Buy Now', give_away: 'Giveaway' }[scan.mode] || scan.mode || '';
+    el.scan.innerHTML = `
+      <div class="k"><span>Just scanned${scan.forced ? ' · forced' : ''}</span><span class="age">${esc(fmtAgo(scan.at))} ago</span></div>
+      <div class="top">
+        <div style="flex:1;min-width:0">
+          <div class="name">${esc(scan.name || scan.sku)}</div>
+          <div class="meta">${esc([scan.variety, scan.sku, modeLabel].filter(Boolean).join(' · '))}</div>
+        </div>
+        <div class="rec"><small>Recommended</small><b>${rec != null ? esc(fmtMoney(rec)) : '—'}</b><i>${esc(sub)}</i></div>
+      </div>
+      ${scan.sellNote ? `<div class="say"><small>Say this</small><div>${esc(scan.sellNote)}</div></div>` : '<div class="none">No sell note for this species</div>'}`;
+    el.scan.hidden = false;
+  }
+
   // ── tick handling ────────────────────────────────────────────────────
   function newShow(show) {
     showId = show.showId;
@@ -444,6 +521,7 @@
     document.removeEventListener('folia:live-tick', onTick);
     document.removeEventListener('folia:live-dead', onDead);
     if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
+    if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     host?.remove(); host = null;
     if (window.__foliaLiveOverlay === overlaySelf) delete window.__foliaLiveOverlay;
@@ -457,7 +535,7 @@
       return;
     }
     lastTickAt = Date.now();
-    if (host.hidden) { host.hidden = false; applyPrefs(); }
+    if (host.hidden) { host.hidden = false; applyPrefs(); pollScan(); }
     // A new show seeds the feed from the show state (which already holds
     // this pass's events) and skips alerts; later passes ingest only what
     // the scraper first saw on that pass.
@@ -587,7 +665,8 @@
     document.addEventListener('folia:live-tick', onTick);
     document.addEventListener('folia:live-dead', onDead);
     // Relative clocks ("last sale 4m ago", history age) drift without a tick.
-    clockTimer = setInterval(() => { if (last && host && !host.hidden) scheduleRender(); }, 5000);
+    clockTimer = setInterval(() => { if (last && host && !host.hidden) { scheduleRender(); renderScan(); } }, 5000);
+    scanTimer = setInterval(pollScan, SCAN_POLL_MS);
     try {
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'sync') return;
