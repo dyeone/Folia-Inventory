@@ -127,6 +127,7 @@ export default wrap(async (req, res) => {
 // ----------------------------------------------------------------------------
 
 const LIVE_SHOW_NS = 'live_show:';
+const LIVE_SCAN_NS = 'live_scan:';   // last scan from the scan screen, for the overlay
 const LIVE_SHOW_MAX_SOLD = 800;
 const LIVE_SHOW_MAX_BIDS = 80;
 const LIVE_SHOW_MAX_RAW = 4000;
@@ -212,6 +213,43 @@ async function handleLiveShow(action, req, res, user, brandId) {
         .from('app_settings').select('data, "updatedAt"').eq('id', id).maybeSingle();
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ show: data?.data || null, updatedAt: data?.updatedAt || null });
+    }
+    case 'live-show-scan-save': {
+      // The scan screen publishes each scan here so the on-page overlay on
+      // the Palmstreet tab can show the streamer what was just scanned — the
+      // list price as the recommendation and the sell note — without them
+      // looking at the scanning window. One brand-scoped row, last scan wins.
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      const scan = req.body?.scan;
+      if (!scan || typeof scan !== 'object' || !scan.sku) {
+        const e = new Error('scan (object with sku) required'); e.status = 400; throw e;
+      }
+      const str = (v, n) => (v == null ? null : String(v).slice(0, n));
+      const num = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
+      const clean = {
+        at: typeof scan.at === 'string' ? scan.at.slice(0, 40) : new Date().toISOString(),
+        sku: str(scan.sku, 40),
+        name: str(scan.name, 200),
+        variety: str(scan.variety, 120),
+        mode: str(scan.mode, 20),
+        price: num(scan.price),
+        listPrice: num(scan.listPrice),
+        sellNote: str(scan.sellNote, 1000),
+        forced: !!scan.forced,
+        by: user.displayName || user.id,
+      };
+      const { error } = await supabase
+        .from('app_settings')
+        .upsert({ id: LIVE_SCAN_NS + brandId, data: clean, updatedAt: new Date().toISOString(), updatedBy: user.id });
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ ok: true });
+    }
+    case 'live-show-scan-get': {
+      if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+      const { data, error } = await supabase
+        .from('app_settings').select('data, "updatedAt"').eq('id', LIVE_SCAN_NS + brandId).maybeSingle();
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      return res.status(200).json({ scan: data?.data || null, updatedAt: data?.updatedAt || null });
     }
     case 'live-show-buyers': {
       // Lifetime buyer tiers for the live overlay's VIP alerts. Any active

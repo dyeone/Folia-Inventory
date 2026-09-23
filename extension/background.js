@@ -35,6 +35,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           await post(settings, '/api/settings', { action: 'live-show-save', show: msg.show });
           sendResponse({ ok: true });
           break;
+        case 'api:liveScanGet':
+          // Last scan from the web app's scan screen, for the overlay's
+          // "just scanned" card (recommended price + sell note).
+          resp = await get(settings, '/api/settings?action=live-show-scan-get');
+          sendResponse({ ok: true, scan: resp.scan || null, updatedAt: resp.updatedAt || null });
+          break;
         case 'api:liveShowBuyers':
           // Lifetime buyer tiers (VIP / repeat) for the live overlay's alerts.
           resp = await get(settings, '/api/settings?action=live-show-buyers');

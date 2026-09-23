@@ -81,6 +81,10 @@ export const api = {
   // an explicit brandId in the path wins over the session brand in request().
   getItemsForBrand: (brandId) =>
     request(`/items${brandId ? `?brandId=${encodeURIComponent(brandId)}` : ''}`).then(r => r.items),
+  // Last scan from Live Scan Mode, read by the Chrome extension's on-page
+  // overlay so the streamer sees the recommended price + sell note on the
+  // Palmstreet tab. Fire-and-forget from the scan screen.
+  liveScanSave: (scan) => request('/settings', { method: 'POST', body: { action: 'live-show-scan-save', scan } }),
   // Live show state written by the Chrome extension's dashboard scraper.
   getLiveShow: (brandId) =>
     request(`/settings?action=live-show-get${brandId ? `&brandId=${encodeURIComponent(brandId)}` : ''}`),
