@@ -226,7 +226,9 @@ function publicUrlFor(path) {
 // the export. Only manage imageUrl when it's empty or already one of this
 // item's photo URLs — a manually-entered URL is left untouched. Returns the
 // resulting imageUrl.
-async function syncItemPrimaryImage(itemId, brandId) {
+// `force` (bulk photo assign): the operator just shot this plant, so the new
+// primary wins even over a hand-pasted external imageUrl.
+async function syncItemPrimaryImage(itemId, brandId, { force = false } = {}) {
   const { data: rows } = await supabase
     .from('item_photos')
     .select('"storagePath"')
@@ -241,7 +243,7 @@ async function syncItemPrimaryImage(itemId, brandId) {
   const cur = it?.imageUrl || '';
   const managedPrefix = publicUrlFor(`items/${itemId}/`) || '';
   const isManaged = !cur || (managedPrefix && cur.startsWith(managedPrefix));
-  if (isManaged && cur !== (primaryUrl || '')) {
+  if ((force || isManaged) && cur !== (primaryUrl || '')) {
     await supabase.from('inventory_items').update({ imageUrl: primaryUrl }).eq('id', itemId).eq('brandId', brandId);
     return primaryUrl;
   }
@@ -271,7 +273,11 @@ async function listItemPhotos(req, res, brandId) {
 }
 
 async function uploadItem(req, res, user, brandId) {
-  const { itemId, fileBase64, contentType, filename } = req.body || {};
+  // `primary`: make this the plant's MAIN photo (bulk "Assign photos" from
+  // the Pre Sale tab — a freshly shot photo should replace whatever was
+  // uploaded before). Existing photos shift down and stay in the gallery.
+  // Default (false) appends, as the item editor's gallery expects.
+  const { itemId, fileBase64, contentType, filename, primary = false } = req.body || {};
   if (!itemId)      { const e = new Error('itemId required');      e.status = 400; throw e; }
   if (!fileBase64)  { const e = new Error('fileBase64 required');  e.status = 400; throw e; }
   if (!contentType) { const e = new Error('contentType required'); e.status = 400; throw e; }
@@ -283,13 +289,22 @@ async function uploadItem(req, res, user, brandId) {
 
   const { data: existing, error: exErr } = await supabase
     .from('item_photos')
-    .select('"sortOrder"')
+    .select('id, "sortOrder"')
     .eq('itemId', itemId)
     .eq('brandId', brandId)
-    .order('sortOrder', { ascending: false })
-    .limit(1);
+    .order('sortOrder', { ascending: true });
   if (exErr) { const e = new Error(exErr.message); e.status = 500; throw e; }
-  const nextSort = existing && existing[0] ? existing[0].sortOrder + 1 : 0;
+  const prior = existing || [];
+  let nextSort = prior.length ? prior[prior.length - 1].sortOrder + 1 : 0;
+  if (primary && prior.length) {
+    // Shift everything down one so the new photo takes slot 0 (= primary).
+    for (let i = prior.length - 1; i >= 0; i--) {
+      const { error } = await supabase
+        .from('item_photos').update({ sortOrder: i + 1 }).eq('id', prior[i].id).eq('brandId', brandId);
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    }
+    nextSort = 0;
+  }
 
   const buf = Buffer.from(String(fileBase64), 'base64');
   if (buf.length === 0) { const e = new Error('Empty file'); e.status = 400; throw e; }
@@ -325,9 +340,9 @@ async function uploadItem(req, res, user, brandId) {
     .from(STORAGE_BUCKET)
     .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
 
-  const itemImageUrl = await syncItemPrimaryImage(itemId, brandId);
+  const itemImageUrl = await syncItemPrimaryImage(itemId, brandId, { force: !!primary });
 
-  return res.status(200).json({ photo: row, signedUrl: signed?.signedUrl || null, itemImageUrl });
+  return res.status(200).json({ photo: row, signedUrl: signed?.signedUrl || null, itemImageUrl, primary: !!primary });
 }
 
 async function removeItem(req, res, brandId) {

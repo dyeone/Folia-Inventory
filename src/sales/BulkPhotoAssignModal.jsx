@@ -7,7 +7,10 @@ import { api } from '../api.js';
 // order. Each photo maps to one listing by position: photo #k → lineup plant #k.
 // A "Reverse" toggle flips the whole batch (for when you shot the row
 // back-to-front), and any single photo can be dragged to a different plant.
-// On confirm, each photo uploads to its plant via the existing item-photo API.
+// On confirm, each photo uploads to its plant via the existing item-photo API
+// as the plant's PRIMARY photo: a plant photographed again for this sale
+// should show the fresh shot, not whatever was uploaded before (older photos
+// shift down and stay in the plant's gallery).
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -62,6 +65,7 @@ export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, show
   });
 
   const pairedCount = orderedItems.filter((_, i) => photos[i]).length;
+  const replacingCount = orderedItems.filter((it, i) => photos[i] && it?.imageUrl).length;
   const extraPhotos = Math.max(0, photos.length - orderedItems.length);
   const rowCount = Math.max(orderedItems.length, photos.length);
 
@@ -79,6 +83,7 @@ export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, show
           fileBase64,
           contentType: photo.file.type || 'image/jpeg',
           filename: photo.file.name,
+          primary: true,
         });
       } catch {
         failed += 1;
@@ -100,6 +105,7 @@ export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, show
           <Images className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
           Each photo maps to one listing in lineup order (photo #1 → plant #1). Use <b className="mx-1 font-semibold">Reverse</b>
           if you shot the row back-to-front, or drag a photo onto a different plant.
+          A plant that already has a photo gets the new one as its main photo; the old one stays in its gallery.
         </div>
 
         {/* Toolbar */}
@@ -173,6 +179,12 @@ export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, show
                       <div className="text-xs text-gray-400 italic">no listing at this position</div>
                     )}
                   </div>
+                  {it?.imageUrl && (
+                    <div className="flex items-center gap-1.5 flex-shrink-0" title={photo ? 'Current photo — will be replaced as the main photo' : 'Current photo'}>
+                      <img src={it.imageUrl} alt="" className={`w-10 h-10 object-cover rounded-md border border-gray-200 ${photo ? 'opacity-50' : ''}`} />
+                      <span className={`text-[10px] font-semibold uppercase tracking-wide ${photo ? 'text-amber-700' : 'text-gray-400'}`}>{photo ? 'replacing' : 'has photo'}</span>
+                    </div>
+                  )}
                   {photo ? (
                     <div
                       draggable={!uploading}
@@ -204,7 +216,7 @@ export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, show
         {/* Footer */}
         <div className="flex items-center justify-between gap-2 pt-1">
           <span className="text-sm text-gray-500">
-            {uploading ? `Uploading ${progress}/${pairedCount}…` : `${pairedCount} photo${pairedCount === 1 ? '' : 's'} will be assigned`}
+            {uploading ? `Uploading ${progress}/${pairedCount}…` : `${pairedCount} photo${pairedCount === 1 ? '' : 's'} will be assigned${replacingCount ? ` · ${replacingCount} replacing a current photo` : ''}`}
           </span>
           <div className="flex gap-2">
             <button onClick={onClose} disabled={uploading} className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-40">
