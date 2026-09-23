@@ -33,6 +33,19 @@ const PRICE_COST_MULTIPLIER = 2.5;
 const DEFAULT_PRICE = 5;
 const MODE_LABEL = Object.fromEntries(MODES.map(m => [m.key, m.label]));
 
+// Text size for the whole scan screen (A−/A+ in the header). The streamer
+// reads this from a few feet away and used to browser-zoom every live;
+// CSS `zoom` on the panel's content scales everything in one step and the
+// choice sticks per browser.
+const TEXT_SCALES = [1, 1.25, 1.5, 1.75, 2];
+const TEXT_SCALE_KEY = 'liveScan.textScale';
+function loadTextScale() {
+  try {
+    const v = parseFloat(localStorage.getItem(TEXT_SCALE_KEY));
+    return TEXT_SCALES.includes(v) ? v : 1.25;
+  } catch { return 1.25; }
+}
+
 // Mirror the bridge's per-mode amount so each row shows the figure that
 // actually gets typed. All three modes now carry the resolved 2.5×-cost
 // price — the auction floor included (see the payload note in pushItem).
@@ -87,6 +100,13 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   const [error, setError] = useState('');
   const [forcePush, setForcePush] = useState(null); // { sku, item } when sold-block triggers
   const [bridgeStatus, setBridgeStatus] = useState({ online: false, queued: 0 });
+  const [textScale, setTextScale] = useState(loadTextScale);
+  const stepText = (dir) => {
+    const i = TEXT_SCALES.indexOf(textScale);
+    const next = TEXT_SCALES[Math.max(0, Math.min(TEXT_SCALES.length - 1, (i < 0 ? 1 : i) + dir))];
+    setTextScale(next);
+    try { localStorage.setItem(TEXT_SCALE_KEY, String(next)); } catch { /* private mode */ }
+  };
   const inputRef = useRef(null);
 
   // Refocus the scanner input on every render unless the operator is
@@ -240,7 +260,8 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-stretch sm:items-center justify-center p-0 sm:p-4">
-      <div className="bg-white w-full max-w-3xl h-full sm:h-[92vh] sm:rounded-2xl flex flex-col">
+      <div className="bg-white w-full max-w-3xl h-full sm:h-[92vh] sm:rounded-2xl flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col" style={{ zoom: textScale }}>
 
         <div className="border-b border-gray-200 px-5 py-4 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -248,8 +269,8 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
               <Radio className="w-5 h-5 text-red-600" />
             </div>
             <div className="min-w-0">
-              <h3 className="font-semibold text-gray-900 text-lg flex items-center gap-2">
-                Live Scan Mode
+              <h3 className="font-semibold text-gray-900 text-lg flex items-center gap-2 flex-wrap">
+                <span className="whitespace-nowrap">Live Scan Mode</span>
                 <BridgeBadge status={bridgeStatus} />
                 <FollowerTicker brandId={activeBrand} isAdmin={isAdmin} showToast={showToast} />
               </h3>
@@ -274,9 +295,18 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
               </p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg" aria-label="Exit live mode">
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <div className="flex items-center rounded-lg border border-gray-200 bg-gray-50 mr-1" role="group" aria-label="Text size">
+              <button type="button" onClick={() => stepText(-1)} disabled={textScale === TEXT_SCALES[0]}
+                className="px-2 py-1.5 text-sm font-bold text-gray-700 hover:bg-gray-200 disabled:opacity-30 rounded-l-lg" title="Smaller text">A−</button>
+              <span className="px-1 text-[11px] tabular-nums text-gray-500 select-none" title="Text size">{Math.round(textScale * 100)}%</span>
+              <button type="button" onClick={() => stepText(1)} disabled={textScale === TEXT_SCALES[TEXT_SCALES.length - 1]}
+                className="px-2 py-1.5 text-sm font-bold text-gray-700 hover:bg-gray-200 disabled:opacity-30 rounded-r-lg" title="Bigger text">A+</button>
+            </div>
+            <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg" aria-label="Exit live mode">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         <div className="px-5 pt-4 flex-shrink-0">
@@ -357,6 +387,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
           )}
         </div>
 
+      </div>
         {forcePush && (
           <ForcePushDialog
             sku={forcePush.sku}
@@ -376,13 +407,13 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
 function BridgeBadge({ status }) {
   if (status.online) {
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+      <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 whitespace-nowrap">
         <Wifi className="w-3 h-3" /> Bridge live
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+    <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 whitespace-nowrap">
       <WifiOff className="w-3 h-3" /> Offline
     </span>
   );
@@ -415,8 +446,9 @@ function NowScanningCard({ entry }) {
         </div>
       </div>
       {sellNote ? (
-        <div className="mt-3 text-base sm:text-lg leading-snug bg-emerald-800/60 rounded-lg px-3 py-2 whitespace-pre-wrap">
-          {sellNote}
+        <div className="mt-3 rounded-lg bg-amber-300 text-gray-900 border-l-8 border-amber-500 px-4 py-3 shadow-inner">
+          <div className="text-[11px] font-bold uppercase tracking-wider text-amber-900/80 mb-0.5">Say this</div>
+          <div className="text-xl sm:text-2xl font-semibold leading-snug whitespace-pre-wrap">{sellNote}</div>
         </div>
       ) : (
         <div className="mt-3 text-xs text-emerald-200">No sell note — add one on the wholesale order line or in the catalog.</div>

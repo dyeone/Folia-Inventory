@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Folia Label Helper",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Drive Palmstreet's USPS label flow from a Folia work queue. Reads weight from a USB scale, captures label + slip PDFs, syncs tracking back. Watches the seller live dashboard and logs the whole show (sold lots, prices, bids) for the Mac app's Show monitor. During a live, shows the streamer an on-page overlay: viewers, sales pace, the lot on the block, and VIP buyers (from shipping history) as they join.",
   "permissions": [
     "storage",

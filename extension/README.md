@@ -169,7 +169,8 @@ While a live is running, the extension draws a small panel titled **BAE
 live** on the Palmstreet **seller dashboard** tab (the one OBS streams from).
 Drag its header to move it and drag its bottom-right corner to resize it —
 the text scales with the width, so pull it wider to read it from across the
-room. Position and size are remembered. It reads
+room — and **A−/A+** in the header bump the text size on top of that.
+Position, size, and text size are remembered. It reads
 the same page scrape that feeds the Show board and the Mac app, so it costs
 nothing extra:
 
