@@ -75,6 +75,7 @@ export default wrap(async (req, res) => {
     const action = req.query?.action;
     if (action === 'get') return getOne(req, res, brandId, isAdminUser);
     if (action === 'received-items') return receivedItemsExport(req, res, brandId);
+    if (action === 'sold-progress') return soldProgress(req, res, brandId);
     return list(req, res, brandId, isAdminUser); // default GET
   }
 
@@ -258,6 +259,41 @@ async function receivedItemsExport(req, res, brandId) {
     rows,
     missing: ids.length - items.length,   // received-audit rows whose item is gone (hard-deleted)
   });
+}
+
+// Per-PO sell-through: of the plants each order has received, how many have
+// sold. One call for every order of the brand (the consultant's list shows
+// a percentage per card). Counts only — no prices, no costs.
+async function soldProgress(req, res, brandId) {
+  const page = async (build) => {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await build().range(from, from + 999);
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      out.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    return out;
+  };
+  const lines = await page(() => supabase.from('purchase_order_lines').select('id, "purchaseOrderId"').eq('brandId', brandId));
+  const poByLine = new Map(lines.map(l => [l.id, l.purchaseOrderId]));
+  const received = await page(() => supabase.from('purchase_order_received_items').select('"lineId", "inventoryItemId"').eq('brandId', brandId));
+  const poByItem = new Map();
+  for (const r of received) { const po = poByLine.get(r.lineId); if (po) poByItem.set(r.inventoryItemId, po); }
+  const ids = [...poByItem.keys()];
+  const progress = {};
+  const bump = (po, k) => { const t = progress[po] || (progress[po] = { received: 0, sold: 0 }); t[k] += 1; };
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await supabase
+      .from('inventory_items').select('id, status').eq('brandId', brandId).in('id', ids.slice(i, i + 200));
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    for (const it of data || []) {
+      const po = poByItem.get(it.id);
+      bump(po, 'received');
+      if (it.status === 'sold' || it.status === 'shipped' || it.status === 'delivered') bump(po, 'sold');
+    }
+  }
+  return res.status(200).json({ progress });
 }
 
 // ─── header writes ──────────────────────────────────────────────────────────

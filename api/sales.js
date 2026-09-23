@@ -37,6 +37,52 @@ export default wrap(async (req, res) => {
         return res.status(200).json({ evaluation: data?.result ?? null });
       }
       // Which sale events have a saved evaluation (ids only — cheap, no blobs).
+      // Consultant-safe sales reads: what sold and for how much, never what it
+      // cost. `sold-summary` = per-sale sold count / revenue / avg for the
+      // sales list; `sold-items` = one sale's sold plants (lot, name, price,
+      // list price) for its analysis board. Any brand member.
+      if (action === 'sold-summary' || action === 'sold-items') {
+        const saleId = action === 'sold-items' ? String(req.query?.saleId || '') : null;
+        if (action === 'sold-items' && !saleId) { const e = new Error('saleId required'); e.status = 400; throw e; }
+        const rows = [];
+        for (let from = 0; ; from += 1000) {
+          let q = supabase
+            .from('inventory_items')
+            .select('id, sku, name, variety, "speciesId", type, status, "salePrice", "listingPrice", "lotNumber", "soldAt", "saleId", quantity')
+            .eq('brandId', brandId)
+            .is('deletedAt', null)
+            .in('status', ['sold', 'shipped', 'delivered'])
+            .not('saleId', 'is', null);
+          if (saleId) q = q.eq('saleId', saleId);
+          const { data, error } = await q.range(from, from + 999);
+          if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+          rows.push(...(data || []));
+          if (!data || data.length < 1000) break;
+        }
+        const price = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : null; };
+        if (saleId) {
+          const items = rows.map(it => ({
+            id: it.id, sku: it.sku, name: it.name, variety: it.variety, speciesId: it.speciesId, type: it.type,
+            status: it.status, salePrice: price(it.salePrice), listPrice: price(it.listingPrice),
+            lotNumber: it.lotNumber || null, soldAt: it.soldAt || null, quantity: Math.max(1, parseInt(it.quantity, 10) || 1),
+          }));
+          items.sort((a, b) => (parseInt(a.lotNumber, 10) || 999999) - (parseInt(b.lotNumber, 10) || 999999) || String(a.sku).localeCompare(String(b.sku)));
+          return res.status(200).json({ items });
+        }
+        const summary = {};
+        for (const it of rows) {
+          const q = Math.max(1, parseInt(it.quantity, 10) || 1);
+          const p = price(it.salePrice);
+          const t = summary[it.saleId] || (summary[it.saleId] = { sold: 0, revenue: 0, priced: 0 });
+          t.sold += q;
+          if (p != null) { t.revenue += p * q; t.priced += q; }
+        }
+        for (const k of Object.keys(summary)) {
+          const t = summary[k];
+          summary[k] = { sold: t.sold, revenue: Math.round(t.revenue * 100) / 100, avgSalePrice: t.priced ? Math.round((t.revenue / t.priced) * 100) / 100 : null };
+        }
+        return res.status(200).json({ summary });
+      }
       if (action === 'evalIds') {
         const { data, error } = await supabase.from('sale_evaluations').select('saleId').eq('brandId', brandId);
         if (error) {
