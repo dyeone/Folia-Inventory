@@ -163,6 +163,10 @@ export const api = {
     request(`/purchase-orders?action=get&id=${encodeURIComponent(id)}`).then(r => ({
       purchaseOrder: r.purchaseOrder, lines: r.lines, receivedItems: r.receivedItems,
     })),
+  // Plants this PO has received so far, with SKU + list price (the wholesale
+  // "received items" CSV export). No cost fields — any brand member.
+  purchaseOrderReceivedItems: (id) =>
+    request(`/purchase-orders?action=received-items&id=${encodeURIComponent(id)}`),
   createPurchaseOrder: ({ supplier, shippingFee, notes, itemType, itemStatus, itemNotes } = {}) =>
     request('/purchase-orders', { method: 'POST', body: { action: 'create', supplier, shippingFee, notes, itemType, itemStatus, itemNotes } }).then(r => r.purchaseOrder),
   updatePurchaseOrderHeader: ({ id, supplier, shippingFee, notes, itemType, itemStatus, itemNotes }) =>
