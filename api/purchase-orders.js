@@ -74,6 +74,7 @@ export default wrap(async (req, res) => {
   if (req.method === 'GET') {
     const action = req.query?.action;
     if (action === 'get') return getOne(req, res, brandId, isAdminUser);
+    if (action === 'received-items') return receivedItemsExport(req, res, brandId);
     return list(req, res, brandId, isAdminUser); // default GET
   }
 
@@ -194,6 +195,68 @@ async function getOne(req, res, brandId, isAdminUser) {
     purchaseOrder: stripPoCosts(po),
     lines: (lines || []).map(stripLineCosts),
     receivedItems: received,
+  });
+}
+
+// The plants one PO has minted so far, with what the wholesale export needs:
+// SKU, plant, and the LIST price (item.listingPrice — stamped from the species
+// list price at receive, re-stamped on list-price edits, or hand-set — with
+// idealPrice as the fallback for plants minted before listingPrice was set).
+// No cost columns are selected, so any brand member can pull it. Paginated on
+// both hops: a season's PO can run past PostgREST's 1000-row page.
+async function receivedItemsExport(req, res, brandId) {
+  const po = await loadPo(req.query?.id, brandId);
+  const lines = await fetchAllPoLines(po.id, brandId, 'id, "speciesId"');
+  const lineIds = lines.map(l => l.id);
+  const received = [];
+  if (lineIds.length) {
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase
+        .from('purchase_order_received_items')
+        .select('"lineId", "inventoryItemId", "receivedAt", "receivedBy"')
+        .eq('brandId', brandId)
+        .in('lineId', lineIds)
+        .order('receivedAt')
+        .range(from, from + 999);
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      received.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+  }
+  const byItemId = new Map(received.map(r => [r.inventoryItemId, r]));
+  const items = [];
+  const ids = [...byItemId.keys()];
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .select('id, sku, name, variety, type, status, "listingPrice", "idealPrice", "lotNumber"')
+      .eq('brandId', brandId)
+      .in('id', ids.slice(i, i + 200));
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    items.push(...(data || []));
+  }
+  const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : null; };
+  const rows = items.map(it => {
+    const r = byItemId.get(it.id);
+    return {
+      sku: it.sku,
+      name: it.name,
+      variety: it.variety,
+      type: it.type,
+      status: it.status,
+      listPrice: num(it.listingPrice) ?? num(it.idealPrice),
+      lotNumber: it.lotNumber || null,
+      receivedAt: r?.receivedAt || null,
+      receivedBy: r?.receivedBy || null,
+    };
+  });
+  // SKU order: prefix, then the number — "PH-9" before "PH-10".
+  const key = (sku) => { const m = /^([A-Za-z]+)-?(\d+)/.exec(sku || ''); return m ? [m[1].toUpperCase(), parseInt(m[2], 10)] : [String(sku || ''), 0]; };
+  rows.sort((a, b) => { const [pa, na] = key(a.sku), [pb, nb] = key(b.sku); return pa < pb ? -1 : pa > pb ? 1 : na - nb; });
+  return res.status(200).json({
+    purchaseOrder: { id: po.id, supplier: po.supplier, status: po.status, createdAt: po.createdAt },
+    rows,
+    missing: ids.length - items.length,   // received-audit rows whose item is gone (hard-deleted)
   });
 }
 

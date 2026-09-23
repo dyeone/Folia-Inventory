@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Loader2, Trash2, Check, Truck, Upload, Plus, ArrowLeftRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2, Trash2, Check, Truck, Upload, Plus, ArrowLeftRight, Download } from 'lucide-react';
 import { api } from '../api.js';
 import { BRANDS, DEFAULT_BRAND, brandName } from '../brands.js';
 import { PurchaseOrderLineRow } from './PurchaseOrderLineRow.jsx';
 import { NameAutocomplete } from './NameAutocomplete.jsx';
 import { UpdateOrderModal } from './UpdateOrderModal.jsx';
+import { buildReceivedCsv, receivedCsvFilename, downloadCsv } from './receivedExport.js';
 
 const STATUS_CLASS = {
   draft:    'bg-gray-300',
@@ -92,6 +93,23 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
     }
   };
 
+  // "Received items" CSV — every plant this order has minted so far, with
+  // SKU + list price. Server-side rows (the card doesn't hold items).
+  const [exporting, setExporting] = useState(false);
+  const exportReceived = async () => {
+    setExporting(true);
+    try {
+      const r = await api.purchaseOrderReceivedItems(po.id);
+      const rows = r?.rows || [];
+      if (rows.length === 0) { showToast?.('Nothing received on this order yet'); return; }
+      downloadCsv(buildReceivedCsv(rows), receivedCsvFilename(r.purchaseOrder || po));
+      const noPrice = rows.filter(x => x.listPrice == null).length;
+      showToast?.(`Exported ${rows.length} received item${rows.length === 1 ? '' : 's'}${noPrice ? ` · ${noPrice} without a list price` : ''}${r.missing ? ` · ${r.missing} deleted plant${r.missing === 1 ? '' : 's'} skipped` : ''}`);
+    } catch (e) {
+      showToast?.(e.message || 'Export failed', 'error');
+    } finally { setExporting(false); }
+  };
+
   const markAllReceived = async () => {
     if (!lines) return;
     const targets = lines.filter(l => l.quantityReceived < l.quantityOrdered);
@@ -134,6 +152,7 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
   };
 
   const isDraft = po.status === 'draft';
+  const poReceivedCount = (lines || []).reduce((sum, l) => sum + (l.quantityReceived || 0), 0);
 
   // Species rows carry only varietyId — look up the NAME so a line reads
   // "Monstera · Thai Con" instead of a dangling "· Thai Con".
@@ -297,6 +316,25 @@ export function PurchaseOrderCard({ po, species, varieties, speciesById, isAdmin
               onAdded={refreshLines}
               onSpeciesChanged={onSpeciesChanged}
             />
+          )}
+
+          {/* Received items export — ordered or received orders with anything minted */}
+          {!isDraft && lines && poReceivedCount > 0 && (
+            <div className="px-4 py-2.5 border-t border-gray-100 flex items-center gap-3 flex-wrap bg-gray-50/60">
+              <span className="text-xs text-gray-600">
+                <span className="font-semibold text-gray-900">{poReceivedCount}</span> received
+              </span>
+              <button
+                type="button"
+                onClick={exportReceived}
+                disabled={exporting}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-gray-300 text-gray-800 rounded-lg hover:bg-white disabled:opacity-60"
+                title="Download a CSV of every plant received on this order: SKU, plant, variety, list price, status, lot, received date"
+              >
+                {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                Export received (SKU + list price)
+              </button>
+            </div>
           )}
 
           {/* Footer actions */}
