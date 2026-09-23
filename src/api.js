@@ -220,8 +220,9 @@ export const api = {
   // function; rows live in item_photos. See migration 0019.
   listItemPhotos: (itemId) =>
     request(`/species-photos?action=list&target=item&itemId=${encodeURIComponent(itemId)}`).then(r => r.photos),
-  uploadItemPhoto: ({ itemId, fileBase64, contentType, filename }) =>
-    request('/species-photos', { method: 'POST', body: { action: 'upload', target: 'item', itemId, fileBase64, contentType, filename } }),
+  // primary: make this the plant's main photo (bulk assign); default appends.
+  uploadItemPhoto: ({ itemId, fileBase64, contentType, filename, primary = false }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'upload', target: 'item', itemId, fileBase64, contentType, filename, primary } }),
   deleteItemPhoto: (id) =>
     request('/species-photos', { method: 'POST', body: { action: 'delete', target: 'item', id } }),
 
