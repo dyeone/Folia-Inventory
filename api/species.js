@@ -135,11 +135,14 @@ export default wrap(async (req, res) => {
       // Packer logins fetch the catalog only for line NAMES on the
       // receiving pane — strip wholesale pricing so bench clients can't
       // reconstruct the costs the purchase-orders API hides from them.
+      // Consultants SET the list price (idealSellingPrice) and sell note but
+      // never see what a plant cost either.
       const stripForPacker = user.role === 'packer';
+      const stripCost = stripForPacker || user.role === 'consultant';
       const out = (species || []).map(s => {
-        const row = stripForPacker
-          ? (({ wholesalePrice, idealSellingPrice, ...rest }) => rest)(s)
-          : s;
+        let row = s;
+        if (stripForPacker) row = (({ wholesalePrice, idealSellingPrice, ...rest }) => rest)(row);
+        else if (stripCost) row = (({ wholesalePrice, ...rest }) => rest)(row);
         return { ...row, photos: photosBySpecies.get(s.id) || [] };
       });
       return res.status(200).json({ species: out });

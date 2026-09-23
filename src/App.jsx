@@ -57,6 +57,7 @@ const SellerSettlementModal = lazyNamed(() => import('./sales/SellerSettlementMo
 const LabelSheet = lazyNamed(() => import('./labels/LabelSheet.jsx'), 'LabelSheet');
 const BoxLabelSheet = lazyNamed(() => import('./labels/BoxLabelSheet.jsx'), 'BoxLabelSheet');
 const PackerView = lazyNamed(() => import('./packing/PackerView.jsx'), 'PackerView');
+const ConsultantView = lazyNamed(() => import('./consult/ConsultantView.jsx'), 'ConsultantView');
 const ShippingSettingsModal = lazyNamed(() => import('./packing/ShippingSettingsModal.jsx'), 'ShippingSettingsModal');
 
 // Lightweight fallback for Suspense boundaries — modals and tab transitions
@@ -246,12 +247,20 @@ function InventorySystem() {
   // bulky useState/useEffect chain even runs.
   const { currentUser } = useContext(AuthContext);
   if (currentUser.role === 'packer') return <PackerRoute />;
+  // Consultants likewise: a mobile-only pricing screen over the wholesale
+  // orders (list price + seller note per species), nothing else.
+  if (currentUser.role === 'consultant') return <ConsultantRoute />;
   return <StaffOrAdminInventory />;
 }
 
 function PackerRoute() {
   const { logout } = useContext(AuthContext);
   return <PackerView onLogout={logout} />;
+}
+
+function ConsultantRoute() {
+  const { logout } = useContext(AuthContext);
+  return <ConsultantView onLogout={logout} />;
 }
 
 function StaffOrAdminInventory() {
