@@ -12,6 +12,10 @@ async function sanitizeBrandIds(input) {
   return arr.length ? arr : ['bae-gin'];
 }
 
+// consultant (migration 0045): prices wholesale orders from a mobile-only
+// screen — list price + seller note per species; no inventory/sales/costs.
+const ROLES = ['admin', 'staff', 'packer', 'consultant'];
+
 export default wrap(async (req, res) => {
   switch (req.method) {
     case 'GET': {
@@ -34,8 +38,8 @@ export default wrap(async (req, res) => {
       if (password.length < 6) {
         const e = new Error('Password must be at least 6 characters'); e.status = 400; throw e;
       }
-      if (!['admin', 'staff', 'packer'].includes(role)) {
-        const e = new Error('Role must be admin, staff, or packer'); e.status = 400; throw e;
+      if (!ROLES.includes(role)) {
+        const e = new Error(`Role must be one of ${ROLES.join(', ')}`); e.status = 400; throw e;
       }
 
       const normalized = username.trim().toLowerCase();
@@ -67,8 +71,8 @@ export default wrap(async (req, res) => {
       const update = {};
       if (patch && typeof patch === 'object') {
         if ('role' in patch) {
-          if (!['admin', 'staff', 'packer'].includes(patch.role)) {
-            const e = new Error('Role must be admin, staff, or packer'); e.status = 400; throw e;
+          if (!ROLES.includes(patch.role)) {
+            const e = new Error(`Role must be one of ${ROLES.join(', ')}`); e.status = 400; throw e;
           }
           update.role = patch.role;
         }
