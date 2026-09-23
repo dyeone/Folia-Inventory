@@ -26,11 +26,14 @@ const STATUS_CLASS = {
 };
 const fmtDate = (t) => (t ? String(t).slice(0, 10) : '');
 const money = (v) => (v == null || v === '' ? null : parseFloat(v));
+const fmtInt = (v) => (v == null ? '—' : Number(v).toLocaleString());
+const fmtMoney = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : `$${Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`);
 
 export function ConsultantView({ onLogout }) {
   const { currentUser, activeBrand, brands, switchBrand } = useContext(AuthContext);
   const [pos, setPos] = useState(null);
   const [species, setSpecies] = useState([]);
+  const [stats, setStats] = useState(null);       // { totals, bySpecies } — stock + sales, no costs
   const [err, setErr] = useState(null);
   const [openPo, setOpenPo] = useState(null);
   const [lines, setLines] = useState(null);
@@ -59,6 +62,8 @@ export function ConsultantView({ onLogout }) {
         setSpecies(sp || []);
       })
       .catch(e => { if (alive) setErr(e.message || 'Could not load orders'); });
+    // Stock + sales context arrives separately — pricing must not wait on it.
+    api.getSpeciesStats().then(st => { if (alive) setStats(st || null); }).catch(() => {});
     return () => { alive = false; };
   }, []);
 
@@ -100,6 +105,7 @@ export function ConsultantView({ onLogout }) {
             po={openPo}
             lines={lines}
             speciesById={speciesById}
+            statsBySpecies={stats?.bySpecies || null}
             onSpeciesSaved={onSpeciesSaved}
             showToast={showToast}
           />
@@ -107,7 +113,8 @@ export function ConsultantView({ onLogout }) {
           <div className="py-16 text-center text-gray-500 text-sm">No wholesale orders for this brand yet.</div>
         ) : (
           <div className="space-y-2">
-            <div className="text-xs text-gray-500 px-1">Tap an order to set list prices and seller notes.</div>
+            <InventorySummary totals={stats?.totals || null} loaded={!!stats} />
+            <div className="text-xs text-gray-500 px-1 pt-1">Tap an order to set list prices and seller notes.</div>
             {pos.map(po => (
               <button
                 key={po.id}
@@ -145,7 +152,52 @@ export function ConsultantView({ onLogout }) {
   );
 }
 
-function OrderDetail({ po, lines, speciesById, onSpeciesSaved, showToast }) {
+// Brand-wide stock + sales, on the order list. Sale prices are the
+// consultant's pricing context; costs never reach this screen.
+function InventorySummary({ totals, loaded }) {
+  const t = totals || {};
+  const tile = (label, value, sub) => (
+    <div className="bg-gray-50 rounded-xl px-3 py-2 min-w-0">
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-gray-500 truncate">{label}</div>
+      <div className="text-lg font-bold text-gray-900 tabular-nums leading-tight">{value}</div>
+      {sub && <div className="text-[11px] text-gray-500 truncate">{sub}</div>}
+    </div>
+  );
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 px-4 py-3">
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-sm font-semibold text-gray-900">Inventory &amp; sales</div>
+        <div className="text-[11px] text-gray-500">{loaded ? 'last 30 days' : 'loading…'}</div>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {tile('In stock', loaded ? fmtInt(t.inStock) : '—', 'units on hand')}
+        {tile('Sold', loaded ? fmtInt(t.sold30d) : '—', loaded ? `${fmtInt(t.sold)} all time` : null)}
+        {tile('Avg sale', loaded ? fmtMoney(t.avgSalePrice30d) : '—', loaded && t.avgSalePrice != null ? `${fmtMoney(t.avgSalePrice)} all time` : null)}
+      </div>
+    </div>
+  );
+}
+
+// Per-plant stock + sales line under the quantities on a line card.
+function SpeciesStats({ st }) {
+  if (!st) return null;
+  if (!st.sold && !st.inStock) return <div className="text-xs text-gray-400 mt-1">No stock or sales history yet</div>;
+  return (
+    <div className="text-xs text-gray-600 mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+      <span>In stock <b className="text-gray-900">{fmtInt(st.inStock)}</b></span>
+      <span>·</span>
+      {st.sold ? (
+        <>
+          <span>Sold <b className="text-gray-900">{fmtInt(st.sold)}</b>{st.sold30d ? ` (${fmtInt(st.sold30d)} in 30d)` : ''}</span>
+          {st.avgSalePrice != null && <><span>·</span><span>Avg <b className="text-gray-900">{fmtMoney(st.avgSalePrice)}</b></span></>}
+          {st.lastSalePrice != null && <><span>·</span><span>Last <b className="text-gray-900">{fmtMoney(st.lastSalePrice)}</b>{st.lastSoldAt ? ` on ${fmtDate(st.lastSoldAt)}` : ''}</span></>}
+        </>
+      ) : <span>No sales yet</span>}
+    </div>
+  );
+}
+
+function OrderDetail({ po, lines, speciesById, statsBySpecies, onSpeciesSaved, showToast }) {
   const [q, setQ] = useState('');
   if (!lines) {
     return <div className="py-16 text-center text-gray-500"><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Loading plants…</div>;
@@ -185,7 +237,7 @@ function OrderDetail({ po, lines, speciesById, onSpeciesSaved, showToast }) {
       <div className="space-y-3 mt-2">
         {shown.length === 0 && <div className="py-10 text-center text-gray-500 text-sm">No plants match.</div>}
         {shown.map(({ line, sp }) => (
-          <LineCard key={line.id} line={line} species={sp} onSaved={onSpeciesSaved} showToast={showToast} />
+          <LineCard key={line.id} line={line} species={sp} stats={statsBySpecies ? (statsBySpecies[line.speciesId] || null) : undefined} onSaved={onSpeciesSaved} showToast={showToast} />
         ))}
       </div>
     </div>
@@ -195,7 +247,7 @@ function OrderDetail({ po, lines, speciesById, onSpeciesSaved, showToast }) {
 // One plant: photo, name, quantities, then the two fields the consultant
 // owns. Each saves on blur (or Enter for the price) so a phone keyboard's
 // "Done" is the whole gesture; a check mark confirms the save landed.
-function LineCard({ line, species, onSaved, showToast }) {
+function LineCard({ line, species, stats, onSaved, showToast }) {
   const [price, setPrice] = useState(species?.idealSellingPrice != null ? String(species.idealSellingPrice) : '');
   const [note, setNote] = useState(species?.sellNote || '');
   const [saving, setSaving] = useState(null);      // 'price' | 'note' | null
@@ -280,6 +332,7 @@ function LineCard({ line, species, onSaved, showToast }) {
             {line.quantityReceived > 0 ? ` · ${line.quantityReceived} received` : ''}
             {(line.itemType === 'tc') ? ' · TC' : ''}
           </div>
+          {stats !== undefined && <SpeciesStats st={stats || { inStock: 0, sold: 0 }} />}
         </div>
         {hasPrice && (
           <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 flex-shrink-0">priced</span>

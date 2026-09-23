@@ -142,6 +142,8 @@ export const api = {
 
   // Species catalog
   getSpecies: () => request('/species').then(r => r.species),
+  // Stock + sales per species (no costs) — the consultant's pricing context.
+  getSpeciesStats: () => request('/species?action=stats'),
   // Combine one species into another (the survivor's variety wins, so this can
   // also move a species across varieties). Re-points items + photos to intoId,
   // then deletes fromId. Refused if fromId has purchase-order history.
