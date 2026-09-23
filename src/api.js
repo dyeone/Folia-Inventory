@@ -85,6 +85,10 @@ export const api = {
   // overlay so the streamer sees the recommended price + sell note on the
   // Palmstreet tab. Fire-and-forget from the scan screen.
   liveScanSave: (scan) => request('/settings', { method: 'POST', body: { action: 'live-show-scan-save', scan } }),
+  // Post-live report: the show archived into its sale event (+ time series).
+  getLiveShowReport: (saleId) =>
+    request(`/settings?action=live-show-report&saleId=${encodeURIComponent(saleId)}`),
+  getLiveShowArchived: () => request('/settings?action=live-show-archived').then(r => r.saleIds || []),
   // Live show state written by the Chrome extension's dashboard scraper.
   getLiveShow: (brandId) =>
     request(`/settings?action=live-show-get${brandId ? `&brandId=${encodeURIComponent(brandId)}` : ''}`),
