@@ -189,6 +189,18 @@ export default wrap(async (req, res) => {
   if (action === 'convert') return convertItem(req, res, user, brandId);
   if (action === 'rename-names') return renameNames(req, res, user, brandId);
   if (action === 'combine-boxes') return combineBoxes(req, res, user, brandId);
+  // Consultant-safe stock list: what's on hand, with the list price and
+  // never the cost. Any brand member. (The plain GET returns full rows with
+  // costs to staff/admin — this is the narrow read for the pricing screen.)
+  if (action === 'stock' && req.method === 'GET') {
+    const data = await fetchAll(() => supabase
+      .from('inventory_items')
+      .select('id, sku, name, variety, "speciesId", type, status, "listingPrice", "lotNumber", "saleId", quantity')
+      .eq('brandId', brandId)
+      .is('deletedAt', null)
+      .in('status', ['available', 'listed', 'acclimated']));
+    return res.status(200).json({ items: data || [] });
+  }
 
   switch (req.method) {
     case 'GET': {

@@ -113,6 +113,9 @@ export const api = {
 
   // Sales
   getSales: () => request('/sales').then(r => r.sales),
+  // Consultant-safe sales reads (sold count/revenue per sale; one sale's sold plants).
+  getSalesSoldSummary: () => request('/sales?action=sold-summary').then(r => r.summary || {}),
+  getSaleSoldItems: (saleId) => request(`/sales?action=sold-items&saleId=${encodeURIComponent(saleId)}`).then(r => r.items || []),
   upsertSales: (sales) => request('/sales', { method: 'POST', body: { sales } }),
   deleteSales: (ids) => request('/sales', { method: 'DELETE', body: { ids } }),
 
@@ -144,6 +147,8 @@ export const api = {
   getSpecies: () => request('/species').then(r => r.species),
   // Stock + sales per species (no costs) — the consultant's pricing context.
   getSpeciesStats: () => request('/species?action=stats'),
+  // Consultant-safe stock list (in-stock items, list price, no costs).
+  getStockItems: () => request('/items?action=stock').then(r => r.items || []),
   // Combine one species into another (the survivor's variety wins, so this can
   // also move a species across varieties). Re-points items + photos to intoId,
   // then deletes fromId. Refused if fromId has purchase-order history.
@@ -167,6 +172,8 @@ export const api = {
     })),
   // Plants this PO has received so far, with SKU + list price (the wholesale
   // "received items" CSV export). No cost fields — any brand member.
+  // Per-PO sell-through counts { [poId]: { received, sold } }.
+  purchaseOrderSoldProgress: () => request('/purchase-orders?action=sold-progress').then(r => r.progress || {}),
   purchaseOrderReceivedItems: (id) =>
     request(`/purchase-orders?action=received-items&id=${encodeURIComponent(id)}`),
   createPurchaseOrder: ({ supplier, shippingFee, notes, itemType, itemStatus, itemNotes } = {}) =>
