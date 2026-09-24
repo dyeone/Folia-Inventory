@@ -3,9 +3,10 @@
 // scraping and emits one `folia:live-tick` DOM event per pass; this script
 // only renders and alerts. It never writes the show blob.
 //
-// Shows: viewers (now / peak), gross, orders, sales pace, time since the
-// last sale, the lot on the block with its high bidder, the VIPs seen in
-// the room this show, and a short activity feed — every username badged
+// Shows: a big wall clock with time on air, viewers (now / peak), gross,
+// orders, sales pace, time since the last sale, the lot on the block with
+// its high bidder, two small charts over elapsed show time (sales $ and
+// lots sold), the VIPs seen in the room this show, and a short activity feed — every username badged
 // against lifetime shipping history (live-show-buyers: 👑 VIP / ⭐ repeat,
 // lifetime $, boxes, and any box still waiting to ship).
 //
@@ -71,6 +72,7 @@
   let scan = null;                   // last scan from the scan screen
   let scanTimer = null;
   let scanPolling = false;
+  let wallClock = null;              // 1 s clock tick
 
   const lc = (s) => String(s || '').trim().toLowerCase();
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
@@ -156,7 +158,7 @@
     .title { font-weight: 700; letter-spacing: .02em; color: #d1d5db; font-size: .9em; text-transform: uppercase; white-space: nowrap; }
     .viewers { margin-left: auto; display: flex; align-items: baseline; gap: .3em; }
     .viewers b { font-size: 1.5em; font-variant-numeric: tabular-nums; }
-    .viewers small { color: #9ca3af; font-size: .8em; }
+    .viewers small { color: #9ca3af; font-size: .8em; white-space: nowrap; }
     .head button { all: unset; cursor: pointer; color: #d1d5db; padding: .15em .4em; border-radius: 6px; font-size: 1.05em; line-height: 1; }
     .head button:hover { background: #1f2937; color: #fff; }
     .head button.tsz { font-size: .8em; font-weight: 700; letter-spacing: -.02em; }
@@ -198,6 +200,18 @@
     .toast b { display: block; font-size: 1.08em; }
     .toast span { color: #e5e7eb; font-size: .92em; }
     @keyframes rise { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
+    .clock { display: flex; align-items: baseline; justify-content: space-between; gap: .6em; margin-bottom: .6em; padding: .35em .7em; background: #111827; border-radius: 10px; }
+    .clock b { font-size: 2.1em; font-weight: 800; letter-spacing: .02em; font-variant-numeric: tabular-nums; line-height: 1.05; }
+    .clock b small { font-size: .45em; font-weight: 700; color: #9ca3af; margin-left: .25em; letter-spacing: 0; }
+    .clock .air { text-align: right; color: #c3c8d2; font-size: .85em; line-height: 1.2; }
+    .clock .air b { display: block; font-size: 1.25em; font-weight: 800; color: #f3f4f6; }
+    .charts { display: grid; grid-template-columns: 1fr; gap: .5em; margin-top: .65em; }
+    .panel.wide .charts { grid-template-columns: 1fr 1fr; }
+    .chart { background: #111827; border-radius: 8px; padding: .45em .55em .3em; min-width: 0; }
+    .chart .h { display: flex; justify-content: space-between; align-items: baseline; gap: .4em; margin-bottom: .15em; }
+    .chart .h small { color: #a3a9b5; font-size: .8em; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+    .chart .h b { font-size: 1.05em; font-variant-numeric: tabular-nums; }
+    .chart svg { display: block; width: 100%; height: auto; }
     .scan { margin-bottom: .65em; background: #14532d; border: 1px solid #166534; border-radius: 10px; padding: .6em .8em; flex-shrink: 0; }
     .scan .k { display: flex; justify-content: space-between; align-items: baseline; gap: .5em; color: #86efac; font-size: .8em; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
     .scan .k .age { font-weight: 500; text-transform: none; letter-spacing: 0; color: #4ade80; }
@@ -219,7 +233,8 @@
        big text on a small panel still reads instead of truncating. */
     .panel.narrow .title { display: none; }
     .panel.narrow .head { gap: .4em; padding-left: .6em; padding-right: .6em; }
-    .panel.narrow .tiles { grid-template-columns: repeat(2, 1fr); }
+    .panel.narrow .tiles, .panel.tight .tiles { grid-template-columns: repeat(2, 1fr); }
+    .panel.narrow .viewers small, .panel.tight .viewers small { display: none; }
   `;
 
   function build() {
@@ -242,6 +257,10 @@
           <button id="collapse" title="Collapse">–</button>
         </div>
         <div class="body">
+          <div class="clock" id="clock">
+            <b><span id="clockTime">--:--</span><small id="clockAmPm"></small></b>
+            <div class="air"><span id="airLabel">on air</span><b id="airTime">—</b></div>
+          </div>
           <div class="scan" id="scan" hidden></div>
           <div class="tiles">
             <div class="tile"><small>Gross</small><b id="gross">—</b></div>
@@ -250,6 +269,10 @@
             <div class="tile" title="Since the last sale"><small>Last sale</small><b id="lastSale">—</b></div>
           </div>
           <div class="lot" id="lot"><span class="empty">No lot on the block</span></div>
+          <div class="charts">
+            <div class="chart"><div class="h"><small>Sales $</small><b id="chartGrossNow">—</b></div><div id="chartGross"></div></div>
+            <div class="chart"><div class="h"><small>Lots sold</small><b id="chartLotsNow">—</b></div><div id="chartLots"></div></div>
+          </div>
           <div class="section vips">
             <small><span>VIPs in the room</span><span id="vipCount">0</span></small>
             <div class="list" id="vips"><div class="empty">Nobody badged yet</div></div>
@@ -262,7 +285,7 @@
         </div>
       </div>
       </div>`;
-    for (const id of ['wrap', 'panel', 'toasts', 'head', 'scan', 'viewers', 'peak', 'smaller', 'bigger', 'mute', 'collapse', 'gross', 'orders', 'pace',
+    for (const id of ['wrap', 'panel', 'toasts', 'head', 'scan', 'clockTime', 'clockAmPm', 'airLabel', 'airTime', 'chartGross', 'chartGrossNow', 'chartLots', 'chartLotsNow', 'viewers', 'peak', 'smaller', 'bigger', 'mute', 'collapse', 'gross', 'orders', 'pace',
       'lastSale', 'lot', 'vipCount', 'vips', 'entries', 'feed', 'foot', 'brand']) {
       el[id] = root.getElementById(id);
     }
@@ -294,7 +317,13 @@
     const scale = SCALE_STEPS.includes(prefs.scale) ? prefs.scale : 1;
     const fs = Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round((w / 22) * scale)));
     el.panel.style.setProperty('--fs', `${fs}px`);
-    el.panel.classList.toggle('narrow', w / fs < 20);
+    // Characters across at this text size decide the layout: < 20 drops the
+    // title and stacks everything, < 26 stacks the stat tiles 2×2, ≥ 34 puts
+    // the two charts side by side.
+    const chars = w / fs;
+    el.panel.classList.toggle('narrow', chars < 20);
+    el.panel.classList.toggle('tight', chars < 26);
+    el.panel.classList.toggle('wide', chars >= 34);
     el.smaller.disabled = scale === SCALE_STEPS[0];
     el.bigger.disabled = scale === SCALE_STEPS[SCALE_STEPS.length - 1];
     el.bigger.title = `Bigger text (${Math.round(scale * 100)}%)`;
@@ -522,6 +551,7 @@
     document.removeEventListener('folia:live-dead', onDead);
     if (clockTimer) { clearInterval(clockTimer); clockTimer = null; }
     if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+    if (wallClock) { clearInterval(wallClock); wallClock = null; }
     if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
     host?.remove(); host = null;
     if (window.__foliaLiveOverlay === overlaySelf) delete window.__foliaLiveOverlay;
@@ -548,6 +578,84 @@
   function scheduleRender() {
     if (rafId) return;
     rafId = requestAnimationFrame(() => { rafId = 0; render(); });
+  }
+
+  // ── clock ────────────────────────────────────────────────────────────
+  // Big wall clock for the streamer + time on air (since the show's first
+  // tick). Ticks every second; only these two elements change.
+  function renderClock() {
+    if (!host) return;
+    const d = new Date();
+    let h = d.getHours();
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    el.clockTime.textContent = `${h}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+    el.clockAmPm.textContent = ampm;
+    const started = last?.show?.startedAt ? new Date(last.show.startedAt).getTime() : null;
+    if (started && host && !host.hidden) {
+      const s = Math.max(0, Math.round((Date.now() - started) / 1000));
+      const hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60);
+      el.airLabel.textContent = 'on air';
+      el.airTime.textContent = hh ? `${hh}h ${String(mm).padStart(2, '0')}m` : `${mm} min`;
+    } else {
+      el.airLabel.textContent = '';
+      el.airTime.textContent = '—';
+    }
+  }
+
+  // ── charts ───────────────────────────────────────────────────────────
+  // Two single-series lines over ELAPSED show time (x, minutes since the
+  // first tick): cumulative sales $ and cumulative lots sold, both from the
+  // sold log. Thin line, area fill, three recessive gridlines, elapsed
+  // ticks, the current value in the header. Colors are the reference
+  // palette's dark steps (blue slot 1, aqua slot 3), validated on this
+  // surface. Rebuilt on each tick — a few dozen points, cheap.
+  const CH_W = 300, CH_H = 92, CH_PL = 34, CH_PR = 8, CH_PT = 8, CH_PB = 16;
+  function chartSvg(points, tMaxMs, color, fmt) {
+    // points: [{ t: ms since start, v }] ascending; always starts at (0, 0).
+    const vMax = Math.max(1, ...points.map(p => p.v));
+    const step = (() => { const raw = vMax / 2; const p = 10 ** Math.floor(Math.log10(raw)); const c = raw / p; return (c <= 1 ? 1 : c <= 2 ? 2 : c <= 5 ? 5 : 10) * p; })();
+    const yMax = Math.max(step, Math.ceil(vMax / step) * step);
+    const x = (t) => CH_PL + (t / tMaxMs) * (CH_W - CH_PL - CH_PR);
+    const y = (v) => CH_H - CH_PB - (v / yMax) * (CH_H - CH_PT - CH_PB);
+    const path = points.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
+    const lastP = points[points.length - 1];
+    const area = `${path} L${x(lastP.t).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
+    const grid = [0, yMax / 2, yMax].map(v => `<line x1="${CH_PL}" x2="${CH_W - CH_PR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="#374151" stroke-width="1"/>` +
+      `<text x="${CH_PL - 4}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="#9ca3af">${esc(fmt(v))}</text>`).join('');
+    const tMin = tMaxMs / 60000;
+    const tickEvery = tMin <= 30 ? 10 : tMin <= 90 ? 15 : tMin <= 180 ? 30 : 60;
+    const ticks = [];
+    for (let m = 0; m <= tMin + 0.01; m += tickEvery) ticks.push(m);
+    const xt = ticks.map((m, i) => `<text x="${x(m * 60000).toFixed(1)}" y="${CH_H - 4}" font-size="9" fill="#9ca3af" text-anchor="${i === 0 ? 'start' : m >= tMin - tickEvery / 2 ? 'end' : 'middle'}">${m >= 60 && m % 60 === 0 ? `${m / 60}h` : `${m}m`}</text>`).join('');
+    return `<svg viewBox="0 0 ${CH_W} ${CH_H}" role="img" aria-label="over show time">${grid}${xt}` +
+      `<path d="${area}" fill="${color}" opacity="0.14"/>` +
+      `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` +
+      `<circle cx="${x(lastP.t).toFixed(1)}" cy="${y(lastP.v).toFixed(1)}" r="3" fill="${color}" stroke="#111827" stroke-width="1.5"/></svg>`;
+  }
+
+  function renderCharts(show) {
+    const started = show?.startedAt ? new Date(show.startedAt).getTime() : null;
+    const sold = (show?.sold || []).filter(s => s && s.at).map(s => ({ t: new Date(s.at).getTime(), price: Number(s.price) || 0 })).sort((a, b) => a.t - b.t);
+    if (!started || !Number.isFinite(started)) {
+      el.chartGross.innerHTML = '<div class="empty">Waiting for the show…</div>';
+      el.chartLots.innerHTML = '';
+      el.chartGrossNow.textContent = '—'; el.chartLotsNow.textContent = '—';
+      return;
+    }
+    const nowT = Math.max(Date.now() - started, 10 * 60000);
+    let g = 0, n = 0;
+    const gross = [{ t: 0, v: 0 }], lots = [{ t: 0, v: 0 }];
+    for (const s of sold) {
+      const t = Math.max(0, s.t - started);
+      g += s.price; n += 1;
+      gross.push({ t, v: g }); lots.push({ t, v: n });
+    }
+    gross.push({ t: nowT, v: g }); lots.push({ t: nowT, v: n });
+    el.chartGross.innerHTML = chartSvg(gross, nowT, '#199e70', (v) => `$${Math.round(v).toLocaleString()}`);
+    el.chartLots.innerHTML = chartSvg(lots, nowT, '#3987e5', (v) => String(Math.round(v)));
+    el.chartGrossNow.textContent = fmtMoney(g);
+    el.chartLotsNow.textContent = String(n);
   }
 
   // ── render ───────────────────────────────────────────────────────────
@@ -605,6 +713,7 @@
     } else {
       el.lot.innerHTML = '<span class="empty">No lot on the block</span>';
     }
+    renderCharts(show);
 
     // VIPs seen this show: joins ∪ bidders ∪ buyers, badged, VIP first.
     const seen = new Map();
@@ -666,6 +775,8 @@
     document.addEventListener('folia:live-dead', onDead);
     // Relative clocks ("last sale 4m ago", history age) drift without a tick.
     clockTimer = setInterval(() => { if (last && host && !host.hidden) { scheduleRender(); renderScan(); } }, 5000);
+    renderClock();
+    wallClock = setInterval(renderClock, 1000);
     scanTimer = setInterval(pollScan, SCAN_POLL_MS);
     try {
       chrome.storage.onChanged.addListener((changes, area) => {
