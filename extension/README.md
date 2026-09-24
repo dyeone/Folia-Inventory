@@ -178,6 +178,8 @@ nothing extra:
   with the species **list price as the recommended price** and the **sell
   note** as a "Say this" callout, so the streamer never has to look at the
   scanning window (polled every 2 s from `live-show-scan-get`)
+- A **big clock** with the time on air, so the streamer never has to look away
+- **Sales $** and **Lots sold** charts over elapsed show time (from the sold log)
 - **Viewers** now / peak this show (see calibration below)
 - **Gross**, **orders**, **pace** (gross per hour · lots per hour), and time
   since the **last sale**
