@@ -5,8 +5,9 @@
 //
 // Shows: a big wall clock with time on air, viewers (now / peak), gross,
 // orders, sales pace, time since the last sale, the lot on the block with
-// its high bidder, two small charts over elapsed show time (sales $ and
-// lots sold), the VIPs seen in the room this show, and a short activity feed — every username badged
+// its high bidder, two bar charts over elapsed show time (sales $ and lots
+// sold per 10 minutes), the VIPs seen in the room this show, and a short
+// activity feed — every username badged
 // against lifetime shipping history (live-show-buyers: 👑 VIP / ⭐ repeat,
 // lifetime $, boxes, and any box still waiting to ship).
 //
@@ -270,8 +271,8 @@
           </div>
           <div class="lot" id="lot"><span class="empty">No lot on the block</span></div>
           <div class="charts">
-            <div class="chart"><div class="h"><small>Sales $</small><b id="chartGrossNow">—</b></div><div id="chartGross"></div></div>
-            <div class="chart"><div class="h"><small>Lots sold</small><b id="chartLotsNow">—</b></div><div id="chartLots"></div></div>
+            <div class="chart"><div class="h"><small>Sales $ · per 10 min</small><b id="chartGrossNow">—</b></div><div id="chartGross"></div></div>
+            <div class="chart"><div class="h"><small>Lots sold · per 10 min</small><b id="chartLotsNow">—</b></div><div id="chartLots"></div></div>
           </div>
           <div class="section vips">
             <small><span>VIPs in the room</span><span id="vipCount">0</span></small>
@@ -604,58 +605,68 @@
   }
 
   // ── charts ───────────────────────────────────────────────────────────
-  // Two single-series lines over ELAPSED show time (x, minutes since the
-  // first tick): cumulative sales $ and cumulative lots sold, both from the
-  // sold log. Thin line, area fill, three recessive gridlines, elapsed
-  // ticks, the current value in the header. Colors are the reference
-  // palette's dark steps (blue slot 1, aqua slot 3), validated on this
-  // surface. Rebuilt on each tick — a few dozen points, cheap.
-  const CH_W = 300, CH_H = 92, CH_PL = 34, CH_PR = 8, CH_PT = 8, CH_PB = 16;
-  function chartSvg(points, tMaxMs, color, fmt) {
-    // points: [{ t: ms since start, v }] ascending; always starts at (0, 0).
-    const vMax = Math.max(1, ...points.map(p => p.v));
+  // Two bar charts over ELAPSED show time, one bar per 10 minutes: sales $
+  // and lots sold in that slice, from the sold log. Thin bars with rounded
+  // tops and 2px gaps, three recessive gridlines, elapsed ticks, only the
+  // tallest bar direct-labelled, a native tooltip (<title>) on every bar,
+  // the current slice drawn a touch brighter. Colors are the reference
+  // palette's dark steps (aqua slot 3 for $, blue slot 1 for lots),
+  // validated on this surface. Rebuilt on each tick — cheap.
+  const BUCKET_MS = 10 * 60000;
+  const CH_W = 300, CH_H = 92, CH_PL = 34, CH_PR = 8, CH_PT = 10, CH_PB = 16;
+  function barsSvg(buckets, color, fmt, unit) {
+    // buckets: [{ t: ms since start (slice start), v }], one per 10 min slice.
+    const n = buckets.length;
+    const vMax = Math.max(1, ...buckets.map(b => b.v));
     const step = (() => { const raw = vMax / 2; const p = 10 ** Math.floor(Math.log10(raw)); const c = raw / p; return (c <= 1 ? 1 : c <= 2 ? 2 : c <= 5 ? 5 : 10) * p; })();
     const yMax = Math.max(step, Math.ceil(vMax / step) * step);
-    const x = (t) => CH_PL + (t / tMaxMs) * (CH_W - CH_PL - CH_PR);
+    const span = n * BUCKET_MS;
+    const x = (t) => CH_PL + (t / span) * (CH_W - CH_PL - CH_PR);
     const y = (v) => CH_H - CH_PB - (v / yMax) * (CH_H - CH_PT - CH_PB);
-    const path = points.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
-    const lastP = points[points.length - 1];
-    const area = `${path} L${x(lastP.t).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
+    const slot = (CH_W - CH_PL - CH_PR) / n;
+    const bw = Math.max(1.5, slot - 2);
     const grid = [0, yMax / 2, yMax].map(v => `<line x1="${CH_PL}" x2="${CH_W - CH_PR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="#374151" stroke-width="1"/>` +
       `<text x="${CH_PL - 4}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end" font-size="9" fill="#9ca3af">${esc(fmt(v))}</text>`).join('');
-    const tMin = tMaxMs / 60000;
-    const tickEvery = tMin <= 30 ? 10 : tMin <= 90 ? 15 : tMin <= 180 ? 30 : 60;
+    const spanMin = span / 60000;
+    const tickEvery = spanMin <= 60 ? 10 : spanMin <= 180 ? 30 : 60;
     const ticks = [];
-    for (let m = 0; m <= tMin + 0.01; m += tickEvery) ticks.push(m);
-    const xt = ticks.map((m, i) => `<text x="${x(m * 60000).toFixed(1)}" y="${CH_H - 4}" font-size="9" fill="#9ca3af" text-anchor="${i === 0 ? 'start' : m >= tMin - tickEvery / 2 ? 'end' : 'middle'}">${m >= 60 && m % 60 === 0 ? `${m / 60}h` : `${m}m`}</text>`).join('');
-    return `<svg viewBox="0 0 ${CH_W} ${CH_H}" role="img" aria-label="over show time">${grid}${xt}` +
-      `<path d="${area}" fill="${color}" opacity="0.14"/>` +
-      `<path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` +
-      `<circle cx="${x(lastP.t).toFixed(1)}" cy="${y(lastP.v).toFixed(1)}" r="3" fill="${color}" stroke="#111827" stroke-width="1.5"/></svg>`;
+    for (let m = 0; m <= spanMin + 0.01; m += tickEvery) ticks.push(m);
+    const xt = ticks.map((m, i) => `<text x="${x(m * 60000).toFixed(1)}" y="${CH_H - 4}" font-size="9" fill="#9ca3af" text-anchor="${i === 0 ? 'start' : m >= spanMin - tickEvery / 2 ? 'end' : 'middle'}">${m >= 60 && m % 60 === 0 ? `${m / 60}h` : `${m}m`}</text>`).join('');
+    const top = buckets.reduce((b, c) => (c.v > (b?.v ?? 0) ? c : b), null);
+    const bars = buckets.map((b, i) => {
+      if (!b.v) return '';
+      const bx = x(b.t) + 1, h = Math.max(1, y(0) - y(b.v));
+      const m0 = b.t / 60000, m1 = m0 + BUCKET_MS / 60000;
+      const label = `${m0}–${m1} min: ${fmt(b.v)}${unit ? ` ${b.v === 1 ? unit.replace(/s$/, '') : unit}` : ''}`;
+      const current = i === n - 1;
+      return `<g><title>${esc(label)}</title><rect x="${bx.toFixed(1)}" y="${y(b.v).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="${color}" opacity="${current ? 1 : 0.8}"/>` +
+        (top && top.t === b.t ? `<text x="${(bx + bw / 2).toFixed(1)}" y="${(y(b.v) - 3).toFixed(1)}" text-anchor="middle" font-size="9" font-weight="700" fill="#f3f4f6">${esc(fmt(b.v))}</text>` : '') + '</g>';
+    }).join('');
+    return `<svg viewBox="0 0 ${CH_W} ${CH_H}" role="img" aria-label="per 10 minutes over show time">${grid}${xt}${bars}</svg>`;
   }
 
   function renderCharts(show) {
     const started = show?.startedAt ? new Date(show.startedAt).getTime() : null;
-    const sold = (show?.sold || []).filter(s => s && s.at).map(s => ({ t: new Date(s.at).getTime(), price: Number(s.price) || 0 })).sort((a, b) => a.t - b.t);
+    const sold = (show?.sold || []).filter(s => s && s.at).map(s => ({ t: new Date(s.at).getTime(), price: Number(s.price) || 0 })).filter(s => Number.isFinite(s.t));
     if (!started || !Number.isFinite(started)) {
       el.chartGross.innerHTML = '<div class="empty">Waiting for the show…</div>';
       el.chartLots.innerHTML = '';
       el.chartGrossNow.textContent = '—'; el.chartLotsNow.textContent = '—';
       return;
     }
-    const nowT = Math.max(Date.now() - started, 10 * 60000);
-    let g = 0, n = 0;
-    const gross = [{ t: 0, v: 0 }], lots = [{ t: 0, v: 0 }];
+    const elapsed = Math.max(Date.now() - started, BUCKET_MS);
+    const n = Math.max(3, Math.ceil(elapsed / BUCKET_MS));
+    const gross = Array.from({ length: n }, (_, i) => ({ t: i * BUCKET_MS, v: 0 }));
+    const lots = Array.from({ length: n }, (_, i) => ({ t: i * BUCKET_MS, v: 0 }));
+    let g = 0;
     for (const s of sold) {
-      const t = Math.max(0, s.t - started);
-      g += s.price; n += 1;
-      gross.push({ t, v: g }); lots.push({ t, v: n });
+      const i = Math.min(n - 1, Math.max(0, Math.floor((s.t - started) / BUCKET_MS)));
+      gross[i].v += s.price; lots[i].v += 1; g += s.price;
     }
-    gross.push({ t: nowT, v: g }); lots.push({ t: nowT, v: n });
-    el.chartGross.innerHTML = chartSvg(gross, nowT, '#199e70', (v) => `$${Math.round(v).toLocaleString()}`);
-    el.chartLots.innerHTML = chartSvg(lots, nowT, '#3987e5', (v) => String(Math.round(v)));
+    el.chartGross.innerHTML = barsSvg(gross, '#199e70', (v) => `$${Math.round(v).toLocaleString()}`, '');
+    el.chartLots.innerHTML = barsSvg(lots, '#3987e5', (v) => String(Math.round(v)), 'lots');
     el.chartGrossNow.textContent = fmtMoney(g);
-    el.chartLotsNow.textContent = String(n);
+    el.chartLotsNow.textContent = String(sold.length);
   }
 
   // ── render ───────────────────────────────────────────────────────────
