@@ -1,5 +1,6 @@
 import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { sweepLiveShows } from './settings.js';
 
 const SERVER_OWNED = ['createdAt', 'createdBy'];
 
@@ -102,6 +103,9 @@ export default wrap(async (req, res) => {
         }
         return res.status(200).json({ sellers: data || [] });
       }
+      // A live that went quiet closes its auto-created sale event here too,
+      // so the list never shows a finished live as ongoing (best effort).
+      try { await sweepLiveShows(brandId); } catch (e) { console.error('[sales] live sweep failed:', e?.message || e); }
       const { data, error } = await supabase.from('sales').select('*').eq('brandId', brandId);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ sales: data || [] });
