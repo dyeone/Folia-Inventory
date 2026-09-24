@@ -56,11 +56,15 @@ export function LiveReport({ saleId, sale, showBuyers = true, compact = false })
             {fmtClock(m.t0)} – {fmtClock(m.tEnd)} · {fmtDur(m.durationMs)}{r.streaming ? ` · ${r.streaming}` : ''}
           </div>
         </div>
-        {state.live && (
+        {state.live ? (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-red-100 text-red-700">
             <Radio className="w-3.5 h-3.5 animate-pulse" /> LIVE · updating
           </span>
-        )}
+        ) : r.closedAt ? (
+          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600" title={`Sale event closed ${r.closedBy === 'auto' ? 'automatically ' : ''}at ${fmtClock(r.closedAt)}`}>
+            Ended {fmtClock(r.endedAt || r.lastSeenAt)}{r.closedBy === 'auto' ? ' · auto-closed' : ''}
+          </span>
+        ) : null}
       </div>
 
       <div className={`grid gap-2 ${compact ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-4'}`}>

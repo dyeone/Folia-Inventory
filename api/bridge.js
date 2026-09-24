@@ -1,5 +1,6 @@
 import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, DEFAULT_BRAND } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { sweepLiveShows } from './settings.js';
 import { randomBytes } from 'node:crypto';
 
 // Routes the local Folia Bridge talks to. The bridge polls outbound from
@@ -374,6 +375,11 @@ async function liveShow(req, res) {
   const { data, error } = await q.order('updatedAt', { ascending: false }).limit(1);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   const row = data?.[0] || null;
+  // The Mac app polls this all day, which makes it the timely place to
+  // close a finished live's auto-created sale event (throttled inside).
+  if (row) {
+    try { await sweepLiveShows(row.id.slice('live_show:'.length)); } catch (e) { console.error('[bridge] live sweep failed:', e?.message || e); }
+  }
   return res.status(200).json({
     show: row?.data || null,
     updatedAt: row?.updatedAt || null,

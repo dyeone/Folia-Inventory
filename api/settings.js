@@ -141,6 +141,14 @@ const LIVE_SERIES_GAP_MS = 60_000;      // one time-series point per minute
 const LIVE_SERIES_MAX = 720;            // 12 hours of points
 const LIVE_ARCHIVE_GAP_MS = 20_000;     // otherwise-idle archive writes, at most this often
 const LIVE_SALE_LINK_WINDOW_MS = 18 * 3600_000;   // an "ongoing" sale older than this isn't today's
+// End of a live: the extension has no end signal, it just stops saving. After
+// this much silence the show counts as over and its AUTO-CREATED sale event
+// closes (hand-made sales keep their own workflow). If the widget saves again
+// within the reopen window (a break, a stream restart) the sale reopens.
+const LIVE_END_GRACE_MS = 30 * 60_000;
+const LIVE_REOPEN_WINDOW_MS = 2 * 3600_000;
+const LIVE_SWEEP_MIN_GAP_MS = 60_000;             // per-instance throttle for the sweep
+const liveSweepAt = new Map();                    // brandId → last sweep (this instance)
 const LIVE_SHOW_MAX_SOLD = 800;
 const LIVE_SHOW_MAX_BIDS = 80;
 const LIVE_SHOW_MAX_RAW = 4000;
@@ -289,6 +297,16 @@ async function archiveLiveShow(show, brandId, user) {
   const now = Date.now();
   const nowIso = new Date(now).toISOString();
 
+  // Saving again after an automatic close (a break, a stream restart): if
+  // it's recent, the live isn't over — reopen the sale and forget the end.
+  let reopened = false;
+  if (prev?.closedAt && prev.closedBy === 'auto' && now - new Date(prev.closedAt).getTime() < LIVE_REOPEN_WINDOW_MS) {
+    const { error: reErr } = await supabase
+      .from('sales').update({ status: 'ongoing' }).eq('id', saleId).eq('brandId', brandId).eq('status', 'closed');
+    if (reErr) { const e = new Error(reErr.message); e.status = 500; throw e; }
+    reopened = true;
+  }
+
   // Sold lots: union with what's archived (a restarted stream gets a new
   // showId but the same sale); dedupe on lot|buyer|price like the scraper.
   const key = (x) => `${x.lot}|${x.buyer}|${x.price}`;
@@ -316,11 +334,14 @@ async function archiveLiveShow(show, brandId, user) {
     seriesGrew = true;
   }
   const lastWrite = prev?.lastSeenAt ? new Date(prev.lastSeenAt).getTime() : 0;
-  if (prev && !created && !soldGrew && !seriesGrew && now - lastWrite < LIVE_ARCHIVE_GAP_MS) {
+  if (prev && !created && !reopened && !soldGrew && !seriesGrew && now - lastWrite < LIVE_ARCHIVE_GAP_MS) {
     return { saleId, created: false, wrote: false };
   }
   const next = {
     saleId,
+    autoCreated: created || !!prev?.autoCreated,
+    // A save means the show is on: any earlier end is stale.
+    endedAt: null, closedAt: null, closedBy: null,
     showId: show.showId,
     showIds: Array.from(new Set([...(prev?.showIds || []), show.showId])).slice(-10),
     title: show.title || prev?.title || null,
@@ -335,7 +356,38 @@ async function archiveLiveShow(show, brandId, user) {
     series: series.slice(-LIVE_SERIES_MAX),
   };
   await writeSetting(archId, next, user);
-  return { saleId, created, wrote: true };
+  return { saleId, created, reopened, wrote: true };
+}
+
+// Close the brand's auto-created sale events whose live has gone quiet for
+// LIVE_END_GRACE_MS. Cheap (two reads for the brand's ongoing sales) and
+// throttled per instance, so it can ride along on reads that already happen
+// all day: the Mac app's show poll, the sales list, the archived list.
+export async function sweepLiveShows(brandId, { force = false } = {}) {
+  const last = liveSweepAt.get(brandId) || 0;
+  const now = Date.now();
+  if (!force && now - last < LIVE_SWEEP_MIN_GAP_MS) return { closed: [], throttled: true };
+  liveSweepAt.set(brandId, now);
+  const { data: ongoing, error } = await supabase
+    .from('sales').select('id').eq('brandId', brandId).eq('status', 'ongoing');
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (!ongoing || ongoing.length === 0) return { closed: [] };
+  const { data: rows, error: aErr } = await supabase
+    .from('app_settings').select('id, data').in('id', ongoing.map(sl => LIVE_ARCHIVE_NS + sl.id));
+  if (aErr) { const e = new Error(aErr.message); e.status = 500; throw e; }
+  const closed = [];
+  for (const r of rows || []) {
+    const d = r.data && typeof r.data === 'object' ? r.data : null;
+    if (!d?.autoCreated || !d.lastSeenAt) continue;
+    if (now - new Date(d.lastSeenAt).getTime() < LIVE_END_GRACE_MS) continue;
+    const saleId = r.id.slice(LIVE_ARCHIVE_NS.length);
+    const { error: uErr } = await supabase
+      .from('sales').update({ status: 'closed' }).eq('id', saleId).eq('brandId', brandId).eq('status', 'ongoing');
+    if (uErr) { const e = new Error(uErr.message); e.status = 500; throw e; }
+    await writeSetting(r.id, { ...d, endedAt: d.lastSeenAt, closedAt: new Date(now).toISOString(), closedBy: 'auto' }, null);
+    closed.push(saleId);
+  }
+  return { closed };
 }
 
 async function handleLiveShow(action, req, res, user, brandId) {
@@ -443,9 +495,15 @@ async function handleLiveShow(action, req, res, user, brandId) {
       const live = row?.updatedAt ? (Date.now() - new Date(row.updatedAt).getTime()) < 60_000 : false;
       return res.status(200).json({ report: row?.data || null, updatedAt: row?.updatedAt || null, live });
     }
+    case 'live-show-sweep': {
+      // Close auto-created sale events whose live went quiet (see sweepLiveShows).
+      if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+      return res.status(200).json(await sweepLiveShows(brandId, { force: true }));
+    }
     case 'live-show-archived': {
       // Which of the brand's sale events have a recorded live.
       if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+      try { await sweepLiveShows(brandId); } catch (e) { console.error('[live-show] sweep failed:', e?.message || e); }
       const { data, error } = await supabase
         .from('app_settings').select('id').like('id', `${LIVE_ARCHIVE_NS}%`);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
