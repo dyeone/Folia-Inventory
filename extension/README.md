@@ -179,7 +179,8 @@ nothing extra:
   note** as a "Say this" callout, so the streamer never has to look at the
   scanning window (polled every 2 s from `live-show-scan-get`)
 - A **big clock** with the time on air, so the streamer never has to look away
-- **Sales $** and **Lots sold** bar charts, one bar per 10 minutes of show time (from the sold log)
+- **Sales $** bar chart, one bar per 10 minutes of show time (lots sold in the header and tooltips)
+- **Returning** share: of everyone seen this show, how many have bought before
 - **Viewers** now / peak this show (see calibration below)
 - **Gross**, **orders**, **pace** (gross per hour · lots per hour), and time
   since the **last sale**

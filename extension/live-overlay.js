@@ -51,7 +51,7 @@
   const HIDE_AFTER_MS = 8_000;       // no dashboard tick for this long → hide
   const PANEL_W = 340;               // default width; the operator can resize
   const PANEL_MIN_W = 240, PANEL_MIN_H = 160;
-  const FONT_MIN = 12, FONT_MAX = 28;   // base font follows width (~1px per 22px) × the A−/A+ scale
+  const FONT_MIN = 11, FONT_MAX = 26;   // base font follows width (~1px per 26px) × the A−/A+ scale
   const SCALE_STEPS = [0.85, 1, 1.15, 1.3, 1.45, 1.6];
   const SCAN_POLL_MS = 2000;
   const SCAN_STALE_MS = 45 * 60 * 1000;   // an old scan is history, not "just scanned"
@@ -169,6 +169,7 @@
     .tile { background: #111827; border-radius: 8px; padding: .5em .6em; min-width: 0; }
     .tile small { display: block; color: #a3a9b5; font-size: .8em; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .tile b { display: block; font-size: 1.2em; font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tile i { display: block; font-style: normal; color: #9ca3af; font-size: .78em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .lot { margin-top: .65em; background: #111827; border-radius: 8px; padding: .55em .75em; display: flex; flex-wrap: wrap; align-items: baseline; gap: .65em; min-height: 2.8em; flex-shrink: 0; }
     .lot .num { font-size: 1.35em; font-weight: 800; font-variant-numeric: tabular-nums; }
     .lot .name { color: #e5e7eb; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
@@ -179,6 +180,10 @@
     .section > small { display: flex; justify-content: space-between; color: #a3a9b5; font-weight: 600; font-size: .8em; text-transform: uppercase; letter-spacing: .05em; margin-bottom: .25em; flex-shrink: 0; }
     .list { display: flex; flex-direction: column; gap: .15em; overflow-y: auto; min-height: 0; }
     .section.vips .list { max-height: 9.5em; }
+    .ret { display: flex; align-items: center; gap: .5em; font-size: .85em; color: #c3c8d2; margin: .1em 0 .4em; white-space: nowrap; }
+    .ret b { color: #f3f4f6; font-variant-numeric: tabular-nums; }
+    .ret .bar { flex: 1; height: .5em; background: #1f2937; border-radius: 999px; overflow: hidden; min-width: 3em; }
+    .ret .bar i { display: block; height: 100%; background: #fbbf24; border-radius: 999px; }
     .section.grow .list { flex: 1; min-height: 4.5em; }
     .list::-webkit-scrollbar { width: 6px; } .list::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
     .row { display: flex; align-items: center; gap: .5em; padding: .25em .4em; border-radius: 6px; cursor: pointer; min-width: 0; flex-shrink: 0; }
@@ -207,7 +212,6 @@
     .clock .air { text-align: right; color: #c3c8d2; font-size: .85em; line-height: 1.2; }
     .clock .air b { display: block; font-size: 1.25em; font-weight: 800; color: #f3f4f6; }
     .charts { display: grid; grid-template-columns: 1fr; gap: .5em; margin-top: .65em; }
-    .panel.wide .charts { grid-template-columns: 1fr 1fr; }
     .chart { background: #111827; border-radius: 8px; padding: .45em .55em .3em; min-width: 0; }
     .chart .h { display: flex; justify-content: space-between; align-items: baseline; gap: .4em; margin-bottom: .15em; }
     .chart .h small { color: #a3a9b5; font-size: .8em; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
@@ -266,16 +270,16 @@
           <div class="tiles">
             <div class="tile"><small>Gross</small><b id="gross">—</b></div>
             <div class="tile"><small>Orders</small><b id="orders">—</b></div>
-            <div class="tile" title="Gross per hour · lots per hour"><small>Pace /hr</small><b id="pace">—</b></div>
-            <div class="tile" title="Since the last sale"><small>Last sale</small><b id="lastSale">—</b></div>
+            <div class="tile" title="Gross per hour · lots per hour"><small>Pace /hr</small><b id="pace">—</b><i id="paceLots"></i></div>
+            <div class="tile" title="Since the last sale"><small>Last</small><b id="lastSale">—</b><i id="lastSaleWhat"></i></div>
           </div>
           <div class="lot" id="lot"><span class="empty">No lot on the block</span></div>
           <div class="charts">
             <div class="chart"><div class="h"><small>Sales $ · per 10 min</small><b id="chartGrossNow">—</b></div><div id="chartGross"></div></div>
-            <div class="chart"><div class="h"><small>Lots sold · per 10 min</small><b id="chartLotsNow">—</b></div><div id="chartLots"></div></div>
           </div>
           <div class="section vips">
             <small><span>VIPs in the room</span><span id="vipCount">0</span></small>
+            <div class="ret" id="ret" title="Of everyone seen this show (joined, bid, or bought), how many have bought before"></div>
             <div class="list" id="vips"><div class="empty">Nobody badged yet</div></div>
           </div>
           <div class="section grow">
@@ -286,7 +290,7 @@
         </div>
       </div>
       </div>`;
-    for (const id of ['wrap', 'panel', 'toasts', 'head', 'scan', 'clockTime', 'clockAmPm', 'airLabel', 'airTime', 'chartGross', 'chartGrossNow', 'chartLots', 'chartLotsNow', 'viewers', 'peak', 'smaller', 'bigger', 'mute', 'collapse', 'gross', 'orders', 'pace',
+    for (const id of ['wrap', 'panel', 'toasts', 'head', 'scan', 'clockTime', 'clockAmPm', 'airLabel', 'airTime', 'chartGross', 'chartGrossNow', 'ret', 'paceLots', 'lastSaleWhat', 'viewers', 'peak', 'smaller', 'bigger', 'mute', 'collapse', 'gross', 'orders', 'pace',
       'lastSale', 'lot', 'vipCount', 'vips', 'entries', 'feed', 'foot', 'brand']) {
       el[id] = root.getElementById(id);
     }
@@ -310,20 +314,20 @@
     window.addEventListener('resize', () => { applyPrefs(); });
   }
 
-  // Base font follows the panel width (about 1px per 22px, clamped) times
+  // Base font follows the panel width (about 1px per 26px, clamped) times
   // the A−/A+ scale, so dragging the corner scales everything, not just the
   // empty space, and the buttons bump it further without a wider panel.
   function applyScale() {
     const w = el.panel.offsetWidth || PANEL_W;
     const scale = SCALE_STEPS.includes(prefs.scale) ? prefs.scale : 1;
-    const fs = Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round((w / 22) * scale)));
+    const fs = Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round((w / 26) * scale)));
     el.panel.style.setProperty('--fs', `${fs}px`);
     // Characters across at this text size decide the layout: < 20 drops the
     // title and stacks everything, < 26 stacks the stat tiles 2×2, ≥ 34 puts
     // the two charts side by side.
     const chars = w / fs;
     el.panel.classList.toggle('narrow', chars < 20);
-    el.panel.classList.toggle('tight', chars < 26);
+    el.panel.classList.toggle('tight', chars < 24);
     el.panel.classList.toggle('wide', chars >= 34);
     el.smaller.disabled = scale === SCALE_STEPS[0];
     el.bigger.disabled = scale === SCALE_STEPS[SCALE_STEPS.length - 1];
@@ -605,8 +609,8 @@
   }
 
   // ── charts ───────────────────────────────────────────────────────────
-  // Two bar charts over ELAPSED show time, one bar per 10 minutes: sales $
-  // and lots sold in that slice, from the sold log. Thin bars with rounded
+  // One bar chart over ELAPSED show time, one bar per 10 minutes: sales $
+  // in that slice (lots in the tooltip and the header), from the sold log. Thin bars with rounded
   // tops and 2px gaps, three recessive gridlines, elapsed ticks, only the
   // tallest bar direct-labelled, a native tooltip (<title>) on every bar,
   // the current slice drawn a touch brighter. Colors are the reference
@@ -614,8 +618,8 @@
   // validated on this surface. Rebuilt on each tick — cheap.
   const BUCKET_MS = 10 * 60000;
   const CH_W = 300, CH_H = 92, CH_PL = 34, CH_PR = 8, CH_PT = 10, CH_PB = 16;
-  function barsSvg(buckets, color, fmt, unit) {
-    // buckets: [{ t: ms since start (slice start), v }], one per 10 min slice.
+  function barsSvg(buckets, color, fmt) {
+    // buckets: [{ t: ms since start (slice start), v, lots }], one per 10 min slice.
     const n = buckets.length;
     const vMax = Math.max(1, ...buckets.map(b => b.v));
     const step = (() => { const raw = vMax / 2; const p = 10 ** Math.floor(Math.log10(raw)); const c = raw / p; return (c <= 1 ? 1 : c <= 2 ? 2 : c <= 5 ? 5 : 10) * p; })();
@@ -637,7 +641,7 @@
       if (!b.v) return '';
       const bx = x(b.t) + 1, h = Math.max(1, y(0) - y(b.v));
       const m0 = b.t / 60000, m1 = m0 + BUCKET_MS / 60000;
-      const label = `${m0}–${m1} min: ${fmt(b.v)}${unit ? ` ${b.v === 1 ? unit.replace(/s$/, '') : unit}` : ''}`;
+      const label = `${m0}–${m1} min: ${fmt(b.v)}${b.lots != null ? ` · ${b.lots} lot${b.lots === 1 ? '' : 's'}` : ''}`;
       const current = i === n - 1;
       return `<g><title>${esc(label)}</title><rect x="${bx.toFixed(1)}" y="${y(b.v).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="${color}" opacity="${current ? 1 : 0.8}"/>` +
         (top && top.t === b.t ? `<text x="${(bx + bw / 2).toFixed(1)}" y="${(y(b.v) - 3).toFixed(1)}" text-anchor="middle" font-size="9" font-weight="700" fill="#f3f4f6">${esc(fmt(b.v))}</text>` : '') + '</g>';
@@ -650,23 +654,19 @@
     const sold = (show?.sold || []).filter(s => s && s.at).map(s => ({ t: new Date(s.at).getTime(), price: Number(s.price) || 0 })).filter(s => Number.isFinite(s.t));
     if (!started || !Number.isFinite(started)) {
       el.chartGross.innerHTML = '<div class="empty">Waiting for the show…</div>';
-      el.chartLots.innerHTML = '';
-      el.chartGrossNow.textContent = '—'; el.chartLotsNow.textContent = '—';
+      el.chartGrossNow.textContent = '—';
       return;
     }
     const elapsed = Math.max(Date.now() - started, BUCKET_MS);
     const n = Math.max(3, Math.ceil(elapsed / BUCKET_MS));
-    const gross = Array.from({ length: n }, (_, i) => ({ t: i * BUCKET_MS, v: 0 }));
-    const lots = Array.from({ length: n }, (_, i) => ({ t: i * BUCKET_MS, v: 0 }));
+    const gross = Array.from({ length: n }, (_, i) => ({ t: i * BUCKET_MS, v: 0, lots: 0 }));
     let g = 0;
     for (const s of sold) {
       const i = Math.min(n - 1, Math.max(0, Math.floor((s.t - started) / BUCKET_MS)));
-      gross[i].v += s.price; lots[i].v += 1; g += s.price;
+      gross[i].v += s.price; gross[i].lots += 1; g += s.price;
     }
-    el.chartGross.innerHTML = barsSvg(gross, '#199e70', (v) => `$${Math.round(v).toLocaleString()}`, '');
-    el.chartLots.innerHTML = barsSvg(lots, '#3987e5', (v) => String(Math.round(v)), 'lots');
-    el.chartGrossNow.textContent = fmtMoney(g);
-    el.chartLotsNow.textContent = String(sold.length);
+    el.chartGross.innerHTML = barsSvg(gross, '#199e70', (v) => `$${Math.round(v).toLocaleString()}`);
+    el.chartGrossNow.textContent = `${fmtMoney(g)} · ${sold.length} lot${sold.length === 1 ? '' : 's'}`;
   }
 
   // ── render ───────────────────────────────────────────────────────────
@@ -705,11 +705,12 @@
     const sold = Array.isArray(show.sold) ? show.sold : [];
     const hours = show.startedAt ? (Date.now() - new Date(show.startedAt).getTime()) / 3.6e6 : 0;
     if (hours >= 0.08 && (gross != null || sold.length)) {
-      const perHr = gross != null ? fmtMoney(gross / hours) : '—';
-      el.pace.textContent = `${perHr} · ${(sold.length / hours).toFixed(1)} lots`;
-    } else el.pace.textContent = '—';
+      el.pace.textContent = gross != null ? fmtMoney(gross / hours) : '—';
+      el.paceLots.textContent = `${(sold.length / hours).toFixed(1)} lots/hr`;
+    } else { el.pace.textContent = '—'; el.paceLots.textContent = ''; }
     const lastSold = sold.length ? sold[sold.length - 1] : null;
-    el.lastSale.textContent = lastSold ? `${fmtAgo(lastSold.at)} ago` : '—';
+    el.lastSale.textContent = lastSold ? `${fmtAgo(lastSold.at).replace(/ \d+s$/, '')} ago` : '—';
+    el.lastSaleWhat.textContent = lastSold ? `#${lastSold.lot} · ${fmtMoney(lastSold.price)}` : '';
     el.lastSale.title = lastSold ? `#${lastSold.lot} ${lastSold.title || ''} · ${fmtMoney(lastSold.price)} · @${lastSold.buyer || '—'}` : '';
 
     const cur = show.current;
@@ -739,6 +740,15 @@
     }
     vips.sort((a, b) => (a.st.tier === b.st.tier ? b.st.spent - a.st.spent : a.st.tier === 'vip' ? -1 : 1));
     el.vipCount.textContent = String(vips.filter(v => v.st.tier === 'vip').length) + (vips.length ? ` · ${vips.length} badged` : '');
+    // Returning buyers: of everyone seen this show, how many have bought
+    // from us before (any badge). The share is what the streamer wants.
+    const seenN = seen.size;
+    if (!buyers) el.ret.innerHTML = '<span class="empty">history not loaded</span>';
+    else if (!seenN) el.ret.innerHTML = '<span class="empty">nobody seen yet</span>';
+    else {
+      const pctRet = Math.round((vips.length / seenN) * 100);
+      el.ret.innerHTML = `<b>${pctRet}%</b> returning <span class="bar"><i style="width:${pctRet}%"></i></span> <b>${vips.length}</b> of ${seenN} · ${seenN - vips.length} new`;
+    }
     el.vips.innerHTML = vips.length
       ? vips.slice(0, VIP_LIST_MAX).map(v => `
           <div class="row" data-user="${esc(v.user)}" title="Click to copy @${esc(v.user)}">
