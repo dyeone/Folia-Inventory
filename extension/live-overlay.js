@@ -5,8 +5,9 @@
 //
 // Shows: a big wall clock with time on air, viewers (now / peak), gross,
 // orders, sales pace, time since the last sale, the lot on the block with
-// its high bidder, two bar charts over elapsed show time (sales $ and lots
-// sold per 10 minutes), the VIPs seen in the room this show, and a short
+// its high bidder, the top five buyers of THIS live (what each has spent
+// so far, from the sold log), a bar chart over elapsed show time (sales $
+// per 10 minutes), the VIPs seen in the room this show, and a short
 // activity feed — every username badged
 // against lifetime shipping history (live-show-buyers: 👑 VIP / ⭐ repeat,
 // lifetime $, boxes, and any box still waiting to ship).
@@ -48,6 +49,7 @@
   const TOAST_MS = 12_000;
   const FEED_MAX = 14;
   const VIP_LIST_MAX = 8;
+  const TOP_BUYERS = 5;              // leaderboard of this live's biggest spenders
   const HIDE_AFTER_MS = 8_000;       // no dashboard tick for this long → hide
   const PANEL_W = 340;               // default width; the operator can resize
   const PANEL_MIN_W = 240, PANEL_MIN_H = 160;
@@ -185,6 +187,16 @@
     .ret .bar { flex: 1; height: .5em; background: #1f2937; border-radius: 999px; overflow: hidden; min-width: 3em; }
     .ret .bar i { display: block; height: 100%; background: #fbbf24; border-radius: 999px; }
     .section.grow .list { flex: 1; min-height: 4.5em; }
+    /* Top buyers of this live: rank, name, tier icon, $ spent, lots. The
+       faint bar behind each row is that buyer's spend relative to #1. */
+    .top .row { background-repeat: no-repeat; }
+    .top > small span { white-space: nowrap; }
+    .top .rk { flex-shrink: 0; width: 1.45em; height: 1.45em; border-radius: 50%; background: #1f2937; color: #d1d5db; font-size: .8em; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+    .top .row.first .rk { background: #fbbf24; color: #111827; }
+    .top .row .u { max-width: none; flex: 0 1 auto; min-width: 2em; }
+    .top .tier { flex-shrink: 0; font-size: .9em; }
+    .top .amt { margin-left: auto; font-size: 1.1em; font-weight: 800; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .top .n { color: #a3a9b5; font-size: .85em; flex-shrink: 0; white-space: nowrap; min-width: 3.4em; text-align: right; font-variant-numeric: tabular-nums; }
     .list::-webkit-scrollbar { width: 6px; } .list::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
     .row { display: flex; align-items: center; gap: .5em; padding: .25em .4em; border-radius: 6px; cursor: pointer; min-width: 0; flex-shrink: 0; }
     .row:hover { background: #1f2937; }
@@ -240,6 +252,7 @@
     .panel.narrow .head { gap: .4em; padding-left: .6em; padding-right: .6em; }
     .panel.narrow .tiles, .panel.tight .tiles { grid-template-columns: repeat(2, 1fr); }
     .panel.narrow .viewers small, .panel.tight .viewers small { display: none; }
+    .panel.narrow .top .n, .panel.narrow .top > small span:last-child { display: none; }
   `;
 
   function build() {
@@ -274,6 +287,10 @@
             <div class="tile" title="Since the last sale"><small>Last</small><b id="lastSale">—</b><i id="lastSaleWhat"></i></div>
           </div>
           <div class="lot" id="lot"><span class="empty">No lot on the block</span></div>
+          <div class="section top">
+            <small><span>Top buyers · this live</span><span id="topCount"></span></small>
+            <div class="list" id="top"><div class="empty">No sales yet</div></div>
+          </div>
           <div class="charts">
             <div class="chart"><div class="h"><small>Sales $ · per 10 min</small><b id="chartGrossNow">—</b></div><div id="chartGross"></div></div>
           </div>
@@ -291,7 +308,7 @@
       </div>
       </div>`;
     for (const id of ['wrap', 'panel', 'toasts', 'head', 'scan', 'clockTime', 'clockAmPm', 'airLabel', 'airTime', 'chartGross', 'chartGrossNow', 'ret', 'paceLots', 'lastSaleWhat', 'viewers', 'peak', 'smaller', 'bigger', 'mute', 'collapse', 'gross', 'orders', 'pace',
-      'lastSale', 'lot', 'vipCount', 'vips', 'entries', 'feed', 'foot', 'brand']) {
+      'lastSale', 'lot', 'top', 'topCount', 'vipCount', 'vips', 'entries', 'feed', 'foot', 'brand']) {
       el[id] = root.getElementById(id);
     }
     (document.documentElement || document.body).appendChild(host);
@@ -307,6 +324,7 @@
     el.smaller.addEventListener('click', (e) => { e.stopPropagation(); stepScale(-1); });
     el.bigger.addEventListener('click', (e) => { e.stopPropagation(); stepScale(1); });
     el.panel.addEventListener('click', () => { resumeAudio(); });
+    el.top.addEventListener('click', onRowClick);
     el.vips.addEventListener('click', onRowClick);
     el.feed.addEventListener('click', onRowClick);
     wireDrag();
@@ -679,6 +697,48 @@
     return `<span class="b ${st.tier}" title="${esc(describe(st))}">${st.tier === 'vip' ? '👑' : '⭐'} ${esc(fmtMoney(st.spent))} · ${st.boxes} bx</span>${open}`;
   }
 
+  // Biggest spenders of THIS live, from the sold log (one record per lot
+  // won). Usernames are matched case-insensitively; a lot with no price
+  // (giveaway) still counts as a lot. Ties: more lots first, then whoever
+  // got there earlier.
+  function topBuyers(sold, n = TOP_BUYERS) {
+    const by = new Map();
+    for (const s of sold || []) {
+      const k = lc(s?.buyer);
+      if (!k) continue;
+      const price = Number(s.price);
+      const t = s.at ? new Date(s.at).getTime() : 0;
+      const cur = by.get(k) || { user: String(s.buyer).trim(), total: 0, lots: 0, lastAt: 0 };
+      cur.total += Number.isFinite(price) ? price : 0;
+      cur.lots += 1;
+      if (Number.isFinite(t) && t > cur.lastAt) cur.lastAt = t;
+      by.set(k, cur);
+    }
+    const all = [...by.values()].sort((a, b) => b.total - a.total || b.lots - a.lots || a.lastAt - b.lastAt);
+    return { top: all.slice(0, n), buyers: all.length, total: all.reduce((sum, b) => sum + b.total, 0) };
+  }
+
+  function renderTop(sold) {
+    const tb = topBuyers(sold);
+    el.topCount.textContent = tb.buyers ? `${tb.buyers} buyer${tb.buyers === 1 ? '' : 's'}` : '';
+    if (!tb.top.length) { el.top.innerHTML = '<div class="empty">No sales yet</div>'; return; }
+    const max = tb.top[0].total;
+    el.top.innerHTML = tb.top.map((b, i) => {
+      const st = statsFor(b.user);
+      const tier = st ? (st.tier === 'vip' ? '👑' : '⭐') : '';
+      const share = tb.total > 0 ? Math.round((b.total / tb.total) * 100) : 0;
+      const w = max > 0 ? Math.max(2, Math.round((b.total / max) * 100)) : 0;
+      const lots = `${b.lots} lot${b.lots === 1 ? '' : 's'}`;
+      const tip = `@${b.user}: ${fmtMoney(b.total)} on ${lots} this live (${share}% of sales)` +
+        (st ? ` · ${describe(st)}` : '') + ' · click to copy';
+      return `<div class="row${i === 0 ? ' first' : ''}" data-user="${esc(b.user)}" title="${esc(tip)}" style="background-image:linear-gradient(to right, rgba(25,158,112,.26) ${w}%, transparent ${w}%)">
+            <span class="rk">${i + 1}</span>
+            <span class="u">@${esc(b.user)}</span>${tier ? `<span class="tier">${tier}</span>` : ''}
+            <span class="amt">${esc(fmtMoney(b.total))}</span><span class="n">${esc(lots)}</span>
+          </div>`;
+    }).join('');
+  }
+
   function highBidder(show) {
     const cur = show.current;
     if (!cur) return null;
@@ -725,6 +785,7 @@
     } else {
       el.lot.innerHTML = '<span class="empty">No lot on the block</span>';
     }
+    renderTop(sold);
     renderCharts(show);
 
     // VIPs seen this show: joins ∪ bidders ∪ buyers, badged, VIP first.
