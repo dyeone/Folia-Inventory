@@ -141,6 +141,11 @@ const LIVE_SERIES_GAP_MS = 60_000;      // one time-series point per minute
 const LIVE_SERIES_MAX = 720;            // 12 hours of points
 const LIVE_ARCHIVE_GAP_MS = 20_000;     // otherwise-idle archive writes, at most this often
 const LIVE_SALE_LINK_WINDOW_MS = 18 * 3600_000;   // an "ongoing" sale older than this isn't today's
+// A show id linked to a sale whose live went quiet this long ago is a
+// RECYCLED id, not that live: scrapers up to 0.6.9 build the id from the
+// UTC date + a page label, so an evening show already carries tomorrow's
+// date and tomorrow's show would be recorded into today's sale event.
+const LIVE_LINK_STALE_MS = 6 * 3600_000;
 // End of a live: the extension has no end signal, it just stops saving. After
 // this much silence the show counts as over and its AUTO-CREATED sale event
 // closes (hand-made sales keep their own workflow). If the widget saves again
@@ -276,26 +281,31 @@ async function resolveSaleForShow(show, brandId, user) {
 // Record the show into its sale: link once per showId, then keep the archive
 // row current (full show state + an appended time series). Throttled so a
 // quiet show doesn't rewrite the row every 4 s; a new sale always writes.
-async function archiveLiveShow(show, brandId, user) {
+export async function archiveLiveShow(show, brandId, user) {
   if (!show?.showId) return null;
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
   const linkId = LIVE_LINK_NS + brandId;
   const linkRow = await readSetting(linkId);
   const links = (linkRow?.data && typeof linkRow.data === 'object' && linkRow.data.links) || {};
   let saleId = links[show.showId] || null;
   let created = false;
+  let prevRow = saleId ? await readSetting(LIVE_ARCHIVE_NS + saleId) : null;
+  if (saleId) {
+    const seen = prevRow?.data?.lastSeenAt ? new Date(prevRow.data.lastSeenAt).getTime() : 0;
+    if (seen && now - seen > LIVE_LINK_STALE_MS) { saleId = null; prevRow = null; }   // recycled id
+  }
   if (!saleId) {
     const r = await resolveSaleForShow(show, brandId, user);
     if (!r) return null;
     saleId = r.saleId; created = r.created;
-    const keep = Object.entries(links).slice(-50);   // bounded: showIds are per day
+    const keep = Object.entries(links).filter(([k]) => k !== show.showId).slice(-50);   // bounded
     await writeSetting(linkId, { links: Object.fromEntries([...keep, [show.showId, saleId]]) }, user);
+    prevRow = await readSetting(LIVE_ARCHIVE_NS + saleId);
   }
 
   const archId = LIVE_ARCHIVE_NS + saleId;
-  const prevRow = await readSetting(archId);
   const prev = prevRow?.data && typeof prevRow.data === 'object' ? prevRow.data : null;
-  const now = Date.now();
-  const nowIso = new Date(now).toISOString();
 
   // Saving again after an automatic close (a break, a stream restart): if
   // it's recent, the live isn't over — reopen the sale and forget the end.
