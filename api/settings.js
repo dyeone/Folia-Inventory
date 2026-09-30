@@ -390,6 +390,94 @@ export async function sweepLiveShows(brandId, { force = false } = {}) {
   return { closed };
 }
 
+// Palmstreet's own on-air timer in the dashboard text ("LIVE · 1h 04m 43s"),
+// as milliseconds. null when the sample doesn't show one.
+export function liveElapsedMs(raw) {
+  const m = /^[ \t]*LIVE[ \t]*[^\w\s][ \t]*((?:\d{1,3}[ \t]*h)?[ \t]*(?:\d{1,2}[ \t]*m)?[ \t]*(?:\d{1,2}[ \t]*s)?)[ \t]*$/m.exec(String(raw || ''));
+  if (!m || !m[1].trim()) return null;
+  const part = (u) => { const r = new RegExp(`(\\d+)[ \\t]*${u}`).exec(m[1]); return r ? Number(r[1]) : 0; };
+  return ((part('h') * 60 + part('m')) * 60 + part('s')) * 1000;
+}
+
+// The scraper owns the live blob and replaces it whole, so when it restarts
+// its state mid-live (an id change, a reload that failed to re-adopt) the
+// blob only holds what happened since. The sale event's archive still has
+// every sold lot. Rebuild the full show from both: sold lots of THIS live
+// from the archive + the blob, the real on-air start (Palmstreet's timer in
+// the raw sample, else the earliest thing we know), the peak from the
+// series. Pure: takes the rows, returns the show to serve.
+const LIVE_RECOVER_LEAD_MS = 10 * 60_000;        // keep archive events from a little before on-air
+const LIVE_RECOVER_FALLBACK_MS = 8 * 3600_000;   // no timer: this far back counts as this live
+export function mergeLiveShow(show, arch, savedAtMs) {
+  if (!show || typeof show !== 'object' || !arch || typeof arch !== 'object') return show;
+  const ts = (x) => { const t = x ? new Date(x).getTime() : 0; return Number.isFinite(t) ? t : 0; };
+  const savedAt = Number.isFinite(savedAtMs) && savedAtMs > 0 ? savedAtMs : Date.now();
+  const elapsed = liveElapsedMs(show.raw);
+  const onAirAt = elapsed != null ? savedAt - elapsed : null;
+  const cutoff = onAirAt != null ? onAirAt - LIVE_RECOVER_LEAD_MS : savedAt - LIVE_RECOVER_FALLBACK_MS;
+
+  const soldKey = (x) => `${x.lot}|${x.buyer}|${x.price}`;
+  const sold = [];
+  const seenSold = new Set();
+  for (const x of [...(arch.sold || []).filter(x => x && ts(x.at) >= cutoff), ...(Array.isArray(show.sold) ? show.sold : [])]) {
+    if (!x || seenSold.has(soldKey(x))) continue;
+    seenSold.add(soldKey(x)); sold.push(x);
+  }
+  sold.sort((a, b) => ts(a.at) - ts(b.at));
+
+  const joins = [];
+  const seenJoin = new Set();
+  for (const j of [...(arch.joins || []).filter(j => j && ts(j.t) >= cutoff), ...(Array.isArray(show.joins) ? show.joins : [])]) {
+    if (!j?.user || seenJoin.has(j.user)) continue;
+    seenJoin.add(j.user); joins.push(j);
+  }
+  joins.sort((a, b) => ts(a.t) - ts(b.t));
+
+  const bidders = [];
+  const seenBid = new Set();
+  for (const b of [...(arch.bidders || []).filter(b => b && ts(b.t) >= cutoff), ...(Array.isArray(show.bidders) ? show.bidders : [])]) {
+    if (!b?.user) continue;
+    const k = `${b.user}|${b.price}|${String(b.t || '').slice(0, 16)}`;
+    if (seenBid.has(k)) continue;
+    seenBid.add(k); bidders.push(b);
+  }
+  bidders.sort((a, b) => ts(a.t) - ts(b.t));
+
+  // Start: a blob that begins after the stream did was restarted mid-live.
+  const blobStart = ts(show.startedAt);
+  let startedAt = show.startedAt || null;
+  if (onAirAt != null) {
+    if (!blobStart || blobStart > onAirAt + 2 * 60_000) startedAt = new Date(onAirAt).toISOString();
+  } else {
+    const known = [blobStart, ts(arch.startedAt) >= cutoff ? ts(arch.startedAt) : 0, sold.length ? ts(sold[0].at) : 0].filter(t => t > 0);
+    if (known.length) startedAt = new Date(Math.min(...known)).toISOString();
+  }
+
+  const peaks = [show.viewers?.peak, ...(arch.series || []).filter(p => p && ts(p.t) >= cutoff).map(p => p.viewers)]
+    .map(Number).filter(v => Number.isFinite(v) && v > 0);
+  const viewers = show.viewers && typeof show.viewers === 'object'
+    ? { ...show.viewers, peak: peaks.length ? Math.max(...peaks) : (show.viewers.peak ?? null) }
+    : (peaks.length ? { now: null, peak: Math.max(...peaks) } : show.viewers);
+
+  return {
+    ...show,
+    startedAt,
+    viewers,
+    sold: sold.slice(-LIVE_SHOW_MAX_SOLD),
+    joins: joins.slice(-LIVE_SHOW_MAX_EVENTS),
+    bidders: bidders.slice(-LIVE_SHOW_MAX_EVENTS),
+  };
+}
+
+async function recoverLiveShow(show, updatedAt, brandId) {
+  if (!show?.showId) return show;
+  const linkRow = await readSetting(LIVE_LINK_NS + brandId);
+  const saleId = linkRow?.data?.links?.[show.showId];
+  if (!saleId) return show;
+  const archRow = await readSetting(LIVE_ARCHIVE_NS + saleId);
+  return mergeLiveShow(show, archRow?.data, updatedAt ? new Date(updatedAt).getTime() : Date.now());
+}
+
 async function handleLiveShow(action, req, res, user, brandId) {
   const id = LIVE_SHOW_NS + brandId;
   switch (action) {
@@ -398,7 +486,16 @@ async function handleLiveShow(action, req, res, user, brandId) {
       const { data, error } = await supabase
         .from('app_settings').select('data, "updatedAt"').eq('id', id).maybeSingle();
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-      return res.status(200).json({ show: data?.data || null, updatedAt: data?.updatedAt || null });
+      // Serve the whole live, not just what the scraper holds since its last
+      // restart. Best effort: a failed recovery serves the blob as it is.
+      let show = data?.data || null;
+      try {
+        if (show) show = await recoverLiveShow(show, data?.updatedAt, brandId);
+      } catch (e) {
+        console.error('[live-show] recover failed:', e?.message || e);
+        show = data?.data || null;
+      }
+      return res.status(200).json({ show, updatedAt: data?.updatedAt || null });
     }
     case 'live-show-scan-save': {
       // The scan screen publishes each scan here so the on-page overlay on
