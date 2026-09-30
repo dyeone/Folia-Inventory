@@ -14,6 +14,14 @@
 // a full replace on save). On a mid-show page reload it re-seeds from
 // live-show-get first, so nothing already recorded is lost.
 //
+// Show identity: a show gets its id ONCE, when it is first seen (local date
+// + local start time + title slug), and keeps it for as long as the
+// dashboard keeps reporting. The id is never recomputed from the clock or
+// from page labels: the old `UTC date + title` id flipped at 00:00 UTC
+// (5 PM Pacific) and whenever the scraped label changed, which blanked the
+// show mid-live. A NEW show starts only when Palmstreet's own counters
+// restart (orders / gross fall back) or the dashboard was unseen for hours.
+//
 // Every pass also emits one `folia:live-tick` DOM event (snapshot + show
 // state + the events first seen on this pass) for live-overlay.js, the
 // on-page streamer widget. The overlay only reads; it never touches the blob.
@@ -40,7 +48,14 @@ let liveSeenSold = new Set();   // `${lot}|${buyer}|${price}` dedupe keys
 let liveSeenJoins = new Set();  // usernames seen joining this show
 let liveSeenBids = new Set();   // `${user}|${price}|${minute}` dedupe keys
 const LIVE_MAX_EVENTS = 400;    // client-side cap on joins/bidders (server re-caps)
-let liveSeeded = false;         // server re-seed attempted
+let liveSeeded = false;         // server re-seed settled (adopted, or nothing to adopt)
+let liveSeeding = false;        // a re-seed is in flight — ticks wait for it
+let liveSeedTries = 0;          // failed re-seed attempts (no answer from the API)
+let liveRestartTicks = 0;       // consecutive passes on which the counters looked restarted
+const LIVE_SEED_MAX_TRIES = 6;                    // then start blank rather than never start
+const LIVE_ADOPT_FRESH_MS = 30 * 60 * 1000;       // a server copy this fresh is this live
+const LIVE_NEW_SHOW_SILENCE_MS = 3 * 3600 * 1000; // dashboard unseen this long → a new show
+const LIVE_RESTART_TICKS = 3;                     // a restart must hold this many passes
 let liveLastSave = 0;
 let liveLastRaw = 0;
 let liveSaving = false;
@@ -81,6 +96,18 @@ try {
   });
 } catch { /* not in an extension context */ }
 
+// Button labels that sit where a title could be.
+const LIVE_BUTTON_LABEL = /^(?:(?:share|end|pause|resume|start|stop|go)\b.*\b(?:live|stream(?:ing)?)|view setup guide|live chat)$/i;
+
+// Palmstreet's own on-air timer ("LIVE · 1h 04m 43s") as milliseconds;
+// null when the page shows none (not streaming yet, or a different layout).
+function parseElapsed(txt) {
+  const r = /^[ \t]*LIVE[ \t]*[^\w\s][ \t]*((?:\d{1,3}[ \t]*h)?[ \t]*(?:\d{1,2}[ \t]*m)?[ \t]*(?:\d{1,2}[ \t]*s)?)[ \t]*$/m.exec(txt);
+  if (!r || !r[1].trim()) return null;
+  const part = (u) => { const x = new RegExp(`(\\d+)[ \\t]*${u}`).exec(r[1]); return x ? Number(x[1]) : 0; };
+  return ((part('h') * 60 + part('m')) * 60 + part('s')) * 1000;
+}
+
 // One pass over the page text → everything we can see right now. Every
 // pattern is best-effort: a miss yields null, never a throw.
 function parseLivePage() {
@@ -102,8 +129,13 @@ function parseLivePage() {
   // the countdown can interleave in innerText reading order.
   const lot = m(/^[ \t]*(\d{1,4})[ \t]+(\S[^\n$]{0,59}?)[ \t]*\n(?:[^\n$]{0,20}\n){0,3}[ \t]*\$[ \t]*([\d,]+(?:\.\d{1,2})?)/m);
   const step = m(/\$\s*[\d,]+(?:\.\d{1,2})?\s*\(\+\s*([\d,.]+)\)/);
-  // Show title: the line right above the LIVE badge in the left panel.
-  const title = m(/^\s*(.{4,90}?)\s*\n+\s*LIVE\b/m);
+  // Show title: the line right after "OBS status: …" (seen on a real
+  // broadcast); the line above the LIVE badge is the fallback. Both spots
+  // can hold a BUTTON ("Share LIVE", "End LIVE", "Start streaming", "View
+  // setup guide") — never a title.
+  const titleOf = (r) => { const v = r?.[1]?.trim(); return v && !LIVE_BUTTON_LABEL.test(v) ? v : null; };
+  const title = titleOf(m(/OBS status[^\n]*\n+[ \t]*([^\n]{2,120})/i))
+    || titleOf(m(/^\s*(.{4,90}?)\s*\n+\s*LIVE\b/m));
 
   // Chat-side events. Joins render as their own line ("subtle_gust_pod51
   // joined"); bid attributions are best-effort — Palmstreet's exact phrasing
@@ -114,7 +146,8 @@ function parseLivePage() {
 
   return {
     at: new Date().toISOString(),
-    title: title?.[1]?.trim() || null,
+    title,
+    elapsedMs: parseElapsed(txt),
     joins,
     bidders,
     viewers: parseViewers(txt),
@@ -133,12 +166,34 @@ function parseLivePage() {
   };
 }
 
-// Stable-enough show identity: the dashboard date + title slug. A new show
-// (new title or new day) resets the blob; a reload mid-show re-adopts it.
-function showIdFor(snap) {
-  const slug = (snap.title || 'live').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 60);
-  return `${new Date().toISOString().slice(0, 10)}:${slug}`;
+// Show id, minted once per show: LOCAL date + LOCAL start time + title slug
+// (the server reads the first 10 characters as the show's day). Never
+// derived again after that — see the header.
+const pad2 = (n) => String(n).padStart(2, '0');
+function mintShowId(snap, startMs) {
+  const d = new Date(startMs);
+  const slug = (snap.title || 'live').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'live';
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}:${pad2(d.getHours())}${pad2(d.getMinutes())}-${slug}`;
 }
+const msOf = (iso) => { const t = iso ? new Date(iso).getTime() : NaN; return Number.isFinite(t) ? t : 0; };
+
+// Did Palmstreet's per-show counters start over? Compares what the show
+// last recorded with what the page says now. Every counter that CAN be
+// compared must have fallen to half or less — a cancelled order moves gross
+// by a few dollars, a new live moves everything back to zero. `freshStream`
+// (the on-air timer restarted after we last saw this show on air) lowers
+// the bar so a tiny first show still counts.
+function countersRestarted(prev, cur, freshStream) {
+  const checks = [];
+  for (const [k, min] of [['orders', freshStream ? 1 : 4], ['gross', freshStream ? 1 : 100]]) {
+    const p = Number(prev?.[k]);
+    const c = cur?.[k];
+    if (!Number.isFinite(p) || p < min || c == null) continue;
+    checks.push(c <= p / 2);
+  }
+  return checks.length > 0 && checks.every(Boolean);
+}
+const streamStartOf = (snap, now) => (snap.elapsedMs != null ? now - snap.elapsedMs : null);
 
 function sendBg(msg) {
   return new Promise((resolve) => {
@@ -170,21 +225,64 @@ async function saveLiveState(force = false) {
   }
 }
 
-// Re-adopt the server copy after a page reload so the sold log survives.
-async function seedFromServer(showId) {
-  liveSeeded = true;
+// Is the server's copy the live that is on screen now? Yes when the stream
+// on screen was already running at the copy's last save (or the copy was
+// saved shortly before it went on air: the setup minutes), or — with no
+// timer on the page — when the copy is fresh. Never when the counters
+// restarted since. The copy's id is NOT compared: ids from the old scheme
+// changed mid-live, and the id is ours to keep, not to re-derive.
+function sameLive(prev, savedAtMs, snap, now) {
+  if (!prev?.showId || !savedAtMs) return false;
+  const streamStart = streamStartOf(snap, now);
+  if (countersRestarted(prev.totals, snap.totals, streamStart != null && streamStart > savedAtMs)) return false;
+  if (streamStart != null) return streamStart <= savedAtMs || savedAtMs > streamStart - LIVE_ADOPT_FRESH_MS;
+  return now - savedAtMs < LIVE_ADOPT_FRESH_MS;
+}
+
+// Re-adopt the server copy after a page or extension reload so the show
+// survives. Returns { show } (null = nothing to adopt, start blank) or
+// { retry: true } when the API didn't answer — starting blank then would
+// overwrite the server copy with an empty show.
+async function seedFromServer(snap, now) {
   const settings = await liveSettings();
-  if (!settings?.apiBase || !settings?.userId) return null;
+  if (!settings?.apiBase || !settings?.userId) return { show: null };   // not configured: nothing is saved either
   const resp = await sendBg({ type: 'api:liveShowGet', settings });
-  const prev = resp?.show;
-  if (prev && prev.showId === showId) {
-    liveSeenSold = new Set((prev.sold || []).map(s => `${s.lot}|${s.buyer}|${s.price}`));
-    liveSeenJoins = new Set((prev.joins || []).map(j => j.user));
-    liveSeenBids = new Set((prev.bidders || []).map(b =>
-      `${b.user}|${b.price}|${String(b.t || '').slice(0, 16)}`));
-    return prev;
-  }
-  return null;
+  if (!resp?.ok) return { retry: true };
+  const prev = resp.show;
+  if (!sameLive(prev, msOf(resp.updatedAt), snap, now)) return { show: null };
+  liveSeenSold = new Set((prev.sold || []).map(s => `${s.lot}|${s.buyer}|${s.price}`));
+  liveSeenJoins = new Set((prev.joins || []).map(j => j.user));
+  liveSeenBids = new Set((prev.bidders || []).map(b =>
+    `${b.user}|${b.price}|${String(b.t || '').slice(0, 16)}`));
+  return { show: prev };
+}
+
+function blankShow(snap, now) {
+  const streamStart = streamStartOf(snap, now);
+  const startMs = streamStart ?? now;
+  return {
+    showId: mintShowId(snap, startMs),
+    title: snap.title,
+    startedAt: new Date(startMs).toISOString(),
+    liveStartedAt: streamStart != null ? new Date(streamStart).toISOString() : null,
+    totals: {},
+    current: null,
+    sold: [],
+    joins: [],
+    bidders: [],
+    viewers: { now: null, peak: null },
+    raw: '',
+  };
+}
+
+// Has the show on screen stopped being the one in memory? (See the header.)
+function isNewShow(state, snap, now) {
+  if (state.lastSeenAt && now - msOf(state.lastSeenAt) > LIVE_NEW_SHOW_SILENCE_MS) return true;
+  const streamStart = streamStartOf(snap, now);
+  const freshStream = streamStart != null && !!state.lastOnAirAt && streamStart > msOf(state.lastOnAirAt) + 60_000;
+  if (countersRestarted(state.totals, snap.totals, freshStream)) liveRestartTicks += 1;
+  else liveRestartTicks = 0;
+  return liveRestartTicks >= LIVE_RESTART_TICKS;
 }
 
 function emitTick(snap, fresh) {
@@ -200,37 +298,68 @@ async function liveTick() {
   if (!snap) { emitTick(null, null); return; } // not the live dashboard (or the show ended)
   const fresh = { joins: [], bidders: [], sold: [] };
 
-  const showId = showIdFor(snap);
-  if (!liveState || liveState.showId !== showId) {
-    const adopted = !liveSeeded ? await seedFromServer(showId) : null;
-    liveState = adopted || {
-      showId,
-      title: snap.title,
-      startedAt: snap.at,
-      totals: {},
-      current: null,
-      sold: [],
-      joins: [],
-      bidders: [],
-      viewers: { now: null, peak: null },
-      raw: '',
-    };
+  const now = Date.now();
+  if (liveSeeding) return;   // a re-seed is in flight; this pass would start blank
+  if (!liveState) {
+    let adopted = null;
+    if (!liveSeeded) {
+      liveSeeding = true;
+      let seed;
+      try { seed = await seedFromServer(snap, now); }
+      catch { seed = { retry: true }; }
+      finally { liveSeeding = false; }
+      if (seed.retry && ++liveSeedTries < LIVE_SEED_MAX_TRIES) return;   // ask again next pass
+      liveSeeded = true;
+      adopted = seed.show || null;
+    }
+    liveState = adopted || blankShow(snap, now);
+    liveRestartTicks = 0;
     if (!adopted) {
       liveSeenSold = new Set();
       liveSeenJoins = new Set();
       liveSeenBids = new Set();
     }
+  } else if (isNewShow(liveState, snap, now)) {
+    liveState = blankShow(snap, now);
+    liveRestartTicks = 0;
+    liveSeenSold = new Set();
+    liveSeenJoins = new Set();
+    liveSeenBids = new Set();
   }
+  if (!Array.isArray(liveState.sold)) liveState.sold = [];
   if (!Array.isArray(liveState.joins)) liveState.joins = [];
   if (!Array.isArray(liveState.bidders)) liveState.bidders = [];
+  if (!liveState.totals || typeof liveState.totals !== 'object') liveState.totals = {};
 
   let dirty = false;
   let soldNow = false;
 
-  // Totals: keep the last non-null reading of each counter.
-  for (const k of ['gross', 'net', 'orders', 'entries']) {
-    const v = snap.totals[k];
-    if (v != null && liveState.totals[k] !== v) { liveState.totals[k] = v; dirty = true; }
+  // Housekeeping for the identity rules; rides along with the next save.
+  liveState.lastSeenAt = snap.at;
+  const streamStart = streamStartOf(snap, now);
+  if (streamStart != null) {
+    liveState.lastOnAirAt = snap.at;
+    // The on-air start, once: Palmstreet's timer beats "when the dashboard
+    // was opened" (setup can be half an hour earlier) for time on air and
+    // pace. Kept as first read — a pause must not move it.
+    if (!liveState.liveStartedAt) {
+      liveState.liveStartedAt = new Date(streamStart).toISOString();
+      const firstSold = liveState.sold.length ? msOf(liveState.sold[0].at) : 0;
+      liveState.startedAt = new Date(firstSold && firstSold < streamStart ? firstSold : streamStart).toISOString();
+      dirty = true;
+    }
+  }
+  // A real title can show up after the show was first seen (setup screen).
+  if (snap.title && liveState.title !== snap.title) { liveState.title = snap.title; dirty = true; }
+
+  // Totals: keep the last non-null reading of each counter. While a restart
+  // is suspected the recorded totals are held, so the next passes still
+  // compare against the show's real numbers (see isNewShow).
+  if (liveRestartTicks === 0) {
+    for (const k of ['gross', 'net', 'orders', 'entries']) {
+      const v = snap.totals[k];
+      if (v != null && liveState.totals[k] !== v) { liveState.totals[k] = v; dirty = true; }
+    }
   }
   if (snap.streaming) liveState.streaming = snap.streaming;
 
