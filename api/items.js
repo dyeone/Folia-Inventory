@@ -200,6 +200,15 @@ function otherBrandsOf(user, brandId) {
   return access.filter((b) => b && b !== brandId);
 }
 
+// PostgREST reports a table the schema cache doesn't know as PGRST205
+// ("Could not find the table …"), and Postgres itself as 42P01 — before
+// migration 0046 is applied, both mean the same thing here.
+function isMissingTransfersTable(error) {
+  if (!error) return false;
+  const text = `${error.code || ''} ${error.message || ''}`;
+  return /item_transfers/.test(text) && /PGRST205|42P01|does not exist|schema cache/i.test(text);
+}
+
 function stripCostsForRole(user, rows) {
   if (user.role === 'admin' || user.role === 'staff') return rows;
   return rows.map(({ grossCost, netCost, cost, ...rest }) => rest);
@@ -315,9 +324,7 @@ async function listTransfers(req, res, user, brandId) {
     .order('createdAt', { ascending: false })
     .limit(200);
   if (error) {
-    if (/item_transfers/.test(error.message) && /does not exist|42P01/.test(`${error.code} ${error.message}`)) {
-      return res.status(200).json({ transfers: [], unsupported: true });
-    }
+    if (isMissingTransfersTable(error)) return res.status(200).json({ transfers: [], unsupported: true });
     const e = new Error(error.message); e.status = 500; throw e;
   }
   const rows = user.role === 'admin' || user.role === 'staff' ? (data || []) : (data || []).map(({ grossCost, netCost, ...r }) => r);
@@ -398,7 +405,7 @@ async function transferItem(req, res, user, brandId) {
   // Idempotent retry: the same transferId already moved it.
   const { data: prior, error: pErr } = await supabase.from('item_transfers').select('id, "toBrandId"').eq('id', transferId).maybeSingle();
   if (pErr) {
-    if (/item_transfers/.test(pErr.message) && /does not exist|42P01/.test(`${pErr.code} ${pErr.message}`)) {
+    if (isMissingTransfersTable(pErr)) {
       const e = new Error('Moving stock between brands needs migration 0046 (item_transfers) — run it in the Supabase SQL editor first'); e.status = 409; throw e;
     }
     const e = new Error(pErr.message); e.status = 500; throw e;
