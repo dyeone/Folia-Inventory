@@ -1309,3 +1309,11 @@ create index if not exists item_transfers_item_idx on item_transfers ("itemId", 
 create index if not exists item_transfers_to_idx   on item_transfers ("toBrandId", "createdAt" desc);
 create index if not exists item_transfers_from_idx on item_transfers ("fromBrandId", "createdAt" desc);
 alter table item_transfers enable row level security;
+
+-- ─── One SKU sequence across brands (migration 0047) ──────────────────────────
+-- New SKUs are numbered from the max over ALL brands (plants move between
+-- brands since 0046, so a label must mean one plant everywhere). Rows minted
+-- from the cutover on are globally unique; the per-brand era keeps its rows.
+create unique index if not exists inventory_items_sku_global_unique
+  on inventory_items (sku)
+  where "createdAt" >= '2026-10-02 00:00:00+00'::timestamptz;

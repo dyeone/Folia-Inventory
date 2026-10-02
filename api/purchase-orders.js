@@ -1382,7 +1382,8 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
   // whole insert atomically (23505) and we re-read + retry once.
   let createdItems = [];
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { data: maxSuffix, error: mErr } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
+    // One SKU sequence across every brand (see api/items.js findMaxSkuSuffix).
+    const { data: maxSuffix, error: mErr } = await supabase.rpc('inventory_max_sku_suffix');
     if (mErr) { const e = new Error(mErr.message); e.status = 500; throw e; }
     const base = (maxSuffix || 0) + 1;
     const rows = [];

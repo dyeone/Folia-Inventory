@@ -15,6 +15,15 @@ export const DEFAULT_ADD_VARIETY = 'anthurium';
 
 // Compute the next SKU suffix given a code prefix and the existing items.
 // Numbering is GLOBAL across all items; the prefix is purely for display.
+// The highest SKU number across ALL brands, as last reported by GET
+// /api/items (`skuMax`). SKU numbers are one sequence shared by the brands
+// since 2026-10-02 (plants move between brands), so a preview computed from
+// the active brand's own list alone could fall behind the other brand and
+// collide. The server mints the real number either way.
+let skuFloor = 0;
+export function setSkuFloor(n) { skuFloor = Number.isFinite(Number(n)) ? Math.max(skuFloor, Number(n)) : skuFloor; }
+export function getSkuFloor() { return skuFloor; }
+
 export function nextSkuForCode(code, existingItems) {
   if (!code) return '';
   const nums = (existingItems || [])
@@ -23,7 +32,7 @@ export function nextSkuForCode(code, existingItems) {
       return m ? parseInt(m[1], 10) : 0;
     })
     .filter(n => n > 0);
-  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  const next = Math.max(nums.length > 0 ? Math.max(...nums) : 0, skuFloor) + 1;
   return `${code}-${next}`;
 }
 

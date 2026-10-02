@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Search, ArrowRightLeft, Undo2, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { Search, ArrowRightLeft, Undo2, Loader2, AlertCircle, RefreshCw, Hash, Printer } from 'lucide-react';
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { brandName } from '../brands.js';
@@ -17,13 +17,15 @@ const MOVABLE = new Set(['available', 'listed', 'acclimated']);
 const money = (v) => (v == null || Number.isNaN(Number(v)) ? '—' : `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const when = (t) => { try { return new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
 
-export function SharedStockModal({ activeBrand, items, canTransfer, showCosts, onItemsChanged, showToast, onClose }) {
+export function SharedStockModal({ activeBrand, items, canTransfer, showCosts, onItemsChanged, onPrintLabels, showToast, onClose }) {
   const [stock, setStock] = useState(null);      // { items, brands }
   const [transfers, setTransfers] = useState(null);
   const [err, setErr] = useState('');
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(() => new Set());
   const [tab, setTab] = useState('stock');
+  const [renumbering, setRenumbering] = useState(false);
+  const [renumbered, setRenumbered] = useState(null);   // [{ id, oldSku, sku, name … }] after a cleanup
 
   // Both reads land together after the awaits (the lint rule wants no
   // synchronous setState inside the effect body).
@@ -115,6 +117,31 @@ export function SharedStockModal({ activeBrand, items, canTransfer, showCosts, o
 
   const total = stock?.items?.length || 0;
 
+  // Plants of OURS, in stock, whose SKU the other brand also has in stock —
+  // the per-brand numbering era. A scan of such a label lists ours even when
+  // the plant in hand is theirs, so these get fresh numbers (+ new labels).
+  const duplicates = useMemo(() => {
+    const theirs = new Set((stock?.items || []).map((i) => String(i.sku || '').toUpperCase()));
+    return (items || []).filter((i) => i.sku && MOVABLE.has(i.status) && !i.deletedAt && theirs.has(String(i.sku).toUpperCase()));
+  }, [stock, items]);
+
+  const renumber = async () => {
+    if (!canTransfer || renumbering) return;
+    setRenumbering(true);
+    try {
+      const done = await api.renumberDuplicateSkus();
+      setRenumbered(done);
+      showToast?.(done.length ? `${done.length} plant${done.length === 1 ? '' : 's'} renumbered — print the new labels` : 'Nothing to renumber');
+      await onItemsChanged?.();
+      // Label rows: what we had for the plant, with its new SKU on top.
+      if (done.length && onPrintLabels) onPrintLabels(done.map((r) => ({ ...(mine.get(r.id) || {}), ...r })));
+    } catch (e) {
+      showToast?.(e.message || 'Could not renumber', 'error');
+    } finally {
+      setRenumbering(false);
+    }
+  };
+
   return (
     <Modal title="Other brand stock" onClose={onClose} size="xl">
       <div className="space-y-3">
@@ -140,6 +167,40 @@ export function SharedStockModal({ activeBrand, items, canTransfer, showCosts, o
               Plants the other brand has on hand. <b>Move to {brandName(activeBrand)}</b> makes one yours to list, sell and ship here; its cost comes with it and the move is recorded.
               {!canTransfer && <span className="text-amber-700"> Moving needs a staff or admin login.</span>}
             </div>
+            {stock && (duplicates.length > 0 || renumbered) && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 space-y-1.5">
+                <div className="flex items-start gap-2">
+                  <Hash className="w-4 h-4 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    {duplicates.length > 0 ? (
+                      <>
+                        <b>{duplicates.length} plant{duplicates.length === 1 ? '' : 's'} here share{duplicates.length === 1 ? 's' : ''} a SKU with the other brand's stock</b>
+                        {' '}(from when each brand numbered its own). A scan of one of those labels lists {brandName(activeBrand)}'s plant even when the plant in hand is theirs.
+                        Renumbering gives {duplicates.length === 1 ? 'it a fresh number' : 'them fresh numbers'}; the new labels print right after.
+                      </>
+                    ) : (
+                      <b>No duplicate SKUs left on this side.</b>
+                    )}
+                  </div>
+                  {duplicates.length > 0 && (
+                    <button
+                      type="button"
+                      disabled={!canTransfer || renumbering}
+                      onClick={renumber}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 shrink-0"
+                    >
+                      {renumbering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
+                      Renumber {duplicates.length} &amp; print labels
+                    </button>
+                  )}
+                </div>
+                {renumbered?.length > 0 && (
+                  <div className="max-h-32 overflow-y-auto font-mono text-[11px] text-amber-900/90 grid grid-cols-2 sm:grid-cols-3 gap-x-3">
+                    {renumbered.map((r) => <span key={r.id}>{r.oldSku} → {r.sku}</span>)}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="relative">
               <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input

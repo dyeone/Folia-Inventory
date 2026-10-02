@@ -39,8 +39,14 @@ function stripServerOwned(item) {
 // caused new SKUs to collide with existing numbers under a different
 // variety prefix. The RPC (defined in migration 0007) extracts the suffix
 // in regex and takes max(int), which is correct regardless of width.
-async function findMaxSkuSuffix(brandId) {
-  const { data, error } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
+//
+// ONE sequence for every brand (2026-10-02): the brands share plants now
+// (cross-brand transfer), and a label that reads ANT-8190 must mean one
+// plant wherever it is scanned. The brand-scoped RPC is left in place for
+// older callers; new numbers come from the global max, and migration 0047
+// backs that with a unique index on sku for rows minted from then on.
+async function findMaxSkuSuffix() {
+  const { data, error } = await supabase.rpc('inventory_max_sku_suffix');
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return data ?? 0;
 }
@@ -85,7 +91,7 @@ async function assignMissingSkus(items, brandId) {
     }
   }
 
-  let next = (await findMaxSkuSuffix(brandId)) + 1;
+  let next = (await findMaxSkuSuffix()) + 1;
   for (const item of needSku) {
     const varietyCode = codeByName[item.variety];
     const prefix = item.sellerId ? `${codeBySellerId[item.sellerId]}-${varietyCode}` : varietyCode;
@@ -108,7 +114,7 @@ async function nextSkuForVariety(variety, brandId) {
   if (!code) {
     const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
   }
-  const next = (await findMaxSkuSuffix(brandId)) + 1;
+  const next = (await findMaxSkuSuffix()) + 1;
   return `${code}-${next}`;
 }
 
@@ -221,6 +227,59 @@ async function sharedStock(req, res, user, brandId) {
     .in('status', TRANSFERABLE_STATUSES)
     .order('brandId').order('createdAt', { ascending: false }));
   return res.status(200).json({ items: stripCostsForRole(user, data || []), brands: await brandNames(others) });
+}
+
+// GET ?action=shared-skus → just the SKUs the other brands have IN STOCK,
+// so the scan screen can tell "ours" from "ours AND theirs" without a round
+// trip per scan (older plants were numbered per brand and can collide).
+async function sharedSkus(req, res, user, brandId) {
+  const others = otherBrandsOf(user, brandId);
+  if (!others.length) return res.status(200).json({ skus: {} });
+  const data = await fetchAll(() => supabase
+    .from('inventory_items')
+    .select('sku, "brandId"')
+    .in('brandId', others)
+    .is('deletedAt', null)
+    .in('status', TRANSFERABLE_STATUSES)
+    .order('sku'));
+  const skus = {};
+  for (const r of data || []) { if (!r.sku) continue; (skus[r.brandId] ||= []).push(String(r.sku).toUpperCase()); }
+  return res.status(200).json({ skus });
+}
+
+// POST { action: 'renumber-duplicates' } → this brand's in-stock plants whose
+// SKU is ALSO in stock in another brand the user can access get a fresh
+// number from the shared sequence (prefix segments kept). Those labels must
+// be reprinted — the response lists old → new for exactly that. Staff or
+// admin. One-time cleanup of the per-brand numbering era; the shared
+// sequence stops new collisions.
+async function renumberDuplicates(req, res, user, brandId) {
+  if (!TRANSFER_ROLES.has(user.role)) { const e = new Error('Only staff or admins can renumber plants'); e.status = 403; throw e; }
+  const others = otherBrandsOf(user, brandId);
+  if (!others.length) return res.status(200).json({ renumbered: [] });
+  const theirs = await fetchAll(() => supabase
+    .from('inventory_items').select('sku').in('brandId', others).is('deletedAt', null).in('status', TRANSFERABLE_STATUSES));
+  const taken = new Set((theirs || []).map((r) => String(r.sku || '').toUpperCase()).filter(Boolean));
+  if (!taken.size) return res.status(200).json({ renumbered: [] });
+  const mine = await fetchAll(() => supabase
+    .from('inventory_items').select('id, sku, name, variety, "speciesId", type, status')
+    .eq('brandId', brandId).is('deletedAt', null).in('status', TRANSFERABLE_STATUSES));
+  const dup = (mine || []).filter((r) => r.sku && taken.has(String(r.sku).toUpperCase()) && /-\d+$/.test(r.sku));
+  if (!dup.length) return res.status(200).json({ renumbered: [] });
+  let next = (await findMaxSkuSuffix()) + 1;
+  const now = new Date().toISOString();
+  const renumbered = [];
+  for (const r of dup) {
+    const sku = r.sku.replace(/-\d+$/, `-${next++}`);
+    const { data: upd, error } = await supabase
+      .from('inventory_items')
+      .update({ sku, modifiedAt: now, modifiedBy: user.displayName })
+      .eq('id', r.id).eq('brandId', brandId).eq('sku', r.sku).is('deletedAt', null)
+      .select('id, sku, name, variety, "speciesId", type, status, "lotNumber"');
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    if (upd && upd.length) renumbered.push({ ...upd[0], oldSku: r.sku });
+  }
+  return res.status(200).json({ renumbered });
 }
 
 // GET ?action=lookup&sku= → one in-stock plant of another brand by SKU (the
@@ -442,6 +501,8 @@ export default wrap(async (req, res) => {
   if (action === 'combine-boxes') return combineBoxes(req, res, user, brandId);
   if (action === 'shared-stock' && req.method === 'GET') return sharedStock(req, res, user, brandId);
   if (action === 'lookup' && req.method === 'GET') return lookupSku(req, res, user, brandId);
+  if (action === 'shared-skus' && req.method === 'GET') return sharedSkus(req, res, user, brandId);
+  if (action === 'renumber-duplicates' && req.method === 'POST') return renumberDuplicates(req, res, user, brandId);
   if (action === 'transfers' && req.method === 'GET') return listTransfers(req, res, user, brandId);
   if (action === 'transfer' && req.method === 'POST') return transferItem(req, res, user, brandId);
   // Consultant-safe stock list: what's on hand, with the list price and
@@ -474,15 +535,21 @@ export default wrap(async (req, res) => {
 
       const data = await fetchAll(() =>
         supabase.from('inventory_items').select('*').eq('brandId', brandId));
+      // skuMax: the highest SKU number across ALL brands, so a client that
+      // previews the next SKU from its own brand's list can't fall behind
+      // the other brand (see findMaxSkuSuffix).
+      let skuMax = 0;
+      try { skuMax = await findMaxSkuSuffix(); } catch { /* preview only; the server mints */ }
       // The packing bench never needs what plants COST — strip bought-price
       // fields for packer logins so the data doesn't reach that client at
       // all (mirrors the purchase-orders API; staff/admin keep full rows).
       if (user.role === 'packer') {
         return res.status(200).json({
           items: (data || []).map(({ grossCost, netCost, cost, ...rest }) => rest),
+          skuMax,
         });
       }
-      return res.status(200).json({ items: data });
+      return res.status(200).json({ items: data, skuMax });
     }
 
     case 'POST': {

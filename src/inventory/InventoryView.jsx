@@ -975,6 +975,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           canTransfer={canTransfer}
           showCosts={isAdmin}
           onItemsChanged={onItemsChanged}
+          onPrintLabels={onBulkPrintLabel}
           showToast={showToast}
           onClose={() => setSharedOpen(false)}
         />

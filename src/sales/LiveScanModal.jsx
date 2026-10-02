@@ -86,6 +86,11 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   // A label from the OTHER brand being moved here right now: { sku, phase:
   // 'checking' | 'moving', name?, brandName? } — a status line, not a prompt.
   const [crossBrand, setCrossBrand] = useState(null);
+  // The other brand's IN-STOCK SKUs (older plants were numbered per brand,
+  // so a label can read the same on both sides). Loaded once; used to warn
+  // when a scan matches a plant of ours AND one of theirs.
+  const [theirSkus, setTheirSkus] = useState(() => new Map());   // SKU → brandId
+  const [warn, setWarn] = useState('');
   const itemsBySku = useMemo(() => {
     const m = new Map();
     for (const [k, i] of movedIn) m.set(k, i);
@@ -124,6 +129,19 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   useEffect(() => {
     if (!forcePush) inputRef.current?.focus();
   });
+
+  // The other brand's in-stock SKUs, once per open (see theirSkus).
+  useEffect(() => {
+    if (!canTransfer) return;
+    let cancelled = false;
+    api.getSharedSkus().then((skus) => {
+      if (cancelled) return;
+      const m = new Map();
+      for (const [b, list] of Object.entries(skus || {})) for (const k of list || []) m.set(normalizeSku(k), b);
+      setTheirSkus(m);
+    }).catch(() => { /* warning only */ });
+    return () => { cancelled = true; };
+  }, [canTransfer]);
 
   // Poll bridge health so the operator can see whether the bridge is
   // actually running. Scans still go through when offline (jobs queue).
@@ -232,29 +250,32 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   // so everything after the scan (listing, sale, packing, shipping,
   // reports) sees an ordinary plant of ours. A plant that can't move
   // (staged, boxed, sold over there) is explained and nothing lists.
-  const moveFromOtherBrand = async (sku) => {
+  // `soldHere`: our plant with that SKU is already sold/shipped (the
+  // per-brand numbering era), so the label in hand is almost certainly the
+  // other brand's plant — move it; if they don't have it in stock, fall back
+  // to the usual "already sold, push anyway?" question.
+  const moveFromOtherBrand = async (sku, soldHere = null) => {
     setCrossBrand({ sku, phase: 'checking' });
     let found;
     try {
       found = await api.lookupSkuAcrossBrands(sku);
     } catch (e) {
       setCrossBrand(null);
+      if (soldHere) { setForcePush({ sku, item: soldHere }); return; }
       setError(`No item with SKU "${sku}" here — and the other brand's stock couldn't be checked (${e.message || 'network'}).`);
       return;
     }
     const item = found?.item;
-    if (!item) {
+    if (!item || found.transferable === false) {
       setCrossBrand(null);
-      setError(`No item with SKU "${sku}".`);
-      return;
-    }
-    const from = found.brandName || brandName(item.brandId);
-    if (found.transferable === false) {
-      setCrossBrand(null);
+      if (soldHere) { setForcePush({ sku, item: soldHere }); return; }
+      if (!item) { setError(`No item with SKU "${sku}".`); return; }
+      const from = found.brandName || brandName(item.brandId);
       const why = item.saleId ? 'in a lineup there' : item.shipmentBoxId ? 'in a box there' : item.status;
       setError(`${sku} (${item.name}) is ${from} stock and can't move right now — it is ${why}.`);
       return;
     }
+    const from = found.brandName || brandName(item.brandId);
     setCrossBrand({ sku, phase: 'moving', name: item.name, brandName: from });
     try {
       const r = await api.transferItem({ itemId: item.id, fromBrandId: item.brandId, reason: 'sale' });
@@ -278,6 +299,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
 
   const handleScan = (rawSku) => {
     setError('');
+    setWarn('');
     const sku = normalizeSku(rawSku);
     if (!sku) return;
     const item = itemsBySku.get(sku);
@@ -287,9 +309,15 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
       return;
     }
     if (SOLD_STATUSES.has(item.status)) {
+      if (canTransfer) { moveFromOtherBrand(sku, item); return; }
       setForcePush({ sku, item });
       return;
     }
+    // Ours and in stock → list ours. If the other brand ALSO has that SKU in
+    // stock (per-brand numbering era), say so: the label in hand might be
+    // theirs, and the fix is the renumber tool, not a guess here.
+    const theirs = theirSkus.get(sku);
+    if (theirs) setWarn(`${brandName(theirs)} also has ${sku} in stock. Listed ours — if the plant in hand is ${brandName(theirs)}'s, renumber the duplicates in Inventory → Other brand stock.`);
     pushItem(item);
   };
 
@@ -420,6 +448,11 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
               {crossBrand.phase === 'checking'
                 ? <span><span className="font-mono">{crossBrand.sku}</span> isn't ours — checking the other brand…</span>
                 : <span>Moving <span className="font-medium">{crossBrand.name}</span> from {crossBrand.brandName} to {brandName(activeBrand)}…</span>}
+            </div>
+          )}
+          {warn && (
+            <div className="flex items-start gap-2 mt-2 bg-amber-50 text-amber-800 text-sm px-3 py-2 rounded-lg">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" /> {warn}
             </div>
           )}
           {error && (
