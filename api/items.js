@@ -1,5 +1,6 @@
 import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { brandSkuPrefix } from './_lib/sku.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 // brandId is server-owned too: the active brand is forced from the request, so
@@ -45,6 +46,7 @@ async function findMaxSkuSuffix(brandId) {
   return data ?? 0;
 }
 
+
 // Assign SKUs to items that don't have one. Numbering is GLOBAL across all
 // items; the variety code is only a prefix for identification. Example
 // sequence: ANT-1, ALO-2, ANT-3, MON-4, JOR-5…
@@ -86,10 +88,11 @@ async function assignMissingSkus(items, brandId) {
   }
 
   let next = (await findMaxSkuSuffix(brandId)) + 1;
+  const brandCode = brandSkuPrefix(brandId);
   for (const item of needSku) {
     const varietyCode = codeByName[item.variety];
     const prefix = item.sellerId ? `${codeBySellerId[item.sellerId]}-${varietyCode}` : varietyCode;
-    item.sku = `${prefix}-${next++}`;
+    item.sku = `${brandCode}-${prefix}-${next++}`;
   }
 }
 
@@ -109,7 +112,7 @@ async function nextSkuForVariety(variety, brandId) {
     const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
   }
   const next = (await findMaxSkuSuffix(brandId)) + 1;
-  return `${code}-${next}`;
+  return `${brandSkuPrefix(brandId)}-${code}-${next}`;
 }
 
 // POST { action: 'combine-boxes', targetBoxId, sourceBoxIds: [...] }
@@ -177,6 +180,312 @@ async function combineBoxes(req, res, user, brandId) {
   return res.status(200).json({ ok: true, moved: moved?.length || 0 });
 }
 
+// ─── Cross-brand stock (migration 0046) ──────────────────────────────────────
+// Either brand can see and sell the other's plants, WITHOUT any query ever
+// spanning brands: a plant belongs to one brand at a time, and selling the
+// other brand's plant means MOVING it first (transfer), after which every
+// existing flow — lineup, scan, listing, packing, shipping, reports — sees
+// an ordinary plant of the active brand. The only cross-brand reads are the
+// two narrow ones below (shared-stock, lookup), scoped to the brands the
+// user's own access list holds — never a brand named by the client alone.
+
+const TRANSFERABLE_STATUSES = ['available', 'listed', 'acclimated'];
+const TRANSFER_REASONS = new Set(['sale', 'manual', 'return']);
+const TRANSFER_ROLES = new Set(['admin', 'staff']);
+const SHARED_FIELDS = 'id, sku, name, variety, "speciesId", type, status, quantity, "listingPrice", "idealPrice", "grossCost", "netCost", "saleId", "shipmentBoxId", "lotNumber", "imageUrl", "sellerId", "createdAt", "modifiedAt", "brandId"';
+
+// The OTHER brands this user may read: their access list minus the active one.
+function otherBrandsOf(user, brandId) {
+  const access = Array.isArray(user.brandIds) && user.brandIds.length ? user.brandIds : [];
+  return access.filter((b) => b && b !== brandId);
+}
+
+function stripCostsForRole(user, rows) {
+  if (user.role === 'admin' || user.role === 'staff') return rows;
+  return rows.map(({ grossCost, netCost, cost, ...rest }) => rest);
+}
+
+async function brandNames(ids) {
+  if (!ids.length) return {};
+  const { data, error } = await supabase.from('brands').select('id, name').in('id', ids);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return Object.fromEntries((data || []).map((b) => [b.id, b.name]));
+}
+
+// GET ?action=shared-stock → the other brands' in-stock plants (read only).
+async function sharedStock(req, res, user, brandId) {
+  const others = otherBrandsOf(user, brandId);
+  if (!others.length) return res.status(200).json({ items: [], brands: {} });
+  const data = await fetchAll(() => supabase
+    .from('inventory_items')
+    .select(SHARED_FIELDS)
+    .in('brandId', others)
+    .is('deletedAt', null)
+    .in('status', TRANSFERABLE_STATUSES)
+    .order('brandId').order('createdAt', { ascending: false }));
+  return res.status(200).json({ items: stripCostsForRole(user, data || []), brands: await brandNames(others) });
+}
+
+// GET ?action=shared-skus → just the SKUs the other brands have IN STOCK,
+// so the scan screen can tell "ours" from "ours AND theirs" without a round
+// trip per scan (older plants were numbered per brand and can collide).
+async function sharedSkus(req, res, user, brandId) {
+  const others = otherBrandsOf(user, brandId);
+  if (!others.length) return res.status(200).json({ skus: {} });
+  const data = await fetchAll(() => supabase
+    .from('inventory_items')
+    .select('sku, "brandId"')
+    .in('brandId', others)
+    .is('deletedAt', null)
+    .in('status', TRANSFERABLE_STATUSES)
+    .order('sku'));
+  const skus = {};
+  for (const r of data || []) { if (!r.sku) continue; (skus[r.brandId] ||= []).push(String(r.sku).toUpperCase()); }
+  return res.status(200).json({ skus });
+}
+
+// POST { action: 'renumber-duplicates' } → this brand's in-stock plants whose
+// SKU is ALSO in stock in another brand the user can access get a fresh SKU:
+// the brand prefix plus a fresh number (seller / variety segments kept).
+// Those labels must be reprinted — the response lists old → new for
+// exactly that. Staff or admin. One-time cleanup of the era before brand
+// prefixes; prefixed SKUs can't collide.
+async function renumberDuplicates(req, res, user, brandId) {
+  if (!TRANSFER_ROLES.has(user.role)) { const e = new Error('Only staff or admins can renumber plants'); e.status = 403; throw e; }
+  const others = otherBrandsOf(user, brandId);
+  if (!others.length) return res.status(200).json({ renumbered: [] });
+  const theirs = await fetchAll(() => supabase
+    .from('inventory_items').select('sku').in('brandId', others).is('deletedAt', null).in('status', TRANSFERABLE_STATUSES));
+  const taken = new Set((theirs || []).map((r) => String(r.sku || '').toUpperCase()).filter(Boolean));
+  if (!taken.size) return res.status(200).json({ renumbered: [] });
+  const mine = await fetchAll(() => supabase
+    .from('inventory_items').select('id, sku, name, variety, "speciesId", type, status')
+    .eq('brandId', brandId).is('deletedAt', null).in('status', TRANSFERABLE_STATUSES));
+  const dup = (mine || []).filter((r) => r.sku && taken.has(String(r.sku).toUpperCase()) && /-\d+$/.test(r.sku));
+  if (!dup.length) return res.status(200).json({ renumbered: [] });
+  let next = (await findMaxSkuSuffix(brandId)) + 1;
+  const brandCode = brandSkuPrefix(brandId);
+  const now = new Date().toISOString();
+  const renumbered = [];
+  for (const r of dup) {
+    const stem = r.sku.replace(/-\d+$/, '').replace(new RegExp(`^${brandCode}-`), '');
+    const sku = `${brandCode}-${stem}-${next++}`;
+    const { data: upd, error } = await supabase
+      .from('inventory_items')
+      .update({ sku, modifiedAt: now, modifiedBy: user.displayName })
+      .eq('id', r.id).eq('brandId', brandId).eq('sku', r.sku).is('deletedAt', null)
+      .select('id, sku, name, variety, "speciesId", type, status, "lotNumber"');
+    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    if (upd && upd.length) renumbered.push({ ...upd[0], oldSku: r.sku });
+  }
+  return res.status(200).json({ renumbered });
+}
+
+// GET ?action=lookup&sku= → one in-stock plant of another brand by SKU (the
+// scan screen asks this when a scanned label isn't the active brand's).
+async function lookupSku(req, res, user, brandId) {
+  const sku = String(req.query?.sku || '').trim().toUpperCase().replace(/_/g, '-');
+  if (!sku) { const e = new Error('sku required'); e.status = 400; throw e; }
+  const others = otherBrandsOf(user, brandId);
+  if (!others.length) return res.status(200).json({ item: null });
+  const { data, error } = await supabase
+    .from('inventory_items')
+    .select(SHARED_FIELDS)
+    .in('brandId', others)
+    .is('deletedAt', null)
+    .ilike('sku', sku)
+    .limit(5);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const hit = (data || []).find((i) => TRANSFERABLE_STATUSES.includes(i.status)) || (data || [])[0] || null;
+  if (!hit) return res.status(200).json({ item: null });
+  const names = await brandNames([hit.brandId]);
+  return res.status(200).json({
+    item: stripCostsForRole(user, [hit])[0],
+    brandName: names[hit.brandId] || hit.brandId,
+    transferable: TRANSFERABLE_STATUSES.includes(hit.status) && !hit.saleId && !hit.shipmentBoxId,
+  });
+}
+
+// GET ?action=transfers → this brand's recent moves, in and out.
+async function listTransfers(req, res, user, brandId) {
+  const { data, error } = await supabase
+    .from('item_transfers')
+    .select('*')
+    .or(`fromBrandId.eq.${brandId},toBrandId.eq.${brandId}`)
+    .order('createdAt', { ascending: false })
+    .limit(200);
+  if (error) {
+    if (/item_transfers/.test(error.message) && /does not exist|42P01/.test(`${error.code} ${error.message}`)) {
+      return res.status(200).json({ transfers: [], unsupported: true });
+    }
+    const e = new Error(error.message); e.status = 500; throw e;
+  }
+  const rows = user.role === 'admin' || user.role === 'staff' ? (data || []) : (data || []).map(({ grossCost, netCost, ...r }) => r);
+  const ids = Array.from(new Set(rows.flatMap((t) => [t.fromBrandId, t.toBrandId])));
+  return res.status(200).json({ transfers: rows, brands: await brandNames(ids) });
+}
+
+// The receiving brand's species for a plant: same variety name, same
+// epithet. Created when missing (a plant must not lose its catalog link),
+// copying the selling fields the streamer relies on.
+// The receiving brand's variety of the same name, created (same code) when
+// missing. `source` is the sending brand's variety row or null.
+async function varietyInBrand(name, code, toBrandId, user) {
+  if (!name) return null;
+  const { data: found, error } = await supabase
+    .from('varieties').select('id, name, code').eq('brandId', toBrandId).ilike('name', name).limit(1);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (found && found.length) return found[0];
+  const row = { id: newId(), brandId: toBrandId, name, code: code || name.slice(0, 3).toUpperCase(), createdBy: user.displayName || user.id };
+  const { error: iErr } = await supabase.from('varieties').insert(row);
+  if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
+  return row;
+}
+
+async function speciesInBrand(fromSpeciesId, toBrandId, user) {
+  if (!fromSpeciesId) return null;
+  const { data: src, error } = await supabase.from('species').select('*').eq('id', fromSpeciesId).maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (!src) return null;
+  const { data: srcVar, error: svErr } = await supabase.from('varieties').select('name, code').eq('id', src.varietyId).maybeSingle();
+  if (svErr) { const e = new Error(svErr.message); e.status = 500; throw e; }
+  if (!srcVar?.name) return null;
+  const variety = await varietyInBrand(srcVar.name, srcVar.code, toBrandId, user);
+  const { data: existing, error: sErr } = await supabase
+    .from('species').select('id').eq('brandId', toBrandId).eq('varietyId', variety.id).ilike('epithet', src.epithet).maybeSingle();
+  if (sErr) { const e = new Error(sErr.message); e.status = 500; throw e; }
+  if (existing) return { speciesId: existing.id, varietyName: variety.name, created: false };
+  const row = {
+    id: newId(),
+    brandId: toBrandId,
+    varietyId: variety.id,
+    epithet: src.epithet,
+    commonName: src.commonName ?? null,
+    notes: src.notes ?? null,
+    profitRate: src.profitRate ?? null,
+    wholesalePrice: src.wholesalePrice ?? null,
+    idealSellingPrice: src.idealSellingPrice ?? null,
+    sellNote: src.sellNote ?? null,
+    createdBy: user.displayName || user.id,
+  };
+  const { error: iErr } = await supabase.from('species').insert(row);
+  if (iErr) {
+    // An older DB without a column we copied: retry with the bare row.
+    const { error: again } = await supabase.from('species').insert({ id: row.id, brandId: toBrandId, varietyId: variety.id, epithet: src.epithet, createdBy: row.createdBy });
+    if (again) { const e = new Error(again.message); e.status = 500; throw e; }
+  }
+  return { speciesId: row.id, varietyName: variety.name, created: true };
+}
+
+// POST { action: 'transfer', itemId, fromBrandId, reason, saleId?, transferId }
+// Moves one plant from `fromBrandId` into the ACTIVE brand. Admin or staff,
+// with both brands on their access list. The plant keeps its SKU (so its
+// printed label keeps scanning) unless the receiving brand already used that
+// SKU, in which case it is re-numbered and `relabel` comes back true. Cost
+// travels with the plant; the ledger row is written first so a move can
+// never happen unrecorded, and the item update guards status / lineup / box
+// in the statement so two operators can't both move it.
+async function transferItem(req, res, user, brandId) {
+  if (!TRANSFER_ROLES.has(user.role)) { const e = new Error('Only staff or admins can move stock between brands'); e.status = 403; throw e; }
+  const { itemId, fromBrandId, reason = 'manual', saleId = null } = req.body || {};
+  const transferId = typeof req.body?.transferId === 'string' && /^[\w-]{6,64}$/.test(req.body.transferId) ? req.body.transferId : newId();
+  if (!itemId || typeof itemId !== 'string') { const e = new Error('itemId required'); e.status = 400; throw e; }
+  if (!fromBrandId || typeof fromBrandId !== 'string') { const e = new Error('fromBrandId required'); e.status = 400; throw e; }
+  if (fromBrandId === brandId) { const e = new Error('That plant is already in this brand'); e.status = 400; throw e; }
+  if (!TRANSFER_REASONS.has(reason)) { const e = new Error('reason must be sale, manual or return'); e.status = 400; throw e; }
+  if (!otherBrandsOf(user, brandId).includes(fromBrandId)) { const e = new Error('Brand access required'); e.status = 403; throw e; }
+
+  // Idempotent retry: the same transferId already moved it.
+  const { data: prior, error: pErr } = await supabase.from('item_transfers').select('id, "toBrandId"').eq('id', transferId).maybeSingle();
+  if (pErr) {
+    if (/item_transfers/.test(pErr.message) && /does not exist|42P01/.test(`${pErr.code} ${pErr.message}`)) {
+      const e = new Error('Moving stock between brands needs migration 0046 (item_transfers) — run it in the Supabase SQL editor first'); e.status = 409; throw e;
+    }
+    const e = new Error(pErr.message); e.status = 500; throw e;
+  }
+  if (prior) {
+    const { data: already } = await supabase.from('inventory_items').select('*').eq('id', itemId).eq('brandId', brandId).maybeSingle();
+    if (already) return res.status(200).json({ ok: true, item: already, relabel: false, transferId, repeated: true });
+  }
+
+  const { data: item, error: iErr } = await supabase
+    .from('inventory_items').select('*').eq('id', itemId).eq('brandId', fromBrandId).is('deletedAt', null).maybeSingle();
+  if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
+  if (!item) { const e = new Error('Plant not found in that brand (it may have just moved)'); e.status = 404; throw e; }
+  if (!TRANSFERABLE_STATUSES.includes(item.status)) { const e = new Error(`A ${item.status} plant can't move between brands`); e.status = 409; throw e; }
+  if (item.saleId) { const e = new Error('That plant is staged in a sale event — remove it from the lineup first'); e.status = 409; throw e; }
+  if (item.shipmentBoxId) { const e = new Error('That plant is in a shipping box'); e.status = 409; throw e; }
+
+  const sp = await speciesInBrand(item.speciesId, brandId, user);
+  // Even without a catalog link the variety must exist here, for the SKU
+  // prefix and the inventory's variety tabs.
+  if (!sp && item.variety) {
+    const { data: srcVar } = await supabase.from('varieties').select('name, code').eq('brandId', fromBrandId).ilike('name', item.variety).limit(1);
+    await varietyInBrand(item.variety, srcVar?.[0]?.code, brandId, user);
+  }
+  // SKU: keep it unless the receiving brand already has that SKU (any row,
+  // deleted ones included — the unique index covers them all).
+  const { data: clash, error: cErr } = await supabase
+    .from('inventory_items').select('id').eq('brandId', brandId).eq('sku', item.sku).limit(1);
+  if (cErr) { const e = new Error(cErr.message); e.status = 500; throw e; }
+  let toSku = item.sku;
+  let relabel = false;
+  if (clash && clash.length) {
+    const variety = sp?.varietyName || item.variety;
+    toSku = await nextSkuForVariety(variety, brandId);
+    relabel = true;
+  }
+
+  const now = new Date().toISOString();
+  const ledger = {
+    id: transferId,
+    itemId: item.id,
+    fromBrandId,
+    toBrandId: brandId,
+    fromSku: item.sku,
+    toSku,
+    fromSpeciesId: item.speciesId || null,
+    toSpeciesId: sp?.speciesId || null,
+    grossCost: item.grossCost ?? null,
+    netCost: item.netCost ?? null,
+    reason,
+    saleId: typeof saleId === 'string' && saleId ? saleId : null,
+    createdAt: now,
+    createdBy: user.displayName || user.id,
+  };
+  const { error: lErr } = await supabase.from('item_transfers').insert(ledger);
+  if (lErr) { const e = new Error(lErr.message); e.status = 500; throw e; }
+
+  const { data: moved, error: mErr } = await supabase
+    .from('inventory_items')
+    .update({
+      brandId,
+      sku: toSku,
+      speciesId: sp?.speciesId || null,
+      variety: sp?.varietyName || item.variety,
+      saleId: null, lotNumber: null, lotKind: 'sale', stagedAt: null,
+      sellerId: null, commissionPct: null,     // consignment is per brand; the plant is ours to sell here
+      modifiedAt: now,
+      modifiedBy: user.displayName,
+    })
+    .eq('id', item.id)
+    .eq('brandId', fromBrandId)
+    .in('status', TRANSFERABLE_STATUSES)
+    .is('saleId', null)
+    .is('shipmentBoxId', null)
+    .is('deletedAt', null)
+    .select('*');
+  if (mErr || !moved || moved.length === 0) {
+    await supabase.from('item_transfers').delete().eq('id', transferId);
+    if (mErr) { const e = new Error(mErr.message); e.status = 500; throw e; }
+    const e = new Error('That plant changed under you (sold, staged or moved) — reload and try again'); e.status = 409; throw e;
+  }
+  // Its photos follow it (best effort — a miss only hides them until the
+  // next move; the transfer itself is complete).
+  try { await supabase.from('item_photos').update({ brandId }).eq('itemId', item.id); } catch { /* see above */ }
+  return res.status(200).json({ ok: true, item: moved[0], relabel, transferId, speciesCreated: !!sp?.created });
+}
+
 export default wrap(async (req, res) => {
   // All item operations require an authenticated user + an authorized brand.
   const userId = req.method === 'GET' ? req.query?.userId : req.body?.userId;
@@ -189,6 +498,12 @@ export default wrap(async (req, res) => {
   if (action === 'convert') return convertItem(req, res, user, brandId);
   if (action === 'rename-names') return renameNames(req, res, user, brandId);
   if (action === 'combine-boxes') return combineBoxes(req, res, user, brandId);
+  if (action === 'shared-stock' && req.method === 'GET') return sharedStock(req, res, user, brandId);
+  if (action === 'lookup' && req.method === 'GET') return lookupSku(req, res, user, brandId);
+  if (action === 'shared-skus' && req.method === 'GET') return sharedSkus(req, res, user, brandId);
+  if (action === 'renumber-duplicates' && req.method === 'POST') return renumberDuplicates(req, res, user, brandId);
+  if (action === 'transfers' && req.method === 'GET') return listTransfers(req, res, user, brandId);
+  if (action === 'transfer' && req.method === 'POST') return transferItem(req, res, user, brandId);
   // Consultant-safe stock list: what's on hand, with the list price and
   // never the cost. Any brand member. (The plain GET returns full rows with
   // costs to staff/admin — this is the narrow read for the pricing screen.)

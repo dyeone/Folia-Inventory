@@ -1,5 +1,6 @@
 import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, DEFAULT_BRAND } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { brandSkuPrefix } from './_lib/sku.js';
 import { installDomMatrixPolyfill } from './_lib/domMatrix.js';
 
 // Purchase orders. Action-dispatched. See:
@@ -1390,7 +1391,8 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
       rows.push({
         id: newId(),
         brandId,
-        sku: `${variety?.code || 'PLT'}-${base + i}`,
+        // Brand-prefixed like every SKU minted since 2026-10-02 (api/items.js brandSkuPrefix).
+        sku: `${brandSkuPrefix(brandId)}-${variety?.code || 'PLT'}-${base + i}`,
         type: mintType,
         name: species.epithet,
         variety: variety?.name || null,

@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Search, Download, ArrowRightLeft, ArrowLeftRight, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil, FileText, DollarSign } from 'lucide-react';
 import { VendorPriceModal } from './VendorPriceModal.jsx';
+import { SharedStockModal } from './SharedStockModal.jsx';
 import { FilterPill } from '../ui/FilterPill.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 import { VARIETIES as DEFAULT_VARIETIES } from '../constants.js';
@@ -24,7 +25,7 @@ function fmtAddedAt(iso) {
   return `${datePart}, ${timePart}`;
 }
 
-export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, onSpeciesChanged, showToast, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onBulkRename, onStatusChange, isAdmin, brand }) {
+export function InventoryView({ items: filteredItems, allItems, sales, varieties = [], species = [], idealRate, acclimatedRate, onUpdateSpeciesRate, onDeleteVariety, onAddToSpecies, onExportPalmstreet, onManageVarieties, onSpeciesChanged, showToast, searchQuery, setSearchQuery, filterType, setFilterType, filterStatus, setFilterStatus, filterSale, setFilterSale, onEdit, onDelete, onConvert, onPrintLabel, onBulkPrintLabel, onBulkDelete, onBulkRename, onStatusChange, isAdmin, brand, otherBrands = [], canTransfer = false, onItemsChanged }) {
   const isMobile = useIsMobile();
   // O(1) lookups for speciesForItem / computeIdealPrice — built once per
   // varieties/species change instead of linear-scanning per item per render.
@@ -37,6 +38,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   );
   const [varietyTab, setVarietyTab] = useState('all');
   const [vendorPricesOpen, setVendorPricesOpen] = useState(false);
+  const [sharedOpen, setSharedOpen] = useState(false);
   const items = useMemo(
     () => varietyTab === 'all' ? filteredItems : filteredItems.filter(i => i.variety === varietyTab),
     [filteredItems, varietyTab]
@@ -304,6 +306,15 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
           <button onClick={exportCSV} className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50">
             <Download className="w-4 h-4" /> Export CSV
           </button>
+          {otherBrands.length > 0 && (
+            <button
+              onClick={() => setSharedOpen(true)}
+              title="See the other brand's stock and move plants here to sell them"
+              className="flex items-center gap-1.5 px-3 py-2 text-sm text-sky-700 border border-sky-300 bg-sky-50 rounded-lg hover:bg-sky-100"
+            >
+              <ArrowRightLeft className="w-4 h-4" /> Other brand stock
+            </button>
+          )}
           {onExportPalmstreet && (
             <button
               onClick={onExportPalmstreet}
@@ -957,6 +968,18 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
         />
       )}
 
+      {sharedOpen && (
+        <SharedStockModal
+          activeBrand={brand}
+          items={allItems}
+          canTransfer={canTransfer}
+          showCosts={isAdmin}
+          onItemsChanged={onItemsChanged}
+          onPrintLabels={onBulkPrintLabel}
+          showToast={showToast}
+          onClose={() => setSharedOpen(false)}
+        />
+      )}
       {vendorPricesOpen && (
         <VendorPriceModal
           species={species}

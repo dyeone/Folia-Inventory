@@ -1,3 +1,5 @@
+import { setSkuBrand } from './constants.js';
+
 // Thin fetch wrapper around the /api/* routes.
 // Each call returns parsed JSON on success and throws Error(message) on failure.
 
@@ -10,7 +12,7 @@ export function setAuthUserId(id) { authUserId = id; }
 // server scopes reads/writes to it. When unset, the server defaults to the
 // 'bae-gin' brand, so brandless flows keep working.
 let authBrandId = null;
-export function setAuthBrandId(id) { authBrandId = id; }
+export function setAuthBrandId(id) { authBrandId = id; setSkuBrand(id); }   // SKU previews carry the brand prefix
 
 // Routes that should NOT have userId appended (auth endpoints).
 // Everything else (items/sales/users) gets userId so the server can verify
@@ -22,7 +24,9 @@ function isUnauthed(path) {
   return UNAUTHED_PREFIXES.some(p => path === p || path.startsWith(`${p}?`) || path.startsWith(`${p}/`));
 }
 
-async function request(path, { method = 'GET', body } = {}) {
+// `brandId` (option) addresses a NON-active brand the user also has access
+// to — the cross-brand transfer's "return" leg writes INTO the other brand.
+async function request(path, { method = 'GET', body, brandId: brandOverride } = {}) {
   const isAuthed = !isUnauthed(path);
 
   // Build the request URL; for GET add userId as a query param.
@@ -37,7 +41,7 @@ async function request(path, { method = 'GET', body } = {}) {
       // used by the follower board to show a non-active brand's store.
       if (authBrandId && !url.includes('brandId=')) url += `&brandId=${encodeURIComponent(authBrandId)}`;
     } else {
-      finalBody = { ...(body || {}), userId: authUserId, brandId: authBrandId ?? undefined };
+      finalBody = { ...(body || {}), userId: authUserId, brandId: brandOverride || authBrandId || undefined };
     }
   }
 
@@ -77,6 +81,21 @@ export const api = {
 
   // Items
   getItems: () => request('/items').then(r => r.items),
+  getSharedSkus: () => request('/items?action=shared-skus').then(r => r.skus || {}),
+  renumberDuplicateSkus: () => request('/items', { method: 'POST', body: { action: 'renumber-duplicates' } }).then(r => r.renumbered || []),
+  // Cross-brand stock (the other brands on the user's access list). Reads
+  // are narrow and read-only; a sale across brands MOVES the plant first.
+  getSharedStock: () => request('/items?action=shared-stock'),
+  lookupSkuAcrossBrands: (sku) => request(`/items?action=lookup&sku=${encodeURIComponent(sku)}`),
+  getItemTransfers: () => request('/items?action=transfers'),
+  // Moves one plant from `fromBrandId` into `toBrandId` (default: the active
+  // brand). reason: 'sale' | 'manual' | 'return'.
+  transferItem: ({ itemId, fromBrandId, toBrandId, reason = 'manual', saleId = null, transferId }) =>
+    request('/items', {
+      method: 'POST',
+      brandId: toBrandId || undefined,
+      body: { action: 'transfer', itemId, fromBrandId, reason, saleId, transferId: transferId || `xfer-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}` },
+    }),
   // Pinned-brand variants for the hash-route boards (#show-board=<brand>):
   // an explicit brandId in the path wins over the session brand in request().
   getItemsForBrand: (brandId) =>
