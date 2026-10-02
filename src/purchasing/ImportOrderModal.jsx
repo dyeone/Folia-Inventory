@@ -3,7 +3,8 @@ import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet } from 'lucide-rea
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
-import { readSheetGrid, readInvoicePdf, isPdfFile, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { readSheetGrid, readOrderPdf, mapTableRows, gridColumns, isPdfFile, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { ColumnMapper } from './ColumnMapper.jsx';
 import { MatchPicker, MatchedRowEditor, RowVarietySelect } from './MatchPicker.jsx';
 
 // Rows the auto-matcher couldn't bind to an existing species — each gets a
@@ -91,7 +92,15 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
   const [overrides, setOverrides] = useState({}); // baseRow index → {speciesId}|{skip:true}
   // Vendor invoice PDF facts (invoice no/date, shipping & tax, totals, sum
   // check warnings) — shown above the rows and used to prefill the header.
+  // What the file told us beyond its rows: { kind: 'invoice' | 'table', … }
+  // (invoice no / date / shipping for the Brighten invoice; line count,
+  // pcs, cartons and the checks for a packing list). Both carry warnings.
   const [invoiceMeta, setInvoiceMeta] = useState(null);
+  // "Which column is which?" — set when the file's columns weren't
+  // recognised; rows only appear once the operator confirms (ColumnMapper).
+  const [mapper, setMapper] = useState(null);
+
+  const newImportId = () => { importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`; };
 
   const handleFile = async (file) => {
     setParseErr('');
@@ -99,29 +108,76 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
     setNoQtyColumn(false);
     setOverrides({});
     setInvoiceMeta(null);
-    importIdRef.current = `imp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    setMapper(null);
+    newImportId();
     if (!file) return;
     setFileName(file.name);
     try {
       let grid;
       if (isPdfFile(file)) {
-        // The invoice PDF: same grid as a sheet, plus the header facts. The
-        // vendor name and shipping & tax only fill EMPTY fields — a value
-        // the operator already typed wins.
-        const { grid: g, meta } = await readInvoicePdf(file);
-        grid = g;
-        setInvoiceMeta(meta);
-        setSupplier((cur) => cur.trim() ? cur : (meta.supplier || ''));
-        setShippingFee((cur) => String(cur).trim() ? cur : (meta.shippingFee != null ? meta.shippingFee.toFixed(2) : ''));
-        setNotes((cur) => cur.trim() ? cur : [meta.invoiceNo ? `Invoice ${meta.invoiceNo}` : '', meta.invoiceDate].filter(Boolean).join(' · '));
+        // The invoice PDF or a packing list: same grid as a sheet, plus the
+        // header facts. The vendor name and shipping & tax only fill EMPTY
+        // fields — a value the operator already typed wins.
+        const r = await readOrderPdf(file);
+        if (r.needsMapping) {
+          setMapper({
+            kind: 'pdf', rows: r.rows, roles: r.roles || {},
+            columns: gridColumns(r.rows, r.columns),
+            message: 'The column names in this PDF were not recognised. Point at the plant name column, and the quantity and price if it has them, then continue.',
+          });
+          return;
+        }
+        grid = r.grid;
+        setInvoiceMeta({ kind: r.kind, ...r.meta });
+        if (r.kind === 'invoice') {
+          const meta = r.meta;
+          setSupplier((cur) => cur.trim() ? cur : (meta.supplier || ''));
+          setShippingFee((cur) => String(cur).trim() ? cur : (meta.shippingFee != null ? meta.shippingFee.toFixed(2) : ''));
+          setNotes((cur) => cur.trim() ? cur : [meta.invoiceNo ? `Invoice ${meta.invoiceNo}` : '', meta.invoiceDate].filter(Boolean).join(' · '));
+        }
       } else {
         grid = await readSheetGrid(file);
       }
-      const { rows: parsed, noQtyColumn: noQty } = parseOrderRows(grid);
-      setNoQtyColumn(noQty);
-      setBaseRows(parsed);
+      let parsed = null;
+      try { parsed = parseOrderRows(grid); } catch (e) { if (!grid.length) throw e; }
+      if (!parsed || parsed.guessed) {
+        // No header we know: don't order column B of plants on a guess —
+        // show the columns and ask (the guess is preselected when there is one).
+        setMapper({
+          kind: 'sheet', grid, roles: parsed?.cols || {},
+          columns: gridColumns(grid),
+          message: parsed
+            ? 'This sheet has no header row we recognise, so the columns were guessed: A = plant name, B = quantity, C = price. Confirm them, or fix them, then continue.'
+            : 'The columns in this sheet were not recognised. Point at the plant name column, and the quantity and price if it has them, then continue.',
+        });
+        return;
+      }
+      setNoQtyColumn(parsed.noQtyColumn);
+      setBaseRows(parsed.rows);
     } catch (e) {
       setParseErr(e.message || 'Could not read that file.');
+    }
+  };
+
+  const confirmMapper = async () => {
+    if (!mapper || mapper.roles.species === undefined) return;
+    setParseErr('');
+    try {
+      let grid = mapper.grid;
+      let forced = mapper.roles;
+      if (mapper.kind === 'pdf') {
+        // The mapped table becomes the standard Item / Quantity / Price grid.
+        const r = await mapTableRows(mapper.rows, mapper.roles);
+        grid = r.grid; forced = null;
+        setInvoiceMeta({ kind: 'table', ...r.meta });
+      }
+      const parsed = parseOrderRows(grid, forced);
+      newImportId();   // a different column reading is a different import
+      setNoQtyColumn(parsed.noQtyColumn);
+      setBaseRows(parsed.rows);
+      setMapper(null);
+    } catch (e) {
+      setParseErr(e.message || 'Could not read those columns.');
     }
   };
 
@@ -360,13 +416,40 @@ export function ImportOrderModal({ species, varieties, showToast, onClose, onCre
           ) : (
             <div className="text-sm text-gray-600">
               <Upload className="w-6 h-6 mx-auto mb-1 text-gray-400" />
-              Drop the supplier's list here (.xlsx / .csv) or their invoice PDF
-              <div className="text-xs text-gray-400 mt-1">Sheet columns: species (required) · variety · qty · price · Invoice PDF: item · price · qty · amount</div>
+              Drop the supplier's list here (.xlsx / .csv), their invoice PDF, or the packing list PDF
+              <div className="text-xs text-gray-400 mt-1">Sheet columns: species (required) · variety · qty · price · PDF: a table with a header row (description · price · qty). Unrecognised columns? You'll be asked which is which.</div>
             </div>
           )}
         </div>
 
-        {invoiceMeta && !parseErr && (
+        {mapper && !baseRows && (
+          <ColumnMapper
+            columns={mapper.columns}
+            roles={mapper.roles}
+            onChange={(roles) => setMapper((m) => (m ? { ...m, roles } : m))}
+            onConfirm={confirmMapper}
+            message={mapper.message}
+            busy={importing}
+          />
+        )}
+
+        {invoiceMeta?.kind === 'table' && !parseErr && (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+              <span className="font-semibold">Packing list</span>
+              <span>{invoiceMeta.rows.length} lines · {invoiceMeta.sumQty.toLocaleString()} pcs{invoiceMeta.cartons ? ` · ${invoiceMeta.cartons} carton${invoiceMeta.cartons === 1 ? '' : 's'}` : ''}</span>
+              {invoiceMeta.sumAmount > 0 && <span>total ${invoiceMeta.sumAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>}
+              {invoiceMeta.rows.some((r) => r.invoiceQty != null) && <span>packed counts used</span>}
+            </div>
+            {invoiceMeta.warnings.length > 0 && (
+              <ul className="list-disc pl-4 text-amber-800">
+                {invoiceMeta.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {invoiceMeta && invoiceMeta.kind !== 'table' && !parseErr && (
           <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900 space-y-1">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
               <span className="font-semibold">Invoice {invoiceMeta.invoiceNo || '—'}</span>

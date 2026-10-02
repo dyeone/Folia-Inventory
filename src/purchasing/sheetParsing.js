@@ -73,25 +73,50 @@ export function decodeCsvBytes(bytes) {
 
 export const isPdfFile = (file) => /\.pdf$/i.test(file?.name || '') || /pdf/i.test(file?.type || '');
 
-// Vendor invoice PDF → { grid, meta }. The grid is the same Item / Quantity
-// / Price shape a spreadsheet yields, so callers that only want rows can use
-// readSheetGrid; ImportOrderModal takes the meta too (vendor, invoice no /
-// date, shipping & tax, totals) to prefill the order header. The PDF's text
-// is extracted server-side (api/purchase-orders.js pdf-text — the desk's
-// Safari can't run pdf.js 6); the parser runs here and is lazy-loaded.
+// Vendor PDF → { grid, meta, kind } or { needsMapping, columns, rows }.
+// Two readers try in turn: the Brighten invoice layout (invoicePdf.js:
+// item · price · qty · amount on one baseline, with invoice no / date /
+// shipping that prefill the order header), then the generic TABLE reader
+// (tablePdf.js: a packing list with a header row — wrapped names, a price
+// on its own baseline, packed vs invoiced counts). When neither recognises
+// the columns the table comes back as the page shows it and the caller
+// asks the operator which column is which (ColumnMapper → mapTableRows).
+// The grid is the same Item / Quantity / Price shape a spreadsheet yields,
+// so the rest of the import pipeline runs unchanged. The PDF's text is
+// extracted server-side (api/purchase-orders.js pdf-text — the desk's
+// Safari can't run pdf.js 6); both parsers run here and are lazy-loaded.
 const INVOICE_PDF_MAX_BYTES = 10 * 1024 * 1024;
-export async function readInvoicePdf(file) {
-  if (file.size > INVOICE_PDF_MAX_BYTES) throw new Error('That PDF is over 10 MB — export a smaller invoice.');
-  const [{ api }, { bytesToBase64 }, { parseInvoicePages, invoiceToGrid, invoiceRowsError }] = await Promise.all([
+export async function readOrderPdf(file) {
+  if (file.size > INVOICE_PDF_MAX_BYTES) throw new Error('That PDF is over 10 MB — export a smaller file.');
+  const [{ api }, { bytesToBase64 }, { parseInvoicePages, invoiceToGrid }, { parseTablePages, tableToGrid }] = await Promise.all([
     import('../api.js'),
     import('../labels/useBridgePrint.js'),
     import('./invoicePdf.js'),
+    import('./tablePdf.js'),
   ]);
   const pages = await api.pdfText(bytesToBase64(new Uint8Array(await file.arrayBuffer())));
-  const meta = parseInvoicePages(pages);
-  const err = invoiceRowsError(meta, pages);
-  if (err) throw new Error(err);
-  return { grid: invoiceToGrid(meta), meta };
+  const invoice = parseInvoicePages(pages);
+  if (invoice.rows.length > 0) return { kind: 'invoice', grid: invoiceToGrid(invoice), meta: invoice };
+  const table = parseTablePages(pages);
+  if (!table.needsMapping) return { kind: 'table', grid: tableToGrid(table), meta: table };
+  if (!table.hasText) throw new Error('That PDF has no text layer (a scan). Export it from Excel, or upload the .xlsx instead.');
+  if (!table.rows.length) throw new Error('No table found in that PDF — is it the packing list or invoice?');
+  return { kind: 'table', needsMapping: true, columns: table.columns, rows: table.rows, roles: table.roles || {} };
+}
+
+// Operator-mapped PDF table → { grid, meta } (see readOrderPdf).
+export async function mapTableRows(rows, roles) {
+  const { shapeRows, tableToGrid } = await import('./tablePdf.js');
+  const meta = shapeRows(rows, roles);
+  if (!meta.rows.length) throw new Error('No rows have a plant name in that column — pick another one.');
+  return { grid: tableToGrid(meta), meta };
+}
+
+// Kept for callers that only ever wanted the invoice layout.
+export async function readInvoicePdf(file) {
+  const r = await readOrderPdf(file);
+  if (r.needsMapping) throw new Error('Could not tell the columns apart in that PDF — import it from the Wholesale tab, which asks which column is which.');
+  return r;
 }
 
 // File → non-empty grid rows (array-of-arrays). CSVs go through our own
@@ -116,28 +141,60 @@ export async function readSheetGrid(file) {
 // header decision — a headerless sheet must not get a free 501st row past
 // the server's hard 500 cap. Throws user-facing messages the modals surface
 // as the parse error.
-export function splitGrid(nonEmpty, headerlessCols) {
+// `forcedCols` is the operator's own answer to "which column is which"
+// (ColumnMapper): it replaces header detection, and the first row is kept
+// as data unless it reads as a header (no number in the quantity or price
+// column). `guessed` says the headerless positional default was used — the
+// modals then ask the operator to confirm the columns instead of silently
+// ordering column B of plants.
+export function splitGrid(nonEmpty, headerlessCols, forcedCols = null) {
   if (!nonEmpty.length) throw new Error('The file looks empty.');
-  let cols = detectColumns(nonEmpty[0]);
+  let cols;
   let dataRows;
-  if (cols.species !== undefined) {
-    dataRows = nonEmpty.slice(1);
+  let guessed = false;
+  if (forcedCols) {
+    cols = forcedCols;
+    dataRows = looksLikeHeader(nonEmpty[0], forcedCols) ? nonEmpty.slice(1) : nonEmpty;
   } else {
-    cols = headerlessCols;
-    dataRows = nonEmpty;
+    cols = detectColumns(nonEmpty[0]);
+    if (cols.species !== undefined) {
+      dataRows = nonEmpty.slice(1);
+    } else {
+      cols = headerlessCols;
+      dataRows = nonEmpty;
+      guessed = true;
+    }
   }
   if (dataRows.length > MAX_ROWS) {
     throw new Error(`That's ${dataRows.length} data rows — the cap is ${MAX_ROWS}. Split the sheet.`);
   }
-  return { cols, dataRows };
+  return { cols, dataRows, guessed };
+}
+
+export function looksLikeHeader(row, cols) {
+  const cell = (i) => (i === undefined ? '' : String(row[i] ?? '').trim());
+  if (/\d/.test(cell(cols.qty)) || /\d/.test(cell(cols.price))) return false;   // numbers = data
+  if (detectColumns(row).species !== undefined) return true;                      // names a role we know
+  return cell(cols.qty) !== '' || cell(cols.price) !== '';                         // words where numbers belong
+}
+
+// Columns with sample values, for the mapper. Sheet grids and PDF tables
+// share the shape: { columns: [label…], rows: [[cell…]…] }.
+export function gridColumns(grid, labels = null) {
+  const width = Math.max(0, ...grid.map((r) => r.length));
+  return Array.from({ length: width }, (_, i) => ({
+    index: i,
+    label: labels?.[i] || `Column ${String.fromCharCode(65 + (i % 26))}`,
+    samples: grid.slice(0, 6).map((r) => String(r[i] ?? '').trim()).filter(Boolean).slice(0, 3),
+  }));
 }
 
 // Grid rows → order rows {row, species, variety, qty, price[, status]}.
 // Shared by the import and update-order modals so a supplier sheet parses
 // identically whichever door it comes in.
-export function parseOrderRows(nonEmpty) {
-  // Headerless: species, qty, price — in that order.
-  const { cols, dataRows } = splitGrid(nonEmpty, { species: 0, qty: 1, price: 2 });
+export function parseOrderRows(nonEmpty, forcedCols = null) {
+  // Headerless: species, qty, price — in that order (flagged as a guess).
+  const { cols, dataRows, guessed } = splitGrid(nonEmpty, { species: 0, qty: 1, price: 2 }, forcedCols);
 
   const rows = dataRows
     .map((r, i) => {
@@ -169,7 +226,7 @@ export function parseOrderRows(nonEmpty) {
   if (!rows.length) throw new Error('No usable rows found — is there a species/name column?');
   // A sheet with headers but no recognizable qty column silently defaults
   // every row to 1 plant — the modals make that loud, not silent.
-  return { rows, noQtyColumn: cols.qty === undefined };
+  return { rows, noQtyColumn: cols.qty === undefined, guessed, cols };
 }
 
 // Catalog lookups the row matcher needs, built once per species/varieties
