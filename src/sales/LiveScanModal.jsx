@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  X, Radio, ScanLine, AlertTriangle, Check, Loader2, WifiOff, Wifi, RotateCw,
+  X, Radio, ScanLine, AlertTriangle, Check, Loader2, WifiOff, Wifi, RotateCw, ArrowRightLeft,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { FollowerTicker } from './FollowerTicker.jsx';
 import { buildLookups, computeIdealPrice } from '../inventory/pricing.js';
 import { normalizeSku } from '../labels/boxCode.js';
+import { brandName } from '../brands.js';
 
 const SOLD_STATUSES = new Set(['sold', 'shipped', 'delivered']);
 const POLL_MS = 1500;
@@ -76,13 +77,21 @@ function asciiTitle(name, sku) {
 // Live Scan Mode — keep the input autofocused; every barcode scan
 // resolves the SKU locally and enqueues a Palmstreet listing job.
 // No per-scan confirmation: scan = list it.
-export function LiveScanModal({ items, varieties, species, idealRate, onClose, isAdmin, activeBrand, showToast }) {
+export function LiveScanModal({ items, varieties, species, idealRate, onClose, isAdmin, activeBrand, showToast, onItemsChanged, canTransfer = false }) {
   const lookups = useMemo(() => buildLookups(varieties, species), [varieties, species]);
+  // Plants moved in from the other brand during THIS session, keyed by both
+  // their old and (if re-numbered) new SKU, so the label in hand keeps
+  // scanning until the app's item list refreshes behind us.
+  const [movedIn, setMovedIn] = useState(() => new Map());
+  // A scanned label that belongs to the OTHER brand: { sku, item, brandName,
+  // transferable, loading, busy } while the operator decides.
+  const [crossBrand, setCrossBrand] = useState(null);
   const itemsBySku = useMemo(() => {
     const m = new Map();
+    for (const [k, i] of movedIn) m.set(k, i);
     for (const i of items) if (i.sku) m.set(normalizeSku(i.sku), i);
     return m;
-  }, [items]);
+  }, [items, movedIn]);
   // Species list price + sell note, looked up live by speciesId so an edit on
   // the order line shows on the very next scan (nothing is stamped).
   const speciesById = useMemo(() => new Map((species || []).map(sp => [sp.id, sp])), [species]);
@@ -113,7 +122,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   // typing in the (rare) force-push confirm dialog. Scanners are HID
   // devices that just emit characters — losing focus = lost scans.
   useEffect(() => {
-    if (!forcePush) inputRef.current?.focus();
+    if (!forcePush && !crossBrand) inputRef.current?.focus();
   });
 
   // Poll bridge health so the operator can see whether the bridge is
@@ -217,12 +226,56 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     }
   };
 
+  // A label that isn't ours may be the other brand's: ask the server, then
+  // the operator. The plant is MOVED into this brand before it lists, so
+  // everything after the scan (listing, sale, packing, shipping, reports)
+  // sees an ordinary plant of ours.
+  const lookupElsewhere = async (sku) => {
+    setCrossBrand({ sku, loading: true });
+    try {
+      const r = await api.lookupSkuAcrossBrands(sku);
+      if (!r?.item) {
+        setCrossBrand(null);
+        setError(`No item with SKU "${sku}".`);
+        return;
+      }
+      setCrossBrand({ sku, item: r.item, brandName: r.brandName, transferable: r.transferable !== false, loading: false });
+    } catch (e) {
+      setCrossBrand(null);
+      setError(`No item with SKU "${sku}" here — and the other brand's stock couldn't be checked (${e.message || 'network'}).`);
+    }
+  };
+
+  const moveAndPush = async () => {
+    const cb = crossBrand;
+    if (!cb?.item || cb.busy) return;
+    setCrossBrand({ ...cb, busy: true });
+    try {
+      const r = await api.transferItem({ itemId: cb.item.id, fromBrandId: cb.item.brandId, reason: 'sale' });
+      const moved = r.item;
+      setMovedIn((prev) => {
+        const n = new Map(prev);
+        n.set(normalizeSku(cb.sku), moved);
+        if (moved.sku) n.set(normalizeSku(moved.sku), moved);
+        return n;
+      });
+      setCrossBrand(null);
+      if (r.relabel) showToast?.(`${moved.name} is now ${moved.sku} — its old SKU was taken here, print a new label after the live`);
+      else showToast?.(`${moved.name} moved from ${cb.brandName} to ${brandName(activeBrand)}`);
+      onItemsChanged?.().catch?.(() => {});
+      pushItem(moved);
+    } catch (e) {
+      setCrossBrand({ ...cb, busy: false, error: e.message || 'Could not move that plant' });
+    }
+  };
+
   const handleScan = (rawSku) => {
     setError('');
     const sku = normalizeSku(rawSku);
     if (!sku) return;
     const item = itemsBySku.get(sku);
     if (!item) {
+      if (canTransfer) { lookupElsewhere(sku); return; }
       setError(`No item with SKU "${sku}".`);
       return;
     }
@@ -254,14 +307,14 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   const handleScanRef = useRef(handleScan);
   handleScanRef.current = handleScan;
   useEffect(() => {
-    if (!scanInput || forcePush) return;
+    if (!scanInput || forcePush || crossBrand) return;
     if (!/^[A-Za-z]{2,4}-\d+$/.test(scanInput.trim())) return;
     const id = setTimeout(() => {
       handleScanRef.current(scanInput);
       setScanInput('');
     }, 200);
     return () => clearTimeout(id);
-  }, [scanInput, forcePush]);
+  }, [scanInput, forcePush, crossBrand]);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-stretch sm:items-center justify-center p-0 sm:p-4">
@@ -393,6 +446,14 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
         </div>
 
       </div>
+        {crossBrand && (
+          <CrossBrandDialog
+            state={crossBrand}
+            activeBrand={activeBrand}
+            onConfirm={moveAndPush}
+            onCancel={() => setCrossBrand(null)}
+          />
+        )}
         {forcePush && (
           <ForcePushDialog
             sku={forcePush.sku}
@@ -533,6 +594,56 @@ function StateBadge({ state, errorMsg }) {
     );
   }
   return null;
+}
+
+// "This label belongs to the other brand": move it here and list it, or not.
+function CrossBrandDialog({ state, activeBrand, onConfirm, onCancel }) {
+  const { sku, item, brandName: fromName, transferable, loading, busy, error } = state;
+  return (
+    <div className="absolute inset-0 bg-black/40 flex items-center justify-center p-4 z-10">
+      <div className="bg-white rounded-xl max-w-sm w-full p-5">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-full bg-sky-100 flex items-center justify-center flex-shrink-0">
+            {loading ? <Loader2 className="w-5 h-5 text-sky-600 animate-spin" /> : <ArrowRightLeft className="w-5 h-5 text-sky-600" />}
+          </div>
+          <div className="flex-1 min-w-0">
+            {loading ? (
+              <>
+                <h4 className="font-semibold text-gray-900">Not ours — checking the other brand</h4>
+                <p className="text-sm text-gray-600 mt-1"><span className="font-mono">{sku}</span>…</p>
+              </>
+            ) : (
+              <>
+                <h4 className="font-semibold text-gray-900">{fromName} stock</h4>
+                <p className="text-sm text-gray-600 mt-1">
+                  <span className="font-mono">{sku}</span> is <span className="font-medium">{item.name}</span>
+                  {item.variety ? ` (${item.variety})` : ''} from {fromName}
+                  {item.listingPrice != null ? `, list $${Number(item.listingPrice).toFixed(0)}` : ''}.
+                </p>
+                {error && <p className="text-sm text-red-700 mt-1">{error}</p>}
+                {transferable ? (
+                  <p className="text-sm text-gray-600 mt-1">Move it to {brandName(activeBrand)} and list it now? The move is recorded and its cost comes with it.</p>
+                ) : (
+                  <p className="text-sm text-amber-700 mt-1">It can't move right now: {item.saleId ? 'it is in a lineup there' : item.shipmentBoxId ? 'it is in a box there' : `it is ${item.status}`}.</p>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onCancel} disabled={busy} className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50">
+            Cancel
+          </button>
+          {!loading && transferable && (
+            <button onClick={onConfirm} disabled={busy} className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium bg-sky-600 hover:bg-sky-700 text-white rounded-lg disabled:opacity-50">
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRightLeft className="w-4 h-4" />}
+              Move &amp; list
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ForcePushDialog({ sku, item, onConfirm, onCancel }) {

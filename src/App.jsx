@@ -1153,6 +1153,9 @@ function StaffOrAdminInventory() {
         {activeTab === 'inventory' && (
           <InventoryView
             brand={activeBrand}
+            otherBrands={(currentUser.brandIds || []).filter((b) => b !== activeBrand)}
+            canTransfer={currentUser.role === 'admin' || currentUser.role === 'staff'}
+            onItemsChanged={async () => { applyItemsFresh(await api.getItems()); }}
             items={filteredItems}
             allItems={items}
             sales={sales}
@@ -1820,6 +1823,8 @@ function StaffOrAdminInventory() {
           isAdmin={isAdmin}
           activeBrand={activeBrand}
           showToast={showToast}
+          canTransfer={(currentUser.role === 'admin' || currentUser.role === 'staff') && (currentUser.brandIds || []).some((b) => b !== activeBrand)}
+          onItemsChanged={async () => { applyItemsFresh(await api.getItems()); }}
         />
       )}
       {showValidateSales && (

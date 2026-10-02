@@ -1284,3 +1284,28 @@ revoke all on function claim_redemption_code(text) from public;
 revoke all on function claim_redemption_code(text) from anon;
 grant execute on function claim_redemption_code(text) to authenticated;
 grant execute on function claim_redemption_code(text) to service_role;
+
+-- ─── Cross-brand transfers (migration 0046) ───────────────────────────────────
+-- A plant moves between brands (POST /api/items action=transfer) so either
+-- brand can sell the other's stock; one row per move. See the migration.
+create table if not exists item_transfers (
+  id              text        primary key,
+  "itemId"        text        not null references inventory_items(id) on delete cascade,
+  "fromBrandId"   text        not null references brands(id),
+  "toBrandId"     text        not null references brands(id),
+  "fromSku"       text        not null,
+  "toSku"         text        not null,
+  "fromSpeciesId" text,
+  "toSpeciesId"   text,
+  "grossCost"     numeric,
+  "netCost"       numeric,
+  reason          text        not null default 'manual'
+                    check (reason in ('sale', 'manual', 'return')),
+  "saleId"        text,
+  "createdAt"     timestamptz not null default now(),
+  "createdBy"     text
+);
+create index if not exists item_transfers_item_idx on item_transfers ("itemId", "createdAt" desc);
+create index if not exists item_transfers_to_idx   on item_transfers ("toBrandId", "createdAt" desc);
+create index if not exists item_transfers_from_idx on item_transfers ("fromBrandId", "createdAt" desc);
+alter table item_transfers enable row level security;
