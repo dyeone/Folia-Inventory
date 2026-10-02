@@ -623,7 +623,7 @@ async function syncPoReceivedStatus(poId, brandId, user, nowIso) {
   return null;
 }
 
-// POST { action: 'pdf-text', pdfBase64 } → { pages: [{ items: [{ str, x, y }] }] }
+// POST { action: 'pdf-text', pdfBase64 } → { pages: [{ items: [{ str, x, y, w }] }] }
 //
 // Positioned text of a vendor PDF (the wholesale invoice import). Extracted
 // HERE rather than in the browser on purpose: pdf.js 6 leans on language
@@ -680,7 +680,10 @@ async function pdfText(req, res) {
       pages.push({
         items: tc.items
           .filter((it) => typeof it.str === 'string' && it.str.trim())
-          .map((it) => ({ str: it.str, x: Math.round(it.transform[4] * 10) / 10, y: Math.round(it.transform[5] * 10) / 10 })),
+          // w = the run's width: the table reader (tablePdf.js) files a run
+          // under the column its CENTRE falls in, so a right-aligned number
+          // or a centred wrapped name lands where the eye puts it.
+          .map((it) => ({ str: it.str, x: Math.round(it.transform[4] * 10) / 10, y: Math.round(it.transform[5] * 10) / 10, w: Math.round((it.width || 0) * 10) / 10 })),
       });
     }
   } finally {

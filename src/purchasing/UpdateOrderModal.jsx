@@ -3,7 +3,8 @@ import { Upload, Check, AlertCircle, Loader2, FileSpreadsheet, X } from 'lucide-
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { DEFAULT_ADD_VARIETY } from '../constants.js';
-import { norm, readSheetGrid, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { norm, readSheetGrid, readOrderPdf, mapTableRows, gridColumns, isPdfFile, parseOrderRows, buildMatchContext, matchSheetRow, mergeDuplicateRows, buildSuggestIndex, suggest, MAX_QTY, MAX_NAME_LEN, MASS_CREATE_WARN } from './sheetParsing.js';
+import { ColumnMapper } from './ColumnMapper.jsx';
 import { MatchPicker, MatchedRowEditor, RowVarietySelect } from './MatchPicker.jsx';
 
 // Rows the auto-matcher couldn't bind to an existing species — every one
@@ -86,20 +87,72 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
     [existingLines],
   );
 
+  // "Which column is which?" (ColumnMapper) + what a packing list told us
+  // beyond its rows (warnings such as packed ≠ invoiced).
+  const [mapper, setMapper] = useState(null);
+  const [fileNotes, setFileNotes] = useState([]);
+
   const handleFile = async (file) => {
     setParseErr('');
     setBaseRows(null);
     setNoQtyColumn(false);
     setOverrides({});
     setLineBinds({});
+    setMapper(null);
+    setFileNotes([]);
     if (!file) return;
     setFileName(file.name);
     try {
-      const { rows: parsed, noQtyColumn: noQty } = parseOrderRows(await readSheetGrid(file));
-      setNoQtyColumn(noQty);
-      setBaseRows(parsed);
+      let grid;
+      if (isPdfFile(file)) {
+        const r = await readOrderPdf(file);
+        if (r.needsMapping) {
+          setMapper({
+            kind: 'pdf', rows: r.rows, roles: r.roles || {}, columns: gridColumns(r.rows, r.columns),
+            message: 'The column names in this PDF were not recognised. Point at the plant name column, and the quantity and price if it has them, then continue.',
+          });
+          return;
+        }
+        grid = r.grid;
+        setFileNotes(r.meta?.warnings || []);
+      } else {
+        grid = await readSheetGrid(file);
+      }
+      let parsed = null;
+      try { parsed = parseOrderRows(grid); } catch (e) { if (!grid.length) throw e; }
+      if (!parsed || parsed.guessed) {
+        setMapper({
+          kind: 'sheet', grid, roles: parsed?.cols || {}, columns: gridColumns(grid),
+          message: parsed
+            ? 'This sheet has no header row we recognise, so the columns were guessed: A = plant name, B = quantity, C = price. Confirm them, or fix them, then continue.'
+            : 'The columns in this sheet were not recognised. Point at the plant name column, and the quantity and price if it has them, then continue.',
+        });
+        return;
+      }
+      setNoQtyColumn(parsed.noQtyColumn);
+      setBaseRows(parsed.rows);
     } catch (e) {
       setParseErr(e.message || 'Could not read that file.');
+    }
+  };
+
+  const confirmMapper = async () => {
+    if (!mapper || mapper.roles.species === undefined) return;
+    setParseErr('');
+    try {
+      let grid = mapper.grid;
+      let forced = mapper.roles;
+      if (mapper.kind === 'pdf') {
+        const r = await mapTableRows(mapper.rows, mapper.roles);
+        grid = r.grid; forced = null;
+        setFileNotes(r.meta.warnings || []);
+      }
+      const parsed = parseOrderRows(grid, forced);
+      setNoQtyColumn(parsed.noQtyColumn);
+      setBaseRows(parsed.rows);
+      setMapper(null);
+    } catch (e) {
+      setParseErr(e.message || 'Could not read those columns.');
     }
   };
 
@@ -421,16 +474,33 @@ export function UpdateOrderModal({ po, species, varieties, showToast, onClose, o
               ) : (
                 <div className="text-sm text-gray-600">
                   <Upload className="w-6 h-6 mx-auto mb-1 text-gray-400" />
-                  Drop the revised list here (.xlsx / .csv) or the invoice PDF
-                  <div className="text-xs text-gray-400 mt-1">Columns: species (required) · variety · qty · price</div>
+                  Drop the revised list here (.xlsx / .csv), the invoice PDF, or the packing list PDF
+                  <div className="text-xs text-gray-400 mt-1">Columns: species (required) · variety · qty · price · unrecognised columns? You'll be asked which is which.</div>
                 </div>
               )}
             </div>
+
+            {mapper && !baseRows && (
+              <ColumnMapper
+                columns={mapper.columns}
+                roles={mapper.roles}
+                onChange={(roles) => setMapper((m) => (m ? { ...m, roles } : m))}
+                onConfirm={confirmMapper}
+                message={mapper.message}
+                busy={applying}
+              />
+            )}
 
             {parseErr && (
               <div className="flex items-center gap-2 bg-red-50 text-red-700 text-xs px-3 py-2 rounded-lg">
                 <AlertCircle className="w-4 h-4 shrink-0" /> {parseErr}
               </div>
+            )}
+
+            {rows && fileNotes.length > 0 && (
+              <ul className="list-disc pl-6 bg-amber-50 text-amber-800 text-xs px-3 py-2 rounded-lg">
+                {fileNotes.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
             )}
 
             {rows && (
