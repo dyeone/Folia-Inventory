@@ -1,4 +1,4 @@
-import { setSkuFloor } from './constants.js';
+import { setSkuBrand } from './constants.js';
 
 // Thin fetch wrapper around the /api/* routes.
 // Each call returns parsed JSON on success and throws Error(message) on failure.
@@ -12,7 +12,7 @@ export function setAuthUserId(id) { authUserId = id; }
 // server scopes reads/writes to it. When unset, the server defaults to the
 // 'bae-gin' brand, so brandless flows keep working.
 let authBrandId = null;
-export function setAuthBrandId(id) { authBrandId = id; }
+export function setAuthBrandId(id) { authBrandId = id; setSkuBrand(id); }   // SKU previews carry the brand prefix
 
 // Routes that should NOT have userId appended (auth endpoints).
 // Everything else (items/sales/users) gets userId so the server can verify
@@ -80,7 +80,7 @@ export const api = {
     request('/auth', { method: 'POST', body: { action: 'change-password', userId, currentPassword, newPassword } }),
 
   // Items
-  getItems: () => request('/items').then(r => { setSkuFloor(r.skuMax); return r.items; }),
+  getItems: () => request('/items').then(r => r.items),
   getSharedSkus: () => request('/items?action=shared-skus').then(r => r.skus || {}),
   renumberDuplicateSkus: () => request('/items', { method: 'POST', body: { action: 'renumber-duplicates' } }).then(r => r.renumbered || []),
   // Cross-brand stock (the other brands on the user's access list). Reads

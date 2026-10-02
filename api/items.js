@@ -1,5 +1,6 @@
 import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { brandSkuPrefix } from './_lib/sku.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 // brandId is server-owned too: the active brand is forced from the request, so
@@ -39,17 +40,12 @@ function stripServerOwned(item) {
 // caused new SKUs to collide with existing numbers under a different
 // variety prefix. The RPC (defined in migration 0007) extracts the suffix
 // in regex and takes max(int), which is correct regardless of width.
-//
-// ONE sequence for every brand (2026-10-02): the brands share plants now
-// (cross-brand transfer), and a label that reads ANT-8190 must mean one
-// plant wherever it is scanned. The brand-scoped RPC is left in place for
-// older callers; new numbers come from the global max, and migration 0047
-// backs that with a unique index on sku for rows minted from then on.
-async function findMaxSkuSuffix() {
-  const { data, error } = await supabase.rpc('inventory_max_sku_suffix');
+async function findMaxSkuSuffix(brandId) {
+  const { data, error } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return data ?? 0;
 }
+
 
 // Assign SKUs to items that don't have one. Numbering is GLOBAL across all
 // items; the variety code is only a prefix for identification. Example
@@ -91,11 +87,12 @@ async function assignMissingSkus(items, brandId) {
     }
   }
 
-  let next = (await findMaxSkuSuffix()) + 1;
+  let next = (await findMaxSkuSuffix(brandId)) + 1;
+  const brandCode = brandSkuPrefix(brandId);
   for (const item of needSku) {
     const varietyCode = codeByName[item.variety];
     const prefix = item.sellerId ? `${codeBySellerId[item.sellerId]}-${varietyCode}` : varietyCode;
-    item.sku = `${prefix}-${next++}`;
+    item.sku = `${brandCode}-${prefix}-${next++}`;
   }
 }
 
@@ -114,8 +111,8 @@ async function nextSkuForVariety(variety, brandId) {
   if (!code) {
     const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
   }
-  const next = (await findMaxSkuSuffix()) + 1;
-  return `${code}-${next}`;
+  const next = (await findMaxSkuSuffix(brandId)) + 1;
+  return `${brandSkuPrefix(brandId)}-${code}-${next}`;
 }
 
 // POST { action: 'combine-boxes', targetBoxId, sourceBoxIds: [...] }
@@ -248,11 +245,11 @@ async function sharedSkus(req, res, user, brandId) {
 }
 
 // POST { action: 'renumber-duplicates' } → this brand's in-stock plants whose
-// SKU is ALSO in stock in another brand the user can access get a fresh
-// number from the shared sequence (prefix segments kept). Those labels must
-// be reprinted — the response lists old → new for exactly that. Staff or
-// admin. One-time cleanup of the per-brand numbering era; the shared
-// sequence stops new collisions.
+// SKU is ALSO in stock in another brand the user can access get a fresh SKU:
+// the brand prefix plus a fresh number (seller / variety segments kept).
+// Those labels must be reprinted — the response lists old → new for
+// exactly that. Staff or admin. One-time cleanup of the era before brand
+// prefixes; prefixed SKUs can't collide.
 async function renumberDuplicates(req, res, user, brandId) {
   if (!TRANSFER_ROLES.has(user.role)) { const e = new Error('Only staff or admins can renumber plants'); e.status = 403; throw e; }
   const others = otherBrandsOf(user, brandId);
@@ -266,11 +263,13 @@ async function renumberDuplicates(req, res, user, brandId) {
     .eq('brandId', brandId).is('deletedAt', null).in('status', TRANSFERABLE_STATUSES));
   const dup = (mine || []).filter((r) => r.sku && taken.has(String(r.sku).toUpperCase()) && /-\d+$/.test(r.sku));
   if (!dup.length) return res.status(200).json({ renumbered: [] });
-  let next = (await findMaxSkuSuffix()) + 1;
+  let next = (await findMaxSkuSuffix(brandId)) + 1;
+  const brandCode = brandSkuPrefix(brandId);
   const now = new Date().toISOString();
   const renumbered = [];
   for (const r of dup) {
-    const sku = r.sku.replace(/-\d+$/, `-${next++}`);
+    const stem = r.sku.replace(/-\d+$/, '').replace(new RegExp(`^${brandCode}-`), '');
+    const sku = `${brandCode}-${stem}-${next++}`;
     const { data: upd, error } = await supabase
       .from('inventory_items')
       .update({ sku, modifiedAt: now, modifiedBy: user.displayName })
@@ -535,21 +534,15 @@ export default wrap(async (req, res) => {
 
       const data = await fetchAll(() =>
         supabase.from('inventory_items').select('*').eq('brandId', brandId));
-      // skuMax: the highest SKU number across ALL brands, so a client that
-      // previews the next SKU from its own brand's list can't fall behind
-      // the other brand (see findMaxSkuSuffix).
-      let skuMax = 0;
-      try { skuMax = await findMaxSkuSuffix(); } catch { /* preview only; the server mints */ }
       // The packing bench never needs what plants COST — strip bought-price
       // fields for packer logins so the data doesn't reach that client at
       // all (mirrors the purchase-orders API; staff/admin keep full rows).
       if (user.role === 'packer') {
         return res.status(200).json({
           items: (data || []).map(({ grossCost, netCost, cost, ...rest }) => rest),
-          skuMax,
         });
       }
-      return res.status(200).json({ items: data, skuMax });
+      return res.status(200).json({ items: data });
     }
 
     case 'POST': {

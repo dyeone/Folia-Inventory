@@ -90,6 +90,17 @@ export function realSku(item) {
 const LABEL_W = 2;
 const LABEL_H = 1;
 
+// Largest font size (≤ pt) at which `text` fits `maxWidthIn` in the font
+// currently set on the pdf — brand-prefixed SKUs (BAEGIN-JADE-ANT-9808) are
+// longer than the fixed sizes were chosen for. Floors at 6pt.
+function fitFontPt(pdf, text, pt, maxWidthIn) {
+  if (!text) return pt;
+  pdf.setFontSize(pt);
+  const w = pdf.getTextWidth(String(text));
+  if (w <= maxWidthIn) return pt;
+  return Math.max(6, Math.floor((pt * maxWidthIn / w) * 10) / 10);
+}
+
 // Printed QR square sizes (inches). Shared with LabelSheet's preview so the
 // on-screen label can't drift from the printed one. Both keep the code
 // ≥0.08" off the label's bottom edge — thermal feed drift clips edges, and
@@ -260,7 +271,7 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
       }
       drawTitle(pdf, canvas, title, { centerX: cx, baselineY: topTag ? 0.29 : 0.22, fontPt: 7, maxWidthIn: cw });
       pdf.setFont('courier', 'bold');
-      pdf.setFontSize(10.5);
+      pdf.setFontSize(fitFontPt(pdf, sku, 10.5, cw));
       pdf.setTextColor(0);
       pdf.text(sku, cx, 0.46, { align: 'center' });
       if (sku) {
@@ -281,7 +292,7 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
     }
     drawTitle(pdf, canvas, title, { centerX: LABEL_W / 2, baselineY: topTag ? 0.24 : 0.18, fontPt: 8, maxWidthIn: LABEL_W - 0.15 });
     pdf.setFont('courier', 'bold');
-    pdf.setFontSize(14);
+    pdf.setFontSize(fitFontPt(pdf, sku, 14, LABEL_W - 0.12));
     pdf.setTextColor(0);
     pdf.text(sku, LABEL_W / 2, 0.44, { align: 'center' });
     if (sku) {

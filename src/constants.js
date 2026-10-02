@@ -15,14 +15,16 @@ export const DEFAULT_ADD_VARIETY = 'anthurium';
 
 // Compute the next SKU suffix given a code prefix and the existing items.
 // Numbering is GLOBAL across all items; the prefix is purely for display.
-// The highest SKU number across ALL brands, as last reported by GET
-// /api/items (`skuMax`). SKU numbers are one sequence shared by the brands
-// since 2026-10-02 (plants move between brands), so a preview computed from
-// the active brand's own list alone could fall behind the other brand and
-// collide. The server mints the real number either way.
-let skuFloor = 0;
-export function setSkuFloor(n) { skuFloor = Number.isFinite(Number(n)) ? Math.max(skuFloor, Number(n)) : skuFloor; }
-export function getSkuFloor() { return skuFloor; }
+// Every SKU minted since 2026-10-02 starts with its BRAND (BAE-ANT-8912,
+// BAEGIN-JADE-ANT-9808): plants move between brands, each brand keeps its
+// own numbers, and the brand segment is what keeps a label unique wherever
+// it is scanned. Same rule as api/_lib/sku.js — keep the two identical.
+// The active brand is set by api.setAuthBrandId.
+export function skuPrefixForBrand(brandId) {
+  return String(brandId || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+}
+let skuBrandPrefix = '';
+export function setSkuBrand(brandId) { skuBrandPrefix = skuPrefixForBrand(brandId); }
 
 export function nextSkuForCode(code, existingItems) {
   if (!code) return '';
@@ -32,18 +34,21 @@ export function nextSkuForCode(code, existingItems) {
       return m ? parseInt(m[1], 10) : 0;
     })
     .filter(n => n > 0);
-  const next = Math.max(nums.length > 0 ? Math.max(...nums) : 0, skuFloor) + 1;
-  return `${code}-${next}`;
+  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
+  return `${skuBrandPrefix ? `${skuBrandPrefix}-` : ''}${code}-${next}`;
 }
 
 // SKU preview for a seller-consignment plant: <SELLERCODE>-<VARIETYCODE>-<n>
 // (e.g. JADE-ANT-142). Cosmetic only — the server assigns the authoritative SKU
 // on save (see api/items.js assignMissingSkus); this just shows the operator
 // what to expect in the intake form.
+// Seller-consignment preview: <BRAND>-<SELLERCODE>-<VARIETYCODE>-<n>.
 export function nextSkuForSeller(sellerCode, varietyCode, existingItems) {
-  const base = nextSkuForCode(varietyCode, existingItems); // "ANT-<n>"
+  const base = nextSkuForCode(varietyCode, existingItems); // "BAE-ANT-<n>"
   if (!base) return '';
-  return sellerCode ? `${sellerCode}-${base}` : base;
+  if (!sellerCode) return base;
+  const cut = skuBrandPrefix ? skuBrandPrefix.length + 1 : 0;
+  return `${base.slice(0, cut)}${sellerCode}-${base.slice(cut)}`;
 }
 
 export const PRICE_BUCKETS = [

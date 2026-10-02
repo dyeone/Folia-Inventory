@@ -343,7 +343,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   handleScanRef.current = handleScan;
   useEffect(() => {
     if (!scanInput || forcePush) return;
-    if (!/^[A-Za-z]{2,4}-\d+$/.test(scanInput.trim())) return;
+    if (!/^(?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-\d+$/.test(scanInput.trim())) return;
     const id = setTimeout(() => {
       handleScanRef.current(scanInput);
       setScanInput('');

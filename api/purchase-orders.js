@@ -1,5 +1,6 @@
 import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, DEFAULT_BRAND } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { brandSkuPrefix } from './_lib/sku.js';
 import { installDomMatrixPolyfill } from './_lib/domMatrix.js';
 
 // Purchase orders. Action-dispatched. See:
@@ -1382,8 +1383,7 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
   // whole insert atomically (23505) and we re-read + retry once.
   let createdItems = [];
   for (let attempt = 0; attempt < 2; attempt++) {
-    // One SKU sequence across every brand (see api/items.js findMaxSkuSuffix).
-    const { data: maxSuffix, error: mErr } = await supabase.rpc('inventory_max_sku_suffix');
+    const { data: maxSuffix, error: mErr } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
     if (mErr) { const e = new Error(mErr.message); e.status = 500; throw e; }
     const base = (maxSuffix || 0) + 1;
     const rows = [];
@@ -1391,7 +1391,8 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
       rows.push({
         id: newId(),
         brandId,
-        sku: `${variety?.code || 'PLT'}-${base + i}`,
+        // Brand-prefixed like every SKU minted since 2026-10-02 (api/items.js brandSkuPrefix).
+        sku: `${brandSkuPrefix(brandId)}-${variety?.code || 'PLT'}-${base + i}`,
         type: mintType,
         name: species.epithet,
         variety: variety?.name || null,
