@@ -1,9 +1,9 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AvailabilityModal } from '../schedule/AvailabilityModal.jsx';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText,
-} from 'lucide-react';
+  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText, CalendarDays} from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
@@ -152,6 +152,7 @@ export function PackerView({ onLogout }) {
   // switch each and fire a test print per type.
   const [printDests, setPrintDests] = useState(getPrintDests);
   const [printerSheetOpen, setPrinterSheetOpen] = useState(false);
+  const [availabilityOpen, setAvailabilityOpen] = useState(false);   // "My availability" (shift schedule)
   // Burrito wrap flow (per device): scanning a plant starts a wrap — the app
   // prints that plant's own label, the packer wraps it in paper and applies
   // the fresh label, and scanning THAT label completes the pack. The second
@@ -1310,6 +1311,7 @@ export function PackerView({ onLogout }) {
           : `${totalOpen} open · ${fullyPacked} packed`}
         onBack={activeBox ? () => goToBox(null) : null}
         onPrinterSettings={() => setPrinterSheetOpen(true)}
+        onAvailability={() => setAvailabilityOpen(true)}
       />
 
       {/* Brand chooser — only on the landing screen (no box open) and only when
@@ -1570,6 +1572,7 @@ export function PackerView({ onLogout }) {
           onClose={() => setCameraMode(null)}
         />
       )}
+      {availabilityOpen && <AvailabilityModal onClose={() => setAvailabilityOpen(false)} />}
       {printerSheetOpen && (
         <PrinterSettingsSheet
           dests={printDests}
@@ -1587,7 +1590,7 @@ export function PackerView({ onLogout }) {
   );
 }
 
-function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings }) {
+function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings, onAvailability }) {
   const isCodeTitle = /^B-/.test(title || '');
   // Flagged box → coloured bar so the whole top of the screen reads the state:
   // amber = on hold, violet = local pickup, else the normal emerald.
@@ -1620,6 +1623,16 @@ function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings }) 
           </div>
           {subtitle && <div className={`text-sm ${subTone} leading-tight truncate mt-0.5`}>{subtitle}</div>}
         </div>
+        {onAvailability && (
+          <button
+            onClick={onAvailability}
+            aria-label="My availability"
+            title="My availability — tell the planner which days you can work"
+            className={`w-12 h-12 rounded-full flex items-center justify-center ${btnHover}`}
+          >
+            <CalendarDays className="w-6 h-6" />
+          </button>
+        )}
         {onPrinterSettings && (
           <button
             onClick={onPrinterSettings}

@@ -85,6 +85,12 @@ export const api = {
   renumberDuplicateSkus: () => request('/items', { method: 'POST', body: { action: 'renumber-duplicates' } }).then(r => r.renumbered || []),
   // Cross-brand stock (the other brands on the user's access list). Reads
   // are narrow and read-only; a sale across brands MOVES the plant first.
+  // Shift schedule (global, settings-backed): one week at a time.
+  getShiftWeek: (week) => request(`/settings?action=shift-week&week=${encodeURIComponent(week)}`),
+  saveShiftAvailability: ({ week, days, note }) =>
+    request('/settings', { method: 'POST', body: { action: 'shift-availability-save', week, days, note } }),
+  saveShiftSchedule: ({ week, shifts, published }) =>
+    request('/settings', { method: 'POST', body: { action: 'shift-schedule-save', week, shifts, published } }),
   getSharedStock: () => request('/items?action=shared-stock'),
   lookupSkuAcrossBrands: (sku) => request(`/items?action=lookup&sku=${encodeURIComponent(sku)}`),
   getItemTransfers: () => request('/items?action=transfers'),

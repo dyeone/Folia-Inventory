@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense }
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, PackageOpen, LineChart, Truck, ShoppingCart,
-  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award,
+  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award, Clock,
 } from 'lucide-react';
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -37,6 +37,7 @@ const OrdersPane = lazyNamed(() => import('./purchasing/OrdersPane.jsx'), 'Order
 const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedView.jsx'), 'RecentlyDeletedView');
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
+const ScheduleView = lazyNamed(() => import('./schedule/ScheduleView.jsx'), 'ScheduleView');
 const CareCalendarView = lazyNamed(() => import('./care/CareCalendarView.jsx'), 'CareCalendarView');
 const BaeLandingEditor = lazyNamed(() => import('./landing/BaeLandingEditor.jsx'), 'BaeLandingEditor');
 const BaeVideoStudio = lazyNamed(() => import('./video/BaeVideoStudio.jsx'), 'BaeVideoStudio');
@@ -907,6 +908,8 @@ function StaffOrAdminInventory() {
   if (isAdmin && activeBrand === 'bae') tabs.push({ id: 'bae-loyalty', label: 'Loyalty', icon: Award });
   // BAE-only video tools hub (Marquee Studio + future live-sales video tools).
   if (activeBrand === 'bae') tabs.push({ id: 'bae-video', label: 'Video', icon: Film });
+  // Shift schedule — the team's weekly availability + the admin's plan.
+  if (isAdmin) tabs.push({ id: 'schedule', label: 'Schedule', icon: Clock });
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users });
 
   return (
@@ -1130,6 +1133,9 @@ function StaffOrAdminInventory() {
             onOpenCalendar={() => setActiveTab('calendar')}
             currentUserId={currentUser.id}
           />
+        )}
+        {activeTab === 'schedule' && isAdmin && (
+          <ScheduleView currentUser={currentUser} showToast={showToast} />
         )}
         {activeTab === 'calendar' && (
           <TasksView
