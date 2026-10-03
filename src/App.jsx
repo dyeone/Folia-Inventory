@@ -7,6 +7,7 @@ import {
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
 import { userBrands, resolveActiveBrand, brandLogo, brandName } from './brands.js';
+import { normalizeRole, roleLabel } from './roles.js';
 import { newTaskId } from './tasks/taskHelpers.js';
 
 // Eager imports: auth screen, the always-rendered chrome, and the default
@@ -121,7 +122,8 @@ export default function InventoryApp() {
   }, []);
 
   // Wire a signed-in user + their active brand into api.js and local state.
-  const activate = (user) => {
+  const activate = (raw) => {
+    const user = { ...raw, role: normalizeRole(raw.role) };   // old role names → current ones
     const brand = resolveActiveBrand(user.brandIds, localStorage.getItem('active-brand'));
     setAuthUserId(user.id);
     setAuthBrandId(brand);
@@ -246,7 +248,7 @@ function InventorySystem() {
   // financial chrome. Route them off before the regular layout's
   // bulky useState/useEffect chain even runs.
   const { currentUser } = useContext(AuthContext);
-  if (currentUser.role === 'packer') return <PackerRoute />;
+  if (currentUser.role === 'teammember') return <PackerRoute />;
   // Consultants likewise: a mobile-only pricing screen over the wholesale
   // orders (list price + seller note per species), nothing else.
   if (currentUser.role === 'consultant') return <ConsultantRoute />;
@@ -941,7 +943,7 @@ function StaffOrAdminInventory() {
                       <div className="text-sm font-medium text-gray-900">{currentUser.displayName}</div>
                       <div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
                         {isAdmin ? <Shield className="w-3 h-3" /> : <User className="w-3 h-3" />}
-                        {isAdmin ? 'Admin' : 'Staff'} · @{currentUser.username}
+                        {roleLabel(currentUser.role)} · @{currentUser.username}
                       </div>
                     </div>
                     <button
@@ -1154,7 +1156,7 @@ function StaffOrAdminInventory() {
           <InventoryView
             brand={activeBrand}
             otherBrands={(currentUser.brandIds || []).filter((b) => b !== activeBrand)}
-            canTransfer={currentUser.role === 'admin' || currentUser.role === 'staff'}
+            canTransfer={isAdmin}
             onItemsChanged={async () => { applyItemsFresh(await api.getItems()); }}
             items={filteredItems}
             allItems={items}
@@ -1823,7 +1825,7 @@ function StaffOrAdminInventory() {
           isAdmin={isAdmin}
           activeBrand={activeBrand}
           showToast={showToast}
-          canTransfer={(currentUser.role === 'admin' || currentUser.role === 'staff') && (currentUser.brandIds || []).some((b) => b !== activeBrand)}
+          canTransfer={isAdmin && (currentUser.brandIds || []).some((b) => b !== activeBrand)}
           onItemsChanged={async () => { applyItemsFresh(await api.getItems()); }}
         />
       )}

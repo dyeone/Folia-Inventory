@@ -24,7 +24,7 @@ import { ReceivingPane } from './ReceivingPane.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
-// Full-screen workflow for the 'packer' role, tuned for an iPad at a
+// Full-screen workflow for the 'teammember' role (formerly 'packer'), tuned for an iPad at a
 // packing table with a USB/Bluetooth barcode scanner.
 //
 //   Landing → an always-focused scan field (the USB scanner just types the

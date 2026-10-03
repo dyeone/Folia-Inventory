@@ -205,7 +205,7 @@ export default wrap(async (req, res) => {
       // reconstruct the costs the purchase-orders API hides from them.
       // Consultants SET the list price (idealSellingPrice) and sell note but
       // never see what a plant cost either.
-      const stripForPacker = user.role === 'packer';
+      const stripForPacker = user.role === 'teammember';   // the packing bench
       const stripCost = stripForPacker || user.role === 'consultant';
       const out = (species || []).map(s => {
         let row = s;

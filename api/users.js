@@ -1,4 +1,4 @@
-import { supabase, stripUser, requireAdmin } from './_lib/supabase.js';
+import { supabase, stripUser, requireAdmin, ROLES } from './_lib/supabase.js';
 import { hashPassword } from './_lib/hash.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
@@ -14,7 +14,6 @@ async function sanitizeBrandIds(input) {
 
 // consultant (migration 0045): prices wholesale orders from a mobile-only
 // screen — list price + seller note per species; no inventory/sales/costs.
-const ROLES = ['admin', 'staff', 'packer', 'consultant'];
 
 export default wrap(async (req, res) => {
   switch (req.method) {
