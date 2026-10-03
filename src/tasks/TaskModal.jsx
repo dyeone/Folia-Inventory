@@ -18,9 +18,9 @@ export function TaskModal({
     task ? { ...task } : makeTask({ due: defaultDue }));
   const [assignee, setAssignee] = useState(currentUser?.id || '');
 
-  // Only staff/admins have a calendar to receive tasks — packers use a
-  // separate UI, so they can't be assignees.
-  const assignable = users.filter(u => u.active && u.role !== 'packer');
+  // Only admins have a calendar to receive tasks — team members and the
+  // consultant use separate screens, so they can't be assignees.
+  const assignable = users.filter(u => u.active && u.role === 'admin');
   const showAssign = !isEdit && isAdmin && assignable.length > 0;
 
   const set = (patch) => setDraft(d => ({ ...d, ...patch }));

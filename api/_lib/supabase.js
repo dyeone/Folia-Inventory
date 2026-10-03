@@ -12,11 +12,23 @@ export const supabase = createClient(url, key, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-// Remove sensitive fields before sending a user object to the client.
+// Roles (2026-10-02): 'admin' (the full app), 'teammember' (the packing
+// bench only, no prices — the role formerly named 'packer') and
+// 'consultant' (the mobile pricing screen). 'staff' is gone. Rows still
+// carrying the old names (until migration 0048 runs) are read as the new
+// ones here, so no login lands on the wrong screen in between.
+export const ROLES = ['admin', 'teammember', 'consultant'];
+export function normalizeRole(role) {
+  if (role === 'packer' || role === 'staff') return 'teammember';
+  return role;
+}
+
+// Remove sensitive fields before sending a user object to the client, and
+// read the role under its current name.
 export const stripUser = (u) => {
   if (!u) return null;
   const { passwordHash, ...safe } = u;
-  return safe;
+  return { ...safe, role: normalizeRole(safe.role) };
 };
 
 // Verify a request came from a currently-active admin user.
@@ -66,7 +78,7 @@ export async function requireUser(userId) {
     e.status = 401;
     throw e;
   }
-  return data;
+  return { ...data, role: normalizeRole(data.role) };
 }
 
 // The default brand. Any request that doesn't carry a brand resolves to it.

@@ -191,7 +191,7 @@ async function combineBoxes(req, res, user, brandId) {
 
 const TRANSFERABLE_STATUSES = ['available', 'listed', 'acclimated'];
 const TRANSFER_REASONS = new Set(['sale', 'manual', 'return']);
-const TRANSFER_ROLES = new Set(['admin', 'staff']);
+const TRANSFER_ROLES = new Set(['admin']);   // team members work the bench, the consultant prices
 const SHARED_FIELDS = 'id, sku, name, variety, "speciesId", type, status, quantity, "listingPrice", "idealPrice", "grossCost", "netCost", "saleId", "shipmentBoxId", "lotNumber", "imageUrl", "sellerId", "createdAt", "modifiedAt", "brandId"';
 
 // The OTHER brands this user may read: their access list minus the active one.
@@ -210,7 +210,7 @@ function isMissingTransfersTable(error) {
 }
 
 function stripCostsForRole(user, rows) {
-  if (user.role === 'admin' || user.role === 'staff') return rows;
+  if (user.role === 'admin') return rows;
   return rows.map(({ grossCost, netCost, cost, ...rest }) => rest);
 }
 
@@ -260,7 +260,7 @@ async function sharedSkus(req, res, user, brandId) {
 // exactly that. Staff or admin. One-time cleanup of the era before brand
 // prefixes; prefixed SKUs can't collide.
 async function renumberDuplicates(req, res, user, brandId) {
-  if (!TRANSFER_ROLES.has(user.role)) { const e = new Error('Only staff or admins can renumber plants'); e.status = 403; throw e; }
+  if (!TRANSFER_ROLES.has(user.role)) { const e = new Error('Only admins can renumber plants'); e.status = 403; throw e; }
   const others = otherBrandsOf(user, brandId);
   if (!others.length) return res.status(200).json({ renumbered: [] });
   const theirs = await fetchAll(() => supabase
@@ -327,7 +327,7 @@ async function listTransfers(req, res, user, brandId) {
     if (isMissingTransfersTable(error)) return res.status(200).json({ transfers: [], unsupported: true });
     const e = new Error(error.message); e.status = 500; throw e;
   }
-  const rows = user.role === 'admin' || user.role === 'staff' ? (data || []) : (data || []).map(({ grossCost, netCost, ...r }) => r);
+  const rows = user.role === 'admin' ? (data || []) : (data || []).map(({ grossCost, netCost, ...r }) => r);
   const ids = Array.from(new Set(rows.flatMap((t) => [t.fromBrandId, t.toBrandId])));
   return res.status(200).json({ transfers: rows, brands: await brandNames(ids) });
 }
@@ -393,7 +393,7 @@ async function speciesInBrand(fromSpeciesId, toBrandId, user) {
 // never happen unrecorded, and the item update guards status / lineup / box
 // in the statement so two operators can't both move it.
 async function transferItem(req, res, user, brandId) {
-  if (!TRANSFER_ROLES.has(user.role)) { const e = new Error('Only staff or admins can move stock between brands'); e.status = 403; throw e; }
+  if (!TRANSFER_ROLES.has(user.role)) { const e = new Error('Only admins can move stock between brands'); e.status = 403; throw e; }
   const { itemId, fromBrandId, reason = 'manual', saleId = null } = req.body || {};
   const transferId = typeof req.body?.transferId === 'string' && /^[\w-]{6,64}$/.test(req.body.transferId) ? req.body.transferId : newId();
   if (!itemId || typeof itemId !== 'string') { const e = new Error('itemId required'); e.status = 400; throw e; }
@@ -544,7 +544,7 @@ export default wrap(async (req, res) => {
       // The packing bench never needs what plants COST — strip bought-price
       // fields for packer logins so the data doesn't reach that client at
       // all (mirrors the purchase-orders API; staff/admin keep full rows).
-      if (user.role === 'packer') {
+      if (user.role === 'teammember') {
         return res.status(200).json({
           items: (data || []).map(({ grossCost, netCost, cost, ...rest }) => rest),
         });

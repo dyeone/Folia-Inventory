@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { ROLES, normalizeRole } from '../roles.js';
 import { UserPlus, Key, Eye, EyeOff, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { BRANDS } from '../brands.js';
@@ -139,20 +140,16 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
                   </td>
                   <td className="px-3 py-2.5">
                     <select
-                      value={user.role}
+                      value={normalizeRole(user.role)}
                       onChange={(e) => changeRole(user.id, e.target.value)}
                       disabled={isSelf}
                       className={`text-xs font-medium rounded px-2 py-1 border-0 focus:ring-2 focus:ring-emerald-500 ${
-                        user.role === 'admin' ? 'bg-violet-100 text-violet-800'
-                          : user.role === 'packer' ? 'bg-amber-100 text-amber-800'
-                          : user.role === 'consultant' ? 'bg-teal-100 text-teal-800'
-                          : 'bg-sky-100 text-sky-800'
+                        normalizeRole(user.role) === 'admin' ? 'bg-violet-100 text-violet-800'
+                          : normalizeRole(user.role) === 'teammember' ? 'bg-amber-100 text-amber-800'
+                          : 'bg-teal-100 text-teal-800'
                       } ${isSelf ? 'opacity-60 cursor-not-allowed' : ''}`}
                     >
-                      <option value="admin">Admin</option>
-                      <option value="staff">Staff</option>
-                      <option value="packer">Packer</option>
-                      <option value="consultant">Consultant</option>
+                      {ROLES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
                     </select>
                   </td>
                   <td className="px-3 py-2.5">

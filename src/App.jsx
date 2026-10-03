@@ -2,11 +2,12 @@ import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense }
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, PackageOpen, LineChart, Truck, ShoppingCart,
-  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award,
+  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award, Clock,
 } from 'lucide-react';
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
 import { userBrands, resolveActiveBrand, brandLogo, brandName } from './brands.js';
+import { normalizeRole, roleLabel } from './roles.js';
 import { newTaskId } from './tasks/taskHelpers.js';
 
 // Eager imports: auth screen, the always-rendered chrome, and the default
@@ -36,6 +37,7 @@ const OrdersPane = lazyNamed(() => import('./purchasing/OrdersPane.jsx'), 'Order
 const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedView.jsx'), 'RecentlyDeletedView');
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
+const ScheduleView = lazyNamed(() => import('./schedule/ScheduleView.jsx'), 'ScheduleView');
 const CareCalendarView = lazyNamed(() => import('./care/CareCalendarView.jsx'), 'CareCalendarView');
 const BaeLandingEditor = lazyNamed(() => import('./landing/BaeLandingEditor.jsx'), 'BaeLandingEditor');
 const BaeVideoStudio = lazyNamed(() => import('./video/BaeVideoStudio.jsx'), 'BaeVideoStudio');
@@ -121,7 +123,8 @@ export default function InventoryApp() {
   }, []);
 
   // Wire a signed-in user + their active brand into api.js and local state.
-  const activate = (user) => {
+  const activate = (raw) => {
+    const user = { ...raw, role: normalizeRole(raw.role) };   // old role names → current ones
     const brand = resolveActiveBrand(user.brandIds, localStorage.getItem('active-brand'));
     setAuthUserId(user.id);
     setAuthBrandId(brand);
@@ -246,7 +249,7 @@ function InventorySystem() {
   // financial chrome. Route them off before the regular layout's
   // bulky useState/useEffect chain even runs.
   const { currentUser } = useContext(AuthContext);
-  if (currentUser.role === 'packer') return <PackerRoute />;
+  if (currentUser.role === 'teammember') return <PackerRoute />;
   // Consultants likewise: a mobile-only pricing screen over the wholesale
   // orders (list price + seller note per species), nothing else.
   if (currentUser.role === 'consultant') return <ConsultantRoute />;
@@ -905,6 +908,8 @@ function StaffOrAdminInventory() {
   if (isAdmin && activeBrand === 'bae') tabs.push({ id: 'bae-loyalty', label: 'Loyalty', icon: Award });
   // BAE-only video tools hub (Marquee Studio + future live-sales video tools).
   if (activeBrand === 'bae') tabs.push({ id: 'bae-video', label: 'Video', icon: Film });
+  // Shift schedule — the team's weekly availability + the admin's plan.
+  if (isAdmin) tabs.push({ id: 'schedule', label: 'Schedule', icon: Clock });
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users });
 
   return (
@@ -941,7 +946,7 @@ function StaffOrAdminInventory() {
                       <div className="text-sm font-medium text-gray-900">{currentUser.displayName}</div>
                       <div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
                         {isAdmin ? <Shield className="w-3 h-3" /> : <User className="w-3 h-3" />}
-                        {isAdmin ? 'Admin' : 'Staff'} · @{currentUser.username}
+                        {roleLabel(currentUser.role)} · @{currentUser.username}
                       </div>
                     </div>
                     <button
@@ -1129,6 +1134,9 @@ function StaffOrAdminInventory() {
             currentUserId={currentUser.id}
           />
         )}
+        {activeTab === 'schedule' && isAdmin && (
+          <ScheduleView currentUser={currentUser} showToast={showToast} />
+        )}
         {activeTab === 'calendar' && (
           <TasksView
             tasks={tasks}
@@ -1154,7 +1162,7 @@ function StaffOrAdminInventory() {
           <InventoryView
             brand={activeBrand}
             otherBrands={(currentUser.brandIds || []).filter((b) => b !== activeBrand)}
-            canTransfer={currentUser.role === 'admin' || currentUser.role === 'staff'}
+            canTransfer={isAdmin}
             onItemsChanged={async () => { applyItemsFresh(await api.getItems()); }}
             items={filteredItems}
             allItems={items}
@@ -1823,7 +1831,7 @@ function StaffOrAdminInventory() {
           isAdmin={isAdmin}
           activeBrand={activeBrand}
           showToast={showToast}
-          canTransfer={(currentUser.role === 'admin' || currentUser.role === 'staff') && (currentUser.brandIds || []).some((b) => b !== activeBrand)}
+          canTransfer={isAdmin && (currentUser.brandIds || []).some((b) => b !== activeBrand)}
           onItemsChanged={async () => { applyItemsFresh(await api.getItems()); }}
         />
       )}

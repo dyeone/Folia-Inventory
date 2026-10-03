@@ -65,7 +65,7 @@ export default wrap(async (req, res) => {
 //
 // Admin-only: a bridge token grants ADB-level control over the
 // operator's phone, which can drive Palmstreet on behalf of the user.
-// Staff and packer roles should never be able to mint one.
+// Team members and the consultant should never be able to mint one.
 async function generateToken(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
   const user = await requireAdmin(req.body?.userId);

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ROLES, DEFAULT_NEW_ROLE } from '../roles.js';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
@@ -10,7 +11,7 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState('staff');
+  const [role, setRole] = useState(DEFAULT_NEW_ROLE);
   const [brandIds, setBrandIds] = useState([DEFAULT_BRAND]);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
@@ -55,10 +56,7 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
         </Field>
         <Field label="Role">
           <select value={role} onChange={(e) => setRole(e.target.value)} className="input">
-            <option value="staff">Staff — view/edit inventory</option>
-            <option value="admin">Admin — full access</option>
-            <option value="packer">Packer — Shipping tab only, pack workflow</option>
-            <option value="consultant">Consultant — wholesale pricing only (list price + seller note, mobile)</option>
+            {ROLES.map((r) => <option key={r.id} value={r.id}>{r.label} — {r.hint}</option>)}
           </select>
         </Field>
         <Field label="Brand access *">

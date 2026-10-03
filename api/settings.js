@@ -43,6 +43,11 @@ export default wrap(async (req, res) => {
   if (typeof action === 'string' && action.startsWith('care-')) {
     return handleCare(action, req, res, user, brandId);
   }
+  // Shift schedule — team availability per week + the admin's plan. Global
+  // (the team works both brands); same no-new-function rationale as tasks.
+  if (typeof action === 'string' && action.startsWith('shift-')) {
+    return handleShifts(action, req, res, user);
+  }
   // BAE landing-page CMS — one brand-scoped JSON blob (id `landing:<brandId>`)
   // that the public BAE landing site reads (via the `landing-public` branch
   // above). Same no-new-function / no-migration rationale as tasks + care.
@@ -969,6 +974,165 @@ function cleanTask(input, existing, now) {
     createdAt, updatedAt: now, completedAt,
     assignedBy, assignedByName, assignedAt,
   };
+}
+
+// ─── Shift schedule ──────────────────────────────────────────────────────────
+// Two kinds of rows, both global (the team works both brands):
+//   shift_avail:<weekStart>:<userId> — one person's availability for one week
+//     { weekStart, days: { 'YYYY-MM-DD': { status: 'yes'|'maybe'|'no', from, to, note } }, note, updatedAt }
+//   shift_week:<weekStart>            — the admin's plan for the week
+//     { weekStart, shifts: [{ id, userId, date, from, to, label, note }], published, publishedAt, updatedAt, updatedBy }
+// weekStart is the Monday (YYYY-MM-DD). Team members read their own
+// availability and the published plan (with colleagues' names, so they see
+// who is on with them); admins read everyone's availability and write the plan.
+const SHIFT_AVAIL_NS = 'shift_avail:';
+const SHIFT_WEEK_NS = 'shift_week:';
+const SHIFT_STATUSES = new Set(['yes', 'maybe', 'no']);
+const SHIFT_MAX_PER_WEEK = 200;
+const SHIFT_LABEL_MAX = 40;
+const SHIFT_NOTE_MAX = 300;
+const SHIFT_ROSTER_ROLES = new Set(['admin', 'teammember']);
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Monday of the week holding `dateStr` (YYYY-MM-DD), as YYYY-MM-DD. Pure
+// calendar arithmetic in UTC so the result never depends on the server's zone.
+export function weekStartOf(dateStr) {
+  if (!DATE_RE.test(dateStr || '')) return null;
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  const dow = (d.getUTCDay() + 6) % 7;          // Monday = 0
+  d.setUTCDate(d.getUTCDate() - dow);
+  return d.toISOString().slice(0, 10);
+}
+function weekDays(weekStart) {
+  const d = new Date(`${weekStart}T00:00:00Z`);
+  return Array.from({ length: 7 }, (_, i) => { const x = new Date(d); x.setUTCDate(d.getUTCDate() + i); return x.toISOString().slice(0, 10); });
+}
+function addWeeks(weekStart, n) {
+  const d = new Date(`${weekStart}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 7 * n);
+  return d.toISOString().slice(0, 10);
+}
+const minutesOf = (t) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+
+function requireWeek(raw) {
+  const week = weekStartOf(String(raw || ''));
+  if (!week) { const e = new Error('week (YYYY-MM-DD) required'); e.status = 400; throw e; }
+  return week;
+}
+
+async function shiftRoster() {
+  const { data, error } = await supabase
+    .from('users').select('id, "displayName", username, role, active').eq('active', true).order('displayName');
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  return (data || [])
+    .map((u) => ({ id: u.id, displayName: u.displayName || u.username, role: u.role === 'packer' || u.role === 'staff' ? 'teammember' : u.role }))
+    .filter((u) => SHIFT_ROSTER_ROLES.has(u.role));
+}
+
+async function readWeekAvailability(week) {
+  const { data, error } = await supabase
+    .from('app_settings').select('id, data').like('id', `${SHIFT_AVAIL_NS}${week}:%`);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const out = {};
+  for (const r of data || []) {
+    const userId = r.id.slice(SHIFT_AVAIL_NS.length + week.length + 1);
+    if (userId && r.data && typeof r.data === 'object') out[userId] = r.data;
+  }
+  return out;
+}
+
+function cleanAvailability(input, week, now) {
+  const days = {};
+  const allowed = new Set(weekDays(week));
+  const src = input?.days && typeof input.days === 'object' ? input.days : {};
+  for (const [date, v] of Object.entries(src)) {
+    if (!allowed.has(date) || !v || typeof v !== 'object') continue;
+    const status = SHIFT_STATUSES.has(v.status) ? v.status : null;
+    if (!status) continue;
+    const from = status !== 'no' && TIME_RE.test(v.from || '') ? v.from : null;
+    const to = status !== 'no' && TIME_RE.test(v.to || '') ? v.to : null;
+    if (from && to && minutesOf(to) <= minutesOf(from)) { const e = new Error(`${date}: the end time must be after the start`); e.status = 400; throw e; }
+    days[date] = { status, from, to, note: String(v.note || '').slice(0, SHIFT_NOTE_MAX) };
+  }
+  return { weekStart: week, days, note: String(input?.note || '').slice(0, SHIFT_NOTE_MAX), updatedAt: now };
+}
+
+function cleanShifts(input, week, roster) {
+  if (!Array.isArray(input)) { const e = new Error('shifts (array) required'); e.status = 400; throw e; }
+  if (input.length > SHIFT_MAX_PER_WEEK) { const e = new Error(`At most ${SHIFT_MAX_PER_WEEK} shifts in a week`); e.status = 400; throw e; }
+  const allowed = new Set(weekDays(week));
+  const people = new Set(roster.map((u) => u.id));
+  const out = [];
+  const seen = new Set();
+  for (const sh of input) {
+    if (!sh || typeof sh !== 'object') continue;
+    if (!people.has(sh.userId)) { const e = new Error('A shift names someone who is not on the team'); e.status = 400; throw e; }
+    if (!allowed.has(sh.date)) { const e = new Error(`${sh.date || 'a shift'} is outside the week ${week}`); e.status = 400; throw e; }
+    if (!TIME_RE.test(sh.from || '') || !TIME_RE.test(sh.to || '')) { const e = new Error(`${sh.date}: shift times must be HH:MM`); e.status = 400; throw e; }
+    if (minutesOf(sh.to) <= minutesOf(sh.from)) { const e = new Error(`${sh.date}: the shift must end after it starts`); e.status = 400; throw e; }
+    let id = typeof sh.id === 'string' && /^[\w-]{4,40}$/.test(sh.id) ? sh.id : newId();
+    if (seen.has(id)) id = newId();
+    seen.add(id);
+    out.push({ id, userId: sh.userId, date: sh.date, from: sh.from, to: sh.to, label: String(sh.label || '').slice(0, SHIFT_LABEL_MAX), note: String(sh.note || '').slice(0, SHIFT_NOTE_MAX) });
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date) || a.from.localeCompare(b.from) || a.userId.localeCompare(b.userId));
+  return out;
+}
+
+async function handleShifts(action, req, res, user) {
+  const isAdmin = user.role === 'admin';
+  switch (action) {
+    case 'shift-week': {
+      // One week, everything the caller may see: the roster (names only for
+      // non-admins), the plan (drafts stay with admins), availability
+      // (everyone's for admins, one's own otherwise).
+      if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
+      const week = requireWeek(req.query?.week);
+      const [roster, planRow, avail] = await Promise.all([shiftRoster(), readSetting(SHIFT_WEEK_NS + week), readWeekAvailability(week)]);
+      const plan = planRow?.data && typeof planRow.data === 'object' ? planRow.data : { weekStart: week, shifts: [], published: false };
+      const visiblePlan = isAdmin || plan.published ? plan : { weekStart: week, shifts: [], published: false, hidden: !!plan.shifts?.length };
+      return res.status(200).json({
+        week, days: weekDays(week), prevWeek: addWeeks(week, -1), nextWeek: addWeeks(week, 1),
+        users: roster.map((u) => (isAdmin ? u : { id: u.id, displayName: u.displayName })),
+        schedule: visiblePlan,
+        availability: isAdmin ? avail : {},
+        mine: avail[user.id] || null,
+        me: user.id,
+        isAdmin,
+      });
+    }
+    case 'shift-availability-save': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      if (!SHIFT_ROSTER_ROLES.has(user.role)) { const e = new Error('Only team members and admins have a shift availability'); e.status = 403; throw e; }
+      const week = requireWeek(req.body?.week);
+      const clean = cleanAvailability(req.body, week, new Date().toISOString());
+      await writeSetting(`${SHIFT_AVAIL_NS}${week}:${user.id}`, clean, user);
+      return res.status(200).json({ availability: clean });
+    }
+    case 'shift-schedule-save': {
+      if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+      requireAdminRole(user);
+      const week = requireWeek(req.body?.week);
+      const roster = await shiftRoster();
+      const shifts = cleanShifts(req.body?.shifts, week, roster);
+      const prevRow = await readSetting(SHIFT_WEEK_NS + week);
+      const prev = prevRow?.data && typeof prevRow.data === 'object' ? prevRow.data : null;
+      const now = new Date().toISOString();
+      const published = req.body?.published === undefined ? !!prev?.published : !!req.body.published;
+      const plan = {
+        weekStart: week, shifts, published,
+        publishedAt: published ? (prev?.published ? prev.publishedAt || now : now) : null,
+        updatedAt: now, updatedBy: user.displayName || user.id,
+      };
+      await writeSetting(SHIFT_WEEK_NS + week, plan, user);
+      return res.status(200).json({ schedule: plan });
+    }
+    default: {
+      const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
+    }
+  }
 }
 
 function requireAdminRole(user) {
