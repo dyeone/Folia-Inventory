@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense }
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, PackageOpen, LineChart, Truck, ShoppingCart,
-  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award, Clock,
+  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award, Clock, Sprout,
 } from 'lucide-react';
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -38,6 +38,7 @@ const RecentlyDeletedView = lazyNamed(() => import('./inventory/RecentlyDeletedV
 const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
 const ScheduleView = lazyNamed(() => import('./schedule/ScheduleView.jsx'), 'ScheduleView');
+const AcclimationView = lazyNamed(() => import('./acclimation/AcclimationView.jsx'), 'AcclimationView');
 const CareCalendarView = lazyNamed(() => import('./care/CareCalendarView.jsx'), 'CareCalendarView');
 const BaeLandingEditor = lazyNamed(() => import('./landing/BaeLandingEditor.jsx'), 'BaeLandingEditor');
 const BaeVideoStudio = lazyNamed(() => import('./video/BaeVideoStudio.jsx'), 'BaeVideoStudio');
@@ -346,7 +347,19 @@ function StaffOrAdminInventory() {
     const next = Number.isFinite(num) ? num : 0;
     setAcclimatedRateState(next);
     localStorage.setItem('acclimated-profit-rate', String(next));
+    // Shared with the server so bench scans (items action=acclimate) apply
+    // the same bump as this browser's scan modal.
+    api.putSettings(`acclimation:${activeBrand}`, { profitRate: next }).catch(() => { /* local value still applies here */ });
   };
+  // The server's copy wins on load — another admin may have changed it.
+  useEffect(() => {
+    let cancelled = false;
+    api.getSettings(`acclimation:${activeBrand}`).then((s) => {
+      const n = parseFloat(s?.data?.profitRate);
+      if (!cancelled && Number.isFinite(n)) { setAcclimatedRateState(n); localStorage.setItem('acclimated-profit-rate', String(n)); }
+    }).catch(() => { /* keep the local value */ });
+    return () => { cancelled = true; };
+  }, [activeBrand]);
   const [showUserMenu, setShowUserMenu] = useState(false);
   // Mobile-nav overflow sheet. 8 tabs squished into the bottom bar were
   // unreadable at 375px — primary 4 stay visible, the rest live in a
@@ -886,9 +899,24 @@ function StaffOrAdminInventory() {
     );
   }
 
+  // Status change from the inventory row or the Acclimation tab. Marking a
+  // TC "acclimated" bumps its profit rate to the acclimated rate — sticky:
+  // only ever raised, an existing higher rate wins.
+  const changeItemStatus = (id, status) => {
+    const updates = { status };
+    if (status === 'sold') updates.soldAt = new Date().toISOString();
+    if (status === 'acclimated') {
+      const item = items.find(i => i.id === id);
+      const current = parseFloat(item?.profitRate);
+      if (!Number.isFinite(current) || current < acclimatedRate) updates.profitRate = acclimatedRate;
+    }
+    return updateItem(id, updates);
+  };
+
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: TrendingUp },
     { id: 'inventory', label: 'Inventory', icon: Archive },
+    { id: 'acclimation', label: 'Acclimation', icon: Sprout },
     { id: 'sales', label: 'Sale', icon: Calendar },
     { id: 'packing', label: 'Shipping', icon: Package },
     { id: 'calendar', label: 'Calendar', icon: CalendarDays },
@@ -1269,21 +1297,16 @@ function StaffOrAdminInventory() {
                 return false;
               }
             }}
-            onStatusChange={(id, status) => {
-              const updates = { status };
-              if (status === 'sold') updates.soldAt = new Date().toISOString();
-              if (status === 'acclimated') {
-                // Sticky rate bump: only raise, never lower. Operator's
-                // existing higher rate (if any) wins.
-                const item = items.find(i => i.id === id);
-                const current = parseFloat(item?.profitRate);
-                if (!Number.isFinite(current) || current < acclimatedRate) {
-                  updates.profitRate = acclimatedRate;
-                }
-              }
-              updateItem(id, updates);
-            }}
+            onStatusChange={changeItemStatus}
             isAdmin={isAdmin}
+          />
+        )}
+        {activeTab === 'acclimation' && (
+          <AcclimationView
+            items={items}
+            acclimatedRate={acclimatedRate}
+            onStatusChange={changeItemStatus}
+            showToast={showToast}
           />
         )}
         {activeTab === 'sales' && (
