@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Check, Loader2, AlertCircle, Copy, Send, Undo2, CalendarDays, Plus, Trash2, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Check, Loader2, AlertCircle, Copy, Send, Undo2, CalendarDays, Plus, Trash2, X, Clock, LayoutGrid } from 'lucide-react';
 import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { AvailabilityModal } from './AvailabilityModal.jsx';
+import { DayPlanner } from './DayPlanner.jsx';
 import { mondayOf, todayStr, addDays, weekDays, dayName, shortDate, weekLabel, fmtRange, fmtHours, hoursBetween, DEFAULT_FROM, DEFAULT_TO } from './weekUtils.js';
 
-// Schedule tab (admins): one week at a time. Rows are the team (admins +
-// team members), columns the seven days. Each cell shows what the person
-// said (Yes 9am–5pm · Maybe · No · no reply) and the shift(s) planned on
-// top of it. Click a cell to plan; "Use their hours" turns the availability
-// into the shift in one tap. The plan is a draft until Publish, which is
-// when team members see their shifts on the bench.
+// Schedule tab (admins): one week at a time, planned BY THE HOUR. The
+// default view is one day as an hour grid (DayPlanner): a row per person,
+// their availability shaded, shifts as blocks — drag across the hours to
+// plan, tap a block to fine-tune. The week view is the overview: rows are
+// the team, columns the seven days, each cell what the person said and the
+// shift(s) on top; click a cell to plan it. The plan is a draft until
+// Publish, which is when team members see their shifts on the bench.
 
 const AVAIL_STYLE = {
   yes: 'bg-emerald-50 text-emerald-800 border-emerald-200',
@@ -21,6 +23,8 @@ const AVAIL_STYLE = {
 
 export function ScheduleView({ currentUser, showToast }) {
   const [week, setWeek] = useState(() => mondayOf(todayStr()));
+  const [view, setView] = useState('day');          // 'day' (by the hour) | 'week' (overview)
+  const [day, setDay] = useState(() => todayStr());  // the day open in the hour view
   const [data, setData] = useState(null);
   const [shifts, setShifts] = useState([]);
   const [published, setPublished] = useState(false);
@@ -63,6 +67,8 @@ export function ScheduleView({ currentUser, showToast }) {
 
   const dates = useMemo(() => weekDays(week), [week]);
   const today = todayStr();
+  const dayInWeek = dates.includes(day) ? day : (dates.includes(today) ? today : dates[0]);
+  const goWeek = (w) => { setWeek(w); setDay(w === mondayOf(today) ? today : w); };   // today when it's in that week, else its Monday
   const users = data?.users || [];
   const avail = data?.availability || {};
 
@@ -119,14 +125,18 @@ export function ScheduleView({ currentUser, showToast }) {
     <div className="space-y-4">
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex items-center gap-1">
-          <button type="button" onClick={() => setWeek(addDays(week, -7))} className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50" aria-label="Previous week"><ChevronLeft className="w-4 h-4" /></button>
-          <button type="button" onClick={() => setWeek(mondayOf(todayStr()))} className="px-3 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 text-sm">This week</button>
-          <button type="button" onClick={() => setWeek(addDays(week, 7))} className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50" aria-label="Next week"><ChevronRight className="w-4 h-4" /></button>
+          <button type="button" onClick={() => goWeek(addDays(week, -7))} className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50" aria-label="Previous week"><ChevronLeft className="w-4 h-4" /></button>
+          <button type="button" onClick={() => goWeek(mondayOf(todayStr()))} className="px-3 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 text-sm">This week</button>
+          <button type="button" onClick={() => goWeek(addDays(week, 7))} className="p-2 rounded-lg border border-gray-300 hover:bg-gray-50" aria-label="Next week"><ChevronRight className="w-4 h-4" /></button>
         </div>
         <h2 className="text-lg font-semibold text-gray-900">{weekLabel(week)}</h2>
         <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${published ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-600'}`}>{published ? 'Published' : 'Draft'}</span>
         {dirty && <span className="text-xs text-amber-700">unsaved changes</span>}
         <div className="ml-auto flex items-center gap-2 flex-wrap">
+          <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden text-sm">
+            <button type="button" onClick={() => setView('day')} className={`inline-flex items-center gap-1.5 px-3 py-2 ${view === 'day' ? 'bg-gray-900 text-white' : 'hover:bg-gray-50 text-gray-700'}`}><Clock className="w-4 h-4" /> By hour</button>
+            <button type="button" onClick={() => setView('week')} className={`inline-flex items-center gap-1.5 px-3 py-2 border-l border-gray-300 ${view === 'week' ? 'bg-gray-900 text-white' : 'hover:bg-gray-50 text-gray-700'}`}><LayoutGrid className="w-4 h-4" /> Week</button>
+          </div>
           <button type="button" onClick={() => setMyAvailOpen(true)} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50"><CalendarDays className="w-4 h-4" /> My availability</button>
           <button type="button" onClick={copyLastWeek} disabled={copying} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">{copying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />} Copy last week</button>
           <button type="button" onClick={() => save()} disabled={saving || !dirty} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50"><Check className="w-4 h-4" /> Save draft</button>
@@ -147,8 +157,41 @@ export function ScheduleView({ currentUser, showToast }) {
             <span><b className="text-gray-900">{replied}</b> of {users.length} replied</span>
             <span>·</span>
             <span><b className="text-gray-900">{shifts.length}</b> shift{shifts.length === 1 ? '' : 's'} · <b className="text-gray-900">{fmtHours(weekHours)}</b> planned</span>
-            <span className="ml-auto">Click a cell to plan a shift · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-200 align-middle" /> yes · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-amber-200 align-middle" /> maybe · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-gray-200 align-middle" /> no</span>
+            <span className="ml-auto">{view === 'day' ? 'Drag across the hours to plan a shift · tap a block to adjust it' : 'Click a cell to plan a shift'} · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-emerald-200 align-middle" /> yes · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-amber-200 align-middle" /> maybe · <span className="inline-block w-2.5 h-2.5 rounded-sm bg-gray-200 align-middle" /> no</span>
           </div>
+          {view === 'day' && (
+            <>
+              <div className="flex gap-1.5 flex-wrap">
+                {dates.map((d) => {
+                  const t = dayTotals(d);
+                  const can = users.filter((u) => ['yes', 'maybe'].includes(avail[u.id]?.days?.[d]?.status)).length;
+                  const on = d === dayInWeek;
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setDay(d)}
+                      className={`px-3 py-1.5 rounded-lg border text-left ${on ? 'bg-gray-900 text-white border-gray-900' : 'bg-white border-gray-300 text-gray-800 hover:bg-gray-50'}`}
+                    >
+                      <div className={`text-sm font-semibold ${d === today && !on ? 'text-emerald-700' : ''}`}>{dayName(d)} <span className="font-normal">{shortDate(d)}</span></div>
+                      <div className={`text-[11px] ${on ? 'text-gray-300' : 'text-gray-500'}`}>{can} can · {t.people ? `${t.people} on · ${fmtHours(t.hours)}` : 'nothing planned'}</div>
+                    </button>
+                  );
+                })}
+              </div>
+              <DayPlanner
+                date={dayInWeek}
+                users={users}
+                availability={avail}
+                shifts={shifts.filter((s) => s.date === dayInWeek)}
+                today={today}
+                currentUserId={currentUser?.id}
+                onCreate={(userId, date, from, to) => change([...shifts, { id: newId(), userId, date, from, to, label: '', note: '' }])}
+                onEdit={(userId, date) => setEditing({ userId, date })}
+              />
+            </>
+          )}
+          {view === 'week' && (
           <div className="overflow-x-auto border border-gray-200 rounded-xl bg-white">
             <table className="min-w-[900px] w-full text-sm border-collapse">
               <thead>
@@ -212,6 +255,7 @@ export function ScheduleView({ currentUser, showToast }) {
               </tfoot>
             </table>
           </div>
+          )}
         </>
       )}
 
