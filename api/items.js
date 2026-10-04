@@ -290,6 +290,68 @@ async function renumberDuplicates(req, res, user, brandId) {
   return res.status(200).json({ renumbered });
 }
 
+// ─── Acclimation ─────────────────────────────────────────────────────────────
+// TCs potted to recover: scanned into "acclimated" from the packing bench or
+// the admin's scan modal, listed on the Acclimation tab, marked available
+// again once grown. POST { action: 'acclimate', skus: [...], revert? } flips
+// every SKU of the active brand in one call (any brand member — the bench is
+// a team member) and reports per SKU, so a scanner session shows what
+// happened to each label. The profit-rate bump the admin's modal applies
+// comes from app_settings `acclimation:<brand>` ({ profitRate }, default 200)
+// so bench scans price the same way; the bump only ever raises.
+const ACCLIMATE_FROM = new Set(['available', 'listed']);
+const ACCLIMATE_MAX = 500;
+const ACCLIMATE_DEFAULT_RATE = 200;
+
+async function acclimationRate(brandId) {
+  const { data, error } = await supabase.from('app_settings').select('data').eq('id', `acclimation:${brandId}`).maybeSingle();
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const n = parseFloat(data?.data?.profitRate);
+  return Number.isFinite(n) ? n : ACCLIMATE_DEFAULT_RATE;
+}
+
+async function acclimateItems(req, res, user, brandId) {
+  const raw = Array.isArray(req.body?.skus) ? req.body.skus : [];
+  const skus = Array.from(new Set(raw.map((s) => String(s || '').trim().toUpperCase().replace(/_/g, '-')).filter(Boolean)));
+  if (!skus.length) { const e = new Error('skus (array) required'); e.status = 400; throw e; }
+  if (skus.length > ACCLIMATE_MAX) { const e = new Error(`At most ${ACCLIMATE_MAX} SKUs per call`); e.status = 400; throw e; }
+  const revert = !!req.body?.revert;
+  const { data: rows, error } = await supabase
+    .from('inventory_items')
+    .select('id, sku, name, variety, type, status, "profitRate", "modifiedAt"')
+    .eq('brandId', brandId).is('deletedAt', null).in('sku', skus);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const bySku = new Map((rows || []).map((r) => [String(r.sku).toUpperCase(), r]));
+  const rate = revert ? null : await acclimationRate(brandId);
+  const now = new Date().toISOString();
+  const results = [];
+  for (const sku of skus) {
+    const item = bySku.get(sku);
+    if (!item) { results.push({ sku, ok: false, error: 'SKU not found' }); continue; }
+    if (revert) {
+      if (item.status !== 'acclimated') { results.push({ sku, ok: false, error: `not in acclimation (${item.status})`, item }); continue; }
+      const { data: upd, error: uErr } = await supabase
+        .from('inventory_items').update({ status: 'available', modifiedAt: now, modifiedBy: user.displayName })
+        .eq('id', item.id).eq('brandId', brandId).eq('status', 'acclimated').select('id, sku, name, variety, type, status, "modifiedAt"');
+      if (uErr) { const e = new Error(uErr.message); e.status = 500; throw e; }
+      results.push(upd?.length ? { sku, ok: true, item: upd[0] } : { sku, ok: false, error: 'changed under you', item });
+      continue;
+    }
+    if (item.status === 'acclimated') { results.push({ sku, ok: false, already: true, error: 'already in acclimation', item }); continue; }
+    if (item.type !== 'tc') { results.push({ sku, ok: false, error: 'not a TC', item }); continue; }
+    if (!ACCLIMATE_FROM.has(item.status)) { results.push({ sku, ok: false, error: `is ${item.status}`, item }); continue; }
+    const current = parseFloat(item.profitRate);
+    const patch = { status: 'acclimated', modifiedAt: now, modifiedBy: user.displayName };
+    if (!Number.isFinite(current) || current < rate) patch.profitRate = rate;
+    const { data: upd, error: uErr } = await supabase
+      .from('inventory_items').update(patch)
+      .eq('id', item.id).eq('brandId', brandId).in('status', [...ACCLIMATE_FROM]).select('id, sku, name, variety, type, status, "modifiedAt"');
+    if (uErr) { const e = new Error(uErr.message); e.status = 500; throw e; }
+    results.push(upd?.length ? { sku, ok: true, item: upd[0] } : { sku, ok: false, error: 'changed under you', item });
+  }
+  return res.status(200).json({ results, done: results.filter((r) => r.ok).length });
+}
+
 // GET ?action=lookup&sku= → one in-stock plant of another brand by SKU (the
 // scan screen asks this when a scanned label isn't the active brand's).
 async function lookupSku(req, res, user, brandId) {
@@ -511,6 +573,7 @@ export default wrap(async (req, res) => {
   if (action === 'renumber-duplicates' && req.method === 'POST') return renumberDuplicates(req, res, user, brandId);
   if (action === 'transfers' && req.method === 'GET') return listTransfers(req, res, user, brandId);
   if (action === 'transfer' && req.method === 'POST') return transferItem(req, res, user, brandId);
+  if (action === 'acclimate' && req.method === 'POST') return acclimateItems(req, res, user, brandId);
   // Consultant-safe stock list: what's on hand, with the list price and
   // never the cost. Any brand member. (The plain GET returns full rows with
   // costs to staff/admin — this is the narrow read for the pricing screen.)

@@ -91,6 +91,9 @@ export const api = {
     request('/settings', { method: 'POST', body: { action: 'shift-availability-save', week, days, note } }),
   saveShiftSchedule: ({ week, shifts, published }) =>
     request('/settings', { method: 'POST', body: { action: 'shift-schedule-save', week, shifts, published } }),
+  // Acclimation: flip TC SKUs to "acclimated" (or back, with revert) in one call.
+  acclimateSkus: (skus, { revert = false } = {}) =>
+    request('/items', { method: 'POST', body: { action: 'acclimate', skus, revert } }),
   getSharedStock: () => request('/items?action=shared-stock'),
   lookupSkuAcrossBrands: (sku) => request(`/items?action=lookup&sku=${encodeURIComponent(sku)}`),
   getItemTransfers: () => request('/items?action=transfers'),

@@ -1,9 +1,10 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AvailabilityModal } from '../schedule/AvailabilityModal.jsx';
+import { AcclimationPane } from '../acclimation/AcclimationPane.jsx';
 import {
   LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
   Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText, CalendarDays} from 'lucide-react';
+  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText, CalendarDays, Sprout} from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
@@ -171,6 +172,7 @@ export function PackerView({ onLogout }) {
   // labeled at the packing table. The list drives the landing banner; the
   // pane itself does its own detail fetching.
   const [receivingOpen, setReceivingOpen] = useState(false);
+  const [acclimationOpen, setAcclimationOpen] = useState(false);   // scan TCs into acclimation
   // Tagged with the brand the fetch belonged to: on a brand switch the chip
   // derives to empty instead of flashing the previous brand's count.
   const [incomingFetch, setIncomingFetch] = useState({ brand: null, list: [] });
@@ -792,7 +794,9 @@ export function PackerView({ onLogout }) {
   // The printer sheet counts as an overlay too: while it's open the scan
   // field must not steal focus back from it, and stray hardware-scanner
   // input must not drive the (covered) packing flow behind it.
-  const overlayOpen = !!cameraMode || printerSheetOpen;
+  // The acclimation pane owns its own scanner field, so it counts as an
+  // overlay too: the hidden bench scanner must not take scans from it.
+  const overlayOpen = !!cameraMode || printerSheetOpen || acclimationOpen;
   const overlayRef = useRef(overlayOpen);
   useEffect(() => { overlayRef.current = overlayOpen; }, [overlayOpen]);
   useEffect(() => {
@@ -1401,6 +1405,13 @@ export function PackerView({ onLogout }) {
             printing={printing}
             onDone={() => goToBox(null)}
           />
+        : acclimationOpen
+        ? <AcclimationPane
+            onClose={() => setAcclimationOpen(false)}
+            showToast={showToast}
+            totalAcclimated={items.filter(i => i.status === 'acclimated').length}
+            onChanged={refresh}
+          />
         : receivingOpen
         ? <ReceivingPane
             key={activeBrand}
@@ -1452,8 +1463,24 @@ export function PackerView({ onLogout }) {
             heatByBox={heatByBox}
             insulationByBox={insulationByBox}
             onOpen={goToBox}
-            header={(heatAlertBoxes.length > 0 || sweepBoxes.length > 0 || shipPlan.total > 0 || incomingPos.length > 0) && (
+            header={(
               <div className="max-w-5xl mx-auto space-y-2 mb-3">
+                {/* Acclimation — scan TCs into acclimation. Always offered:
+                    it isn't tied to any order or box. */}
+                <button
+                  type="button"
+                  onClick={() => { setSweepOpen(false); setStationOpen(false); setReceivingOpen(false); setAcclimationOpen(true); }}
+                  title="Scan TCs into acclimation"
+                  className="w-full rounded-xl border-2 border-fuchsia-300 bg-fuchsia-50 hover:border-fuchsia-400 px-3 py-2 flex items-center gap-2 transition active:scale-[0.99]"
+                >
+                  <Sprout className="w-5 h-5 text-fuchsia-700 shrink-0" />
+                  <span className="min-w-0 truncate text-sm font-bold text-fuchsia-900">
+                    Acclimation<span className="hidden min-[480px]:inline"> — scan TCs into acclimation</span>
+                  </span>
+                  <span className="ml-auto shrink-0 text-sm font-bold tabular-nums text-fuchsia-800">
+                    {items.filter(i => i.status === 'acclimated').length} in
+                  </span>
+                </button>
                 {/* New order receiving — appears when the admin has sent a
                     wholesale order to receiving. The packer's side is count
                     + label only, so with nothing incoming there's nothing
