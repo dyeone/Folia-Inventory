@@ -10,7 +10,9 @@ import { weekDays, dayName, shortDate, weekLabel, todayStr, fmtRange, fmtHours, 
 
 const hourLabel = (h) => (h % 12 || 12) + (h >= 12 ? 'p' : 'a');
 
-export function AvailabilityForm({ week, onSaved }) {
+// stickySubmit: the submit bar floats above the streamer screen's bottom
+// nav, so the grid never has to be scrolled past to reach it.
+export function AvailabilityForm({ week, onSaved, stickySubmit = false }) {
   const [data, setData] = useState(null);     // the week payload from the server
   const [hours, setHours] = useState({});     // date → Set of hour numbers
   const [notes, setNotes] = useState({});     // date → note
@@ -103,7 +105,7 @@ export function AvailabilityForm({ week, onSaved }) {
   const totalHours = dates.reduce((n, d) => n + (hours[d]?.size || 0), 0);
 
   return (
-    <div className="space-y-3" onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
+    <div className={`space-y-3 ${stickySubmit ? 'pb-24' : ''}`} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
       <div className="flex items-baseline justify-between gap-2 flex-wrap">
         <div className="font-semibold text-gray-900">{weekLabel(week)}</div>
         <div className="text-xs text-gray-500">{fmtHours(totalHours)} offered</div>
@@ -135,7 +137,9 @@ export function AvailabilityForm({ week, onSaved }) {
             <button type="button" onClick={clearAll} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"><Eraser className="w-3 h-3" /> Clear</button>
           </div>
 
-          <div className="border border-gray-200 rounded-xl overflow-hidden bg-white select-none" style={{ touchAction: 'none' }}>
+          {/* pan-y: a vertical swipe scrolls the page (the browser cancels the
+              pointer, which ends the paint); a sideways drag paints hours. */}
+          <div className="border border-gray-200 rounded-xl overflow-hidden bg-white select-none" style={{ touchAction: 'pan-y' }}>
             <div className="grid text-[10px] text-gray-500 bg-gray-50 border-b border-gray-200" style={{ gridTemplateColumns: `4.5rem repeat(${PICK_HOURS.length}, minmax(0, 1fr))` }}>
               <div />
               {PICK_HOURS.map((h) => <div key={h} className="text-center py-1 truncate">{h % 2 === 0 ? hourLabel(h) : ''}</div>)}
@@ -193,19 +197,26 @@ export function AvailabilityForm({ week, onSaved }) {
             rows={2}
             className="w-full text-sm border border-gray-300 rounded-xl px-3 py-2"
           />
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="text-xs text-gray-500">
-              {savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : data.mine?.updatedAt ? `Last saved ${new Date(data.mine.updatedAt).toLocaleDateString()}` : 'Not submitted yet'}
+          <div className={stickySubmit
+            ? 'fixed inset-x-0 z-10 bg-white/95 backdrop-blur border-t border-gray-200 px-3 py-2 pb-safe'
+            : 'flex items-center justify-between gap-2 flex-wrap'}
+            style={stickySubmit ? { bottom: 'calc(4rem + env(safe-area-inset-bottom, 0px))' } : undefined}
+          >
+            <div className={`flex items-center justify-between gap-2 ${stickySubmit ? 'max-w-md mx-auto' : 'contents'}`}>
+              <div className="text-xs text-gray-500 min-w-0">
+                {stickySubmit && <div className="font-semibold text-gray-900 text-sm">{fmtHours(totalHours)} offered{dirty ? ' · unsaved' : ''}</div>}
+                {savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : data.mine?.updatedAt ? `Last saved ${new Date(data.mine.updatedAt).toLocaleDateString()}` : 'Not submitted yet'}
+              </div>
+              <button
+                type="button"
+                onClick={save}
+                disabled={saving || (!dirty && !!data.mine)}
+                className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold text-sm disabled:opacity-40 hover:bg-emerald-700 shrink-0"
+              >
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                {data.mine && !dirty ? 'Submitted' : 'Submit availability'}
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={save}
-              disabled={saving || (!dirty && !!data.mine)}
-              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 text-white font-semibold text-sm disabled:opacity-40 hover:bg-emerald-700"
-            >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-              {data.mine && !dirty ? 'Submitted' : 'Submit availability'}
-            </button>
           </div>
         </>
       )}
