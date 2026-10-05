@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { Modal } from '../ui/Modal.jsx';
 import { AvailabilityModal } from './AvailabilityModal.jsx';
 import { DayPlanner } from './DayPlanner.jsx';
-import { mondayOf, todayStr, addDays, weekDays, dayName, shortDate, weekLabel, fmtRange, fmtHours, hoursBetween, DEFAULT_FROM, DEFAULT_TO } from './weekUtils.js';
+import { mondayOf, todayStr, addDays, weekDays, dayName, shortDate, weekLabel, fmtRange, fmtHours, hoursBetween, dayHours, hourRuns, fmtRuns, DEFAULT_FROM, DEFAULT_TO } from './weekUtils.js';
 
 // Schedule tab (admins): one week at a time, planned BY THE HOUR. The
 // default view is one day as an hour grid (DayPlanner): a row per person,
@@ -115,10 +115,10 @@ export function ScheduleView({ currentUser, showToast }) {
   };
 
   const availLabel = (a) => {
-    if (!a?.status) return 'no reply';
-    if (a.status === 'no') return 'No';
-    const hrs = a.from && a.to ? fmtRange(a.from, a.to) : 'any time';
-    return `${a.status === 'yes' ? 'Yes' : 'Maybe'} ${hrs}`;
+    if (!a) return 'no reply';
+    const hs = dayHours(a);
+    if (!hs.length) return 'No';
+    return `${a.status === 'maybe' ? 'Maybe' : 'Yes'} ${fmtRuns(hs)}`;
   };
 
   return (
@@ -164,7 +164,7 @@ export function ScheduleView({ currentUser, showToast }) {
               <div className="flex gap-1.5 flex-wrap">
                 {dates.map((d) => {
                   const t = dayTotals(d);
-                  const can = users.filter((u) => ['yes', 'maybe'].includes(avail[u.id]?.days?.[d]?.status)).length;
+                  const can = users.filter((u) => dayHours(avail[u.id]?.days?.[d]).length > 0).length;
                   const on = d === dayInWeek;
                   return (
                     <button
@@ -219,7 +219,7 @@ export function ScheduleView({ currentUser, showToast }) {
                       {dates.map((d) => {
                         const a = ua?.days?.[d];
                         const cell = shiftsAt(u.id, d);
-                        const style = AVAIL_STYLE[a?.status || 'none'];
+                        const style = AVAIL_STYLE[!a ? 'none' : dayHours(a).length ? (a.status === 'maybe' ? 'maybe' : 'yes') : 'no'];
                         return (
                           <td key={d} className="px-1.5 py-1.5">
                             <button
@@ -280,7 +280,7 @@ function ShiftEditor({ user, date, availability, shifts, onChange, onClose }) {
   const [rows, setRows] = useState(() => (shifts.length ? shifts : []));
   const set = (i, patch) => setRows((r) => r.map((s, j) => (j === i ? { ...s, ...patch } : s)));
   const add = (from = DEFAULT_FROM, to = DEFAULT_TO) => setRows((r) => [...r, { id: `sh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, userId: user.id, date, from, to, label: '', note: '' }]);
-  const canUse = availability && availability.status !== 'no';
+  const canUse = dayHours(availability).length > 0;
   const apply = () => {
     for (const s of rows) {
       if (!s.from || !s.to || s.to <= s.from) return;
@@ -291,12 +291,12 @@ function ShiftEditor({ user, date, availability, shifts, onChange, onClose }) {
   return (
     <Modal title={`${user?.displayName || 'Shift'} · ${dayName(date)} ${shortDate(date)}`} onClose={onClose} size="md">
       <div className="space-y-3">
-        <div className={`text-sm rounded-lg px-3 py-2 border ${AVAIL_STYLE[availability?.status || 'none']}`}>
-          {availability?.status
-            ? <>Said <b>{availability.status === 'no' ? 'No' : availability.status === 'yes' ? 'Yes' : 'Maybe'}</b>{availability.from ? ` · ${fmtRange(availability.from, availability.to)}` : ''}{availability.note ? ` — ${availability.note}` : ''}</>
+        <div className={`text-sm rounded-lg px-3 py-2 border ${AVAIL_STYLE[!availability ? 'none' : dayHours(availability).length ? 'yes' : 'no']}`}>
+          {availability
+            ? <>{dayHours(availability).length ? <>Can work <b>{fmtRuns(dayHours(availability))}</b></> : <b>Not available</b>}{availability.note ? ` — ${availability.note}` : ''}</>
             : 'No availability submitted for this day.'}
           {canUse && (
-            <button type="button" onClick={() => { const from = availability.from || DEFAULT_FROM, to = availability.to || DEFAULT_TO; if (rows.length) set(0, { from, to }); else add(from, to); }} className="ml-2 text-xs font-semibold underline">Use their hours</button>
+            <button type="button" onClick={() => { const runs = hourRuns(dayHours(availability)); setRows(runs.map(([from, to]) => ({ id: `sh-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`, userId: user.id, date, from, to, label: '', note: '' }))); }} className="ml-2 text-xs font-semibold underline">Use their hours</button>
           )}
         </div>
         {rows.length === 0 && <div className="text-sm text-gray-500">No shift planned. Add one below.</div>}

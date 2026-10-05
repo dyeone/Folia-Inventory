@@ -191,7 +191,7 @@ async function combineBoxes(req, res, user, brandId) {
 
 const TRANSFERABLE_STATUSES = ['available', 'listed', 'acclimated'];
 const TRANSFER_REASONS = new Set(['sale', 'manual', 'return']);
-const TRANSFER_ROLES = new Set(['admin']);   // team members work the bench, the consultant prices
+const TRANSFER_ROLES = new Set(['admin']);   // packers work the bench, streamers sell, the consultant prices
 const SHARED_FIELDS = 'id, sku, name, variety, "speciesId", type, status, quantity, "listingPrice", "idealPrice", "grossCost", "netCost", "saleId", "shipmentBoxId", "lotNumber", "imageUrl", "sellerId", "createdAt", "modifiedAt", "brandId"';
 
 // The OTHER brands this user may read: their access list minus the active one.
@@ -607,7 +607,7 @@ export default wrap(async (req, res) => {
       // The packing bench never needs what plants COST — strip bought-price
       // fields for packer logins so the data doesn't reach that client at
       // all (mirrors the purchase-orders API; staff/admin keep full rows).
-      if (user.role === 'teammember') {
+      if (user.role === 'packer' || user.role === 'streamer') {
         return res.status(200).json({
           items: (data || []).map(({ grossCost, netCost, cost, ...rest }) => rest),
         });

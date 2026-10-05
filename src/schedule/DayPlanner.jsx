@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
-import { dayName, shortDate, fmtRange, fmtHours, hoursBetween, minutesOf, DEFAULT_FROM, DEFAULT_TO } from './weekUtils.js';
+import { dayName, shortDate, fmtRange, fmtHours, hoursBetween, minutesOf, dayHours, hourRuns, fmtRuns } from './weekUtils.js';
 
 // One day, by the hour. A row per person, a column per hour: the hours they
 // said they can work are shaded (green = yes, amber = maybe), the planned
@@ -82,14 +82,14 @@ export function DayPlanner({ date, users, availability, shifts, onCreate, onEdit
           const a = availability[u.id]?.days?.[date];
           const mine = byUser.get(u.id) || [];
           const hours = mine.reduce((n, s) => n + hoursBetween(s.from, s.to), 0);
-          const availFrom = a && a.status !== 'no' ? minutesOf(a.from || DEFAULT_FROM) : null;
-          const availTo = a && a.status !== 'no' ? minutesOf(a.to || DEFAULT_TO) : null;
+          const offered = dayHours(a);                 // the hours they marked
+          const runs = hourRuns(offered);              // contiguous blocks of them
           return (
             <div key={u.id} className="grid border-b border-gray-100 items-stretch" style={{ gridTemplateColumns: `11rem repeat(${HOURS.length}, minmax(0, 1fr))` }}>
               <div className="px-3 py-2 min-w-0">
                 <div className="font-medium text-gray-900 truncate">{u.displayName}{u.id === currentUserId ? ' (you)' : ''}</div>
                 <div className="text-xs text-gray-500 truncate">
-                  {a?.status === 'no' ? 'Not available' : a?.status ? `${a.status === 'yes' ? 'Can work' : 'Maybe'} ${fmtRange(a.from || DEFAULT_FROM, a.to || DEFAULT_TO)}` : 'No reply'}
+                  {!a ? 'No reply' : offered.length ? `Can work ${fmtRuns(offered)}` : 'Not available'}
                   {hours ? ` · ${fmtHours(hours)} planned` : ''}
                 </div>
                 {a?.note && <div className="text-[11px] text-amber-800 italic truncate" title={a.note}>“{a.note}”</div>}
@@ -97,23 +97,24 @@ export function DayPlanner({ date, users, availability, shifts, onCreate, onEdit
               {/* the hour lane: spans every hour column */}
               <div
                 ref={(el) => { rowRefs.current[u.id] = el; }}
-                className={`relative h-14 cursor-crosshair ${a?.status === 'no' ? 'bg-gray-50' : ''}`}
+                className={`relative h-14 cursor-crosshair ${a && !offered.length ? 'bg-gray-50' : ''}`}
                 style={{ gridColumn: `2 / span ${HOURS.length}`, touchAction: 'none' }}
                 onPointerDown={onDown(u.id)}
                 onPointerMove={onMove(u.id)}
                 onPointerUp={onUp(u.id)}
                 onPointerCancel={() => setDrag(null)}
-                title={a?.status === 'no' ? `${u.displayName} said no for this day` : 'Drag across the hours to plan a shift'}
+                title={a && !offered.length ? `${u.displayName} said no for this day` : 'Drag across the hours to plan a shift'}
               >
                 {/* hour gridlines */}
                 {HOURS.map((h, i) => <div key={h} className="absolute inset-y-0 border-l border-gray-100" style={{ left: `${(i / HOURS.length) * 100}%` }} />)}
-                {/* availability shade */}
-                {availFrom != null && availTo != null && availTo > availFrom && (
+                {/* availability shade: one block per run of marked hours */}
+                {runs.map(([from, to]) => (
                   <div
-                    className={`absolute inset-y-1 rounded ${a.status === 'yes' ? 'bg-emerald-100' : 'bg-amber-100'}`}
-                    style={{ left: pct(availFrom), width: `calc(${pct(availTo)} - ${pct(availFrom)})` }}
+                    key={from}
+                    className={`absolute inset-y-1 rounded ${a?.status === 'maybe' ? 'bg-amber-100' : 'bg-emerald-100'}`}
+                    style={{ left: pct(minutesOf(from)), width: `calc(${pct(minutesOf(to))} - ${pct(minutesOf(from))})` }}
                   />
-                )}
+                ))}
                 {/* planned shifts */}
                 {mine.map((s) => (
                   <button
@@ -132,11 +133,11 @@ export function DayPlanner({ date, users, availability, shifts, onCreate, onEdit
                 {drag && drag.userId === u.id && dragRange && (
                   <div className="absolute inset-y-2 rounded-md border-2 border-dashed border-emerald-500 bg-emerald-50/60 pointer-events-none" style={{ left: pct(dragRange.from), width: `calc(${pct(dragRange.to)} - ${pct(dragRange.from)})` }} />
                 )}
-                {mine.length === 0 && availFrom != null && availTo != null && (
+                {mine.length === 0 && runs.length > 0 && (
                   <button
                     type="button"
                     data-shift="use"
-                    onClick={() => onCreate(u.id, date, a.from || DEFAULT_FROM, a.to || DEFAULT_TO)}
+                    onClick={() => runs.forEach(([from, to]) => onCreate(u.id, date, from, to))}
                     className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-white/90 border border-emerald-300 rounded-full px-2 py-0.5 hover:bg-emerald-50"
                     title="Plan a shift over the hours they said"
                   >

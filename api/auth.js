@@ -72,7 +72,7 @@ async function register(req, res) {
     username: normalized,
     displayName: displayName?.trim() || username.trim(),
     passwordHash: hashPassword(password),
-    role: isFirst ? 'admin' : 'teammember',
+    role: isFirst ? 'admin' : 'packer',
     createdAt: new Date().toISOString(),
     active: true,
     // The first account is the 3babes owner — give it every brand. Later staff

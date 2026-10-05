@@ -1,10 +1,6 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { AvailabilityModal } from '../schedule/AvailabilityModal.jsx';
 import { AcclimationPane } from '../acclimation/AcclimationPane.jsx';
-import {
-  LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck,
-  Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock,
-  Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText, CalendarDays, Sprout} from 'lucide-react';
+import { LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck, Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock, Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText, Sprout} from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
@@ -25,7 +21,7 @@ import { ReceivingPane } from './ReceivingPane.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
-// Full-screen workflow for the 'teammember' role (formerly 'packer'), tuned for an iPad at a
+// Full-screen workflow for the 'packer' role, tuned for an iPad at a
 // packing table with a USB/Bluetooth barcode scanner.
 //
 //   Landing → an always-focused scan field (the USB scanner just types the
@@ -153,7 +149,6 @@ export function PackerView({ onLogout }) {
   // switch each and fire a test print per type.
   const [printDests, setPrintDests] = useState(getPrintDests);
   const [printerSheetOpen, setPrinterSheetOpen] = useState(false);
-  const [availabilityOpen, setAvailabilityOpen] = useState(false);   // "My availability" (shift schedule)
   // Burrito wrap flow (per device): scanning a plant starts a wrap — the app
   // prints that plant's own label, the packer wraps it in paper and applies
   // the fresh label, and scanning THAT label completes the pack. The second
@@ -1315,7 +1310,6 @@ export function PackerView({ onLogout }) {
           : `${totalOpen} open · ${fullyPacked} packed`}
         onBack={activeBox ? () => goToBox(null) : null}
         onPrinterSettings={() => setPrinterSheetOpen(true)}
-        onAvailability={() => setAvailabilityOpen(true)}
       />
 
       {/* Brand chooser — only on the landing screen (no box open) and only when
@@ -1599,7 +1593,6 @@ export function PackerView({ onLogout }) {
           onClose={() => setCameraMode(null)}
         />
       )}
-      {availabilityOpen && <AvailabilityModal onClose={() => setAvailabilityOpen(false)} />}
       {printerSheetOpen && (
         <PrinterSettingsSheet
           dests={printDests}
@@ -1617,7 +1610,7 @@ export function PackerView({ onLogout }) {
   );
 }
 
-function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings, onAvailability }) {
+function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings }) {
   const isCodeTitle = /^B-/.test(title || '');
   // Flagged box → coloured bar so the whole top of the screen reads the state:
   // amber = on hold, violet = local pickup, else the normal emerald.
@@ -1650,16 +1643,6 @@ function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings, on
           </div>
           {subtitle && <div className={`text-sm ${subTone} leading-tight truncate mt-0.5`}>{subtitle}</div>}
         </div>
-        {onAvailability && (
-          <button
-            onClick={onAvailability}
-            aria-label="My availability"
-            title="My availability — tell the planner which days you can work"
-            className={`w-12 h-12 rounded-full flex items-center justify-center ${btnHover}`}
-          >
-            <CalendarDays className="w-6 h-6" />
-          </button>
-        )}
         {onPrinterSettings && (
           <button
             onClick={onPrinterSettings}
