@@ -59,3 +59,35 @@ export const fmtHours = (h) => (Number.isInteger(h) ? `${h}h` : `${h.toFixed(1).
 
 export const DEFAULT_FROM = '09:00';
 export const DEFAULT_TO = '17:00';
+
+// ── Availability by the hour ──────────────────────────────────────────────
+// A day's availability is a list of hour numbers (0–23). These turn it into
+// contiguous runs ("9am–12pm, 2–6pm") and back.
+export const HOUR_FIRST = 6;    // the hours the pickers show: 6am …
+export const HOUR_LAST = 22;    // … up to 10pm (last cell is 9–10pm)
+export const PICK_HOURS = Array.from({ length: HOUR_LAST - HOUR_FIRST }, (_, i) => HOUR_FIRST + i);
+
+export function hourRuns(hours) {
+  const hs = Array.from(new Set((hours || []).map(Number).filter((h) => Number.isInteger(h)))).sort((a, b) => a - b);
+  const runs = [];
+  for (const h of hs) {
+    const last = runs[runs.length - 1];
+    if (last && last[1] === h) last[1] = h + 1; else runs.push([h, h + 1]);
+  }
+  return runs.map(([a, b]) => [`${pad2(a)}:00`, `${pad2(b)}:00`]);
+}
+export const fmtRuns = (hours) => hourRuns(hours).map(([a, b]) => fmtRange(a, b)).join(', ');
+// Hours covered by a from/to span (legacy day shape → hours).
+export function hoursOfSpan(from, to) {
+  if (!from || !to) return [];
+  const out = [];
+  for (let h = Math.floor(minutesOf(from) / 60); h < Math.ceil(minutesOf(to) / 60); h++) out.push(h);
+  return out;
+}
+// A stored day → its hours, whichever shape it was saved in.
+export function dayHours(day) {
+  if (!day) return [];
+  if (Array.isArray(day.hours)) return day.hours.map(Number);
+  if (day.status === 'no' || !day.status) return [];
+  return hoursOfSpan(day.from || DEFAULT_FROM, day.to || DEFAULT_TO);
+}

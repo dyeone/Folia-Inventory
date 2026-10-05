@@ -12,14 +12,16 @@ export const supabase = createClient(url, key, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-// Roles (2026-10-02): 'admin' (the full app), 'teammember' (the packing
-// bench only, no prices — the role formerly named 'packer') and
-// 'consultant' (the mobile pricing screen). 'staff' is gone. Rows still
-// carrying the old names (until migration 0048 runs) are read as the new
-// ones here, so no login lands on the wrong screen in between.
-export const ROLES = ['admin', 'teammember', 'consultant'];
+// Roles (2026-10-04): 'admin' (the full app), 'packer' (the packing bench:
+// shipping + TC acclimation, no prices), 'streamer' (the mobile screen:
+// availability, the schedule, the available inventory with list prices and
+// sell notes — never costs) and 'consultant' (the mobile pricing screen).
+// 'teammember' (2026-10-02) and 'staff' are gone; rows still carrying them
+// (until migration 0049 runs) are read as 'packer' here, so no login lands
+// on the wrong screen in between.
+export const ROLES = ['admin', 'packer', 'streamer', 'consultant'];
 export function normalizeRole(role) {
-  if (role === 'packer' || role === 'staff') return 'teammember';
+  if (role === 'teammember' || role === 'staff') return 'packer';
   return role;
 }
 

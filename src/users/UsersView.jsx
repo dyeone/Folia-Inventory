@@ -145,7 +145,8 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
                       disabled={isSelf}
                       className={`text-xs font-medium rounded px-2 py-1 border-0 focus:ring-2 focus:ring-emerald-500 ${
                         normalizeRole(user.role) === 'admin' ? 'bg-violet-100 text-violet-800'
-                          : normalizeRole(user.role) === 'teammember' ? 'bg-amber-100 text-amber-800'
+                          : normalizeRole(user.role) === 'packer' ? 'bg-amber-100 text-amber-800'
+                          : normalizeRole(user.role) === 'streamer' ? 'bg-rose-100 text-rose-800'
                           : 'bg-teal-100 text-teal-800'
                       } ${isSelf ? 'opacity-60 cursor-not-allowed' : ''}`}
                     >

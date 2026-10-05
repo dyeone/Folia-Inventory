@@ -39,6 +39,7 @@ const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
 const ScheduleView = lazyNamed(() => import('./schedule/ScheduleView.jsx'), 'ScheduleView');
 const AcclimationView = lazyNamed(() => import('./acclimation/AcclimationView.jsx'), 'AcclimationView');
+const StreamerView = lazyNamed(() => import('./streamer/StreamerView.jsx'), 'StreamerView');
 const CareCalendarView = lazyNamed(() => import('./care/CareCalendarView.jsx'), 'CareCalendarView');
 const BaeLandingEditor = lazyNamed(() => import('./landing/BaeLandingEditor.jsx'), 'BaeLandingEditor');
 const BaeVideoStudio = lazyNamed(() => import('./video/BaeVideoStudio.jsx'), 'BaeVideoStudio');
@@ -250,7 +251,8 @@ function InventorySystem() {
   // financial chrome. Route them off before the regular layout's
   // bulky useState/useEffect chain even runs.
   const { currentUser } = useContext(AuthContext);
-  if (currentUser.role === 'teammember') return <PackerRoute />;
+  if (currentUser.role === 'packer') return <PackerRoute />;
+  if (currentUser.role === 'streamer') return <StreamerRoute />;
   // Consultants likewise: a mobile-only pricing screen over the wholesale
   // orders (list price + seller note per species), nothing else.
   if (currentUser.role === 'consultant') return <ConsultantRoute />;
@@ -265,6 +267,15 @@ function PackerRoute() {
 function ConsultantRoute() {
   const { logout } = useContext(AuthContext);
   return <ConsultantView onLogout={logout} />;
+}
+
+function StreamerRoute() {
+  const { logout } = useContext(AuthContext);
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>}>
+      <StreamerView onLogout={logout} />
+    </Suspense>
+  );
 }
 
 function StaffOrAdminInventory() {

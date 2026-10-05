@@ -1,24 +1,29 @@
-// User roles (2026-10-02). Mirrors api/_lib/supabase.js ROLES — keep the two
+// User roles (2026-10-04). Mirrors api/_lib/supabase.js ROLES — keep the two
 // identical.
 //
 //   admin       the full app, every tab, every action
-//   teammember  the packing bench only (pack, wrap, label, count in wholesale
-//               deliveries, slips); never sees a price. Formerly 'packer'.
+//   packer      the packing bench only: shipping, wrapping, labels, wholesale
+//               receiving, TC acclimation. Never sees a price.
+//   streamer    the mobile streamer screen: weekly availability (by the
+//               hour), the published schedule, and the available inventory
+//               with list prices and the consultant's sell notes. Never
+//               sees a cost.
 //   consultant  the mobile wholesale-pricing screen (list price + seller
 //               note); never sees a cost.
 //
-// 'staff' no longer exists. The API reads old rows ('packer', 'staff') under
-// the new names until migration 0048 renames them; normalizeRole does the
-// same for anything cached on this side.
+// 'teammember' (2026-10-02) and 'staff' no longer exist. The API reads old
+// rows under the new names until migration 0049 renames them; normalizeRole
+// does the same for anything cached on this side.
 export const ROLES = [
   { id: 'admin', label: 'Admin', hint: 'full access' },
-  { id: 'teammember', label: 'Team member', hint: 'packing bench only — pack, wrap, label, receive; no prices' },
+  { id: 'packer', label: 'Packer', hint: 'packing bench only — shipping, labels, receiving, TC acclimation; no prices' },
+  { id: 'streamer', label: 'Streamer', hint: 'availability, schedule, available inventory with list prices + sell notes' },
   { id: 'consultant', label: 'Consultant', hint: 'wholesale pricing only (list price + seller note, mobile)' },
 ];
-export const DEFAULT_NEW_ROLE = 'teammember';
+export const DEFAULT_NEW_ROLE = 'packer';
 
 export function normalizeRole(role) {
-  if (role === 'packer' || role === 'staff') return 'teammember';
+  if (role === 'teammember' || role === 'staff') return 'packer';
   return role;
 }
 

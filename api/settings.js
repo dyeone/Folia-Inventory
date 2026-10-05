@@ -991,7 +991,10 @@ const SHIFT_STATUSES = new Set(['yes', 'maybe', 'no']);
 const SHIFT_MAX_PER_WEEK = 200;
 const SHIFT_LABEL_MAX = 40;
 const SHIFT_NOTE_MAX = 300;
-const SHIFT_ROSTER_ROLES = new Set(['admin', 'teammember']);
+// Who is scheduled: admins and streamers. Packers aren't on the roster
+// (operator's split, 2026-10-04: the bench does shipping + acclimation; the
+// schedule and availability belong to the streamers).
+const SHIFT_ROSTER_ROLES = new Set(['admin', 'streamer']);
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -1027,7 +1030,7 @@ async function shiftRoster() {
     .from('users').select('id, "displayName", username, role, active').eq('active', true).order('displayName');
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return (data || [])
-    .map((u) => ({ id: u.id, displayName: u.displayName || u.username, role: u.role === 'packer' || u.role === 'staff' ? 'teammember' : u.role }))
+    .map((u) => ({ id: u.id, displayName: u.displayName || u.username, role: u.role === 'teammember' || u.role === 'staff' ? 'packer' : u.role }))
     .filter((u) => SHIFT_ROSTER_ROLES.has(u.role));
 }
 
@@ -1043,18 +1046,36 @@ async function readWeekAvailability(week) {
   return out;
 }
 
+// A day's availability is BY THE HOUR: `hours` is the sorted list of hour
+// numbers (0–23) the person can work; from/to are kept as the envelope and
+// `status` ('yes' with hours, 'no' without) for older readers. A day sent
+// the old way (status + from/to) is expanded into hours.
+const pad2 = (n) => String(n).padStart(2, '0');
 function cleanAvailability(input, week, now) {
   const days = {};
   const allowed = new Set(weekDays(week));
   const src = input?.days && typeof input.days === 'object' ? input.days : {};
   for (const [date, v] of Object.entries(src)) {
     if (!allowed.has(date) || !v || typeof v !== 'object') continue;
-    const status = SHIFT_STATUSES.has(v.status) ? v.status : null;
-    if (!status) continue;
-    const from = status !== 'no' && TIME_RE.test(v.from || '') ? v.from : null;
-    const to = status !== 'no' && TIME_RE.test(v.to || '') ? v.to : null;
-    if (from && to && minutesOf(to) <= minutesOf(from)) { const e = new Error(`${date}: the end time must be after the start`); e.status = 400; throw e; }
-    days[date] = { status, from, to, note: String(v.note || '').slice(0, SHIFT_NOTE_MAX) };
+    let hours = null;
+    if (Array.isArray(v.hours)) {
+      hours = Array.from(new Set(v.hours.map(Number).filter((h) => Number.isInteger(h) && h >= 0 && h <= 23))).sort((a, b) => a - b);
+    } else {
+      const status = SHIFT_STATUSES.has(v.status) ? v.status : null;
+      if (!status) continue;
+      if (status === 'no') hours = [];
+      else {
+        const from = TIME_RE.test(v.from || '') ? v.from : '09:00';
+        const to = TIME_RE.test(v.to || '') ? v.to : '17:00';
+        if (minutesOf(to) <= minutesOf(from)) { const e = new Error(`${date}: the end time must be after the start`); e.status = 400; throw e; }
+        hours = [];
+        for (let h = Math.floor(minutesOf(from) / 60); h < Math.ceil(minutesOf(to) / 60); h++) hours.push(h);
+      }
+    }
+    const status = hours.length ? 'yes' : 'no';
+    const from = hours.length ? `${pad2(hours[0])}:00` : null;
+    const to = hours.length ? `${pad2(hours[hours.length - 1] + 1)}:00` : null;
+    days[date] = { status, hours, from, to, note: String(v.note || '').slice(0, SHIFT_NOTE_MAX) };
   }
   return { weekStart: week, days, note: String(input?.note || '').slice(0, SHIFT_NOTE_MAX), updatedAt: now };
 }
@@ -1105,7 +1126,7 @@ async function handleShifts(action, req, res, user) {
     }
     case 'shift-availability-save': {
       if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
-      if (!SHIFT_ROSTER_ROLES.has(user.role)) { const e = new Error('Only team members and admins have a shift availability'); e.status = 403; throw e; }
+      if (!SHIFT_ROSTER_ROLES.has(user.role)) { const e = new Error('Only streamers and admins have a shift availability'); e.status = 403; throw e; }
       const week = requireWeek(req.body?.week);
       const clean = cleanAvailability(req.body, week, new Date().toISOString());
       await writeSetting(`${SHIFT_AVAIL_NS}${week}:${user.id}`, clean, user);

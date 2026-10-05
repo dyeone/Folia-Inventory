@@ -204,9 +204,10 @@ export default wrap(async (req, res) => {
       // receiving pane — strip wholesale pricing so bench clients can't
       // reconstruct the costs the purchase-orders API hides from them.
       // Consultants SET the list price (idealSellingPrice) and sell note but
-      // never see what a plant cost either.
-      const stripForPacker = user.role === 'teammember';   // the packing bench
-      const stripCost = stripForPacker || user.role === 'consultant';
+      // never see what a plant cost; streamers READ list price + sell note
+      // (their inventory screen) and never see a cost either.
+      const stripForPacker = user.role === 'packer';   // the packing bench
+      const stripCost = stripForPacker || user.role === 'consultant' || user.role === 'streamer';
       const out = (species || []).map(s => {
         let row = s;
         if (stripForPacker) row = (({ wholesalePrice, idealSellingPrice, ...rest }) => rest)(row);
