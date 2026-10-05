@@ -607,7 +607,7 @@ export default wrap(async (req, res) => {
       // The packing bench never needs what plants COST — strip bought-price
       // fields for packer logins so the data doesn't reach that client at
       // all (mirrors the purchase-orders API; staff/admin keep full rows).
-      if (user.role === 'packer' || user.role === 'streamer') {
+      if (user.role !== 'admin') {
         return res.status(200).json({
           items: (data || []).map(({ grossCost, netCost, cost, ...rest }) => rest),
         });

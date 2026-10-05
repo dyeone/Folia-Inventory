@@ -1,6 +1,6 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AcclimationPane } from '../acclimation/AcclimationPane.jsx';
-import { LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck, Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock, Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText, Sprout} from 'lucide-react';
+import { LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck, Ruler, ChevronRight, Loader2, PackageCheck, Smartphone, X, Search, Clock, Printer, Tag, Thermometer, StickyNote, Snowflake, PackageOpen, Receipt, Store, Leaf, FileText, Sprout, Radio} from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
@@ -105,7 +105,7 @@ function heatScanBoxes(items, boxNotes) {
   return [...map.values()].filter(b => !boxIsLocalPickup(boxNotes?.[b.id]?.note, b.items));
 }
 
-export function PackerView({ onLogout }) {
+export function PackerView({ onLogout, onSwitchToStreamer }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -1310,6 +1310,7 @@ export function PackerView({ onLogout }) {
           : `${totalOpen} open · ${fullyPacked} packed`}
         onBack={activeBox ? () => goToBox(null) : null}
         onPrinterSettings={() => setPrinterSheetOpen(true)}
+        onSwitchToStreamer={onSwitchToStreamer}
       />
 
       {/* Brand chooser — only on the landing screen (no box open) and only when
@@ -1610,7 +1611,7 @@ export function PackerView({ onLogout }) {
   );
 }
 
-function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings }) {
+function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings, onSwitchToStreamer }) {
   const isCodeTitle = /^B-/.test(title || '');
   // Flagged box → coloured bar so the whole top of the screen reads the state:
   // amber = on hold, violet = local pickup, else the normal emerald.
@@ -1643,6 +1644,16 @@ function TopBar({ onLogout, title, subtitle, onBack, tone, onPrinterSettings }) 
           </div>
           {subtitle && <div className={`text-sm ${subTone} leading-tight truncate mt-0.5`}>{subtitle}</div>}
         </div>
+        {onSwitchToStreamer && (
+          <button
+            onClick={onSwitchToStreamer}
+            aria-label="Switch to the streamer screen"
+            title="Streamer screen — availability, schedule, inventory"
+            className={`h-12 px-3 rounded-full flex items-center gap-1.5 text-sm font-semibold ${btnHover}`}
+          >
+            <Radio className="w-5 h-5" /><span className="hidden sm:inline">Streamer</span>
+          </button>
+        )}
         {onPrinterSettings && (
           <button
             onClick={onPrinterSettings}

@@ -1,4 +1,19 @@
-import { supabase, stripUser, requireAdmin, ROLES } from './_lib/supabase.js';
+import { supabase, stripUser, requireAdmin, ROLES, normalizeRole, primaryRole } from './_lib/supabase.js';
+
+// A user's role set from the request: `roles` (array) wins, else `role`.
+// Validated against ROLES; duplicates and old names folded.
+function rolesFromBody(body) {
+  const raw = Array.isArray(body?.roles) && body.roles.length ? body.roles : (body?.role ? [body.role] : []);
+  const out = [];
+  for (const r of raw) { const n = normalizeRole(r); if (!ROLES.includes(n)) { const e = new Error(`Role must be one of ${ROLES.join(', ')}`); e.status = 400; throw e; } if (!out.includes(n)) out.push(n); }
+  if (!out.length) { const e = new Error('At least one role is required'); e.status = 400; throw e; }
+  return out;
+}
+
+// Writes that carry `roles` before migration 0050 (no such column): retry
+// with the primary role only when a single role was asked for; a real
+// multi-role assignment can't be stored yet, so say which migration.
+const isMissingRolesColumn = (error) => !!error && /roles/.test(error.message || '') && /PGRST204|42703|schema cache|does not exist|column/i.test(`${error.code} ${error.message}`);
 import { hashPassword } from './_lib/hash.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
@@ -28,7 +43,7 @@ export default wrap(async (req, res) => {
 
     case 'POST': {
       // Admin creates a new user (with specified role + brand access).
-      const { username, password, displayName, role, brandIds, adminUserId } = req.body || {};
+      const { username, password, displayName, brandIds, adminUserId } = req.body || {};
       await requireAdmin(adminUserId);
 
       if (!username?.trim() || !password) {
@@ -37,9 +52,8 @@ export default wrap(async (req, res) => {
       if (password.length < 6) {
         const e = new Error('Password must be at least 6 characters'); e.status = 400; throw e;
       }
-      if (!ROLES.includes(role)) {
-        const e = new Error(`Role must be one of ${ROLES.join(', ')}`); e.status = 400; throw e;
-      }
+      const roles = rolesFromBody(req.body);
+      const role = primaryRole(roles);
 
       const normalized = username.trim().toLowerCase();
       const { data: existing } = await supabase.from('users').select('id').eq('username', normalized).maybeSingle();
@@ -51,12 +65,18 @@ export default wrap(async (req, res) => {
         displayName: displayName?.trim() || username.trim(),
         passwordHash: hashPassword(password),
         role,
+        roles,
         createdAt: new Date().toISOString(),
         active: true,
         brandIds: await sanitizeBrandIds(brandIds),
       };
 
-      const { error } = await supabase.from('users').insert(user);
+      let { error } = await supabase.from('users').insert(user);
+      if (error && isMissingRolesColumn(error)) {
+        if (roles.length > 1) { const e = new Error('Giving one person several roles needs migration 0050 (users.roles) — run it in the Supabase SQL editor first'); e.status = 409; throw e; }
+        const { roles: _omit, ...single } = user;
+        ({ error } = await supabase.from('users').insert(single));
+      }
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(201).json({ user: stripUser(user) });
     }
@@ -69,11 +89,10 @@ export default wrap(async (req, res) => {
 
       const update = {};
       if (patch && typeof patch === 'object') {
-        if ('role' in patch) {
-          if (!ROLES.includes(patch.role)) {
-            const e = new Error(`Role must be one of ${ROLES.join(', ')}`); e.status = 400; throw e;
-          }
-          update.role = patch.role;
+        if ('roles' in patch || 'role' in patch) {
+          const roles = rolesFromBody(patch);
+          update.roles = roles;
+          update.role = primaryRole(roles);
         }
         if ('active' in patch) update.active = patch.active;
         if ('brandIds' in patch) update.brandIds = await sanitizeBrandIds(patch.brandIds);
@@ -101,9 +120,14 @@ export default wrap(async (req, res) => {
         }
       }
 
-      const { error } = await supabase.from('users').update(update).eq('id', id);
+      let { error } = await supabase.from('users').update(update).eq('id', id);
+      if (error && isMissingRolesColumn(error)) {
+        if ((update.roles || []).length > 1) { const e = new Error('Giving one person several roles needs migration 0050 (users.roles) — run it in the Supabase SQL editor first'); e.status = 409; throw e; }
+        const { roles: _omit, ...single } = update;
+        ({ error } = await supabase.from('users').update(single).eq('id', id));
+      }
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-      return res.status(200).json({ ok: true });
+      return res.status(200).json({ ok: true, roles: update.roles, role: update.role });
     }
 
     case 'DELETE': {

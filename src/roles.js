@@ -30,3 +30,15 @@ export function normalizeRole(role) {
 export function roleLabel(role) {
   return ROLES.find((r) => r.id === normalizeRole(role))?.label || String(role || '');
 }
+
+// A person can hold several roles (users.roles, migration 0050). The set,
+// deduped and in ROLES order; `role` alone when the set is missing.
+export function rolesOf(user) {
+  const raw = Array.isArray(user?.roles) && user.roles.length ? user.roles : [user?.role];
+  const set = new Set(raw.map(normalizeRole));
+  const out = ROLES.map((r) => r.id).filter((id) => set.has(id));
+  return out.length ? out : ['packer'];
+}
+export const hasRole = (user, role) => rolesOf(user).includes(role);
+export const primaryRole = (roles) => (roles.includes('admin') ? 'admin' : roles[0]);
+export const rolesLabel = (user) => rolesOf(user).map(roleLabel).join(' + ');

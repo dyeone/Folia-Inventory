@@ -7,7 +7,7 @@ import {
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
 import { userBrands, resolveActiveBrand, brandLogo, brandName } from './brands.js';
-import { normalizeRole, roleLabel } from './roles.js';
+import { rolesOf, primaryRole, rolesLabel } from './roles.js';
 import { newTaskId } from './tasks/taskHelpers.js';
 
 // Eager imports: auth screen, the always-rendered chrome, and the default
@@ -126,7 +126,8 @@ export default function InventoryApp() {
 
   // Wire a signed-in user + their active brand into api.js and local state.
   const activate = (raw) => {
-    const user = { ...raw, role: normalizeRole(raw.role) };   // old role names → current ones
+    const roles = rolesOf(raw);                                 // old names → current; the set
+    const user = { ...raw, roles, role: primaryRole(roles) };
     const brand = resolveActiveBrand(user.brandIds, localStorage.getItem('active-brand'));
     setAuthUserId(user.id);
     setAuthBrandId(brand);
@@ -251,11 +252,17 @@ function InventorySystem() {
   // financial chrome. Route them off before the regular layout's
   // bulky useState/useEffect chain even runs.
   const { currentUser } = useContext(AuthContext);
-  if (currentUser.role === 'packer') return <PackerRoute />;
-  if (currentUser.role === 'streamer') return <StreamerRoute />;
-  // Consultants likewise: a mobile-only pricing screen over the wholesale
-  // orders (list price + seller note per species), nothing else.
-  if (currentUser.role === 'consultant') return <ConsultantRoute />;
+  // Roles are a set: admins get the full app; a packer who also streams gets
+  // the bench with a switch to the streamer screen (and back); the rest get
+  // their own screen. Consultants: a mobile-only pricing screen over the
+  // wholesale orders (list price + seller note per species), nothing else.
+  const roles = rolesOf(currentUser);
+  if (!roles.includes('admin')) {
+    if (roles.includes('packer') && roles.includes('streamer')) return <DualRoute />;
+    if (roles.includes('packer')) return <PackerRoute />;
+    if (roles.includes('streamer')) return <StreamerRoute />;
+    if (roles.includes('consultant')) return <ConsultantRoute />;
+  }
   return <StaffOrAdminInventory />;
 }
 
@@ -276,6 +283,22 @@ function StreamerRoute() {
       <StreamerView onLogout={logout} />
     </Suspense>
   );
+}
+
+// Packer + streamer: both screens, a switch in each top bar. The last mode
+// used sticks per browser (the iPad at the bench stays on the bench).
+function DualRoute() {
+  const { logout } = useContext(AuthContext);
+  const [mode, setMode] = useState(() => (localStorage.getItem('dual-mode') === 'streamer' ? 'streamer' : 'packer'));
+  const go = (m) => { setMode(m); try { localStorage.setItem('dual-mode', m); } catch { /* fine */ } };
+  if (mode === 'streamer') {
+    return (
+      <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-gray-500">Loading…</div>}>
+        <StreamerView onLogout={logout} onSwitchToPacker={() => go('packer')} />
+      </Suspense>
+    );
+  }
+  return <PackerView onLogout={logout} onSwitchToStreamer={() => go('streamer')} />;
 }
 
 function StaffOrAdminInventory() {
@@ -985,7 +1008,7 @@ function StaffOrAdminInventory() {
                       <div className="text-sm font-medium text-gray-900">{currentUser.displayName}</div>
                       <div className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
                         {isAdmin ? <Shield className="w-3 h-3" /> : <User className="w-3 h-3" />}
-                        {roleLabel(currentUser.role)} · @{currentUser.username}
+                        {rolesLabel(currentUser)} · @{currentUser.username}
                       </div>
                     </div>
                     <button

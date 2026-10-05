@@ -1,5 +1,5 @@
 import { useContext, useEffect, useMemo, useState } from 'react';
-import { LogOut, Radio, CalendarDays, CalendarCheck, Boxes, Search, ChevronLeft, ChevronRight, Loader2, AlertCircle } from 'lucide-react';
+import { LogOut, Radio, CalendarDays, CalendarCheck, Boxes, Search, ChevronLeft, ChevronRight, Loader2, AlertCircle, Package, ChevronDown } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { AvailabilityForm } from '../schedule/AvailabilityForm.jsx';
@@ -16,9 +16,14 @@ import { mondayOf, todayStr, addDays, weekDays, dayName, shortDate, weekLabel, f
 const TABS = [['availability', 'Availability'], ['schedule', 'Schedule'], ['inventory', 'Inventory']];
 const TAB_ICON = { availability: <CalendarDays className="w-6 h-6" />, schedule: <CalendarCheck className="w-6 h-6" />, inventory: <Boxes className="w-6 h-6" /> };
 
-export function StreamerView({ onLogout }) {
+// The schedule and availability are shared across brands (one team); only
+// the Inventory tab is per brand, so the brand strip shows there alone.
+// Switching brand remounts the app, so the open tab is remembered.
+const TAB_KEY = 'streamer-tab';
+export function StreamerView({ onLogout, onSwitchToPacker }) {
   const { currentUser, activeBrand, brands, switchBrand } = useContext(AuthContext);
-  const [tab, setTab] = useState('availability');
+  const [tab, setTabState] = useState(() => { try { const t = localStorage.getItem(TAB_KEY); return TABS.some(([id]) => id === t) ? t : 'availability'; } catch { return 'availability'; } });
+  const setTab = (t) => { setTabState(t); try { localStorage.setItem(TAB_KEY, t); } catch { /* fine */ } };
   const [toast, setToast] = useState(null);
   const showToast = (msg, type = 'success') => { setToast({ msg, type }); setTimeout(() => setToast(null), 2500); };
 
@@ -29,8 +34,13 @@ export function StreamerView({ onLogout }) {
           <div className="w-12 h-12 -ml-2 rounded-full flex items-center justify-center"><Radio className="w-6 h-6" /></div>
           <div className="flex-1 min-w-0">
             <div className="font-semibold text-lg leading-tight truncate">{currentUser.displayName}</div>
-            <div className="text-sm text-emerald-100 leading-tight truncate mt-0.5">Streamer · {TABS.find(([id]) => id === tab)?.[1]}</div>
+            <div className="text-sm text-emerald-100 leading-tight truncate mt-0.5">Streamer · {TABS.find(([id]) => id === tab)?.[1]}{tab === 'inventory' && brands?.length > 1 ? ` · ${brands.find((b) => b.id === activeBrand)?.name || activeBrand}` : ''}</div>
           </div>
+          {onSwitchToPacker && (
+            <button onClick={onSwitchToPacker} aria-label="Switch to the packing bench" title="Packing bench — shipping, labels, acclimation" className="h-12 px-3 rounded-full flex items-center gap-1.5 text-sm font-semibold hover:bg-emerald-800 active:bg-emerald-900">
+              <Package className="w-5 h-5" /><span className="hidden sm:inline">Packing</span>
+            </button>
+          )}
           <button onClick={onLogout} aria-label="Log out" className="w-12 h-12 -mr-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"><LogOut className="w-6 h-6" /></button>
         </div>
       </div>
@@ -90,7 +100,7 @@ function AvailabilityTab() {
           </button>
         ))}
       </div>
-      <AvailabilityForm key={week} week={week} />
+      <AvailabilityForm key={week} week={week} stickySubmit />
     </div>
   );
 }
@@ -166,6 +176,7 @@ function InventoryTab({ showToast }) {
   const [species, setSpecies] = useState([]);
   const [q, setQ] = useState('');
   const [err, setErr] = useState('');
+  const [open, setOpen] = useState(() => new Set());   // groups showing every SKU
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -181,16 +192,28 @@ function InventoryTab({ showToast }) {
     return () => { cancelled = true; };
   }, [showToast]);
   const speciesById = useMemo(() => new Map(species.map((s) => [s.id, s])), [species]);
-  const rows = useMemo(() => {
-    const list = (items || []).map((i) => {
+
+  // One card per species (the same plant listed many times reads as a
+  // count, not a wall of rows); plants without a catalog link group by
+  // name + variety. Search matches the name, variety or any SKU in the group.
+  const groups = useMemo(() => {
+    const m = new Map();
+    for (const i of items || []) {
       const sp = speciesById.get(i.speciesId);
-      const list = sp?.idealSellingPrice ?? i.listingPrice ?? null;
-      return { ...i, listPrice: list, sellNote: sp?.sellNote || '' };
-    });
+      const key = i.speciesId || `${i.name || ''}|${i.variety || ''}`;
+      if (!m.has(key)) m.set(key, { key, name: i.name || sp?.epithet || '', variety: i.variety || '', listPrice: sp?.idealSellingPrice ?? null, sellNote: sp?.sellNote || '', items: [] });
+      const g = m.get(key);
+      g.items.push(i);
+      if (g.listPrice == null && i.listingPrice != null) g.listPrice = i.listingPrice;
+    }
     const needle = q.trim().toLowerCase();
-    const hit = needle ? list.filter((i) => [i.sku, i.name, i.variety].some((v) => String(v || '').toLowerCase().includes(needle))) : list;
-    return hit.sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')) || String(a.sku || '').localeCompare(String(b.sku || '')));
+    const list = [...m.values()].filter((g) => !needle || [g.name, g.variety].some((v) => String(v || '').toLowerCase().includes(needle)) || g.items.some((i) => String(i.sku || '').toLowerCase().includes(needle)));
+    for (const g of list) g.items.sort((a, b) => String(a.sku || '').localeCompare(String(b.sku || ''), undefined, { numeric: true }));
+    return list.sort((a, b) => a.name.localeCompare(b.name) || a.variety.localeCompare(b.variety));
   }, [items, speciesById, q]);
+  const shownCount = groups.reduce((n, g) => n + g.items.length, 0);
+  const toggleOpen = (key) => setOpen((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const SKU_PREVIEW = 4;
 
   return (
     <div className="space-y-3">
@@ -200,29 +223,41 @@ function InventoryTab({ showToast }) {
       </div>
       {err && <div className="flex items-center gap-2 bg-red-50 text-red-700 text-sm px-3 py-2 rounded-lg"><AlertCircle className="w-4 h-4 shrink-0" /> {err}</div>}
       {!items && !err && <div className="flex items-center gap-2 text-sm text-gray-500 py-4"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>}
-      {items && <div className="text-xs text-gray-500">{rows.length} of {items.length} available plant{items.length === 1 ? '' : 's'}</div>}
-      {items && rows.length === 0 && <div className="rounded-xl border border-gray-200 bg-white px-3 py-6 text-center text-sm text-gray-500">{items.length ? `Nothing matches "${q}".` : 'Nothing available right now.'}</div>}
+      {items && <div className="text-xs text-gray-500">{groups.length} plant{groups.length === 1 ? '' : 's'} · {shownCount} of {items.length} available</div>}
+      {items && groups.length === 0 && <div className="rounded-xl border border-gray-200 bg-white px-3 py-6 text-center text-sm text-gray-500">{items.length ? `Nothing matches "${q}".` : 'Nothing available right now.'}</div>}
       <div className="space-y-2">
-        {rows.map((i) => (
-          <div key={i.id} className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
-            <div className="flex items-start gap-2">
-              <div className="min-w-0 flex-1">
-                <div className="font-semibold text-gray-900 leading-tight">{i.name}</div>
-                <div className="text-xs text-gray-500 mt-0.5"><span className="font-mono">{i.sku}</span>{i.variety ? ` · ${i.variety}` : ''}{i.type === 'tc' ? ' · TC' : ''}</div>
+        {groups.map((g) => {
+          const expanded = open.has(g.key);
+          const skus = expanded ? g.items : g.items.slice(0, SKU_PREVIEW);
+          return (
+            <div key={g.key} className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="font-semibold text-gray-900 leading-tight">{g.name}</div>
+                  <div className="text-xs text-gray-500 mt-0.5">{g.variety}{g.items.some((i) => i.type === 'tc') ? ' · TC' : ''}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-lg font-bold text-gray-900 leading-tight">{money(g.listPrice) || '—'}</div>
+                  <div className="text-[11px] text-gray-500">list · <b className="text-gray-800">{g.items.length}</b> available</div>
+                </div>
               </div>
-              <div className="text-right shrink-0">
-                <div className="text-[10px] uppercase tracking-wide text-gray-500">List</div>
-                <div className="text-lg font-bold text-gray-900 leading-tight">{money(i.listPrice) || '—'}</div>
+              <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                {skus.map((i) => <span key={i.id} className="font-mono text-[11px] text-gray-700 bg-gray-100 rounded px-1.5 py-0.5">{i.sku}</span>)}
+                {g.items.length > SKU_PREVIEW && (
+                  <button type="button" onClick={() => toggleOpen(g.key)} className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-emerald-700 px-1">
+                    {expanded ? 'fewer' : `+${g.items.length - SKU_PREVIEW} more`}<ChevronDown className={`w-3 h-3 transition ${expanded ? 'rotate-180' : ''}`} />
+                  </button>
+                )}
               </div>
+              {g.sellNote && (
+                <div className="mt-2 rounded-lg bg-amber-50 border-l-4 border-amber-400 px-2.5 py-1.5 text-sm text-amber-900">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Say this</div>
+                  <div className="whitespace-pre-wrap">{g.sellNote}</div>
+                </div>
+              )}
             </div>
-            {i.sellNote && (
-              <div className="mt-2 rounded-lg bg-amber-50 border-l-4 border-amber-400 px-2.5 py-1.5 text-sm text-amber-900">
-                <div className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Say this</div>
-                <div className="whitespace-pre-wrap">{i.sellNote}</div>
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

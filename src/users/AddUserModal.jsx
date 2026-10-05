@@ -11,7 +11,12 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
-  const [role, setRole] = useState(DEFAULT_NEW_ROLE);
+  const [roles, setRoles] = useState([DEFAULT_NEW_ROLE]);
+  const toggleRole = (id) => setRoles((cur) => {
+    if (id === 'admin') return cur.includes('admin') ? [DEFAULT_NEW_ROLE] : ['admin'];
+    const next = cur.includes(id) ? cur.filter((r) => r !== id) : [...cur.filter((r) => r !== 'admin'), id];
+    return next.length ? next : [DEFAULT_NEW_ROLE];
+  });
   const [brandIds, setBrandIds] = useState([DEFAULT_BRAND]);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
@@ -33,7 +38,8 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
         username: username.trim(),
         password,
         displayName: displayName.trim() || username.trim(),
-        role,
+        roles,
+        role: roles.includes('admin') ? 'admin' : roles[0],
         brandIds,
       });
     } catch (e) {
@@ -54,10 +60,15 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
         <Field label="Initial Password *">
           <input type="text" value={password} onChange={(e) => setPassword(e.target.value)} className="input" placeholder="At least 6 characters" />
         </Field>
-        <Field label="Role">
-          <select value={role} onChange={(e) => setRole(e.target.value)} className="input">
-            {ROLES.map((r) => <option key={r.id} value={r.id}>{r.label} — {r.hint}</option>)}
-          </select>
+        <Field label="Roles * (a person can have more than one)">
+          <div className="space-y-1.5">
+            {ROLES.map((r) => (
+              <label key={r.id} className="flex items-start gap-2 text-sm cursor-pointer">
+                <input type="checkbox" checked={roles.includes(r.id)} onChange={() => toggleRole(r.id)} className="mt-0.5" />
+                <span><span className="font-medium">{r.label}</span> <span className="text-gray-500">— {r.hint}</span></span>
+              </label>
+            ))}
+          </div>
         </Field>
         <Field label="Brand access *">
           <div className="flex flex-wrap gap-2">

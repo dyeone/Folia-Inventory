@@ -13,7 +13,7 @@ create table if not exists users (
   username      text        unique not null,
   "displayName" text,
   "passwordHash" text       not null,
-  role          text        not null default 'packer' check (role in ('admin','packer','streamer','consultant')),   -- 0049: packer (bench) + streamer; 'teammember'/'staff' gone
+  role          text        not null default 'packer' check (role in ('admin','packer','streamer','consultant')),   -- 0049: packer (bench) + streamer; 'teammember'/'staff' gone. PRIMARY role; the set is `roles` (0050)
   active        boolean     not null default true,
   "createdAt"   timestamptz not null default now()
 );
@@ -1309,3 +1309,8 @@ create index if not exists item_transfers_item_idx on item_transfers ("itemId", 
 create index if not exists item_transfers_to_idx   on item_transfers ("toBrandId", "createdAt" desc);
 create index if not exists item_transfers_from_idx on item_transfers ("fromBrandId", "createdAt" desc);
 alter table item_transfers enable row level security;
+
+-- ─── Role set per user (migration 0050) ───────────────────────────────────────
+-- A person can hold several roles (a streamer who also packs). `role` is the
+-- primary (admin if held, else the first); `roles` is the whole set.
+alter table users add column if not exists roles text[];
