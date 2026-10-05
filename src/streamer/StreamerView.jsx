@@ -1,5 +1,5 @@
 import { useContext, useEffect, useMemo, useState } from 'react';
-import { LogOut, Radio, CalendarDays, CalendarCheck, Boxes, Search, ChevronLeft, ChevronRight, Loader2, AlertCircle } from 'lucide-react';
+import { LogOut, Radio, CalendarDays, CalendarCheck, Boxes, Search, ChevronLeft, ChevronRight, Loader2, AlertCircle, Package } from 'lucide-react';
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { AvailabilityForm } from '../schedule/AvailabilityForm.jsx';
@@ -16,7 +16,7 @@ import { mondayOf, todayStr, addDays, weekDays, dayName, shortDate, weekLabel, f
 const TABS = [['availability', 'Availability'], ['schedule', 'Schedule'], ['inventory', 'Inventory']];
 const TAB_ICON = { availability: <CalendarDays className="w-6 h-6" />, schedule: <CalendarCheck className="w-6 h-6" />, inventory: <Boxes className="w-6 h-6" /> };
 
-export function StreamerView({ onLogout }) {
+export function StreamerView({ onLogout, onSwitchToPacker }) {
   const { currentUser, activeBrand, brands, switchBrand } = useContext(AuthContext);
   const [tab, setTab] = useState('availability');
   const [toast, setToast] = useState(null);
@@ -31,6 +31,11 @@ export function StreamerView({ onLogout }) {
             <div className="font-semibold text-lg leading-tight truncate">{currentUser.displayName}</div>
             <div className="text-sm text-emerald-100 leading-tight truncate mt-0.5">Streamer · {TABS.find(([id]) => id === tab)?.[1]}</div>
           </div>
+          {onSwitchToPacker && (
+            <button onClick={onSwitchToPacker} aria-label="Switch to the packing bench" title="Packing bench — shipping, labels, acclimation" className="h-12 px-3 rounded-full flex items-center gap-1.5 text-sm font-semibold hover:bg-emerald-800 active:bg-emerald-900">
+              <Package className="w-5 h-5" /><span className="hidden sm:inline">Packing</span>
+            </button>
+          )}
           <button onClick={onLogout} aria-label="Log out" className="w-12 h-12 -mr-2 rounded-full flex items-center justify-center hover:bg-emerald-800 active:bg-emerald-900"><LogOut className="w-6 h-6" /></button>
         </div>
       </div>

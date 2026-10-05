@@ -1,4 +1,4 @@
-import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, rolesOf } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Single-row JSON blob per settings id. Currently used only for
@@ -1027,11 +1027,12 @@ function requireWeek(raw) {
 
 async function shiftRoster() {
   const { data, error } = await supabase
-    .from('users').select('id, "displayName", username, role, active').eq('active', true).order('displayName');
+    .from('users').select('*').eq('active', true).order('displayName');
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   return (data || [])
-    .map((u) => ({ id: u.id, displayName: u.displayName || u.username, role: u.role === 'teammember' || u.role === 'staff' ? 'packer' : u.role }))
-    .filter((u) => SHIFT_ROSTER_ROLES.has(u.role));
+    .map((u) => ({ id: u.id, displayName: u.displayName || u.username, roles: rolesOf(u) }))
+    .filter((u) => u.roles.some((r) => SHIFT_ROSTER_ROLES.has(r)))
+    .map((u) => ({ id: u.id, displayName: u.displayName, role: u.roles.includes('admin') ? 'admin' : 'streamer' }));
 }
 
 async function readWeekAvailability(week) {
@@ -1126,7 +1127,7 @@ async function handleShifts(action, req, res, user) {
     }
     case 'shift-availability-save': {
       if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
-      if (!SHIFT_ROSTER_ROLES.has(user.role)) { const e = new Error('Only streamers and admins have a shift availability'); e.status = 403; throw e; }
+      if (!(user.roles || [user.role]).some((r) => SHIFT_ROSTER_ROLES.has(r))) { const e = new Error('Only streamers and admins have a shift availability'); e.status = 403; throw e; }
       const week = requireWeek(req.body?.week);
       const clean = cleanAvailability(req.body, week, new Date().toISOString());
       await writeSetting(`${SHIFT_AVAIL_NS}${week}:${user.id}`, clean, user);

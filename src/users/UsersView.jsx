@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ROLES, normalizeRole } from '../roles.js';
+import { ROLES, rolesOf } from '../roles.js';
 import { UserPlus, Key, Eye, EyeOff, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { BRANDS } from '../brands.js';
@@ -30,14 +30,22 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
     };
   }, [showToast]);
 
-  const changeRole = async (userId, newRole) => {
-    if (userId === currentUser.id) return showToast("You can't change your own role", 'error');
+  // Roles are a set: tap a pill to add or remove that role (at least one
+  // stays). Admin is exclusive — it already includes everything.
+  const toggleRole = async (user, roleId) => {
+    if (user.id === currentUser.id) return showToast("You can't change your own roles", 'error');
+    const cur = rolesOf(user);
+    let next;
+    if (roleId === 'admin') next = cur.includes('admin') ? ['packer'] : ['admin'];
+    else if (cur.includes(roleId)) next = cur.filter(r => r !== roleId);
+    else next = [...cur.filter(r => r !== 'admin'), roleId];
+    if (!next.length) return showToast('A user needs at least one role', 'error');
     try {
-      await api.updateUser({ id: userId, patch: { role: newRole }, adminUserId: currentUser.id });
-      setUsers(users.map(u => u.id === userId ? { ...u, role: newRole } : u));
-      showToast('Role updated');
+      const r = await api.updateUser({ id: user.id, patch: { roles: next }, adminUserId: currentUser.id });
+      setUsers(users.map(u => u.id === user.id ? { ...u, roles: r.roles || next, role: r.role || next[0] } : u));
+      showToast('Roles updated');
     } catch (e) {
-      showToast(e.message || 'Failed to update role', 'error');
+      showToast(e.message || 'Failed to update roles', 'error');
     }
   };
 
@@ -139,19 +147,23 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
                     </div>
                   </td>
                   <td className="px-3 py-2.5">
-                    <select
-                      value={normalizeRole(user.role)}
-                      onChange={(e) => changeRole(user.id, e.target.value)}
-                      disabled={isSelf}
-                      className={`text-xs font-medium rounded px-2 py-1 border-0 focus:ring-2 focus:ring-emerald-500 ${
-                        normalizeRole(user.role) === 'admin' ? 'bg-violet-100 text-violet-800'
-                          : normalizeRole(user.role) === 'packer' ? 'bg-amber-100 text-amber-800'
-                          : normalizeRole(user.role) === 'streamer' ? 'bg-rose-100 text-rose-800'
-                          : 'bg-teal-100 text-teal-800'
-                      } ${isSelf ? 'opacity-60 cursor-not-allowed' : ''}`}
-                    >
-                      {ROLES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
-                    </select>
+                    <div className="flex flex-wrap gap-1">
+                      {ROLES.map((r) => {
+                        const on = rolesOf(user).includes(r.id);
+                        const tone = r.id === 'admin' ? 'bg-violet-600 border-violet-600' : r.id === 'packer' ? 'bg-amber-500 border-amber-500' : r.id === 'streamer' ? 'bg-rose-500 border-rose-500' : 'bg-teal-600 border-teal-600';
+                        return (
+                          <button
+                            key={r.id}
+                            type="button"
+                            disabled={isSelf}
+                            onClick={() => toggleRole(user, r.id)}
+                            title={r.hint}
+                            aria-pressed={on}
+                            className={`text-xs font-semibold rounded-full px-2.5 py-1 border ${on ? `${tone} text-white` : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'} ${isSelf ? 'opacity-60 cursor-not-allowed' : ''}`}
+                          >{r.label}</button>
+                        );
+                      })}
+                    </div>
                   </td>
                   <td className="px-3 py-2.5">
                     <div className="flex flex-wrap gap-1">

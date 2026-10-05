@@ -25,12 +25,27 @@ export function normalizeRole(role) {
   return role;
 }
 
+// A person can hold SEVERAL roles (2026-10-04: "people can be both streamer
+// and packer"). `users.roles` (text[], migration 0050) is the set; `role`
+// stays the primary one (admin if held, else the first) for the check
+// constraint, the last-admin guard and older readers. Until 0050 runs the
+// column is missing and the set is just [role].
+export function rolesOf(u) {
+  const list = Array.isArray(u?.roles) && u.roles.length ? u.roles : [u?.role];
+  const set = new Set(list.map(normalizeRole));
+  const out = ROLES.filter((r) => set.has(r));   // deduped, in ROLES order (same as the client)
+  return out.length ? out : ['packer'];
+}
+export const primaryRole = (roles) => (roles.includes('admin') ? 'admin' : roles[0]);
+export const hasRole = (u, role) => rolesOf(u).includes(role);
+
 // Remove sensitive fields before sending a user object to the client, and
 // read the role under its current name.
 export const stripUser = (u) => {
   if (!u) return null;
   const { passwordHash, ...safe } = u;
-  return { ...safe, role: normalizeRole(safe.role) };
+  const roles = rolesOf(safe);
+  return { ...safe, role: primaryRole(roles), roles };
 };
 
 // Verify a request came from a currently-active admin user.
@@ -70,9 +85,11 @@ export async function requireUser(userId) {
     e.status = 401;
     throw e;
   }
+  // '*' rather than a column list: `roles` only exists once migration 0050
+  // has run, and naming a missing column fails the whole read.
   const { data } = await supabase
     .from('users')
-    .select('id,role,active,"displayName","brandIds"')
+    .select('*')
     .eq('id', userId)
     .maybeSingle();
   if (!data || !data.active) {
@@ -80,7 +97,8 @@ export async function requireUser(userId) {
     e.status = 401;
     throw e;
   }
-  return { ...data, role: normalizeRole(data.role) };
+  const roles = rolesOf(data);
+  return { id: data.id, role: primaryRole(roles), roles, active: data.active, displayName: data.displayName, brandIds: data.brandIds };
 }
 
 // The default brand. Any request that doesn't carry a brand resolves to it.
