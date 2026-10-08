@@ -725,6 +725,14 @@ export default wrap(async (req, res) => {
       if (updates.length > 0) {
         for (const item of updates) {
           const { id, ...patch } = item;
+          // imageUrl is kept in step with the plant's photos by the server
+          // (species-photos syncItemPrimaryImage). A client that saves a
+          // plant from a copy fetched BEFORE its photo was assigned carries
+          // imageUrl: null and would wipe that URL — the Palmstreet CSV then
+          // falls back to the brand's mystery tile. Null/undefined means
+          // "not set here", so leave the column alone; an explicit '' still
+          // clears it (the item form sends '' when the field is emptied).
+          if (patch.imageUrl == null) delete patch.imageUrl;
           const { error } = await supabase
             .from('inventory_items')
             .update(patch)
