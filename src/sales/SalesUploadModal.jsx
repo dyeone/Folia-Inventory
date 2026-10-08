@@ -3,7 +3,7 @@ import {
   X, Upload, AlertCircle, Check, FileText, ArrowLeft,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
+import { parsePalmstreetOrdersDetailed, rowsOfWorkbook } from '../packing/parsePalmstreetOrders.js';
 import { parseTikTokOrders } from '../packing/parseTikTokOrders.js';
 import { boxPlatform } from '../packing/platform.js';
 import { matchInventory } from '../packing/matchInventory.js';
@@ -89,6 +89,7 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
   const isTikTok = platform === 'tiktok';
   const [fileName, setFileName] = useState('');
   const [boxes, setBoxes] = useState(null);
+  const [skipped, setSkipped] = useState(null);   // what the parser left out, and why
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
 
@@ -99,11 +100,15 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
     try {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-      const parsed = isTikTok ? parseTikTokOrders(rows, items) : parsePalmstreetOrders(rows);
+      // Every sheet, not just the first — an export split across tabs must
+      // not lose its second tab.
+      const rows = rowsOfWorkbook(XLSX, wb);
+      let parsed, left = null;
+      if (isTikTok) parsed = parseTikTokOrders(rows, items);
+      else { const d = parsePalmstreetOrdersDetailed(rows); parsed = d.boxes; left = d.skipped; }
+      setSkipped(left);
       if (parsed.length === 0) {
-        setErr('No shippable items found in this file.');
+        setErr(rows.length ? `No shippable items found in this file (${rows.length} rows read${left?.canceled?.length ? `, ${left.canceled.length} canceled` : ''}). Check the column names.` : 'That file has no rows.');
         setBoxes(null);
       } else {
         setBoxes(parsed);
@@ -450,12 +455,22 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
                   <span className="text-gray-500"> · {summary.totalItems} order rows</span>
                 </div>
                 <button
-                  onClick={() => { setBoxes(null); setFileName(''); }}
+                  onClick={() => { setBoxes(null); setSkipped(null); setFileName(''); }}
                   className="text-xs text-gray-600 hover:text-gray-900 flex items-center gap-1"
                 >
                   <ArrowLeft className="w-3 h-3" /> Different file
                 </button>
               </div>
+              {skipped && (skipped.canceled.length > 0 || skipped.noAddress.length > 0) && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 space-y-1">
+                  {skipped.canceled.length > 0 && (
+                    <div><b>{skipped.canceled.length} canceled order line{skipped.canceled.length === 1 ? '' : 's'}</b> left out: {skipped.canceled.slice(0, 6).map((c) => c.orderNumber || c.username || '?').join(', ')}{skipped.canceled.length > 6 ? '…' : ''}</div>
+                  )}
+                  {skipped.noAddress.length > 0 && (
+                    <div><b>{skipped.noAddress.length} line{skipped.noAddress.length === 1 ? '' : 's'} with no shipping address</b> — kept as a box under the buyer's name, flagged in Shipping: {skipped.noAddress.slice(0, 6).map((c) => c.orderNumber || c.username || '?').join(', ')}{skipped.noAddress.length > 6 ? '…' : ''}</div>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 <SummaryStat label="Boxes" value={resolved.length} tone="emerald" />

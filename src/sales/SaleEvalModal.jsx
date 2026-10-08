@@ -8,7 +8,7 @@ import * as XLSX from 'xlsx';
 import { Modal } from '../ui/Modal.jsx';
 import { Kpi } from '../financial/FinancialChrome.jsx';
 import { fmt$, fmt$2, fmtPct } from '../financial/financialHelpers.js';
-import { parsePalmstreetOrders } from '../packing/parsePalmstreetOrders.js';
+import { parsePalmstreetOrders, rowsOfWorkbook } from '../packing/parsePalmstreetOrders.js';
 import {
   evaluateSale, applyManualMatch, loadEval, fetchEval, storeEval,
   LABOR_PER_BOX, SHIPPING_COST_PER_BOX, SELLER_COMMISSION_RATE, OLD_PLANT_SKU_MAX,
@@ -75,8 +75,7 @@ export function SaleEvalModal({ sale, items, mode = 'evaluate', showToast, onGen
         setLoading(false);
         return;
       }
-      const sheet = wb.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      const rows = rowsOfWorkbook(XLSX, wb);   // every sheet, not just the first
       const boxes = parsePalmstreetOrders(rows);
       if (boxes.length === 0) {
         setErr('No sales found in this file. Is it a Palmstreet orders export?');

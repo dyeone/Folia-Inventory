@@ -1972,7 +1972,9 @@ function BuyerGroupCard({
           <div className="font-medium text-gray-900 truncate">{group.displayName}</div>
           <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
             {group.username && <span>@{group.username}</span>}
-            {group.addressSnippet && <span className="truncate">· {group.addressSnippet}</span>}
+            {group.addressSnippet
+              ? <span className="truncate">· {group.addressSnippet}</span>
+              : <span className="shrink-0 inline-flex items-center rounded-full bg-red-100 text-red-800 px-2 py-0.5 text-[11px] font-bold" title="This order came in without a shipping address — fix it with Edit address (or on Palmstreet and re-upload) before buying a label">NO ADDRESS</span>}
           </div>
         </div>
         <div className="text-right text-xs text-gray-500 shrink-0 leading-tight">
