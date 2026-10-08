@@ -23,7 +23,7 @@ function pick(row, ...keys) {
   return '';
 }
 
-const SKU_SHAPE = /^(?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-(\d+)$/;   // brand · seller · variety · n
+const SKU_SHAPE = /^(?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(\d+)$/;   // brand · seller · variety · n
 
 export function parseTikTokOrders(rows, inventoryItems) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
@@ -108,7 +108,7 @@ export function parseTikTokOrders(rows, inventoryItems) {
       lineupIndex = productName;
       sku = skuBySuffix.get(productName)?.sku || '';
     } else {
-      const m = /\b((?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-\d+)\b/.exec(productName);
+      const m = /\b((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-\d+)\b/.exec(productName);
       if (m) sku = m[1].toUpperCase();
     }
 

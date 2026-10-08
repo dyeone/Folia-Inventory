@@ -15,13 +15,17 @@ export const DEFAULT_ADD_VARIETY = 'anthurium';
 
 // Compute the next SKU suffix given a code prefix and the existing items.
 // Numbering is GLOBAL across all items; the prefix is purely for display.
-// Every SKU minted since 2026-10-02 starts with its BRAND (BAE-ANT-8912,
-// BAEGIN-JADE-ANT-9808): plants move between brands, each brand keeps its
-// own numbers, and the brand segment is what keeps a label unique wherever
-// it is scanned. Same rule as api/_lib/sku.js — keep the two identical.
-// The active brand is set by api.setAuthBrandId.
+// Every SKU minted since 2026-10-02 starts with its BRAND; since 2026-10-08
+// that segment is ONE letter (B-ANT-8912, G-JADE-ANT-9808) so it fits the
+// label. Plants move between brands, each brand keeps its own numbers, and
+// the letter keeps a label unique wherever it is scanned. Same table as
+// api/_lib/sku.js — keep the two identical. The active brand is set by
+// api.setAuthBrandId.
+const BRAND_SKU_LETTER = { bae: 'B', 'bae-gin': 'G' };
 export function skuPrefixForBrand(brandId) {
-  return String(brandId || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+  const id = String(brandId || '').toLowerCase();
+  if (BRAND_SKU_LETTER[id]) return BRAND_SKU_LETTER[id];
+  return id.split(/[^a-z0-9]+/).filter(Boolean).map((p) => p[0].toUpperCase()).join('') || 'X';
 }
 let skuBrandPrefix = '';
 export function setSkuBrand(brandId) { skuBrandPrefix = skuPrefixForBrand(brandId); }

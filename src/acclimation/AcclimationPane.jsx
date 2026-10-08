@@ -65,7 +65,7 @@ export function AcclimationPane({ onClose, showToast, totalAcclimated, onChanged
   const scanRef = useRef(scan);
   scanRef.current = scan;
   useEffect(() => {
-    if (!scanInput || !/^(?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-\d+$/.test(scanInput.trim())) return undefined;
+    if (!scanInput || !/^(?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-\d+$/.test(scanInput.trim())) return undefined;
     const id = setTimeout(() => { scanRef.current(scanInput); setScanInput(''); }, 200);
     return () => clearTimeout(id);
   }, [scanInput]);

@@ -276,8 +276,11 @@ async function renumberDuplicates(req, res, user, brandId) {
   const brandCode = brandSkuPrefix(brandId);
   const now = new Date().toISOString();
   const renumbered = [];
+  // The stem keeps the seller / variety segments and drops any brand
+  // marker already there — the current letter or the older word (BAEGIN-).
+  const legacyWord = String(brandId).replace(/[^a-z0-9]/gi, '').toUpperCase();
   for (const r of dup) {
-    const stem = r.sku.replace(/-\d+$/, '').replace(new RegExp(`^${brandCode}-`), '');
+    const stem = r.sku.replace(/-\d+$/, '').replace(new RegExp(`^(?:${brandCode}|${legacyWord})-`), '');
     const sku = `${brandCode}-${stem}-${next++}`;
     const { data: upd, error } = await supabase
       .from('inventory_items')
