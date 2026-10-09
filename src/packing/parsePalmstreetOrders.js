@@ -36,13 +36,15 @@ function isUpsUpgradeLine(title) {
 // Each letter segment is 2-8 letters; an optional leading segment covers the
 // seller code. Bare numbers are only honored when parenthesized — bare digits
 // in running text are too ambiguous (could be qty, year, count).
-// Up to THREE letter segments since 2026-10-02: brand, optional seller,
-// variety (BAEGIN-JADE-ANT-9808) — see api/_lib/sku.js.
-const SKU_PATTERN = /\(\s*((?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-\d+|\d+)\s*\)|\b((?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-\d+)\b/g;
+// Up to THREE letter segments since 2026-10-02: brand (one letter since
+// 2026-10-08, longer on older labels), optional seller, variety
+// (G-JADE-ANT-9808, BAEGIN-ANT-9807) — see api/_lib/sku.js.
+// A suffix is digits or a letter + three digits (A001 after 9999).
+const SKU_PATTERN = /\(\s*((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(?:\d+|[A-Za-z]\d{3})|\d+|[A-Za-z]\d{3})\s*\)|\b((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(?:\d+|[A-Za-z]\d{3}))\b/g;
 
 function normalizeSku(raw) {
   const s = String(raw || '').trim();
-  return /^(?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-\d+$/.test(s) ? s.toUpperCase() : s;
+  return /^(?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(?:\d+|[A-Za-z]\d{3})$/.test(s) ? s.toUpperCase() : s;
 }
 
 // The lineup number our Palmstreet export prepends to the title ("<#> <name>",
@@ -72,15 +74,48 @@ function extractAllSkus(title) {
   return out;
 }
 
+// Column lookup: exact header first, then case/space-insensitive (Palmstreet
+// has renamed and re-cased columns between exports; "Order number" vs
+// "Order Number" vs "order_number" must all land).
 function pick(row, ...keys) {
   for (const k of keys) {
     if (row[k] !== undefined && row[k] !== null && row[k] !== '') return row[k];
   }
+  const wanted = new Set(keys.map((k) => String(k).toLowerCase().replace(/[\s_-]+/g, '')));
+  for (const [k, v] of Object.entries(row)) {
+    if (v === undefined || v === null || v === '') continue;
+    if (wanted.has(String(k).toLowerCase().replace(/[\s_-]+/g, ''))) return v;
+  }
   return '';
 }
 
+// Rows of every sheet of a workbook, in order. Palmstreet's export is one
+// sheet today; a workbook that splits orders across tabs (auction / shop)
+// must not lose the second tab.
+export function rowsOfWorkbook(XLSX, wb) {
+  const out = [];
+  for (const name of wb.SheetNames) {
+    const sheet = wb.Sheets[name];
+    if (!sheet) continue;
+    out.push(...XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+  }
+  return out;
+}
+
+// Boxes only (the shape every caller consumes). See parsePalmstreetOrdersDetailed
+// for what was skipped.
 export function parsePalmstreetOrders(rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return [];
+  return parsePalmstreetOrdersDetailed(rows).boxes;
+}
+
+// { boxes, skipped: { canceled: [...], blank: n, noAddress: [...] } }.
+// Nothing with an order number is dropped silently any more: a row with
+// no shipping address (a pickup, an export with the address columns
+// missing) still becomes a box — keyed by buyer + order — flagged
+// `addressMissing` so the operator sees it instead of losing the sale.
+export function parsePalmstreetOrdersDetailed(rows) {
+  const skipped = { canceled: [], blank: 0, noAddress: [] };
+  if (!Array.isArray(rows) || rows.length === 0) return { boxes: [], skipped };
 
   // Per-upload nonce prefixed onto every box id. Without it, re-uploading
   // the same buyer in a fresh sales report would produce the same
@@ -99,15 +134,15 @@ export function parsePalmstreetOrders(rows) {
   const boxes = new Map();
 
   rows.forEach((row, idx) => {
-    const recipient = String(pick(row, 'Recipient Name')).trim();
-    const street1 = String(pick(row, 'Street Line 1')).trim();
-    const street2 = String(pick(row, 'Street Line 2')).trim();
+    const recipient = String(pick(row, 'Recipient Name', 'Recipient', 'Ship To Name', 'Shipping Name', 'Buyer Name', 'Name')).trim();
+    const street1 = String(pick(row, 'Street Line 1', 'Address Line 1', 'Street', 'Street Address', 'Address 1', 'Address')).trim();
+    const street2 = String(pick(row, 'Street Line 2', 'Address Line 2', 'Street 2', 'Address 2', 'Apt/Suite')).trim();
     const city = String(pick(row, 'City')).trim();
-    const state = String(pick(row, 'State')).trim();
-    const zip = String(pick(row, 'Zip/Postal Code', 'Zip', 'Postal Code')).trim();
+    const state = String(pick(row, 'State', 'State/Province', 'Province')).trim();
+    const zip = String(pick(row, 'Zip/Postal Code', 'Zip', 'Postal Code', 'Zip Code', 'ZIP')).trim();
     const country = String(pick(row, 'Country')).trim();
-    const username = String(pick(row, 'Palmstreet UserName', 'Username')).trim();
-    const orderNum = String(pick(row, 'Order number', 'Order Number', 'Order')).trim();
+    const username = String(pick(row, 'Palmstreet UserName', 'Username', 'Buyer Username', 'Buyer', 'User Name', 'Customer')).trim();
+    const orderNum = String(pick(row, 'Order number', 'Order Number', 'Order', 'Order ID', 'Order No', 'Order #')).trim();
     const orderDateRaw = String(pick(row, 'Order Date(PDT)', 'Order Date', 'OrderDate')).trim();
     // Palmstreet exports `2026-04-06 21:30:12`. Treat as ISO-ish; new Date()
     // handles the space delimiter.
@@ -129,29 +164,37 @@ export function parsePalmstreetOrders(rows) {
     // Validate Sales (which marks items sold), so being precise here matters.
     const isCanceled = /cancel(l?ed|lation)/.test(orderStatus)
       && !/request|pending|review/.test(orderStatus);
-    if (isCanceled) return;
 
-    const title = String(pick(row, 'Item Title', 'Title')).trim();
+    const title = String(pick(row, 'Item Title', 'Title', 'Product Name', 'Product', 'Item Name', 'Listing Title', 'Item', 'Listing')).trim();
     const sku = String(pick(row, 'SKU')).trim();
     const quantity = parseInt(pick(row, 'Quantity', 'Qty'), 10) || 1;
-    const price = parseFloat(pick(row, 'Item Price', 'Price')) || 0;
-    const shippingFee = parseFloat(pick(row, 'Shipping Fee')) || 0;
+    const price = parseFloat(pick(row, 'Item Price', 'Price', 'Unit Price')) || 0;
+    const shippingFee = parseFloat(pick(row, 'Shipping Fee', 'Shipping')) || 0;
 
-    if (!recipient && !street1) return; // skip empty rows
+    if (isCanceled) { skipped.canceled.push({ orderNumber: orderNum, username, title }); return; }
 
-    const groupKey = [
-      recipient.toLowerCase(),
-      street1.toLowerCase(),
-      city.toLowerCase(),
-      state.toLowerCase(),
-      zip.toLowerCase(),
-    ].join('|');
+    // A row with nothing to identify it is a blank line. One with an order
+    // number or buyer but no address still carries a sale.
+    const addressMissing = !recipient && !street1;
+    if (addressMissing && !orderNum && !username && !title) { skipped.blank += 1; return; }
+    if (addressMissing) skipped.noAddress.push({ orderNumber: orderNum, username, title });
+
+    const groupKey = addressMissing
+      ? `noaddress|${username.toLowerCase() || orderNum.toLowerCase() || `row${idx}`}`
+      : [
+        recipient.toLowerCase(),
+        street1.toLowerCase(),
+        city.toLowerCase(),
+        state.toLowerCase(),
+        zip.toLowerCase(),
+      ].join('|');
     const boxId = `${uploadId}|${groupKey}`;
 
     if (!boxes.has(boxId)) {
       boxes.set(boxId, {
         id: boxId,
-        recipientName: recipient,
+        recipientName: recipient || (addressMissing ? username : ''),
+        addressMissing,
         username,
         street1,
         street2,
@@ -241,5 +284,5 @@ export function parsePalmstreetOrders(rows) {
   // Return every box that had at least one row — including boxes whose
   // only row is a coupon / free-shipping line. The operator asked to see
   // every uploaded line, no skips.
-  return [...boxes.values()].filter(b => b.items.length > 0);
+  return { boxes: [...boxes.values()].filter(b => b.items.length > 0), skipped };
 }

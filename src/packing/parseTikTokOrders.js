@@ -10,11 +10,11 @@
 //
 // SKU resolution: live listings created from the flowers template carry
 // the plant's label number as the Product Name (e.g. "7393" for
-// ANT-7393). The per-brand SKU counter is a single sequence across all
-// prefixes, so bare digits resolve unambiguously against inventory by
-// numeric suffix. Non-numeric product names are scanned for a standard
-// PREFIX-123 SKU; anything else stays unmatched and flows through as a
-// placeholder, same as Palmstreet.
+// ANT-7393, "A001" once the brand's numbers roll past 9999). The
+// per-brand SKU counter is a single sequence across all prefixes, so a
+// bare suffix resolves unambiguously against inventory. Other product
+// names are scanned for a standard PREFIX-123 SKU; anything else stays
+// unmatched and flows through as a placeholder, same as Palmstreet.
 
 function pick(row, ...keys) {
   for (const k of keys) {
@@ -23,12 +23,12 @@ function pick(row, ...keys) {
   return '';
 }
 
-const SKU_SHAPE = /^(?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-(\d+)$/;   // brand · seller · variety · n
+const SKU_SHAPE = /^(?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(\d+|[A-Za-z]\d{3})$/;   // brand · seller · variety · n (A001 after 9999)
 
 export function parseTikTokOrders(rows, inventoryItems) {
   if (!Array.isArray(rows) || rows.length === 0) return [];
 
-  // Numeric suffix → full inventory SKU. Prefer a fresh (available/listed)
+  // Suffix (digits, or A001-style after 9999) → full inventory SKU. Prefer a fresh (available/listed)
   // row when a suffix somehow appears twice (e.g. a consignment SKU that
   // wraps a base one) — that's the row apply would mark sold.
   const skuBySuffix = new Map();
@@ -37,9 +37,9 @@ export function parseTikTokOrders(rows, inventoryItems) {
     const m = SKU_SHAPE.exec(String(i.sku).trim());
     if (!m) continue;
     const fresh = i.status === 'available' || i.status === 'listed';
-    const prev = skuBySuffix.get(m[1]);
+    const prev = skuBySuffix.get(m[1].toUpperCase());
     if (!prev || (fresh && !prev.fresh)) {
-      skuBySuffix.set(m[1], { sku: String(i.sku).trim().toUpperCase(), fresh });
+      skuBySuffix.set(m[1].toUpperCase(), { sku: String(i.sku).trim().toUpperCase(), fresh });
     }
   }
 
@@ -103,12 +103,12 @@ export function parseTikTokOrders(rows, inventoryItems) {
 
     let sku = '';
     let lineupIndex = null;
-    if (/^\d{1,6}$/.test(productName)) {
+    if (/^(?:\d{1,6}|[A-Za-z]\d{3})$/.test(productName)) {
       // Label number — also the packer's handle on the physical plant.
-      lineupIndex = productName;
-      sku = skuBySuffix.get(productName)?.sku || '';
+      lineupIndex = productName.toUpperCase();
+      sku = skuBySuffix.get(productName.toUpperCase())?.sku || '';
     } else {
-      const m = /\b((?:[A-Za-z]{2,8}-){0,2}[A-Za-z]{2,8}-\d+)\b/.exec(productName);
+      const m = /\b((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(?:\d+|[A-Za-z]\d{3}))\b/.exec(productName);
       if (m) sku = m[1].toUpperCase();
     }
 

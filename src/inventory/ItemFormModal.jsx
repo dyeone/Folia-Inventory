@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
-import { nextSkuForCode, nextSkuForSeller, DEFAULT_ITEM_TYPE, DEFAULT_ADD_VARIETY } from '../constants.js';
+import { nextSkuForCode, nextSkuForSeller, DEFAULT_ITEM_TYPE, DEFAULT_ADD_VARIETY, skuSerialOf, formatSkuSerial, SKU_SUFFIX_END_RE } from '../constants.js';
 import { SpeciesPicker } from './SpeciesPicker.jsx';
 
 export function ItemFormModal({
@@ -156,9 +156,9 @@ export function ItemFormModal({
   const addQty = isEditing ? 1 : Math.max(1, parseInt(form.quantity, 10) || 1);
   const skuPreview = useMemo(() => {
     if (addQty <= 1) return sku || '—';
-    const m = String(sku).match(/^(.*-)(\d+)$/);
-    if (!m) return sku || '—';
-    return `${sku} → ${m[1]}${parseInt(m[2], 10) + addQty - 1}`;
+    const serial = skuSerialOf(sku);
+    if (serial == null) return sku || '—';
+    return `${sku} → ${String(sku).replace(SKU_SUFFIX_END_RE, '')}-${formatSkuSerial(serial + addQty - 1)}`;
   }, [sku, addQty]);
 
   const recalcIdeal = (netCost, profitRate) => {

@@ -1,6 +1,6 @@
 import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
-import { brandSkuPrefix } from './_lib/sku.js';
+import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, SKU_SUFFIX_END_RE } from './_lib/sku.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 // brandId is server-owned too: the active brand is forced from the request, so
@@ -40,10 +40,10 @@ function stripServerOwned(item) {
 // caused new SKUs to collide with existing numbers under a different
 // variety prefix. The RPC (defined in migration 0007) extracts the suffix
 // in regex and takes max(int), which is correct regardless of width.
+// Next free number for the brand — see api/_lib/sku.js: 1…9999, then
+// A001…Z999 so the suffix stays four characters on the label.
 async function findMaxSkuSuffix(brandId) {
-  const { data, error } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  return data ?? 0;
+  return (await nextSkuSerial(supabase, brandId)) - 1;
 }
 
 
@@ -92,7 +92,7 @@ async function assignMissingSkus(items, brandId) {
   for (const item of needSku) {
     const varietyCode = codeByName[item.variety];
     const prefix = item.sellerId ? `${codeBySellerId[item.sellerId]}-${varietyCode}` : varietyCode;
-    item.sku = `${brandCode}-${prefix}-${next++}`;
+    item.sku = `${brandCode}-${prefix}-${formatSkuSerial(next++)}`;
   }
 }
 
@@ -112,7 +112,7 @@ async function nextSkuForVariety(variety, brandId) {
     const e = new Error(`Unknown variety: ${variety}`); e.status = 400; throw e;
   }
   const next = (await findMaxSkuSuffix(brandId)) + 1;
-  return `${brandSkuPrefix(brandId)}-${code}-${next}`;
+  return `${brandSkuPrefix(brandId)}-${code}-${formatSkuSerial(next)}`;
 }
 
 // POST { action: 'combine-boxes', targetBoxId, sourceBoxIds: [...] }
@@ -270,15 +270,18 @@ async function renumberDuplicates(req, res, user, brandId) {
   const mine = await fetchAll(() => supabase
     .from('inventory_items').select('id, sku, name, variety, "speciesId", type, status')
     .eq('brandId', brandId).is('deletedAt', null).in('status', TRANSFERABLE_STATUSES));
-  const dup = (mine || []).filter((r) => r.sku && taken.has(String(r.sku).toUpperCase()) && /-\d+$/.test(r.sku));
+  const dup = (mine || []).filter((r) => r.sku && taken.has(String(r.sku).toUpperCase()) && SKU_SUFFIX_END_RE.test(String(r.sku).toUpperCase()));
   if (!dup.length) return res.status(200).json({ renumbered: [] });
   let next = (await findMaxSkuSuffix(brandId)) + 1;
   const brandCode = brandSkuPrefix(brandId);
   const now = new Date().toISOString();
   const renumbered = [];
+  // The stem keeps the seller / variety segments and drops any brand
+  // marker already there — the current letter or the older word (BAEGIN-).
+  const legacyWord = String(brandId).replace(/[^a-z0-9]/gi, '').toUpperCase();
   for (const r of dup) {
-    const stem = r.sku.replace(/-\d+$/, '').replace(new RegExp(`^${brandCode}-`), '');
-    const sku = `${brandCode}-${stem}-${next++}`;
+    const stem = String(r.sku).toUpperCase().replace(SKU_SUFFIX_END_RE, '').replace(new RegExp(`^(?:${brandCode}|${legacyWord})-`), '');
+    const sku = `${brandCode}-${stem}-${formatSkuSerial(next++)}`;
     const { data: upd, error } = await supabase
       .from('inventory_items')
       .update({ sku, modifiedAt: now, modifiedBy: user.displayName })

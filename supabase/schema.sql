@@ -1314,3 +1314,8 @@ alter table item_transfers enable row level security;
 -- A person can hold several roles (a streamer who also packs). `role` is the
 -- primary (admin if held, else the first); `roles` is the whole set.
 alter table users add column if not exists roles text[];
+
+-- ─── SKU numbers past 9999 (migration 0051) ───────────────────────────────────
+-- Suffixes run 1 … 9999, then A001 … Z999 (A001 = 10000, Z999 = 35973). The
+-- max-suffix functions above are REPLACED by 0051 to count both spellings;
+-- api/_lib/sku.js holds the same encoding.
