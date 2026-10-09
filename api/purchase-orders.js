@@ -1,6 +1,6 @@
 import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, DEFAULT_BRAND } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
-import { brandSkuPrefix } from './_lib/sku.js';
+import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, parseSkuSerial, SKU_SUFFIX_END_RE } from './_lib/sku.js';
 import { installDomMatrixPolyfill } from './_lib/domMatrix.js';
 
 // Purchase orders. Action-dispatched. See:
@@ -252,8 +252,13 @@ async function receivedItemsExport(req, res, brandId) {
       receivedBy: r?.receivedBy || null,
     };
   });
-  // SKU order: prefix, then the number — "PH-9" before "PH-10".
-  const key = (sku) => { const m = /^([A-Za-z]+)-?(\d+)/.exec(sku || ''); return m ? [m[1].toUpperCase(), parseInt(m[2], 10)] : [String(sku || ''), 0]; };
+  // SKU order: prefix, then the serial — "G-PH-9" before "G-PH-10", and
+  // "G-PH-9999" before "G-PH-A001".
+  const key = (sku) => {
+    const s = String(sku || '').toUpperCase();
+    const m = SKU_SUFFIX_END_RE.exec(s);
+    return m ? [s.slice(0, m.index), parseSkuSerial(m[1]) || 0] : [s, 0];
+  };
   rows.sort((a, b) => { const [pa, na] = key(a.sku), [pb, nb] = key(b.sku); return pa < pb ? -1 : pa > pb ? 1 : na - nb; });
   return res.status(200).json({
     purchaseOrder: { id: po.id, supplier: po.supplier, status: po.status, createdAt: po.createdAt },
@@ -1383,16 +1388,14 @@ async function receiveLine(req, res, user, brandId, isAdminUser) {
   // whole insert atomically (23505) and we re-read + retry once.
   let createdItems = [];
   for (let attempt = 0; attempt < 2; attempt++) {
-    const { data: maxSuffix, error: mErr } = await supabase.rpc('inventory_max_sku_suffix', { p_brand: brandId });
-    if (mErr) { const e = new Error(mErr.message); e.status = 500; throw e; }
-    const base = (maxSuffix || 0) + 1;
+    const base = await nextSkuSerial(supabase, brandId);   // 1…9999, then A001… (api/_lib/sku.js)
     const rows = [];
     for (let i = 0; i < n; i++) {
       rows.push({
         id: newId(),
         brandId,
         // Brand-prefixed like every SKU minted since 2026-10-02 (api/items.js brandSkuPrefix).
-        sku: `${brandSkuPrefix(brandId)}-${variety?.code || 'PLT'}-${base + i}`,
+        sku: `${brandSkuPrefix(brandId)}-${variety?.code || 'PLT'}-${formatSkuSerial(base + i)}`,
         type: mintType,
         name: species.epithet,
         variety: variety?.name || null,

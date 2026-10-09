@@ -30,16 +30,35 @@ export function skuPrefixForBrand(brandId) {
 let skuBrandPrefix = '';
 export function setSkuBrand(brandId) { skuBrandPrefix = skuPrefixForBrand(brandId); }
 
+// The number part: 1 … 9999, then A001 … A999, B001 … Z999 — a
+// four-character suffix always fits the label. The "serial" is the plain
+// count behind both spellings (A001 = 10000). Same encoding as
+// api/_lib/sku.js — keep the two identical.
+export const SKU_SUFFIX_END_RE = /-(\d+|[A-Z]\d{3})$/;
+const FIRST_LETTER_SERIAL = 10000, LETTER_BLOCK = 999;
+export function formatSkuSerial(n) {
+  const s = Math.max(1, Math.floor(Number(n) || 0));
+  if (s < FIRST_LETTER_SERIAL) return String(s);
+  const k = Math.min(s, FIRST_LETTER_SERIAL + 26 * LETTER_BLOCK - 1) - FIRST_LETTER_SERIAL;
+  return `${String.fromCharCode(65 + Math.floor(k / LETTER_BLOCK))}${String((k % LETTER_BLOCK) + 1).padStart(3, '0')}`;
+}
+export function parseSkuSerial(suffix) {
+  const t = String(suffix || '').trim().toUpperCase();
+  if (/^\d+$/.test(t)) return parseInt(t, 10);
+  const m = /^([A-Z])(\d{3})$/.exec(t);
+  if (!m || parseInt(m[2], 10) < 1) return null;
+  return FIRST_LETTER_SERIAL + (m[1].charCodeAt(0) - 65) * LETTER_BLOCK + (parseInt(m[2], 10) - 1);
+}
+export function skuSerialOf(sku) {
+  const m = SKU_SUFFIX_END_RE.exec(String(sku || '').toUpperCase());
+  return m ? parseSkuSerial(m[1]) : null;
+}
+
 export function nextSkuForCode(code, existingItems) {
   if (!code) return '';
-  const nums = (existingItems || [])
-    .map(i => {
-      const m = String(i.sku || '').match(/-(\d+)$/);
-      return m ? parseInt(m[1], 10) : 0;
-    })
-    .filter(n => n > 0);
-  const next = nums.length > 0 ? Math.max(...nums) + 1 : 1;
-  return `${skuBrandPrefix ? `${skuBrandPrefix}-` : ''}${code}-${next}`;
+  let max = 0;
+  for (const i of existingItems || []) { const s = skuSerialOf(i.sku); if (s != null && s > max) max = s; }
+  return `${skuBrandPrefix ? `${skuBrandPrefix}-` : ''}${code}-${formatSkuSerial(max + 1)}`;
 }
 
 // SKU preview for a seller-consignment plant: <SELLERCODE>-<VARIETYCODE>-<n>

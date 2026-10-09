@@ -39,11 +39,12 @@ function isUpsUpgradeLine(title) {
 // Up to THREE letter segments since 2026-10-02: brand (one letter since
 // 2026-10-08, longer on older labels), optional seller, variety
 // (G-JADE-ANT-9808, BAEGIN-ANT-9807) — see api/_lib/sku.js.
-const SKU_PATTERN = /\(\s*((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-\d+|\d+)\s*\)|\b((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-\d+)\b/g;
+// A suffix is digits or a letter + three digits (A001 after 9999).
+const SKU_PATTERN = /\(\s*((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(?:\d+|[A-Za-z]\d{3})|\d+|[A-Za-z]\d{3})\s*\)|\b((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(?:\d+|[A-Za-z]\d{3}))\b/g;
 
 function normalizeSku(raw) {
   const s = String(raw || '').trim();
-  return /^(?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-\d+$/.test(s) ? s.toUpperCase() : s;
+  return /^(?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(?:\d+|[A-Za-z]\d{3})$/.test(s) ? s.toUpperCase() : s;
 }
 
 // The lineup number our Palmstreet export prepends to the title ("<#> <name>",
