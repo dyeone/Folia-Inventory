@@ -3,7 +3,7 @@ import {
   X, Upload, AlertCircle, Check, FileText, ArrowLeft,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { parsePalmstreetOrdersDetailed, rowsOfWorkbook } from '../packing/parsePalmstreetOrders.js';
+import { parsePalmstreetOrdersDetailed, rowsOfWorkbookDetailed } from '../packing/parsePalmstreetOrders.js';
 import { parseTikTokOrders } from '../packing/parseTikTokOrders.js';
 import { boxPlatform } from '../packing/platform.js';
 import { matchInventory } from '../packing/matchInventory.js';
@@ -102,11 +102,12 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
       const wb = XLSX.read(buf, { type: 'array' });
       // Every sheet, not just the first — an export split across tabs must
       // not lose its second tab.
-      const rows = rowsOfWorkbook(XLSX, wb);
+      const { rows, repeated, sheets } = rowsOfWorkbookDetailed(XLSX, wb);
       let parsed, left = null;
       if (isTikTok) parsed = parseTikTokOrders(rows, items);
       else { const d = parsePalmstreetOrdersDetailed(rows); parsed = d.boxes; left = d.skipped; }
-      setSkipped(left);
+      // Lines the export repeats on its per-buyer tabs were read once.
+      setSkipped(left ? { ...left, repeated, sheets } : (repeated ? { canceled: [], noAddress: [], blank: 0, repeated, sheets } : null));
       if (parsed.length === 0) {
         setErr(rows.length ? `No shippable items found in this file (${rows.length} rows read${left?.canceled?.length ? `, ${left.canceled.length} canceled` : ''}). Check the column names.` : 'That file has no rows.');
         setBoxes(null);
@@ -461,8 +462,11 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
                   <ArrowLeft className="w-3 h-3" /> Different file
                 </button>
               </div>
-              {skipped && (skipped.canceled.length > 0 || skipped.noAddress.length > 0) && (
+              {skipped && (skipped.canceled.length > 0 || skipped.noAddress.length > 0 || skipped.repeated > 0) && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 space-y-1">
+                  {skipped.repeated > 0 && (
+                    <div><b>{skipped.repeated} line{skipped.repeated === 1 ? '' : 's'} repeated on other tabs</b> of this workbook ({skipped.sheets} tabs) were read once.</div>
+                  )}
                   {skipped.canceled.length > 0 && (
                     <div><b>{skipped.canceled.length} canceled order line{skipped.canceled.length === 1 ? '' : 's'}</b> left out: {skipped.canceled.slice(0, 6).map((c) => c.orderNumber || c.username || '?').join(', ')}{skipped.canceled.length > 6 ? '…' : ''}</div>
                   )}
