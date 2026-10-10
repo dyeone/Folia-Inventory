@@ -92,14 +92,36 @@ function pick(row, ...keys) {
 // Rows of every sheet of a workbook, in order. Palmstreet's export is one
 // sheet today; a workbook that splits orders across tabs (auction / shop)
 // must not lose the second tab.
-export function rowsOfWorkbook(XLSX, wb) {
-  const out = [];
+// Palmstreet's "All Orders" export is one tab with every line PLUS one
+// tab per buyer repeating their lines (measured 2026-10-10: 133 + 133,
+// nothing on a buyer tab that the first tab lacks). Reading the tabs
+// blindly imported every line twice. So: every tab is read, but a row
+// whose content already appeared on an EARLIER tab is a repeat and is
+// dropped. Identity is the whole row (every column, trimmed), so two
+// lines that differ in anything at all both survive, and repeats WITHIN
+// one tab are left alone — those are the file's own business.
+export function rowsOfWorkbookDetailed(XLSX, wb) {
+  const rows = [];
+  const seen = new Set();
+  let repeated = 0;
   for (const name of wb.SheetNames) {
     const sheet = wb.Sheets[name];
     if (!sheet) continue;
-    out.push(...XLSX.utils.sheet_to_json(sheet, { defval: '' }));
+    const mine = new Set();
+    for (const row of XLSX.utils.sheet_to_json(sheet, { defval: '' })) {
+      const cells = Object.entries(row).map(([k, v]) => `${k}=${String(v ?? '').trim()}`).filter((c) => !c.endsWith('='));
+      const key = cells.join('\u0001');
+      if (cells.length && seen.has(key) && !mine.has(key)) { repeated += 1; continue; }
+      mine.add(key);
+      rows.push(row);
+    }
+    for (const k of mine) seen.add(k);
   }
-  return out;
+  return { rows, repeated, sheets: wb.SheetNames.length };
+}
+
+export function rowsOfWorkbook(XLSX, wb) {
+  return rowsOfWorkbookDetailed(XLSX, wb).rows;
 }
 
 // Boxes only (the shape every caller consumes). See parsePalmstreetOrdersDetailed
