@@ -48,8 +48,13 @@ export function parseSkuSerial(suffix) {
 }
 
 // The serial of a whole SKU (null when it has no suffix we know).
+// Only a real SKU counts: letter segments (brand · seller · variety) and
+// the suffix. Validate Sales placeholders (UNMATCHED-upmv2uqal82y-r123,
+// DBL-…-0771) end in something that LOOKS like a serial — r123 reads as
+// the letter code R123 = 27,105 — and must never push the next number.
+export const SKU_SHAPE_RE = /^(?:[A-Z]{1,8}-){0,2}[A-Z]{2,8}-(\d+|[A-Z]\d{3})$/;
 export function skuSerialOf(sku) {
-  const m = SKU_SUFFIX_END_RE.exec(String(sku || '').toUpperCase());
+  const m = SKU_SHAPE_RE.exec(String(sku || '').trim().toUpperCase());
   return m ? parseSkuSerial(m[1]) : null;
 }
 
@@ -61,7 +66,9 @@ export async function nextSkuSerial(supabase, brandId) {
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   let max = Number(numeric) || 0;
   const { data: lettered, error: lErr } = await supabase
-    .from('inventory_items').select('sku').eq('brandId', brandId).filter('sku', 'match', '-[A-Z][0-9]{3}$');
+    .from('inventory_items').select('sku').eq('brandId', brandId)
+    .not('sku', 'like', 'UNMATCHED-%').not('sku', 'like', 'DBL-%')
+    .filter('sku', 'match', '-[A-Z][0-9]{3}$');
   if (lErr) { const e = new Error(lErr.message); e.status = 500; throw e; }
   for (const r of lettered || []) { const s = skuSerialOf(r.sku); if (s != null && s > max) max = s; }
   return max + 1;

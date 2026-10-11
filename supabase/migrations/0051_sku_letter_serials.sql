@@ -5,6 +5,9 @@
 -- 10000 and Z999 = 35973. The app also scans letter-coded SKUs itself, so
 -- numbering stays right before this runs; this keeps the SQL honest.
 --
+-- Validate Sales placeholders (UNMATCHED-…-r123, DBL-…) are not SKUs and
+-- never count. Safe to run again if an earlier copy was applied.
+--
 -- Apply by hand in the Supabase SQL editor.
 
 create or replace function inventory_max_sku_suffix(p_brand text) returns int
@@ -17,7 +20,8 @@ language sql stable as $$
         + (regexp_match(sku, '-[A-Z](\d{3})$'))[1]::int - 1
     end), 0)
   from inventory_items
-  where "brandId" = p_brand and (sku ~ '-\d+$' or sku ~ '-[A-Z]\d{3}$');
+  where "brandId" = p_brand and sku !~* '^(unmatched|dbl)-'
+    and (sku ~ '-\d+$' or sku ~ '-[A-Z]\d{3}$');
 $$;
 
 create or replace function inventory_max_sku_suffix() returns int
@@ -30,7 +34,7 @@ language sql stable as $$
         + (regexp_match(sku, '-[A-Z](\d{3})$'))[1]::int - 1
     end), 0)
   from inventory_items
-  where sku ~ '-\d+$' or sku ~ '-[A-Z]\d{3}$';
+  where sku !~* '^(unmatched|dbl)-' and (sku ~ '-\d+$' or sku ~ '-[A-Z]\d{3}$');
 $$;
 
 insert into applied_migrations (id) values ('0051_sku_letter_serials')

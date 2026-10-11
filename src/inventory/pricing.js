@@ -76,3 +76,28 @@ export function rateSourceLabel(item, lookups) {
   if (Number.isFinite(parseFloat(sp?.profitRate))) return 'cultivar rate';
   return 'global';
 }
+
+// What a blank number on the Add form saves as, so a plant never leaves the
+// form unpriced. Each default says where it came from (the placeholder
+// under the field shows it). In order:
+//   gross cost    ← the species' wholesale price (vendor price sheet)
+//   net cost      ← gross cost (no overhead is known at add time)
+//   profit rate   ← the species' rate → the global rate
+//   ideal price   ← net cost × (1 + rate / 100)
+//   listing price ← the species' list price → the ideal price
+// A typed value (even 0) is the operator's and gets no default. Returns
+// { field: { value, from } } for every blank field that has one.
+export function defaultPricing(form, sp, globalRate) {
+  const typed = (v) => { const s = String(v ?? '').trim(); const n = parseFloat(s); return s && Number.isFinite(n) ? n : null; };
+  const pos = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : null; };
+  const out = {};
+  const take = (key, value, from) => { if (value != null) out[key] = { value: Math.round(value * 100) / 100, from }; return value; };
+  const gross = typed(form.grossCost) ?? take('grossCost', pos(sp?.wholesalePrice), 'species wholesale price');
+  const net = typed(form.netCost) ?? take('netCost', gross, 'same as gross cost');
+  const spRate = pos(sp?.profitRate);
+  const rate = typed(form.profitRate) ?? take('profitRate', spRate ?? pos(globalRate), spRate != null ? 'species rate' : 'global rate');
+  const ideal = typed(form.idealPrice) ?? take('idealPrice', net != null && rate != null ? net * (1 + rate / 100) : null, 'net cost × rate');
+  const list = pos(sp?.idealSellingPrice);
+  if (typed(form.listingPrice) == null) take('listingPrice', list ?? ideal, list != null ? 'species list price' : 'ideal price');
+  return out;
+}

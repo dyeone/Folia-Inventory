@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
+import { defaultPricing } from './pricing.js';
 import { nextSkuForCode, nextSkuForSeller, DEFAULT_ITEM_TYPE, DEFAULT_ADD_VARIETY, skuSerialOf, formatSkuSerial, SKU_SUFFIX_END_RE } from '../constants.js';
 import { SpeciesPicker } from './SpeciesPicker.jsx';
 
@@ -9,7 +10,7 @@ export function ItemFormModal({
   title, item, sales, existingItems = [],
   varieties = [], species = [], sellers = [],
   onCreateVariety, onCreateSpecies,
-  onSave, onClose,
+  onSave, onClose, idealRate,
 }) {
   // An `item` without an id is a prefill (e.g. "Add to this cultivar" on the
   // inventory list seeds variety/name/speciesId), not an edit — only treat
@@ -179,6 +180,16 @@ export function ItemFormModal({
     return Number.isFinite(n) ? n : null;
   };
 
+  // Defaults for the numbers left blank (add mode): shown in each field's
+  // placeholder with where they come from, saved in place of the blank.
+  const pickedSpecies = species.find(s => s.id === pick.speciesId) || null;
+  const defaults = useMemo(
+    () => (isEditing ? {} : defaultPricing(form, pickedSpecies, idealRate)),
+    [isEditing, form, pickedSpecies, idealRate],
+  );
+  const hint = (k, fallback) => (defaults[k] ? `${defaults[k].value.toFixed(k === 'profitRate' ? 0 : 2)} · ${defaults[k].from}` : fallback);
+  const withDefault = (k) => numOrNull(form[k]) ?? defaults[k]?.value ?? null;
+
   const handleSubmit = () => {
     setErr('');
     if (!pick.varietyId) return setErr('Variety is required');
@@ -187,7 +198,7 @@ export function ItemFormModal({
     if (!isEditing && existingItems.some(i => i.sku === sku)) {
       return setErr(`SKU "${sku}" already exists. Please retry.`);
     }
-    const grossCost = numOrNull(form.grossCost);
+    const grossCost = withDefault('grossCost');
     onSave({
       ...form,
       sku,
@@ -199,10 +210,10 @@ export function ItemFormModal({
       quantity: parseInt(form.quantity, 10) || 1,
       grossCost,
       cost: grossCost,
-      netCost:      numOrNull(form.netCost),
-      profitRate:   numOrNull(form.profitRate),
-      idealPrice:   numOrNull(form.idealPrice),
-      listingPrice: numOrNull(form.listingPrice),
+      netCost:      withDefault('netCost'),
+      profitRate:   withDefault('profitRate'),
+      idealPrice:   withDefault('idealPrice'),
+      listingPrice: withDefault('listingPrice'),
       salePrice:    numOrNull(form.salePrice),
       saleId: form.saleId || null,
       lotNumber: form.lotNumber || null,
@@ -280,9 +291,12 @@ export function ItemFormModal({
               {prefillNote.ts ? ` (added ${new Date(prefillNote.ts).toLocaleDateString()})` : ''} — the last {form.type === 'tc' ? 'TC' : 'plant'} of this species. Edit anything below.
             </div>
           )}
+          {!isEditing && Object.keys(defaults).length > 0 && (
+            <div className="text-[11px] text-gray-500 mb-2">A number left blank saves with the default shown in its box.</div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field label="Gross Cost">
-              <input type="number" step="0.01" value={form.grossCost} onChange={(e) => setForm({ ...form, grossCost: e.target.value })} className="input" placeholder="0.00" />
+              <input type="number" step="0.01" value={form.grossCost} onChange={(e) => setForm({ ...form, grossCost: e.target.value })} className="input" placeholder={hint('grossCost', '0.00')} />
             </Field>
             <Field label="Net Cost (incl. overhead)">
               <input
@@ -291,7 +305,7 @@ export function ItemFormModal({
                   const v = e.target.value;
                   setForm({ ...form, netCost: v, idealPrice: recalcIdeal(v, form.profitRate) });
                 }}
-                className="input" placeholder="0.00"
+                className="input" placeholder={hint('netCost', '0.00')}
               />
             </Field>
           </div>
@@ -303,16 +317,16 @@ export function ItemFormModal({
                   const v = e.target.value;
                   setForm({ ...form, profitRate: v, idealPrice: recalcIdeal(form.netCost, v) });
                 }}
-                className="input" placeholder="200"
+                className="input" placeholder={hint('profitRate', '200')}
               />
             </Field>
             <Field label="Ideal Sale Price">
-              <input type="number" step="0.01" value={form.idealPrice} onChange={(e) => setForm({ ...form, idealPrice: e.target.value })} className="input bg-emerald-50/50" placeholder="auto" />
+              <input type="number" step="0.01" value={form.idealPrice} onChange={(e) => setForm({ ...form, idealPrice: e.target.value })} className="input bg-emerald-50/50" placeholder={hint('idealPrice', 'auto')} />
             </Field>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
             <Field label="Listing Price">
-              <input type="number" step="0.01" value={form.listingPrice} onChange={(e) => setForm({ ...form, listingPrice: e.target.value })} className="input" placeholder="0.00" />
+              <input type="number" step="0.01" value={form.listingPrice} onChange={(e) => setForm({ ...form, listingPrice: e.target.value })} className="input" placeholder={hint('listingPrice', '0.00')} />
             </Field>
             <Field label="Sold Price">
               <input type="number" step="0.01" value={form.salePrice} onChange={(e) => setForm({ ...form, salePrice: e.target.value })} className="input" placeholder="0.00" />
