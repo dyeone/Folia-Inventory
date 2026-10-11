@@ -79,10 +79,16 @@ function asciiTitle(name, sku) {
 // No per-scan confirmation: scan = list it.
 export function LiveScanModal({ items, varieties, species, idealRate, onClose, isAdmin, activeBrand, showToast, onItemsChanged, canTransfer = false }) {
   const lookups = useMemo(() => buildLookups(varieties, species), [varieties, species]);
-  // Plants moved in from the other brand during THIS session, keyed by both
-  // their old and (if re-numbered) new SKU, so the label in hand keeps
+  // Plants this session learned about from the server — added to this
+  // brand after the page loaded, or moved in from the other brand (keyed
+  // by old AND new SKU when re-numbered) — so the label in hand keeps
   // scanning until the app's item list refreshes behind us.
-  const [movedIn, setMovedIn] = useState(() => new Map());
+  const [sessionItems, setSessionItems] = useState(() => new Map());
+  const remember = (item, ...skus) => setSessionItems((prev) => {
+    const n = new Map(prev);
+    for (const k of [item.sku, ...skus]) if (k) n.set(normalizeSku(k), item);
+    return n;
+  });
   // A label from the OTHER brand being moved here right now: { sku, phase:
   // 'checking' | 'moving', name?, brandName? } — a status line, not a prompt.
   const [crossBrand, setCrossBrand] = useState(null);
@@ -93,10 +99,10 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   const [warn, setWarn] = useState('');
   const itemsBySku = useMemo(() => {
     const m = new Map();
-    for (const [k, i] of movedIn) m.set(k, i);
+    for (const [k, i] of sessionItems) m.set(k, i);
     for (const i of items) if (i.sku) m.set(normalizeSku(i.sku), i);
     return m;
-  }, [items, movedIn]);
+  }, [items, sessionItems]);
   // Species list price + sell note, looked up live by speciesId so an edit on
   // the order line shows on the very next scan (nothing is stamped).
   const speciesById = useMemo(() => new Map((species || []).map(sp => [sp.id, sp])), [species]);
@@ -254,11 +260,12 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
   // per-brand numbering era), so the label in hand is almost certainly the
   // other brand's plant — move it; if they don't have it in stock, fall back
   // to the usual "already sold, push anyway?" question.
-  const moveFromOtherBrand = async (sku, soldHere = null) => {
+  // `prefetched`: resolveUnknown already asked the server — don't ask twice.
+  const moveFromOtherBrand = async (sku, soldHere = null, prefetched = null) => {
     setCrossBrand({ sku, phase: 'checking' });
     let found;
     try {
-      found = await api.lookupSkuAcrossBrands(sku);
+      found = prefetched || await api.lookupSkuAcrossBrands(sku);
     } catch (e) {
       setCrossBrand(null);
       if (soldHere) { setForcePush({ sku, item: soldHere }); return; }
@@ -280,12 +287,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     try {
       const r = await api.transferItem({ itemId: item.id, fromBrandId: item.brandId, reason: 'sale' });
       const moved = r.item;
-      setMovedIn((prev) => {
-        const n = new Map(prev);
-        n.set(normalizeSku(sku), moved);
-        if (moved.sku) n.set(normalizeSku(moved.sku), moved);
-        return n;
-      });
+      remember(moved, sku);
       setCrossBrand(null);
       if (r.relabel) showToast?.(`${moved.name} is now ${moved.sku} — its old SKU was taken here, print a new label after the live`);
       else showToast?.(`${moved.name} moved from ${from} to ${brandName(activeBrand)}`);
@@ -297,17 +299,34 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     }
   };
 
-  const handleScan = (rawSku) => {
-    setError('');
-    setWarn('');
-    const sku = normalizeSku(rawSku);
-    if (!sku) return;
-    const item = itemsBySku.get(sku);
-    if (!item) {
-      if (canTransfer) { moveFromOtherBrand(sku); return; }
-      setError(`No item with SKU "${sku}".`);
+  // A label that isn't in the list this page loaded with. Ask the server
+  // before calling it foreign: a plant added to this brand since the page
+  // opened (another device, a PO received at the bench) comes back as
+  // `ours` and lists right away — no page refresh. Only when this brand
+  // has nothing is it the other brand's plant, which moves here.
+  const resolveUnknown = async (sku) => {
+    setCrossBrand({ sku, phase: 'checking' });
+    let found;
+    try {
+      found = await api.lookupSkuAcrossBrands(sku);
+    } catch (e) {
+      setCrossBrand(null);
+      setError(`No item with SKU "${sku}" in the list — and the server couldn't be asked (${e.message || 'network'}). Check the connection and scan again.`);
       return;
     }
+    if (found?.ours) {
+      setCrossBrand(null);
+      remember(found.ours);
+      onItemsChanged?.().catch?.(() => {});   // the app's list catches up behind us
+      listOurs(sku, found.ours);
+      return;
+    }
+    if (!canTransfer) { setCrossBrand(null); setError(`No item with SKU "${sku}".`); return; }
+    moveFromOtherBrand(sku, null, found);
+  };
+
+  // One of ours: sold → ask (or move the other brand's twin in); in stock → list.
+  const listOurs = (sku, item) => {
     if (SOLD_STATUSES.has(item.status)) {
       if (canTransfer) { moveFromOtherBrand(sku, item); return; }
       setForcePush({ sku, item });
@@ -319,6 +338,16 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
     const theirs = theirSkus.get(sku);
     if (theirs) setWarn(`${brandName(theirs)} also has ${sku} in stock. Listed ours — if the plant in hand is ${brandName(theirs)}'s, renumber the duplicates in Inventory → Other brand stock.`);
     pushItem(item);
+  };
+
+  const handleScan = (rawSku) => {
+    setError('');
+    setWarn('');
+    const sku = normalizeSku(rawSku);
+    if (!sku) return;
+    const item = itemsBySku.get(sku);
+    if (!item) { resolveUnknown(sku); return; }
+    listOurs(sku, item);
   };
 
   const onSubmit = (e) => {
@@ -446,7 +475,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
             <div className="flex items-center gap-2 mt-2 bg-sky-50 text-sky-800 text-sm px-3 py-2 rounded-lg">
               <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin" />
               {crossBrand.phase === 'checking'
-                ? <span><span className="font-mono">{crossBrand.sku}</span> isn't ours — checking the other brand…</span>
+                ? <span><span className="font-mono">{crossBrand.sku}</span> isn't in the list — asking the server…</span>
                 : <span>Moving <span className="font-medium">{crossBrand.name}</span> from {crossBrand.brandName} to {brandName(activeBrand)}…</span>}
             </div>
           )}

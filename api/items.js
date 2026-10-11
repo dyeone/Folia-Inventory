@@ -360,8 +360,22 @@ async function acclimateItems(req, res, user, brandId) {
 async function lookupSku(req, res, user, brandId) {
   const sku = String(req.query?.sku || '').trim().toUpperCase().replace(/_/g, '-');
   if (!sku) { const e = new Error('sku required'); e.status = 400; throw e; }
+  // This brand first. The live scanner works off the item list its page
+  // loaded with; a plant added since (another device, a PO received at
+  // the bench) is only on the server. `ours` is that plant, full row —
+  // the scanner lists it without a page refresh. Then the other brands,
+  // as before (`item`), so "sold here, in stock there" still moves.
+  const { data: mine, error: mineErr } = await supabase
+    .from('inventory_items')
+    .select('*')
+    .eq('brandId', brandId)
+    .is('deletedAt', null)
+    .ilike('sku', sku)
+    .limit(1);
+  if (mineErr) { const e = new Error(mineErr.message); e.status = 500; throw e; }
+  const ours = mine?.[0] ? stripCostsForRole(user, mine)[0] : null;
   const others = otherBrandsOf(user, brandId);
-  if (!others.length) return res.status(200).json({ item: null });
+  if (!others.length) return res.status(200).json({ ours, item: null });
   const { data, error } = await supabase
     .from('inventory_items')
     .select(SHARED_FIELDS)
@@ -371,9 +385,10 @@ async function lookupSku(req, res, user, brandId) {
     .limit(5);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
   const hit = (data || []).find((i) => TRANSFERABLE_STATUSES.includes(i.status)) || (data || [])[0] || null;
-  if (!hit) return res.status(200).json({ item: null });
+  if (!hit) return res.status(200).json({ ours, item: null });
   const names = await brandNames([hit.brandId]);
   return res.status(200).json({
+    ours,
     item: stripCostsForRole(user, [hit])[0],
     brandName: names[hit.brandId] || hit.brandId,
     transferable: TRANSFERABLE_STATUSES.includes(hit.status) && !hit.saleId && !hit.shipmentBoxId,
