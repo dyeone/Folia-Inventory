@@ -1896,7 +1896,7 @@ function WrapStationPane({ rows, heatByBox, packed, total, wrap, wrapItem, dupeL
                     {box.code}
                   </span>
                   {needsTag(item) && (
-                    <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className="shrink-0 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">
+                    <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't)`} className="shrink-0 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">
                       TAG
                     </span>
                   )}
@@ -2001,7 +2001,7 @@ function SweepPlantRow({ item, pickup, boxCode, isFound, isDupe, onToggleFound }
         </span>
       )}
       {needsTag(item) && (
-        <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className={`shrink-0 text-[11px] font-extrabold px-1.5 py-0.5 rounded ${isFound ? 'bg-amber-200 text-amber-800' : 'bg-amber-400 text-amber-950'}`}>
+        <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't)`} className={`shrink-0 text-[11px] font-extrabold px-1.5 py-0.5 rounded ${isFound ? 'bg-amber-200 text-amber-800' : 'bg-amber-400 text-amber-950'}`}>
           TAG
         </span>
       )}
@@ -2362,7 +2362,8 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
   const total = unpacked.length + packed.length;
   const allPacked = total > 0 && unpacked.length === 0;
   const pct = total > 0 ? (packed.length / total) * 100 : 0;
-  // Plants sold for $100+ ship with a tag — named here, where the box is
+  // Our own plants sold for $100+ ship with a tag (consignment plants never
+  // do) — named here, where the box is
   // packed, so the tags go in before it is sealed.
   const tagPlants = tagItemsOf(box);
 
@@ -2423,7 +2424,7 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
             <Tag className="w-5 h-5 shrink-0 mt-0.5" />
             <div className="min-w-0">
               <span className="text-base font-extrabold tracking-wide">
-                {tagPlants.length === 1 ? '1 PLANT NEEDS A TAG' : `${tagPlants.length} PLANTS NEED TAGS`} — sold for ${TAG_PRICE_MIN}+
+                {tagPlants.length === 1 ? '1 PLANT NEEDS A TAG' : `${tagPlants.length} PLANTS NEED TAGS`} — our own plants sold for ${TAG_PRICE_MIN}+
               </span>
               <div className="text-sm font-semibold break-words">
                 {tagPlants.map((t) => `${t.lotNumber ? `#${t.lotNumber} ` : ''}${[(t.name || '').trim(), (t.variety || '').trim()].filter(Boolean).join(' ') || t.sku || 'plant'} ($${parseFloat(t.salePrice).toFixed(0)})`).join(' · ')}
@@ -2777,7 +2778,7 @@ function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots, nigel = fal
         </div>
         {item.quantity > 1 && <span className={`text-sm font-medium ${family.accent} shrink-0`}>×{item.quantity}</span>}
         {needsTag(item) && (
-          <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className={`shrink-0 inline-flex items-center gap-1 text-sm font-extrabold px-2 py-1 rounded-lg ${isPacked ? 'bg-amber-200 text-amber-800' : 'bg-amber-400 text-amber-950'}`}>
+          <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't)`} className={`shrink-0 inline-flex items-center gap-1 text-sm font-extrabold px-2 py-1 rounded-lg ${isPacked ? 'bg-amber-200 text-amber-800' : 'bg-amber-400 text-amber-950'}`}>
             <Tag className="w-4 h-4" /> TAG
           </span>
         )}
@@ -2906,7 +2907,7 @@ function PhoneHandoffOverlay({ box, onClose }) {
                   </div>
                   {it.quantity > 1 && <span className="text-sm font-medium text-gray-600 shrink-0">×{it.quantity}</span>}
                   {needsTag(it) && (
-                    <span title={`Sold for $${parseFloat(it.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className="shrink-0 text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">
+                    <span title={`Sold for $${parseFloat(it.salePrice).toFixed(2)} — our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't)`} className="shrink-0 text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">
                       TAG
                     </span>
                   )}

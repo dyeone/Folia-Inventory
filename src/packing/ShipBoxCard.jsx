@@ -151,7 +151,7 @@ export function ShipBoxCard({
                     {item.sku}
                     {item.salePrice ? ` · $${parseFloat(item.salePrice).toFixed(2)}` : ''}
                     {needsTag(item) && (
-                      <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className="ml-1.5 font-sans text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">TAG</span>
+                      <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't)`} className="ml-1.5 font-sans text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">TAG</span>
                     )}
                   </div>
                   <ItemNotes raw={item.notes} />

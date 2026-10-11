@@ -21,7 +21,8 @@ import { tagItemsOf, TAG_PRICE_MIN } from './tagList.js';
 // Anthurium chip already owns the light pink-100 palette and the packer
 // must never confuse the two.
 export function BoxContentBadges({ box, size = 'sm' }) {
-  // Plants sold for $100+ ship with a tag — the chip says how many and
+  // Our own plants sold for $100+ ship with a tag (never consignment) — the
+  // chip says how many and
   // names them on hover, so the packer sees it before the box is sealed.
   const tags = tagItemsOf(box);
   let hasTc = false;
@@ -39,7 +40,7 @@ export function BoxContentBadges({ box, size = 'sm' }) {
           kind="tags"
           size={size}
           label={`${tags.length} tag${tags.length === 1 ? '' : 's'}`}
-          title={`Plants $${TAG_PRICE_MIN}+ ship with a tag: ${tags.map((t) => `${t.lotNumber ? `#${t.lotNumber} ` : ''}${t.name || t.sku || 'plant'} ($${parseFloat(t.salePrice).toFixed(0)})`).join(', ')}`}
+          title={`Our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't): ${tags.map((t) => `${t.lotNumber ? `#${t.lotNumber} ` : ''}${t.name || t.sku || 'plant'} ($${parseFloat(t.salePrice).toFixed(0)})`).join(', ')}`}
         />
       )}
       {hasTc && <ContentChip kind="tc" size={size} />}

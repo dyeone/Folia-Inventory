@@ -1,9 +1,11 @@
 import { shortBoxCode } from '../labels/boxCode.js';
 
-// Plants that ship with a tag: anything the buyer paid $100 or more for.
-// One rule, used everywhere it shows — the "N tags" chip on a box (Shipping
-// cards, the packer's box header), the TAG mark on the plant's own line,
-// and the weekly XLS the tag-maker works from.
+// Plants that ship with a tag: OUR OWN plants the buyer paid $100 or more
+// for. Consignment plants (sold for a seller — sellerId set, SKU carries the
+// seller's code) never get one, whatever they sold for. One rule, used
+// everywhere it shows — the "N tags" chip on a box (Shipping cards, the
+// packer's box header), the TAG mark on the plant's own line, the packer's
+// banner, and the weekly XLS the tag-maker works from.
 //
 // A Validate Sales placeholder (UNMATCHED-…) is still a plant the buyer
 // paid for — it just isn't linked to inventory — so it counts, with an
@@ -14,6 +16,7 @@ export const TAG_PRICE_MIN = 100;
 
 export function needsTag(item) {
   if (!item || item.deletedAt) return false;
+  if (item.sellerId) return false;                 // consignment: the seller's plant, no tag
   if (/^DBL-/i.test(item.sku || '')) return false;
   const price = parseFloat(item.salePrice);
   return Number.isFinite(price) && price >= TAG_PRICE_MIN;
