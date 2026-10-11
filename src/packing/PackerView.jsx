@@ -19,7 +19,7 @@ import { isNigelBoxId } from './platform.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { ReceivingPane } from './ReceivingPane.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
-import { needsTag, TAG_PRICE_MIN } from './tagList.js';
+import { needsTag, tagItemsOf, TAG_PRICE_MIN } from './tagList.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
 // Full-screen workflow for the 'packer' role, tuned for an iPad at a
@@ -2000,6 +2000,11 @@ function SweepPlantRow({ item, pickup, boxCode, isFound, isDupe, onToggleFound }
           ×{item.quantity}
         </span>
       )}
+      {needsTag(item) && (
+        <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className={`shrink-0 text-[11px] font-extrabold px-1.5 py-0.5 rounded ${isFound ? 'bg-amber-200 text-amber-800' : 'bg-amber-400 text-amber-950'}`}>
+          TAG
+        </span>
+      )}
       {noBarcode && (
         <button
           type="button"
@@ -2357,6 +2362,9 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
   const total = unpacked.length + packed.length;
   const allPacked = total > 0 && unpacked.length === 0;
   const pct = total > 0 ? (packed.length / total) * 100 : 0;
+  // Plants sold for $100+ ship with a tag — named here, where the box is
+  // packed, so the tags go in before it is sealed.
+  const tagPlants = tagItemsOf(box);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -2403,6 +2411,24 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
                 original slip not stored
               </span>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Tags: every plant sold for $100+ gets one — the banner lists them by
+          lineup number so the packer pulls the tags before sealing. */}
+      {tagPlants.length > 0 && (
+        <div className="flex-shrink-0 px-4 sm:px-5 py-2.5 bg-amber-400 border-b border-amber-500">
+          <div className="max-w-5xl mx-auto flex items-start gap-2 text-amber-950">
+            <Tag className="w-5 h-5 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <span className="text-base font-extrabold tracking-wide">
+                {tagPlants.length === 1 ? '1 PLANT NEEDS A TAG' : `${tagPlants.length} PLANTS NEED TAGS`} — sold for ${TAG_PRICE_MIN}+
+              </span>
+              <div className="text-sm font-semibold break-words">
+                {tagPlants.map((t) => `${t.lotNumber ? `#${t.lotNumber} ` : ''}${[(t.name || '').trim(), (t.variety || '').trim()].filter(Boolean).join(' ') || t.sku || 'plant'} ($${parseFloat(t.salePrice).toFixed(0)})`).join(' · ')}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -2750,6 +2776,11 @@ function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots, nigel = fal
           )}
         </div>
         {item.quantity > 1 && <span className={`text-sm font-medium ${family.accent} shrink-0`}>×{item.quantity}</span>}
+        {needsTag(item) && (
+          <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className={`shrink-0 inline-flex items-center gap-1 text-sm font-extrabold px-2 py-1 rounded-lg ${isPacked ? 'bg-amber-200 text-amber-800' : 'bg-amber-400 text-amber-950'}`}>
+            <Tag className="w-4 h-4" /> TAG
+          </span>
+        )}
         {onPrintPlantLabel && !isPacked && (
           <button
             type="button"
@@ -2874,6 +2905,11 @@ function PhoneHandoffOverlay({ box, onClose }) {
                     )}
                   </div>
                   {it.quantity > 1 && <span className="text-sm font-medium text-gray-600 shrink-0">×{it.quantity}</span>}
+                  {needsTag(it) && (
+                    <span title={`Sold for $${parseFloat(it.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className="shrink-0 text-[11px] font-extrabold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">
+                      TAG
+                    </span>
+                  )}
                 </div>
                 <ItemNotes raw={it.notes} />
               </div>
