@@ -29,6 +29,7 @@ import { ImportLabelsModal } from './ImportLabelsModal.jsx';
 import { ImportNigelSlipsModal } from './ImportNigelSlipsModal.jsx';
 import { isNigelBoxId } from './platform.js';
 import { buildNigelShippingRows, downloadNigelShippingCsv } from './nigelExport.js';
+import { buildTagRows, downloadTagsXlsx, needsTag, TAG_PRICE_MIN } from './tagList.js';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
@@ -964,6 +965,30 @@ export function PackingView({
             className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-[#ff69b4] text-[#c0106b] bg-white hover:bg-pink-50 active:bg-pink-100"
           >
             <Download className="w-4 h-4 text-[#ff69b4]" /> Export Nigel
+          </button>
+          {/* This week's tags: one XLS row per plant sold for $100+ in the
+              Ready boxes on screen (held boxes ship a later week and are
+              left out) — live number, SKU, species, name — for the
+              tag-maker. */}
+          <button
+            type="button"
+            onClick={async () => {
+              const ready = filteredReady.flatMap(g => g.boxes);
+              const shipping = ready.filter(b => boxHoldState(b.items, b.holdUntil).state !== 'holding');
+              const rows = buildTagRows(shipping);
+              if (rows.length === 0) { showToast(`No plants $${TAG_PRICE_MIN}+ in this week's boxes`); return; }
+              try {
+                await downloadTagsXlsx(rows, 'tags');
+                const held = ready.length - shipping.length;
+                showToast(`Exported ${rows.length} tag${rows.length === 1 ? '' : 's'} across ${new Set(rows.map(r => r.box)).size} box${new Set(rows.map(r => r.box)).size === 1 ? '' : 'es'}${held ? ` · ${held} held box${held === 1 ? '' : 'es'} left out` : ''}`);
+              } catch (e) {
+                showToast(e.message || 'Export failed', 'error');
+              }
+            }}
+            title={`Download this week's tag list — every plant sold for $${TAG_PRICE_MIN}+ in the Ready boxes shown (held boxes left out): live number, SKU, species, name, price, buyer, box`}
+            className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-amber-500 text-amber-900 bg-white hover:bg-amber-50 active:bg-amber-100"
+          >
+            <Tag className="w-4 h-4 text-amber-600" /> Export tags
           </button>
           {/* Print the boxes currently on screen (current sub-tab + filter) as
               a packing-list table, straight to the document printer. */}
@@ -2236,6 +2261,11 @@ function BoxItemsList({ box, salesById, onTogglePacked, dupeLots, findDupeLotBox
                 {isPacked && !shippedAlready && (
                   <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 no-underline">
                     packed
+                  </span>
+                )}
+                {needsTag(item) && (
+                  <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950 no-underline">
+                    TAG
                   </span>
                 )}
                 {item.reviewFlag === 'double_sale' && (

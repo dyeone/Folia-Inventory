@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { ItemNotes } from './ItemNotes.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
+import { needsTag, TAG_PRICE_MIN } from './tagList.js';
 import { BoxNotePanel, InsulationStrip, InsulationChip } from './BoxNotePanel.jsx';
 import { BoxPackagingPanel } from './BoxPackagingPanel.jsx';
 import { ShippingMarginNote } from './ShippingMarginNote.jsx';
@@ -149,6 +150,9 @@ export function ShipBoxCard({
                   <div className="text-xs text-gray-500 font-mono">
                     {item.sku}
                     {item.salePrice ? ` · $${parseFloat(item.salePrice).toFixed(2)}` : ''}
+                    {needsTag(item) && (
+                      <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className="ml-1.5 font-sans text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">TAG</span>
+                    )}
                   </div>
                   <ItemNotes raw={item.notes} />
                 </div>

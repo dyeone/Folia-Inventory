@@ -19,6 +19,7 @@ import { isNigelBoxId } from './platform.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { ReceivingPane } from './ReceivingPane.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
+import { needsTag, TAG_PRICE_MIN } from './tagList.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
 
 // Full-screen workflow for the 'packer' role, tuned for an iPad at a
@@ -1894,6 +1895,11 @@ function WrapStationPane({ rows, heatByBox, packed, total, wrap, wrapItem, dupeL
                   <span className="shrink-0 text-[11px] font-mono font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-800">
                     {box.code}
                   </span>
+                  {needsTag(item) && (
+                    <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className="shrink-0 text-[11px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950">
+                      TAG
+                    </span>
+                  )}
                   {heatByBox?.[box.id] != null && (
                     <span
                       className="shrink-0 text-[11px] font-bold px-1.5 py-0.5 rounded bg-red-600 text-white"
