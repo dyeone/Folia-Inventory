@@ -966,7 +966,8 @@ export function PackingView({
           >
             <Download className="w-4 h-4 text-[#ff69b4]" /> Export Nigel
           </button>
-          {/* This week's tags: one XLS row per plant sold for $100+ in the
+          {/* This week's tags: one XLS row per OWN plant sold for $100+ (never
+              a consignment plant) in the
               Ready boxes on screen (held boxes ship a later week and are
               left out) — live number, SKU, species, name — for the
               tag-maker. */}
@@ -976,7 +977,7 @@ export function PackingView({
               const ready = filteredReady.flatMap(g => g.boxes);
               const shipping = ready.filter(b => boxHoldState(b.items, b.holdUntil).state !== 'holding');
               const rows = buildTagRows(shipping);
-              if (rows.length === 0) { showToast(`No plants $${TAG_PRICE_MIN}+ in this week's boxes`); return; }
+              if (rows.length === 0) { showToast(`No plants of ours sold for $${TAG_PRICE_MIN}+ in this week's boxes`); return; }
               try {
                 await downloadTagsXlsx(rows, 'tags');
                 const held = ready.length - shipping.length;
@@ -985,7 +986,7 @@ export function PackingView({
                 showToast(e.message || 'Export failed', 'error');
               }
             }}
-            title={`Download this week's tag list — every plant sold for $${TAG_PRICE_MIN}+ in the Ready boxes shown (held boxes left out): live number, SKU, species, name, price, buyer, box`}
+            title={`Download this week's tag list — every one of our own plants sold for $${TAG_PRICE_MIN}+ in the Ready boxes shown (consignment plants and held boxes left out): live number, SKU, species, name, price, buyer, box`}
             className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-amber-500 text-amber-900 bg-white hover:bg-amber-50 active:bg-amber-100"
           >
             <Tag className="w-4 h-4 text-amber-600" /> Export tags
@@ -2264,7 +2265,7 @@ function BoxItemsList({ box, salesById, onTogglePacked, dupeLots, findDupeLotBox
                   </span>
                 )}
                 {needsTag(item) && (
-                  <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — plants $${TAG_PRICE_MIN}+ ship with a tag`} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950 no-underline">
+                  <span title={`Sold for $${parseFloat(item.salePrice).toFixed(2)} — our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't)`} className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-400 text-amber-950 no-underline">
                     TAG
                   </span>
                 )}
