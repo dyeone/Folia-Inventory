@@ -49,8 +49,13 @@ export function parseSkuSerial(suffix) {
   if (!m || parseInt(m[2], 10) < 1) return null;
   return FIRST_LETTER_SERIAL + (m[1].charCodeAt(0) - 65) * LETTER_BLOCK + (parseInt(m[2], 10) - 1);
 }
+// Only a real SKU counts: letter segments (brand · seller · variety) and
+// the suffix. Validate Sales placeholders (UNMATCHED-upmv2uqal82y-r123,
+// DBL-…-0771) end in something that LOOKS like a serial — r123 reads as
+// the letter code R123 = 27,105 — and must never push the next number.
+export const SKU_SHAPE_RE = /^(?:[A-Z]{1,8}-){0,2}[A-Z]{2,8}-(\d+|[A-Z]\d{3})$/;
 export function skuSerialOf(sku) {
-  const m = SKU_SUFFIX_END_RE.exec(String(sku || '').toUpperCase());
+  const m = SKU_SHAPE_RE.exec(String(sku || '').trim().toUpperCase());
   return m ? parseSkuSerial(m[1]) : null;
 }
 

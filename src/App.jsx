@@ -1745,6 +1745,7 @@ function StaffOrAdminInventory() {
           sales={sales}
           sellers={sellers}
           existingItems={items}
+          idealRate={idealRate}
           varieties={varieties}
           species={species}
           onCreateVariety={addVariety}
@@ -1763,6 +1764,7 @@ function StaffOrAdminInventory() {
           sales={sales}
           item={editingItem}
           existingItems={items}
+          idealRate={idealRate}
           varieties={varieties}
           species={species}
           onCreateVariety={addVariety}
