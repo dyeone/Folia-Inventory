@@ -52,9 +52,11 @@ function normalizeSku(raw) {
 // so this never grabs a SKU. Returns the number as a string, or null. Lets the
 // packer identify the physical plant by the number on its label even when the
 // listing name is unhelpful ("no id").
+// The lineup number a title starts with, as the app stores it — "002 Name"
+// (titles are zero-padded for Palmstreet's search) and "2 Name" both give "2".
 function leadingIndex(title) {
   const m = /^\s*(\d{1,4})(?:\s|$)/.exec(String(title || ''));
-  return m ? m[1] : null;
+  return m ? String(parseInt(m[1], 10)) : null;
 }
 
 function extractAllSkus(title) {

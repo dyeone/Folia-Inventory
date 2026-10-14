@@ -73,7 +73,9 @@ export function displayName(item) {
   const t = d && typeof d === 'object' && d.title != null ? String(d.title).trim() : '';
   let name = t || (item.name || '');
   const lot = lotStr(item);
-  if (lot && name.startsWith(`${lot} `)) name = name.slice(lot.length + 1).trim();
+  // "31 no id", "002 Mystery" — the number in any padding is already printed big.
+  const lead = lot ? /^(\d{1,4})\s+/.exec(name) : null;
+  if (lead && parseInt(lead[1], 10) === parseInt(lot, 10)) name = name.slice(lead[0].length).trim();
   return name;
 }
 
