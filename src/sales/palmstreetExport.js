@@ -1,3 +1,4 @@
+import { lotTag } from './lotBlock.js';
 // Build a Palmstreet CSV — for a single sale event, or for the entire
 // "available" inventory ready to be listed. Both modes share the same
 // header set so Palmstreet ingests them identically.
@@ -39,21 +40,24 @@ function details(item) {
   return o && typeof o === 'object' ? o : {};
 }
 
-// Title: "<#> <name>" — the lineup number then the plant name — so buyers see a
-// clean product name and the operator can call lots by number during the live.
-// The SKU is deliberately NOT in the title; it still travels in the dedicated
-// SKU column (which is what order reconciliation reads). The number is the
-// item's lotNumber (its lineup position); items without one (e.g. the
-// whole-inventory export) get just the name. The operator's title override, if
-// set, replaces the name. Capped at 80 chars.
-function buildTitle(item) {
+// Title: "<###> <name>" — the lineup number, zero-padded to three digits (see
+// lotTag: Palmstreet's title search is a substring match, and a bare "2"
+// matched 12, 20, 21…), then the plant name — so buyers see a clean product
+// name and the operator can call lots by number during the live. The SKU is
+// deliberately NOT in the title; it still travels in the dedicated SKU column
+// (which is what order reconciliation reads). The number is the item's
+// lotNumber (its lineup position); items without one (e.g. the whole-inventory
+// export) get just the name. The operator's title override, if set, replaces
+// the name — and if it already starts with this lot's number in any padding,
+// that prefix is re-padded rather than doubled. Capped at 80 chars.
+export function buildTitle(item) {
   const override = (details(item).title != null ? String(details(item).title) : '').trim();
-  const base = override || (item.name || '');
-  const num = String(item.lotNumber ?? '').trim();
-  let t = base;
-  if (num && !base.startsWith(`${num} `)) {
-    t = base ? `${num} ${base}` : num;
-  }
+  let base = override || (item.name || '');
+  const tag = lotTag(item.lotNumber);
+  if (!tag) return base.length > 80 ? base.slice(0, 80) : base;
+  const lead = /^(\d{1,4})\s+/.exec(base);
+  if (lead && parseInt(lead[1], 10) === parseInt(item.lotNumber, 10)) base = base.slice(lead[0].length);
+  const t = base ? `${tag} ${base}` : tag;
   return t.length > 80 ? t.slice(0, 80) : t;
 }
 

@@ -51,6 +51,20 @@ export function blockIndex(week) { return (((week + WEEK_OFFSET) % CYCLE) + CYCL
 export function blockStart(week) { return blockIndex(week) * BLOCK + 1; }
 export function blockEnd(week) { return blockStart(week) + BLOCK - 1; }
 
+// The lineup number as it goes into a Palmstreet listing title: three
+// digits, zero-padded ("002"). Palmstreet's search is a substring match, so
+// a bare "2" in the title turned up 12, 20, 21, 22… — with every number
+// printed as exactly three digits, searching "002" finds only #2. (1000, the
+// top of the fifth block, is the one four-digit number: a search for "100"
+// also shows it.) Labels and the app keep showing the plain number; this is
+// for titles only, and every reader of a title strips the zeros again
+// (parsePalmstreetOrders leadingIndex, the label's displayName).
+export function lotTag(lotNumber) {
+  if (!/^\s*\d{1,4}\s*$/.test(String(lotNumber ?? ''))) return '';
+  const n = parseInt(lotNumber, 10);
+  return n > 0 ? String(n).padStart(3, '0') : '';
+}
+
 // The lot week a sale's numbering belongs to (today when the sale is undated).
 export function saleWeek(sale) { return lotWeek(sale?.date); }
 
