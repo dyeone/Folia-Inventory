@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Tag, ScanLine, Search, X, Loader2, ImagePlus, Trash2, Calendar, Plus, Check,
-  Download, ChevronRight, Users, Sprout, Printer, GripVertical, Images, ListOrdered,
+  Download, ChevronRight, Users, Sprout, Printer, GripVertical, Images, ListOrdered, Upload,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { saleWeek, blockStart, blockEnd, isoWeekNum } from './lotBlock.js';
@@ -9,6 +9,7 @@ import { ImageDropZone } from '../purchasing/ImageDropZone.jsx';
 import { exportPalmstreetCsv } from './palmstreetExport.js';
 import { SellerIntakeModal } from './SellerIntakeModal.jsx';
 import { BulkPhotoAssignModal } from './BulkPhotoAssignModal.jsx';
+import { LineupImportModal } from './LineupImportModal.jsx';
 
 // Pre Sale — stage individual inventory items into an upcoming sale event's
 // lineup by SKU (scan or type), fill in their Palmstreet listing details
@@ -66,7 +67,7 @@ function numOrNull(v) {
 
 export function PreSaleTab({
   sales, items, showToast, onStageItems, onItemsChanged,
-  isBae, sellers = [], varieties = [], onIntakeSeller, onManageSellers,
+  isBae, sellers = [], varieties = [], species = [], onIntakeSeller, onManageSellers,
   onPrintLabels,
 }) {
   const openSales = useMemo(
@@ -81,6 +82,9 @@ export function PreSaleTab({
   // Quick-create OUR OWN plants (no seller) straight into inventory + this
   // sale — same intake modal, own-plants mode.
   const [showOwnIntake, setShowOwnIntake] = useState(false);
+  // Import a whole lineup from a sheet (index + name per row) — new plants,
+  // numbered as the sheet says, staged here.
+  const [showLineupImport, setShowLineupImport] = useState(false);
 
   const [saleSel, setSaleSel] = useState('');
   const saleId = (saleSel && openSales.some(s => s.id === saleSel))
@@ -201,6 +205,20 @@ export function PreSaleTab({
     // prints later when the lineup is numbered) straight after intake — the
     // pots need labels before they can ever be scanned again.
     if (print && rows.length) onPrintLabels?.(rows);
+    return ids;
+  };
+
+  // A sheet import brings its own numbers: keep the weekly counter ahead of
+  // them so the next numbering can't re-mint one (same as persistOrder).
+  const handleLineupImport = async (payloads, opts) => {
+    const ids = await handleIntake(payloads, opts);
+    const end = Math.max(0, ...payloads.map(p => parseInt(p.lotNumber, 10) || 0)) + 1;
+    if (end > lineupNext) {
+      setLineupNext(end);
+      api.bumpLineupNext?.(end, week).catch(() => {
+        showToast?.('Plants added, but the weekly counter didn’t update — the next sale may suggest overlapping numbers', 'error');
+      });
+    }
     return ids;
   };
 
@@ -674,6 +692,16 @@ export function PreSaleTab({
             >
               <Sprout className="w-4 h-4" /> New plants
             </button>
+            <button
+              onClick={() => setShowLineupImport(true)}
+              disabled={!sale || sale?.itemTypes === 'tc'}
+              title={sale?.itemTypes === 'tc'
+                ? 'This sale is TC only — the import makes plants'
+                : 'Import this live\'s lineup from a CSV/XLSX (index + name per row) — new plants with auto SKUs, numbered as the sheet says, staged into this event'}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 active:bg-emerald-200 disabled:opacity-40"
+            >
+              <Upload className="w-4 h-4" /> Import CSV
+            </button>
           </div>
         </div>
       </div>
@@ -941,6 +969,20 @@ export function PreSaleTab({
           onIntake={handleIntake}
           showToast={showToast}
           onClose={() => setShowOwnIntake(false)}
+        />
+      )}
+
+      {showLineupImport && sale && (
+        <LineupImportModal
+          sale={sale}
+          items={items}
+          sales={sales}
+          varieties={varieties}
+          species={species}
+          isBae={isBae}
+          onImport={handleLineupImport}
+          showToast={showToast}
+          onClose={() => setShowLineupImport(false)}
         />
       )}
 

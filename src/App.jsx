@@ -1356,6 +1356,7 @@ function StaffOrAdminInventory() {
             onManageSellers={() => setShowSellers(true)}
             onSellerSettlement={(sale) => setSellerSettlement({ sale })}
             onIntakeSeller={intakeSellerPlants}
+            species={species}
             onReloadSellers={reloadSellers}
             onPrintLabels={(labels) => { if (labels.length) setLabelItems(labels); }}
             onStageItems={async (updates) => {

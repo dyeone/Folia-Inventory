@@ -77,6 +77,17 @@ export function displayName(item) {
   return name;
 }
 
+// The title line: the name, then " · Variety" — unless the name already
+// carries the variety word ("Anthurium crystallinum" needs no "· Anthurium"),
+// which is most of the width a long title wastes.
+export function labelTitle(item) {
+  const name = displayName(item);
+  const variety = String(item?.variety || '').trim();
+  if (!variety) return name;
+  const has = new RegExp(`(^|[^a-z])${variety.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z]|$)`, 'i').test(name);
+  return has ? name : `${name} · ${variety}`;
+}
+
 // The SKU to print / QR-encode. UNMATCHED-… and DBL-… are synthetic placeholder
 // SKUs (a line that didn't match real inventory) — they're long and don't scan
 // to anything, so we suppress them: those labels show just the big lineup number
@@ -101,6 +112,48 @@ function fitFontPt(pdf, text, pt, maxWidthIn) {
   return Math.max(6, Math.floor((pt * maxWidthIn / w) * 10) / 10);
 }
 
+// The name must print in full. One line at the base size when it fits;
+// otherwise the size steps down toward the floor; and a name that still
+// doesn't fit wraps onto a second line at the floor size (the SKU below
+// drops a hair to make room). Only a name longer than two floor-size lines
+// is cut, with an ellipsis — nothing a plant is actually called.
+// `measure(text, pt)` returns the printed width in inches, so the same rule
+// serves the vector (Helvetica) and the canvas (CJK) paths.
+export const TITLE_MAX_LINES = 2;
+export function layoutTitle(measure, title, { fontPt, minPt, maxWidthIn }) {
+  const text = String(title || '').trim();
+  if (!text) return { pt: fontPt, lines: [] };
+  for (let pt = fontPt; pt >= minPt - 1e-9; pt = Math.round((pt - 0.5) * 10) / 10) {
+    if (measure(text, pt) <= maxWidthIn) return { pt, lines: [text] };
+  }
+  return { pt: minPt, lines: wrapToWidth(measure, text, minPt, maxWidthIn, TITLE_MAX_LINES) };
+}
+
+// Greedy wrap: the longest prefix that fits, cut at the last space when one
+// sits past the middle of the line, else mid-word (CJK names have no spaces).
+function wrapToWidth(measure, text, pt, maxWidthIn, maxLines) {
+  const lines = [];
+  let rest = Array.from(text);
+  while (rest.length && lines.length < maxLines) {
+    const whole = rest.join('');
+    if (measure(whole, pt) <= maxWidthIn) { lines.push(whole); rest = []; break; }
+    let cut = rest.length - 1;
+    while (cut > 1 && measure(rest.slice(0, cut).join(''), pt) > maxWidthIn) cut--;
+    const space = rest.lastIndexOf(' ', cut);
+    const at = space >= Math.floor(cut / 2) ? space : cut;
+    lines.push(rest.slice(0, at).join('').trim());
+    rest = rest.slice(at);
+    while (rest[0] === ' ') rest.shift();
+  }
+  if (rest.length) {
+    // Out of lines: the last one ends in an ellipsis and still fits.
+    let last = Array.from(`${lines.pop()} ${rest.join('')}`.trim());
+    while (last.length > 1 && measure(`${last.join('')}…`, pt) > maxWidthIn) last.pop();
+    lines.push(`${last.join('').trimEnd()}…`);
+  }
+  return lines;
+}
+
 // Printed QR square sizes (inches). Shared with LabelSheet's preview so the
 // on-screen label can't drift from the printed one. Both keep the code
 // ≥0.08" off the label's bottom edge — thermal feed drift clips edges, and
@@ -116,21 +169,26 @@ export const QR_SIZE_FULL = 0.44;  // full-width layout
 // titles keep the vector-text path untouched.
 const CJK_RE = /[\u1100-\u11FF\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]|[\uD800-\uDBFF][\uDC00-\uDFFF]/;
 
-// One truncated-with-ellipsis text line → { dataUrl, wIn, hIn } (or null).
-// 300px-per-inch keeps it crisp on the 203dpi thermal head.
+const PPI = 300;   // canvas px per inch — crisp on the 203dpi thermal head
+const CJK_FONT = '-apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif';
+const cjkFont = (fontPt) => `${Math.round((fontPt / 72) * PPI)}px ${CJK_FONT}`;
+
+// Width (inches) of `text` at `fontPt` in the browser font the CJK path
+// prints with — the measure layoutTitle wraps by on that path.
+function cjkMeasure(canvas) {
+  const ctx = canvas.getContext('2d');
+  return (text, pt) => { ctx.font = cjkFont(pt); return ctx.measureText(String(text)).width / PPI; };
+}
+
+// One text line, already fitted by layoutTitle → { dataUrl, wIn, hIn } (or null).
 function textLineImage(canvas, text, { fontPt, maxWidthIn, color = '#000000' }) {
   try {
-    const PPI = 300;
     const fontPx = Math.round((fontPt / 72) * PPI);
     const maxPx = Math.round(maxWidthIn * PPI);
-    const font = `${fontPx}px -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif`;
+    const font = cjkFont(fontPt);
     let ctx = canvas.getContext('2d');
     ctx.font = font;
-    let t = String(text);
-    if (ctx.measureText(t).width > maxPx) {
-      while (t.length > 1 && ctx.measureText(`${t}…`).width > maxPx) t = [...t].slice(0, -1).join('');
-      t += '…';
-    }
+    const t = String(text);
     const wPx = Math.max(1, Math.min(maxPx, Math.ceil(ctx.measureText(t).width)));
     const hPx = Math.ceil(fontPx * 1.25);
     canvas.width = wPx;   // resizing clears the canvas (transparent)
@@ -149,23 +207,33 @@ function textLineImage(canvas, text, { fontPt, maxWidthIn, color = '#000000' }) 
   }
 }
 
-// Title line for either layout: vector text for Latin, canvas image for CJK.
-// centerX/baselineY mirror the vector call's geometry; the image is placed
-// so its optical middle sits where the vector baseline's x-height was.
-function drawTitle(pdf, canvas, title, { centerX, baselineY, fontPt, maxWidthIn }) {
-  if (CJK_RE.test(title)) {
-    const img = textLineImage(canvas, title, { fontPt, maxWidthIn, color: '#464646' });
-    if (img) {
-      pdf.addImage(img.dataUrl, 'PNG', centerX - img.wIn / 2, baselineY - img.hIn * 0.7, img.wIn, img.hIn, undefined, 'FAST');
-    }
-    return;
-  }
+// Title for either layout: vector text for Latin, canvas image for CJK —
+// fitted by layoutTitle (shrink, then wrap to two lines). `baselineY` is the
+// single-line baseline; a second line pushes the block up a little and
+// continues below it. Returns the number of lines drawn so the caller can
+// make room underneath. The image is placed so its optical middle sits where
+// the vector baseline's x-height would be.
+function drawTitle(pdf, canvas, title, { centerX, baselineY, fontPt, minPt, maxWidthIn }) {
+  const cjk = CJK_RE.test(title);
   pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(fontPt);
-  pdf.setTextColor(70);
-  // One line only (matches the preview's truncate) — maxWidth WRAPS, and a
-  // wrapped second line lands on the SKU glyphs below.
-  pdf.text(pdf.splitTextToSize(title, maxWidthIn)[0] || '', centerX, baselineY, { align: 'center' });
+  const vectorMeasure = (text, pt) => { pdf.setFontSize(pt); return pdf.getTextWidth(String(text)); };
+  const { pt, lines } = layoutTitle(cjk ? cjkMeasure(canvas) : vectorMeasure, title, { fontPt, minPt, maxWidthIn });
+  if (!lines.length) return 0;
+  const step = (pt / 72) * 1.15;                       // line pitch, inches
+  const firstY = lines.length > 1 ? baselineY - step * 0.45 : baselineY;
+  lines.forEach((line, i) => {
+    const y = firstY + i * step;
+    if (cjk) {
+      const img = textLineImage(canvas, line, { fontPt: pt, maxWidthIn, color: '#464646' });
+      if (img) pdf.addImage(img.dataUrl, 'PNG', centerX - img.wIn / 2, y - img.hIn * 0.7, img.wIn, img.hIn, undefined, 'FAST');
+      return;
+    }
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(pt);
+    pdf.setTextColor(70);
+    pdf.text(line, centerX, y, { align: 'center' });
+  });
+  return lines.length;
 }
 
 // Renders a QR code into a canvas and returns it as a PNG data URL. QR
@@ -232,7 +300,7 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
     // bae-gin (the default, no sellers) prints without a top line.
     const sellerName = item.sellerId && sellerNameById ? sellerNameById.get(item.sellerId) : null;
     const topTag = [tag, sellerName].filter(Boolean).join(' · ').slice(0, 28);
-    const title = `${displayName(item)}${item.variety ? ` · ${item.variety}` : ''}`;
+    const title = labelTitle(item);
     const sku = realSku(item);
     const lot = lotStr(item);
 
@@ -269,11 +337,14 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
         pdf.setTextColor(0);
         pdf.text(topTag, cx, 0.15, { align: 'center', maxWidth: cw });
       }
-      drawTitle(pdf, canvas, title, { centerX: cx, baselineY: topTag ? 0.29 : 0.22, fontPt: 7, maxWidthIn: cw });
+      const titleLines = drawTitle(pdf, canvas, title, { centerX: cx, baselineY: topTag ? 0.29 : 0.22, fontPt: 7, minPt: 6, maxWidthIn: cw });
+      // A two-line title under a brand tag reaches the SKU's cap line: the
+      // SKU drops a hair and caps a point smaller. The QR below never moves.
+      const tight = titleLines > 1 && topTag;
       pdf.setFont('courier', 'bold');
-      pdf.setFontSize(fitFontPt(pdf, sku, 10.5, cw));
+      pdf.setFontSize(fitFontPt(pdf, sku, tight ? 9.5 : 10.5, cw));
       pdf.setTextColor(0);
-      pdf.text(sku, cx, 0.46, { align: 'center' });
+      pdf.text(sku, cx, tight ? 0.47 : 0.46, { align: 'center' });
       if (sku) {
         const dataUrl = qrDataUrl(canvas, sku);
         if (dataUrl) {
@@ -290,11 +361,12 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
       pdf.setTextColor(0);
       pdf.text(topTag, LABEL_W / 2, 0.11, { align: 'center' });
     }
-    drawTitle(pdf, canvas, title, { centerX: LABEL_W / 2, baselineY: topTag ? 0.24 : 0.18, fontPt: 8, maxWidthIn: LABEL_W - 0.15 });
+    const titleLines = drawTitle(pdf, canvas, title, { centerX: LABEL_W / 2, baselineY: topTag ? 0.24 : 0.18, fontPt: 8, minPt: 6.5, maxWidthIn: LABEL_W - 0.15 });
+    const tight = titleLines > 1 && topTag;          // same give as the lineup layout
     pdf.setFont('courier', 'bold');
-    pdf.setFontSize(fitFontPt(pdf, sku, 14, LABEL_W - 0.12));
+    pdf.setFontSize(fitFontPt(pdf, sku, tight ? 12 : 14, LABEL_W - 0.12));
     pdf.setTextColor(0);
-    pdf.text(sku, LABEL_W / 2, 0.44, { align: 'center' });
+    pdf.text(sku, LABEL_W / 2, tight ? 0.455 : 0.44, { align: 'center' });
     if (sku) {
       const dataUrl = qrDataUrl(canvas, sku);
       if (dataUrl) {

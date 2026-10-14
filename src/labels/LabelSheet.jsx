@@ -7,7 +7,7 @@ import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 // boxLabelPdf.js) so non-component code — the packer's burrito-wrap reprint —
 // can share them without this component file exporting non-components.
 import {
-  buildItemLabelPdf, brandTag, realSku, lotStr, displayName, weekTag,
+  buildItemLabelPdf, brandTag, realSku, lotStr, labelTitle, weekTag,
   qrDataUrl, QR_SIZE_LOT, QR_SIZE_FULL,
 } from './itemLabelPdf.js';
 
@@ -28,13 +28,17 @@ function Label({ item, tag, sellerName, week }) {
   );
 
   const lot = lotStr(item);
-  const titleLine = `${displayName(item)}${item.variety ? ` · ${item.variety}` : ''}`;
+  const titleLine = labelTitle(item);
+  // The PDF prints the whole name: smaller when long, on two lines when
+  // longer still. The preview mirrors that in CSS — a long title drops a
+  // size and may take two lines.
+  const longTitle = titleLine.length > (lot ? 22 : 34);
 
   // Sized to a standard 2" x 1" thermal label. This is both the on-screen
   // preview and the printed size. When the plant has a lineup number, it fills
   // the left; the name/SKU/QR stack on the right. Known acceptable drift:
-  // this preview truncates the title via CSS in the app font, while the PDF
-  // truncates by canvas/vector measure — the cut point can differ by a
+  // this preview fits the title via CSS in the app font, while the PDF fits
+  // by canvas/vector measure — the size step or wrap point can differ by a
   // character or two. Geometry and the QR itself are shared, so nothing
   // scannable can drift.
   return (
@@ -54,7 +58,7 @@ function Label({ item, tag, sellerName, week }) {
           </div>
           <div className="flex-1 min-w-0 flex flex-col items-center justify-between text-center pl-1">
             {top && <div className="text-[6pt] font-bold text-black leading-none truncate w-full">{top}</div>}
-            <div className="text-[7pt] leading-tight text-gray-700 truncate w-full">{titleLine}</div>
+            <div className={`${longTitle ? 'text-[6pt]' : 'text-[7pt]'} leading-tight text-gray-700 line-clamp-2 break-words w-full`}>{titleLine}</div>
             <div className="font-mono font-bold text-gray-900 leading-none" style={{ fontSize: '10.5pt' }}>{sku}</div>
             {qrSrc && <img src={qrSrc} alt="" style={{ width: `${QR_SIZE_LOT}in`, height: `${QR_SIZE_LOT}in` }} />}
           </div>
@@ -62,7 +66,7 @@ function Label({ item, tag, sellerName, week }) {
       ) : (
         <div className="flex flex-col items-center justify-between text-center h-full w-full">
           {top && <div className="text-[6pt] font-bold text-black leading-none">{top}</div>}
-          <div className="text-[8pt] leading-tight text-gray-700 truncate w-full">{titleLine}</div>
+          <div className={`${longTitle ? 'text-[6.5pt]' : 'text-[8pt]'} leading-tight text-gray-700 line-clamp-2 break-words w-full`}>{titleLine}</div>
           <div className="font-mono font-bold text-gray-900 tracking-wider leading-none" style={{ fontSize: '14pt' }}>{sku}</div>
           {qrSrc && <img src={qrSrc} alt="" style={{ width: `${QR_SIZE_FULL}in`, height: `${QR_SIZE_FULL}in` }} />}
         </div>
