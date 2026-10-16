@@ -3,8 +3,10 @@ import { blockStart, blockEnd } from './lotBlock.js';
 
 // A live's lineup as a sheet: one row per plant — its lineup number (the
 // "index" the streamer calls out and the packer finds it by) and its name,
-// optionally a listing price and a variety. Every row becomes a NEW plant
-// of our own, numbered as the sheet says and staged into the sale.
+// optionally a listing price and a variety. Every row becomes a NEW plant,
+// numbered as the sheet says and staged into the sale: our own, or — when
+// the operator picks a consignment seller first — that seller's, carrying
+// the seller and commission like the "Add plants" intake does.
 // Headers are matched loosely; a sheet without one is read as index, name,
 // price in that order, and the modal shows what it decided so the operator
 // can re-point a column.
@@ -124,13 +126,31 @@ export function varietyForRow(row, varieties, defaultVarietyId) {
   return list.find(v => v.id === defaultVarietyId) || null;
 }
 
+// A commission percentage as typed (or a seller's default): 0–100, else null.
+export function parseCommission(v) {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  const n = parseFloat(s);
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : null;
+}
+
 // Rows that passed → the item payloads the intake handler saves (same shape
-// as SellerIntakeModal's own-plants mode, plus the lineup number). A name
-// that is a species we have ("crystallinum", or "Anthurium crystallinum"
-// with the variety word in front) links to it, so its list price and sell
-// note follow the plant; the name itself stays as the sheet wrote it.
-export function lineupPayloads(checked, { sale, varieties, species, defaultVarietyId }) {
+// as SellerIntakeModal's rows, plus the lineup number). With no seller the
+// plants are our own with no cost recorded; with one they are consignment —
+// sellerId + commissionPct, zero cost of ours (the commission is the
+// economics, as in the seller intake) — and the server mints the SKU with the
+// seller's code in it. A name that is a species we have ("crystallinum", or
+// "Anthurium crystallinum" with the variety word in front) links to it, so
+// its list price and sell note follow the plant; the name itself stays as
+// the sheet wrote it.
+export function lineupPayloads(checked, { sale, varieties, species, defaultVarietyId, seller = null, commissionPct = null }) {
   const ctx = buildMatchContext(species || [], varieties || []);
+  // A typed commission wins; a blank one means the seller's default (what
+  // the "Add plants" rows carry when the operator leaves them alone).
+  const typed = String(commissionPct ?? '').trim() !== '';
+  const owner = seller
+    ? { sellerId: seller.id, commissionPct: parseCommission(typed ? commissionPct : seller.defaultCommissionPct), grossCost: 0, netCost: 0 }
+    : { grossCost: null, cost: null, netCost: null };
   const out = [];
   for (const r of checked) {
     if (r.blocking) continue;
@@ -153,7 +173,7 @@ export function lineupPayloads(checked, { sale, varieties, species, defaultVarie
       lotNumber: String(r.index),
       status: 'available',
       quantity: 1,
-      grossCost: null, cost: null, netCost: null,
+      ...owner,
     });
   }
   return out;
