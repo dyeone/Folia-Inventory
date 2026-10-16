@@ -83,8 +83,10 @@ export function PreSaleTab({
   // sale — same intake modal, own-plants mode.
   const [showOwnIntake, setShowOwnIntake] = useState(false);
   // Import a whole lineup from a sheet (index + name per row) — new plants,
-  // numbered as the sheet says, staged here.
-  const [showLineupImport, setShowLineupImport] = useState(false);
+  // numbered as the sheet says, staged here. null = closed; otherwise the
+  // seller the import opens with ('' = our own plants; the Seller
+  // consignment panel opens it with its chosen seller).
+  const [lineupImport, setLineupImport] = useState(null);
 
   const [saleSel, setSaleSel] = useState('');
   const saleId = (saleSel && openSales.some(s => s.id === saleSel))
@@ -693,11 +695,11 @@ export function PreSaleTab({
               <Sprout className="w-4 h-4" /> New plants
             </button>
             <button
-              onClick={() => setShowLineupImport(true)}
+              onClick={() => setLineupImport({ sellerId: '' })}
               disabled={!sale || sale?.itemTypes === 'tc'}
               title={sale?.itemTypes === 'tc'
                 ? 'This sale is TC only — the import makes plants'
-                : 'Import this live\'s lineup from a CSV/XLSX (index + name per row) — new plants with auto SKUs, numbered as the sheet says, staged into this event'}
+                : `Import this live's lineup from a CSV/XLSX (index + name per row) — new plants with auto SKUs, numbered as the sheet says, staged into this event${isBae && sellers.length ? '. Our own plants, or a consignment seller\u2019s when you pick one' : ''}`}
               className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg bg-emerald-50 text-emerald-700 hover:bg-emerald-100 active:bg-emerald-200 disabled:opacity-40"
             >
               <Upload className="w-4 h-4" /> Import CSV
@@ -740,6 +742,18 @@ export function PreSaleTab({
                 className="flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium rounded-lg bg-amber-600 hover:bg-amber-700 active:bg-amber-800 text-white disabled:bg-gray-200 disabled:text-gray-400"
               >
                 <Sprout className="w-4 h-4" /> Add plants
+              </button>
+              <button
+                onClick={() => { if (sellerById.has(addSellerId)) setLineupImport({ sellerId: addSellerId }); }}
+                disabled={!addSellerId || !sale || sale?.itemTypes === 'tc'}
+                title={sale?.itemTypes === 'tc'
+                  ? 'This sale is TC only — the import makes plants'
+                  : (addSellerId
+                    ? `Import ${sellerById.get(addSellerId)?.name || 'this seller'}'s lineup from a CSV/XLSX (index + name per row) — consignment plants with ${sellerById.get(addSellerId)?.code || 'seller'}-coded SKUs, numbered as the sheet says, staged into this event`
+                    : 'Choose a seller first')}
+                className="flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium rounded-lg border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100 active:bg-amber-200 disabled:border-gray-200 disabled:bg-gray-100 disabled:text-gray-400"
+              >
+                <Upload className="w-4 h-4" /> Import CSV
               </button>
             </div>
           )}
@@ -972,17 +986,19 @@ export function PreSaleTab({
         />
       )}
 
-      {showLineupImport && sale && (
+      {lineupImport && sale && (
         <LineupImportModal
           sale={sale}
           items={items}
           sales={sales}
           varieties={varieties}
           species={species}
+          sellers={isBae ? sellers : []}
+          initialSellerId={lineupImport.sellerId}
           isBae={isBae}
           onImport={handleLineupImport}
           showToast={showToast}
-          onClose={() => setShowLineupImport(false)}
+          onClose={() => { if (lineupImport.sellerId) setAddSellerId(''); setLineupImport(null); }}
         />
       )}
 
