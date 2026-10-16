@@ -278,7 +278,7 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
       if (soldHere) { setForcePush({ sku, item: soldHere }); return; }
       if (!item) { setError(`No item with SKU "${sku}".`); return; }
       const from = found.brandName || brandName(item.brandId);
-      const why = item.saleId ? 'in a lineup there' : item.shipmentBoxId ? 'in a box there' : item.status;
+      const why = item.shipmentBoxId ? 'in a box there' : item.status;
       setError(`${sku} (${item.name}) is ${from} stock and can't move right now — it is ${why}.`);
       return;
     }
@@ -289,8 +289,11 @@ export function LiveScanModal({ items, varieties, species, idealRate, onClose, i
       const moved = r.item;
       remember(moved, sku);
       setCrossBrand(null);
-      if (r.relabel) showToast?.(`${moved.name} is now ${moved.sku} — its old SKU was taken here, print a new label after the live`);
-      else showToast?.(`${moved.name} moved from ${from} to ${brandName(activeBrand)}`);
+      // Staged over there? It left that lineup — say so, the other brand's
+      // streamer will look for the number.
+      const left = r.fromSale ? ` (pulled out of ${from}'s lineup${r.fromSale.name ? ` “${r.fromSale.name}”` : ''})` : '';
+      if (r.relabel) showToast?.(`${moved.name} is now ${moved.sku} — its old SKU was taken here, print a new label after the live${left}`);
+      else showToast?.(`${moved.name} moved from ${from} to ${brandName(activeBrand)}${left}`);
       onItemsChanged?.().catch?.(() => {});
       pushItem(moved);
     } catch (e) {

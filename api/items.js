@@ -391,7 +391,9 @@ async function lookupSku(req, res, user, brandId) {
     ours,
     item: stripCostsForRole(user, [hit])[0],
     brandName: names[hit.brandId] || hit.brandId,
-    transferable: TRANSFERABLE_STATUSES.includes(hit.status) && !hit.saleId && !hit.shipmentBoxId,
+    // Staged in a lineup over there is NOT a block: BAE leaves unsold plants
+    // staged after a live (hundreds at a time), and the move un-stages.
+    transferable: TRANSFERABLE_STATUSES.includes(hit.status) && !hit.shipmentBoxId,
   });
 }
 
@@ -500,8 +502,16 @@ async function transferItem(req, res, user, brandId) {
   if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
   if (!item) { const e = new Error('Plant not found in that brand (it may have just moved)'); e.status = 404; throw e; }
   if (!TRANSFERABLE_STATUSES.includes(item.status)) { const e = new Error(`A ${item.status} plant can't move between brands`); e.status = 409; throw e; }
-  if (item.saleId) { const e = new Error('That plant is staged in a sale event — remove it from the lineup first'); e.status = 409; throw e; }
   if (item.shipmentBoxId) { const e = new Error('That plant is in a shipping box'); e.status = 409; throw e; }
+  // A plant staged in one of the other brand's lineups moves anyway — the
+  // other brand leaves unsold plants staged for weeks, and the plant in
+  // hand is being sold HERE, now. The move un-stages it (saleId/lotNumber
+  // reset below); the caller is told which lineup it left.
+  let fromSale = null;
+  if (item.saleId) {
+    const { data: sale } = await supabase.from('sales').select('id, name').eq('id', item.saleId).maybeSingle();
+    fromSale = sale ? { id: sale.id, name: sale.name } : { id: item.saleId, name: null };
+  }
 
   const sp = await speciesInBrand(item.speciesId, brandId, user);
   // Even without a catalog link the variety must exist here, for the SKU
@@ -558,19 +568,18 @@ async function transferItem(req, res, user, brandId) {
     .eq('id', item.id)
     .eq('brandId', fromBrandId)
     .in('status', TRANSFERABLE_STATUSES)
-    .is('saleId', null)
     .is('shipmentBoxId', null)
     .is('deletedAt', null)
     .select('*');
   if (mErr || !moved || moved.length === 0) {
     await supabase.from('item_transfers').delete().eq('id', transferId);
     if (mErr) { const e = new Error(mErr.message); e.status = 500; throw e; }
-    const e = new Error('That plant changed under you (sold, staged or moved) — reload and try again'); e.status = 409; throw e;
+    const e = new Error('That plant changed under you (sold, boxed or moved) — reload and try again'); e.status = 409; throw e;
   }
   // Its photos follow it (best effort — a miss only hides them until the
   // next move; the transfer itself is complete).
   try { await supabase.from('item_photos').update({ brandId }).eq('itemId', item.id); } catch { /* see above */ }
-  return res.status(200).json({ ok: true, item: moved[0], relabel, transferId, speciesCreated: !!sp?.created });
+  return res.status(200).json({ ok: true, item: moved[0], relabel, transferId, speciesCreated: !!sp?.created, fromSale });
 }
 
 export default wrap(async (req, res) => {

@@ -112,7 +112,7 @@ export function SharedStockModal({ activeBrand, items, canTransfer, showCosts, o
   const returnable = (t) => {
     if (latestByItem.get(t.itemId) !== t || t.toBrandId !== activeBrand) return false;
     const it = mine.get(t.itemId);
-    return !!it && MOVABLE.has(it.status) && !it.saleId && !it.shipmentBoxId;
+    return !!it && MOVABLE.has(it.status) && !it.shipmentBoxId;   // staged here is fine — the move un-stages
   };
 
   const total = stock?.items?.length || 0;
@@ -220,7 +220,8 @@ export function SharedStockModal({ activeBrand, items, canTransfer, showCosts, o
                 </div>
                 <div className="max-h-[48vh] overflow-y-auto divide-y divide-gray-100">
                   {list.map((i) => {
-                    const blocked = i.saleId ? 'in a lineup there' : i.shipmentBoxId ? 'in a box there' : !MOVABLE.has(i.status) ? i.status : null;
+                    // Staged in one of their lineups doesn't block — the move un-stages it.
+                    const blocked = i.shipmentBoxId ? 'in a box there' : !MOVABLE.has(i.status) ? i.status : null;
                     return (
                       <div key={i.id} className="px-3 py-2 flex items-center gap-3 text-sm">
                         <div className="min-w-0 flex-1">
