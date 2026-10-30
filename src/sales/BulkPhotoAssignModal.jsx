@@ -4,7 +4,12 @@ import { Modal } from '../ui/Modal.jsx';
 import { api } from '../api.js';
 
 // Bulk-assign a batch of photos to the staged listings in the fixed lineup
-// order. Each photo maps to one listing by position: photo #k → lineup plant #k.
+// order. Each photo maps to one listing by position: photo #k → k-th plant of
+// the list. The list is the whole lineup, or only the plants the operator
+// checked in the Pre Sale list (`totalCount` > orderedItems.length then):
+// shooting ten pots in the middle of a 150-plant lineup shouldn't mean
+// scrolling photo #1 down to plant #61. Rows show each plant's lineup
+// number so the operator can check the pairing against the pot labels.
 // A "Reverse" toggle flips the whole batch (for when you shot the row
 // back-to-front), and any single photo can be dragged to a different plant.
 // On confirm, each photo uploads to its plant via the existing item-photo API
@@ -27,7 +32,9 @@ function fileToBase64(file) {
 
 let PHOTO_SEQ = 0;
 
-export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, showToast, onClose }) {
+export function BulkPhotoAssignModal({ sale, orderedItems = [], totalCount = null, onUploaded, showToast, onClose }) {
+  // A subset of the lineup (the checked plants) rather than all of it.
+  const subset = totalCount != null && totalCount > orderedItems.length;
   // Working order of the photos. Position i pairs with orderedItems[i].
   const [photos, setPhotos] = useState([]);
   const [dragIdx, setDragIdx] = useState(null);
@@ -99,13 +106,18 @@ export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, show
   };
 
   return (
-    <Modal title={`Assign photos · ${sale?.name || ''}`} onClose={uploading ? () => {} : onClose} size="xl">
+    <Modal title={`Assign photos · ${sale?.name || ''}${subset ? ` · ${orderedItems.length} checked` : ''}`} onClose={uploading ? () => {} : onClose} size="xl">
       <div className="space-y-3">
         <div className="flex items-start gap-2 text-xs text-gray-500 bg-sky-50/70 rounded-lg px-3 py-2">
           <Images className="w-4 h-4 text-sky-600 flex-shrink-0 mt-0.5" />
-          Each photo maps to one listing in lineup order (photo #1 → plant #1). Use <b className="mx-1 font-semibold">Reverse</b>
-          if you shot the row back-to-front, or drag a photo onto a different plant.
-          A plant that already has a photo gets the new one as its main photo; the old one stays in its gallery.
+          <span>
+            {subset
+              ? <>Only the <b className="font-semibold text-sky-800">{orderedItems.length} checked plant{orderedItems.length === 1 ? '' : 's'}</b> (of {totalCount} staged) are here, in lineup order — photo #1 goes to the first checked plant. Uncheck them all to work on the whole lineup. </>
+              : <>Each photo maps to one listing in lineup order (photo #1 → plant #1); check plants in the list first to assign photos to just those. </>}
+            Use <b className="mx-1 font-semibold">Reverse</b>
+            if you shot the row back-to-front, or drag a photo onto a different plant.
+            A plant that already has a photo gets the new one as its main photo; the old one stays in its gallery.
+          </span>
         </div>
 
         {/* Toolbar */}
@@ -129,7 +141,7 @@ export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, show
             <ArrowDownUp className="w-4 h-4" /> Reverse
           </button>
           <span className="text-xs text-gray-500 ml-auto">
-            {photos.length} photo{photos.length === 1 ? '' : 's'} · {orderedItems.length} listing{orderedItems.length === 1 ? '' : 's'}
+            {photos.length} photo{photos.length === 1 ? '' : 's'} · {orderedItems.length} {subset ? 'checked plant' : 'listing'}{orderedItems.length === 1 ? '' : 's'}
           </span>
         </div>
 
@@ -172,7 +184,10 @@ export function BulkPhotoAssignModal({ sale, orderedItems = [], onUploaded, show
                   <div className="min-w-0 flex-1">
                     {it ? (
                       <>
-                        <div className="text-sm font-medium text-gray-900 truncate">{it.name || it.sku}</div>
+                        <div className="text-sm font-medium text-gray-900 truncate">
+                          {it.lotNumber ? <span className="font-mono font-bold text-gray-700 mr-1.5" title="Lineup number">#{it.lotNumber}</span> : null}
+                          {it.name || it.sku}
+                        </div>
                         <div className="text-xs text-gray-500 font-mono">{it.sku}</div>
                       </>
                     ) : (

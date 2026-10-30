@@ -915,9 +915,11 @@ export function PreSaleTab({
                   onClick={() => setShowPhotoAssign(true)}
                   disabled={busy}
                   className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50 active:bg-sky-100 rounded-lg disabled:opacity-40"
-                  title="Bulk-assign a batch of photos to these listings in order"
+                  title={someSelected
+                    ? `Bulk-assign a batch of photos to only the ${selectedStaged.length} checked plant${selectedStaged.length === 1 ? '' : 's'}, in lineup order`
+                    : 'Bulk-assign a batch of photos to these listings in order — check plants to assign to just those'}
                 >
-                  <Images className="w-3.5 h-3.5" /> Assign photos
+                  <Images className="w-3.5 h-3.5" /> Assign photos{someSelected ? ` (${selectedStaged.length})` : ''}
                 </button>
               </div>
             )}
@@ -1002,10 +1004,13 @@ export function PreSaleTab({
         />
       )}
 
+      {/* Checked plants only when any are checked (same rule as Export CSV);
+          otherwise the whole lineup, as before. Both keep lineup order. */}
       {showPhotoAssign && (
         <BulkPhotoAssignModal
           sale={sale}
-          orderedItems={staged}
+          orderedItems={someSelected ? selectedStaged : staged}
+          totalCount={staged.length}
           onUploaded={onItemsChanged}
           showToast={showToast}
           onClose={() => setShowPhotoAssign(false)}
