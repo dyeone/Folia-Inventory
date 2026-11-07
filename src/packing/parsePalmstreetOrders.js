@@ -54,8 +54,14 @@ function normalizeSku(raw) {
 // listing name is unhelpful ("no id").
 // The lineup number a title starts with, as the app stores it — "002 Name"
 // (titles are zero-padded for Palmstreet's search) and "2 Name" both give "2".
+// A number followed by a count word is a quantity, not a lineup number:
+// "4 pc BAE aid", "2 pcs mix", "3 pack". Such a line gets no number at all
+// (it used to file under #4 and sort to the top of the lineup).
+const COUNT_WORD_RE = /^\s*\d{1,4}\s*(?:pcs?|pieces?|packs?|pk|x|ct|qty)\b/i;
 function leadingIndex(title) {
-  const m = /^\s*(\d{1,4})(?:\s|$)/.exec(String(title || ''));
+  const t = String(title || '');
+  if (COUNT_WORD_RE.test(t)) return null;
+  const m = /^\s*(\d{1,4})(?:\s|$)/.exec(t);
   return m ? String(parseInt(m[1], 10)) : null;
 }
 
