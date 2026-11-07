@@ -57,6 +57,18 @@ function lotNum(item) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+// A Validate Sales / slip-import placeholder: a sold line the system minted to
+// track an order that matched no plant. It keeps the sale (the Shipping tab
+// labels its box by it) and the title's number (the packer finds the pot by
+// it), but it is not a plant on the bench — never a lineup row.
+function isPlaceholder(item) {
+  return item?.lotKind === 'unmatched' || /^(UNMATCHED|DBL)-/i.test(item?.sku || '');
+}
+// Statuses that have left the bench. A sold plant stays attributed to its sale
+// (reports, settlement, the box's sale label) but is no longer in the lineup
+// for the next live.
+const LEFT_THE_BENCH = new Set(['sold', 'shipped']);
+
 // Postgres rejects "" for numeric columns, so blanks become null.
 function numOrNull(v) {
   const s = String(v ?? '').trim();
@@ -211,7 +223,7 @@ export function PreSaleTab({
   };
 
   // A sheet import brings its own numbers: keep the weekly counter ahead of
-  // them so the next numbering can't re-mint one (same as persistOrder).
+  // them so the next numbering can't re-mint one (same as numberNew).
   const handleLineupImport = async (payloads, opts) => {
     const ids = await handleIntake(payloads, opts);
     const end = Math.max(0, ...payloads.map(p => parseInt(p.lotNumber, 10) || 0)) + 1;
@@ -248,7 +260,13 @@ export function PreSaleTab({
     const rank = (id) => addedOrder.indexOf(id); // -1 = staged before this session
     return items
       .filter(it => (it.id in override ? override[it.id] : it.saleId) === saleId)
-      .slice()
+      // Only plants still on the bench. Validate Sales marks sold plants and
+      // files its placeholders under the same saleId — neither is a lineup
+      // row. The operator's rule: the system never changes the lineup by
+      // itself. A sold row that stayed would hold a number for nothing; a
+      // placeholder that slipped in (one did, numbered "4" from a "4 pc …"
+      // title) sorted to the top and shifted every number below it.
+      .filter(it => !LEFT_THE_BENCH.has(it.status) && !isPlaceholder(it))
       .sort((a, b) => {
         const la = lotNum(a), lb = lotNum(b);
         if (la != null && lb != null) return la - lb;
@@ -289,29 +307,64 @@ export function PreSaleTab({
     });
   };
 
-  // Where this sale's lineup numbering begins. A sale that's already numbered
-  // shows its own lowest number (so the display matches after reload); a fresh
-  // sale suggests the brand's running index; either way the operator can type
-  // an override into the Start # box.
+  // Numbers are fixed once set. A numbered plant shows its stored lotNumber
+  // and nothing in this tab rewrites it — not Number, not Print, not Export,
+  // not a drag: the number is on a printed label and in a Palmstreet title
+  // the moment it exists, and the packers pick by it. Only the un-numbered
+  // rows (scanned or picked after the last numbering — always the tail of
+  // the list) get numbers: after the lineup's highest number or the week's
+  // running index, whichever is further, or from the Start # the operator
+  // types. (Positional numbering, start + row index, was how a placeholder
+  // at the top once renumbered a whole live.)
   const numberedMin = useMemo(() => {
     const nums = staged.map(lotNum).filter(n => n != null);
     return nums.length ? Math.min(...nums) : null;
   }, [staged]);
-  const suggestedStart = numberedMin != null ? numberedMin : lineupNext;
+  const numberedMax = useMemo(() => {
+    const nums = staged.map(lotNum).filter(n => n != null);
+    return nums.length ? Math.max(...nums) : null;
+  }, [staged]);
+  const unnumbered = useMemo(() => staged.filter(it => lotNum(it) == null), [staged]);
+  // Every number this sale has handed out — sold and shipped plants included,
+  // since their labels still carry theirs. New numbers continue past the
+  // highest and never land on one of these.
+  const usedNums = useMemo(() => {
+    const s = new Set();
+    for (const it of items) {
+      if ((it.id in override ? override[it.id] : it.saleId) !== saleId) continue;
+      const n = lotNum(it);
+      if (n != null) s.add(n);
+    }
+    return s;
+  }, [items, saleId, override]);
+  const usedMax = usedNums.size ? Math.max(...usedNums) : null;
+  const suggestedStart = usedMax != null ? Math.max(usedMax + 1, lineupNext) : lineupNext;
   const startTyped = parseInt(startEdited, 10);
   const startNum = (Number.isFinite(startTyped) && startTyped > 0) ? startTyped : suggestedStart;
+  // What each un-numbered row will become, shown muted in its row so the
+  // operator sees the lineup as it will print.
+  const provisional = useMemo(
+    () => new Map(unnumbered.map((it, i) => [it.id, startNum + i])),
+    [unnumbered, startNum],
+  );
+  // The new range must not land on a number this sale already used.
+  const startOverlap = unnumbered.length > 0 && unnumbered.some((_, i) => usedNums.has(startNum + i));
+  const numberOf = (it) => lotNum(it) ?? provisional.get(it.id);
 
   const eligibleToAdd = (it) => {
     const cur = effSaleId(it);
+    // Status first: a sold plant still carries this sale's id (it keeps its
+    // attribution) but is no longer in the list — "already staged" would
+    // send the operator looking for a row that isn't there.
+    if (!['available', 'listed'].includes(it.status)) {
+      return { ok: false, code: 'status', reason: `${it.sku} is ${it.status}, not available` };
+    }
     if (cur === saleId) return { ok: false, code: 'staged', reason: 'Already staged' };
     // Type gate before the other-sale check so an auto-move can never pull a
     // plant into a TC-only sale (or vice versa).
     if (sale?.itemTypes === 'tc' && it.type !== 'tc') return { ok: false, code: 'type', reason: `${it.sku} is not a TC; this sale is TC only` };
     if (sale?.itemTypes === 'plant' && it.type !== 'plant') return { ok: false, code: 'type', reason: `${it.sku} is not a plant; this sale is plants only` };
     if (cur && cur !== saleId) return { ok: false, code: 'other-sale', reason: `${it.sku} is already on another sale`, otherSaleId: cur };
-    if (!['available', 'listed'].includes(it.status)) {
-      return { ok: false, code: 'status', reason: `${it.sku} is ${it.status}, not available` };
-    }
     return { ok: true };
   };
 
@@ -494,23 +547,33 @@ export function PreSaleTab({
   const toggleSelectAll = () =>
     setSelectedIds(allSelected ? new Set() : new Set(staged.map(i => i.id)));
 
-  // Persist a lineup order: lotNumber = startNum..startNum+N-1 in the given id
-  // order. One batch of partial patches through the parent's proven item-save
-  // path. After a successful save, advance the brand's running index past this
-  // lineup so the next sale continues where this one ended.
-  const persistOrder = async (orderedIds) => {
+  // One batch of partial patches through the parent's proven item-save path.
+  const savePatches = async (ps) => {
+    if (onStageItems) await onStageItems(ps);
+    else { await api.upsertItems(ps); onItemsChanged?.(); }
+  };
+
+  // Number the un-numbered rows, in list order, startNum onward. Numbered
+  // rows are never touched. After a successful save, advance the brand's
+  // running index past the lineup so the next sale continues where this one
+  // ended. Resolves true when every row has a number.
+  const numberNew = async () => {
+    if (!unnumbered.length) return true;
     // A never-numbered sale takes its start from the weekly counter; until
-    // that loads, startNum may be another week's stale value. The Number and
-    // Print buttons are disabled on !lineupLoaded, but drag-reorder also lands
-    // here — refuse rather than commit a colliding range.
-    if (numberedMin == null && !lineupLoaded) {
+    // that loads, startNum may be another week's stale value — refuse rather
+    // than commit a colliding range.
+    if (usedMax == null && !lineupLoaded) {
       showToast?.('Loading this week’s lot numbers — try again in a second', 'error');
-      return;
+      return false;
     }
-    const patches = orderedIds.map((id, idx) => ({ id, lotNumber: String(startNum + idx) }));
+    if (startOverlap) {
+      showToast?.(`Start # ${startNum} runs into a number this sale already used (up to ${usedMax}) — start after ${usedMax}`, 'error');
+      return false;
+    }
+    const patches = unnumbered.map((it, idx) => ({ id: it.id, lotNumber: String(startNum + idx) }));
     try {
-      await onStageItems?.(patches);
-      const end = startNum + orderedIds.length; // next number after this lineup
+      await savePatches(patches);
+      const end = startNum + patches.length; // next number after this lineup
       if (end > lineupNext) {
         setLineupNext(end);
         // A silently failed bump means the next numbering session re-mints
@@ -519,63 +582,81 @@ export function PreSaleTab({
           showToast?.('Numbers saved, but the weekly counter didn’t update — the next sale may suggest overlapping numbers', 'error');
         });
       }
-    } catch (e) { showToast?.(e.message || 'Could not save order', 'error'); }
+      return true;
+    } catch (e) {
+      showToast?.(e.message || 'Could not save numbers', 'error');
+      return false;
+    }
   };
   // The rolling blocks (lotBlock.js) keep two weeks' bench labels from ever
   // sharing a number — but only while a lineup stays inside its week's block.
-  // Confirm before committing a range that leaves it.
+  // Confirm before committing a range that leaves it. Only the NEW numbers
+  // are up for confirmation; the set ones are what they are.
   const confirmStartJump = () => {
-    const endNum = startNum + staged.length - 1;
+    if (!unnumbered.length) return true;
+    const endNum = startNum + unnumbered.length - 1;
+    const what = unnumbered.length === 1 ? 'this plant' : `these ${unnumbered.length} plants`;
     return (startNum >= blockStart(week) && endNum <= blockEnd(week)) ||
-      window.confirm(`Number this lineup ${startNum}–${endNum}? Week ${isoWeekNum(week)}'s lots are ${blockStart(week)}–${blockEnd(week)} — numbers outside that block can duplicate a held plant's label from another week, and packers pick by number.`);
+      window.confirm(`Number ${what} ${startNum}–${endNum}? Week ${isoWeekNum(week)}'s lots are ${blockStart(week)}–${blockEnd(week)} — numbers outside that block can duplicate a held plant's label from another week, and packers pick by number.`);
   };
-  // "Number {start}–{end}" — lock the current display order in as the lineup.
-  const numberAll = () => { if (confirmStartJump()) persistOrder(staged.map(i => i.id)); };
-  // Drop `sourceId` at `targetId`'s position and renumber the whole lineup.
-  // Same out-of-block confirm as the Number button — a drag commits numbers
-  // just the same.
-  const handleReorder = (sourceId, targetId) => {
+  // "Number {start}–{end}" — give the un-numbered rows their numbers.
+  const numberAll = () => { if (confirmStartJump()) numberNew(); };
+  // Drag-to-reorder moves an un-numbered row among the un-numbered rows (the
+  // tail of the list) by rewriting their stagedAt — the sort key for rows
+  // without a number. Numbers aren't involved: a numbered row sits where its
+  // number puts it, and nothing a drag does becomes a number until the
+  // operator clicks Number / Print labels / Export.
+  const handleReorder = async (sourceId, targetId) => {
     if (!sourceId || sourceId === targetId) return;
-    const ids = staged.map(i => i.id);
+    const src = staged.find(i => i.id === sourceId);
+    const tgt = staged.find(i => i.id === targetId);
+    if (!src || !tgt) return;
+    if (lotNum(src) != null) { flash('error', `#${src.lotNumber} keeps its number — numbered plants don’t move`); return; }
+    if (lotNum(tgt) != null) { flash('error', 'Un-numbered plants reorder among themselves, below the numbered lineup'); return; }
+    const ids = unnumbered.map(i => i.id);
     const from = ids.indexOf(sourceId);
     const to = ids.indexOf(targetId);
     if (from < 0 || to < 0) return;
     ids.splice(to, 0, ids.splice(from, 1)[0]);
-    if (!confirmStartJump()) return;
-    persistOrder(ids);
+    // One second apart, ending now, so a scan that lands later still appends.
+    const base = new Date().getTime() - ids.length * 1000;
+    const patches = ids.map((id, idx) => ({ id, stagedAt: new Date(base + idx * 1000).toISOString() }));
+    setBusy(true);
+    try {
+      await savePatches(patches);
+    } catch (e) {
+      // Un-migrated DB (0042): the order can't persist, but nothing else is
+      // at stake — numbers were never part of this.
+      flash('error', /stagedAt/i.test(e?.message || '') ? 'Reordering needs migration 0042 (stagedAt) — numbers are untouched' : (e.message || 'Could not save order'));
+    } finally {
+      setBusy(false);
+    }
   };
   // Print labels for the selected plants. Each label carries the big lineup
-  // number AND the SKU/barcode (see LabelSheet), so we bake every plant's current
-  // 1..N position onto its lotNumber — so the printed number matches its row —
-  // and persist that numbering so export/scan stay in sync.
-  const printLabels = () => {
-    const lineup = staged.map((it, idx) => ({ ...it, lotNumber: String(startNum + idx) }));
-    const chosen = lineup.filter(it => selectedIds.has(it.id));
-    if (!chosen.length) return;
+  // number AND the SKU/barcode (see LabelSheet), so the still-un-numbered rows
+  // get their numbers first (the numbered ones keep theirs) and every label
+  // prints the number the plant will keep.
+  const printLabels = async () => {
+    const chosen = new Set(selectedStaged.map(i => i.id));
+    if (!chosen.size) return;
     if (!confirmStartJump()) return;
-    persistOrder(staged.map(i => i.id));
-    onPrintLabels?.(chosen);
+    if (!(await numberNew())) return;
+    onPrintLabels?.(staged.filter(it => chosen.has(it.id)).map(it => ({ ...it, lotNumber: String(numberOf(it)) })));
   };
 
   // Export the lineup (or just the checked rows) as a Palmstreet CSV. The
-  // CSV title carries the lineup number ("657 ???"), but rows added after
-  // the last Number click have no persisted lotNumber yet — so bake every
-  // row's current on-screen position first and persist that numbering,
-  // exactly like Print labels, so exported titles, printed labels, and
-  // scans all agree.
-  const doExport = () => {
+  // CSV title carries the lineup number ("657 ???"), so rows added after the
+  // last numbering get theirs first — exactly like Print labels — so exported
+  // titles, printed labels, and scans all agree. Numbered rows export as
+  // numbered.
+  const doExport = async () => {
     if (!sale) return;
-    if (numberedMin == null && !lineupLoaded) {
-      flash('error', 'Loading this week’s lot numbers — try again in a second');
-      return;
-    }
-    const lineup = staged.map((it, idx) => ({ ...it, lotNumber: String(startNum + idx) }));
     const partial = selectedStaged.length > 0;
-    const pool = partial ? lineup.filter(it => selectedIds.has(it.id)) : lineup;
+    const pool = partial ? selectedStaged : staged;
     if (!pool.length) return;
     if (!confirmStartJump()) return;
-    persistOrder(staged.map(i => i.id));
-    const res = exportPalmstreetCsv(sale, pool);
+    if (!(await numberNew())) return;
+    const res = exportPalmstreetCsv(sale, pool.map(it => ({ ...it, lotNumber: String(numberOf(it)) })));
     if (!res.ok) { flash('error', res.reason); return; }
     flash('ok', partial ? `Exported ${res.count} selected lots` : `Exported ${res.count} lots`);
   };
@@ -877,7 +958,9 @@ export function PreSaleTab({
               <div className="px-3 pb-2.5 flex flex-wrap items-center gap-1.5">
                 <label
                   className="flex items-center gap-1 px-1 text-xs font-medium text-gray-500 select-none"
-                  title="Where this sale's lineup numbering starts. Auto-continues within this week's lot block; edit to override."
+                  title={unnumbered.length
+                    ? 'Where the not-yet-numbered plants start. Continues after this lineup’s last number (or this week’s running index); edit to override. Numbers already set never change.'
+                    : 'Every plant here is numbered — numbers never change once set. Remove a plant (×) to free its number.'}
                 >
                   Start #
                   <input
@@ -885,18 +968,35 @@ export function PreSaleTab({
                     min="1"
                     value={startEdited === '' ? String(suggestedStart) : startEdited}
                     onChange={(e) => setStartEdited(e.target.value)}
-                    disabled={busy}
-                    className="w-16 px-1.5 py-1 text-xs text-gray-800 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-40"
+                    disabled={busy || !unnumbered.length}
+                    className={`w-16 px-1.5 py-1 text-xs text-gray-800 border rounded-lg focus:outline-none focus:ring-2 disabled:opacity-40 ${
+                      startOverlap ? 'border-red-400 focus:ring-red-400 bg-red-50' : 'border-gray-300 focus:ring-emerald-500'
+                    }`}
                   />
                 </label>
                 <button
                   onClick={numberAll}
-                  disabled={busy || !lineupLoaded}
+                  disabled={busy || !unnumbered.length || (usedMax == null && !lineupLoaded)}
                   className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
-                  title={lineupLoaded ? `Lock the current order in as the lineup, numbered ${startNum}…${startNum + staged.length - 1}` : 'Loading the running index…'}
+                  title={!unnumbered.length
+                    ? 'Every plant here already has its number'
+                    : (usedMax == null && !lineupLoaded)
+                      ? 'Loading the running index…'
+                      : startOverlap
+                        ? `Start # ${startNum} runs into a number this sale already used (up to ${usedMax})`
+                        : `Give the ${unnumbered.length} un-numbered plant${unnumbered.length === 1 ? '' : 's'} (muted numbers) their numbers, ${startNum}…${startNum + unnumbered.length - 1} in list order — the numbered plants keep theirs`}
                 >
-                  <ListOrdered className="w-3.5 h-3.5" /> Number {startNum}–{startNum + staged.length - 1}
+                  <ListOrdered className="w-3.5 h-3.5" />
+                  {!unnumbered.length ? 'All numbered' : unnumbered.length === 1 ? `Number ${startNum}` : `Number ${startNum}–${startNum + unnumbered.length - 1}`}
                 </button>
+                {numberedMax != null && (
+                  <span
+                    className="text-[11px] text-gray-500 tabular-nums"
+                    title="Numbers never change once set — not by numbering, printing, exporting or dragging. Remove a plant (×) to free its number."
+                  >
+                    #{numberedMin}–{numberedMax} set{unnumbered.length ? ` · ${unnumbered.length} new` : ''}
+                  </span>
+                )}
                 <span
                   className="text-[11px] text-gray-400"
                   title="Each week owns a fixed 200-number lot block, so held plants from another week never share a number"
@@ -905,7 +1005,7 @@ export function PreSaleTab({
                 </span>
                 <button
                   onClick={printLabels}
-                  disabled={busy || !onPrintLabels || !someSelected || !lineupLoaded}
+                  disabled={busy || !onPrintLabels || !someSelected || (unnumbered.length > 0 && usedMax == null && !lineupLoaded)}
                   className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 active:bg-emerald-100 rounded-lg disabled:opacity-40"
                   title={someSelected ? 'Print labels (big lineup number + SKU/barcode) for the selected plants' : 'Select plants to print their labels'}
                 >
@@ -933,11 +1033,12 @@ export function PreSaleTab({
             </div>
           ) : (
             <div className="p-3 space-y-2 max-h-[640px] overflow-y-auto">
-              {staged.map((it, idx) => (
+              {staged.map((it) => (
                 <PreSaleRow
                   key={it.id}
                   item={it}
-                  number={startNum + idx}
+                  number={numberOf(it)}
+                  numbered={lotNum(it) != null}
                   busy={busy}
                   showToast={showToast}
                   sellerName={it.sellerId ? (sellerById.get(it.sellerId)?.name || null) : null}
@@ -1025,7 +1126,7 @@ function defaultTitle(item) {
   return (item.name || '').slice(0, 80);
 }
 
-function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onToggleSelect, dragging, onHandleDragStart, onRowDrop, onDragEnd, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
+function PreSaleRow({ item, number, numbered, busy, showToast, sellerName, selected, onToggleSelect, dragging, onHandleDragStart, onRowDrop, onDragEnd, open, onToggle, autoFocusPrice, highlight, onRemove, onSaveDetails, onSaved, onPhotosChanged }) {
   const [saving, setSaving] = useState(false);
   const rowRef = useRef(null);
   const priceRef = useRef(null);
@@ -1171,16 +1272,24 @@ function PreSaleRow({ item, number, busy, showToast, sellerName, selected, onTog
       }`}
     >
       <div className="flex items-center gap-2 px-3 py-2.5">
+        {numbered ? (
+          // A numbered plant sits where its number puts it — no handle.
+          <span className="w-4 h-4 flex-shrink-0" aria-hidden="true" />
+        ) : (
+          <span
+            draggable
+            onDragStart={onHandleDragStart}
+            onDragEnd={onDragEnd}
+            className="cursor-grab active:cursor-grabbing text-gray-300 hover:text-gray-500 flex-shrink-0 touch-none"
+            title="Drag to reorder among the not-yet-numbered plants"
+          >
+            <GripVertical className="w-4 h-4" />
+          </span>
+        )}
         <span
-          draggable
-          onDragStart={onHandleDragStart}
-          onDragEnd={onDragEnd}
-          className="cursor-grab active:cursor-grabbing text-gray-300 hover:text-gray-500 flex-shrink-0 touch-none"
-          title="Drag to reorder the lineup"
+          className={`min-w-[1.75rem] px-0.5 text-center text-base font-bold tabular-nums flex-shrink-0 ${numbered ? 'text-gray-800' : 'text-gray-400'}`}
+          title={numbered ? 'Lineup number — fixed' : `Not numbered yet — becomes #${number} when you Number, Print labels or Export`}
         >
-          <GripVertical className="w-4 h-4" />
-        </span>
-        <span className="min-w-[1.75rem] px-0.5 text-center text-base font-bold text-gray-800 tabular-nums flex-shrink-0" title="Lineup number">
           {number}
         </span>
         <input
