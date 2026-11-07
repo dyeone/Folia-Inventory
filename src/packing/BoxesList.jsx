@@ -99,7 +99,7 @@ function BoxItemRow({ item }) {
         {alreadyInBoxId ? (
           <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded border border-gray-300">
             <SkipForward className="w-3 h-3" />
-            Already in box <span className="font-mono">{shortBoxCode(alreadyInBoxId)}</span> · skipped
+            Already in box <span className="font-mono">{shortBoxCode(alreadyInBoxId)}</span> · {item.lotFix ? 'details topped up' : 'skipped'}
           </div>
         ) : matchItem ? (
           <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200">
@@ -112,6 +112,15 @@ function BoxItemRow({ item }) {
           <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-amber-50 text-amber-800 px-2 py-0.5 rounded border border-amber-200">
             <AlertCircle className="w-3 h-3" />
             {item.sku ? `No inventory item with SKU ${item.sku}` : 'No SKU on this order line'}
+          </div>
+        )}
+        {item.lotFix && (
+          <div
+            className="mt-1.5 ml-1.5 inline-flex items-center gap-1.5 text-xs bg-amber-50 text-amber-900 px-2 py-0.5 rounded border border-amber-200"
+            title="The number in this file is the one on the label and in the listing; the system's number is set back to it"
+          >
+            <AlertCircle className="w-3 h-3" />
+            System has #{item.lotFix.from} → set to #{item.lotFix.to} from this file
           </div>
         )}
         <ItemNotes raw={item.notes} />

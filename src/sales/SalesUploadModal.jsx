@@ -80,6 +80,25 @@ function classifyLine(box, it, match) {
   return 'topup';
 }
 
+// The lineup number in the orders file is the operator's own record: Export
+// CSV wrote it into the listing title from the number on the pot's label, so
+// the file says what the buyer saw and what the packer must find. For a
+// Palmstreet plant being marked sold or topped up, that number is the truth.
+// When the system carries a different one, something renumbered the plant
+// after it was listed (the 2026-11-05 incident: a positional renumber moved
+// every plant by one or two) — the upload puts the label's number back and
+// the preview says so. TikTok "lineupIndex" is the product name used for SKU
+// matching, not a lineup number, so it only ever fills a blank.
+// Returns { from, to } when the stored number will change, else null.
+function lineupFixFor(it, match, dispo, isTikTok) {
+  if (isTikTok || !it.lineupIndex || !match?.item) return null;
+  if (dispo !== 'fresh' && dispo !== 'topup') return null;
+  const stored = match.item.lotNumber;
+  if (stored == null || stored === '') return null;
+  if (String(stored) === String(it.lineupIndex)) return null;
+  return { from: String(stored), to: String(it.lineupIndex) };
+}
+
 // platform: 'palmstreet' (default) or 'tiktok'. Same pipeline end to end —
 // only the parser, the merge scope (a TikTok order only ever merges into an
 // open TikTok box, never a Palmstreet one for the same client, and vice
@@ -130,17 +149,24 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
       ...box,
       items: box.items.map(item => {
         const match = matchInventory(item, items);
-        return { ...item, match, dispo: classifyLine(box, item, match) };
+        const dispo = classifyLine(box, item, match);
+        return { ...item, match, dispo, lotFix: lineupFixFor(item, match, dispo, isTikTok) };
       }),
     }));
-  }, [boxes, items]);
+  }, [boxes, items, isTikTok]);
 
   const summary = useMemo(() => {
     if (!resolved) return null;
     let totalItems = 0, matched = 0, alreadyInBox = 0, unmatched = 0, sameShipment = 0, doubleSale = 0;
+    let renumbered = 0;
+    const renumberExamples = [];
     for (const box of resolved) {
       for (const it of box.items) {
         totalItems += 1;
+        if (it.lotFix) {
+          renumbered += 1;
+          if (renumberExamples.length < 4) renumberExamples.push({ sku: it.match.item.sku, ...it.lotFix });
+        }
         switch (it.dispo) {
           case 'fresh': matched += 1; break;
           case 'topup': alreadyInBox += 1; break;
@@ -150,7 +176,7 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
         }
       }
     }
-    return { totalItems, matched, alreadyInBox, unmatched, sameShipment, doubleSale };
+    return { totalItems, matched, alreadyInBox, unmatched, sameShipment, doubleSale, renumbered, renumberExamples };
   }, [resolved]);
 
   // Buyer+address → existing OPEN box id, so new orders for the same
@@ -308,7 +334,9 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
           if (inv.buyerAddress == null) patch.buyerAddress = buyerAddress;
           if (inv.salePrice == null && it.price > 0) patch.salePrice = it.price;
           if (it.notes && !inv.notes) patch.notes = it.notes;
-          if (it.lineupIndex && !inv.lotNumber) patch.lotNumber = it.lineupIndex;
+          // Lineup number: fills a blank on any platform; on Palmstreet the
+          // file's number also corrects a drifted one (see lineupFixFor).
+          if (it.lineupIndex && (!inv.lotNumber || it.lotFix)) patch.lotNumber = it.lineupIndex;
           // Only enqueue a write if something actually changed.
           if (Object.keys(patch).length > 1) updates.push(patch);
           continue;
@@ -343,12 +371,12 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
             orderDate: it.orderDate || null,
             orderShippingFee: it.orderShippingFee ?? null,
             notes: it.notes || null,
-            // The lineup number the order title carried ("<#> <name>") helps
-            // the packer find the plant — but it only fills a MISSING number.
-            // A plant's number never changes once set (operator's rule): it is
-            // on the printed label, and a title can carry a stray number ("4
-            // pc BAE aid" reads as #4).
-            ...(it.lineupIndex && !inv.lotNumber ? { lotNumber: it.lineupIndex } : {}),
+            // The lineup number the order title carries ("<#> <name>") is what
+            // the label and the listing said when the plant sold. It fills a
+            // blank on any platform; on Palmstreet it also wins over a stored
+            // number that drifted (it.lotFix) — the file is the operator's
+            // record, the system never changes a number on its own.
+            ...(it.lineupIndex && (!inv.lotNumber || it.lotFix) ? { lotNumber: it.lineupIndex } : {}),
           });
         } else {
           // No matching inventory row — emit a placeholder insert so the
@@ -405,7 +433,7 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
             <p className="text-xs text-gray-500 mt-0.5">
               {isTikTok
                 ? 'Match each TikTok order to inventory by the label number in the product name. New lines for a buyer with an open TikTok box merge into it — TikTok boxes are never combined with the same client\'s Palmstreet boxes, and carry their own TikTok mark in Shipping.'
-                : 'Match each Palmstreet order to inventory by exact SKU. New lines for a buyer with an open box merge into it; lines whose SKU is already in any box (open or shipped) are updated in place — order date, shipping fee, and any missing details are filled in without duplicating or moving the box.'}
+                : 'Match each Palmstreet order to inventory by exact SKU. New lines for a buyer with an open box merge into it; lines whose SKU is already in any box (open or shipped) are updated in place — order date, shipping fee, the lineup number from the title, and any missing details are filled in without duplicating or moving the box.'}
             </p>
           </div>
           <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2" aria-label="Close">
@@ -519,6 +547,18 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
                 </div>
               )}
 
+              {summary.renumbered > 0 && (
+                <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-900 text-sm px-3 py-2 rounded-lg">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>
+                    <span className="font-medium">{summary.renumbered} plant{summary.renumbered === 1 ? ' carries' : 's carry'} a different lineup number in the system than in this file.</span>{' '}
+                    The file&apos;s number is what the label and the listing said, so it is written back:{' '}
+                    {summary.renumberExamples.map(e => `${e.sku} ${e.from} → ${e.to}`).join(', ')}{summary.renumbered > summary.renumberExamples.length ? ', …' : ''}.
+                    {' '}A difference means something renumbered the plant after it was listed — check the Pre Sale list.
+                  </span>
+                </div>
+              )}
+
               <BoxesList boxes={resolved} />
             </>
           )}
@@ -543,6 +583,7 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
               {summary?.unmatched > 0 && <> + {summary.unmatched} unmatched</>}
               {summary?.alreadyInBox > 0 && <> · {summary.alreadyInBox} updated</>}
               {summary?.doubleSale > 0 && <> · {summary.doubleSale} flagged</>}
+              {summary?.renumbered > 0 && <> · {summary.renumbered} number{summary.renumbered === 1 ? '' : 's'} fixed</>}
             </button>
           </div>
         )}
