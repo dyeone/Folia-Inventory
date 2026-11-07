@@ -343,10 +343,12 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
             orderDate: it.orderDate || null,
             orderShippingFee: it.orderShippingFee ?? null,
             notes: it.notes || null,
-            // The lineup number the order title carried ("<#> <name>") is the
-            // number printed on the plant's label — persist it so the packer can
-            // find the plant by it (authoritative over any earlier lot number).
-            ...(it.lineupIndex ? { lotNumber: it.lineupIndex } : {}),
+            // The lineup number the order title carried ("<#> <name>") helps
+            // the packer find the plant — but it only fills a MISSING number.
+            // A plant's number never changes once set (operator's rule): it is
+            // on the printed label, and a title can carry a stray number ("4
+            // pc BAE aid" reads as #4).
+            ...(it.lineupIndex && !inv.lotNumber ? { lotNumber: it.lineupIndex } : {}),
           });
         } else {
           // No matching inventory row — emit a placeholder insert so the
