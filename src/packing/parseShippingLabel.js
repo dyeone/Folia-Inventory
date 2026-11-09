@@ -18,7 +18,7 @@ import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 import { jsPDF } from 'jspdf';
 import { canonicalTracking, extractTrackingFromText } from '../labels/tracking.js';
 import { getPdfjs } from './pdfjsLoader.js';
-import { isBiggerThanLabel, inkBox, boxToRegion, placement, regionToLabelPdf, cutKeepsInk, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
+import { isBiggerThanLabel, inkBox, boxToRegion, placement, regionToLabelPdf, cutKeepsInk, pageAlonePdf, UnseenImageError, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
 
 // ── lazy singletons ──────────────────────────────────────────────────────
 
@@ -218,10 +218,14 @@ async function labelPdfBase64ForPage({ srcBytes, origBase64, pageCount, pageInde
     // stored; the rendered page (which shows exactly what was read) is.
     if (await cutKeepsInk(cut, { canvas, viewport, region })) return arrayBufferToBase64(cut);
   } catch (e) {
+    // A page with an image pdf.js can't draw here: the rendered page would
+    // miss it too, so store the page as it came — complete, if small.
+    if (e instanceof UnseenImageError) return pageCount === 1 ? origBase64 : arrayBufferToBase64(await pageAlonePdf(srcBytes, pageIndex));
     console.warn('[parseShippingLabel] lossless label cut failed — using the rendered page:', e?.message || e);
   }
   return canvasRegionToPagePdfBase64(canvas, box, scale);
 }
+
 
 function arrayBufferToBase64(buf) {
   const bytes = new Uint8Array(buf);

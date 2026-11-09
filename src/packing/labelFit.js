@@ -100,27 +100,33 @@ export function placement(region) {
   return { x: (LABEL_W_PT - w * s) / 2, y: (LABEL_H_PT - h * s) / 2, xScale: s, yScale: s };
 }
 
-// Embedding a page copies everything its resource dictionary lists. Some
-// generators (jsPDF among them) give every page of a file ONE shared
-// dictionary naming all its images, so a cut from a 20-label sheet would
-// carry all 20 images (MBs per stored label). Keep only the images and forms
-// this page's content actually draws. Conservative: when the content can't
-// be read, or a kept form borrows the page's resources, nothing is dropped.
-// `src` is a throwaway copy, so editing its (shared) dictionary is safe.
-function dropUnusedXObjects(page, lib) {
-  const { PDFName, PDFDict, PDFArray, PDFRawStream, decodePDFRawStream } = lib;
-  const node = page.node;
-  const xobjects = node.Resources()?.lookupMaybe(PDFName.of('XObject'), PDFDict);
-  if (!xobjects) return;
+// The page's content stream(s) as text, or null when it can't be read.
+function pageContentText(node, lib) {
+  const { PDFArray, PDFRawStream, decodePDFRawStream } = lib;
   const contents = node.Contents();
   const streams = contents instanceof PDFArray ? contents.asArray().map((ref) => node.context.lookup(ref)) : [contents];
   let text = '';
   for (const stream of streams) {
-    if (!(stream instanceof PDFRawStream)) return;
+    if (!(stream instanceof PDFRawStream)) return null;
     const bytes = decodePDFRawStream(stream).decode();
     for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
     text += '\n';
   }
+  return text;
+}
+
+// Embedding a page copies everything its resource dictionary lists. Some
+// generators (jsPDF among them) give every page of a file ONE shared
+// dictionary naming all its images, so a cut from a 20-label sheet would
+// carry all 20 images (MBs per stored label). Keep only the images and forms
+// this page's content actually draws. Conservative: when a kept form borrows
+// the page's resources, nothing is dropped. `src` is a throwaway copy, so
+// editing its (shared) dictionary is safe.
+function dropUnusedXObjects(page, lib, text) {
+  const { PDFName, PDFDict } = lib;
+  const node = page.node;
+  const xobjects = node.Resources()?.lookupMaybe(PDFName.of('XObject'), PDFDict);
+  if (!xobjects) return;
   const drawn = new Set();
   for (const m of text.matchAll(/\/([^\s()<>[\]{}/%]+)\s+Do(?=[\s()<>[\]{}/%]|$)/g)) drawn.add(PDFName.of(m[1]).asString());
   const unused = [];
@@ -133,6 +139,48 @@ function dropUnusedXObjects(page, lib) {
   for (const key of unused) xobjects.delete(key);
 }
 
+// pdf.js runs here without its image-decoder files, so it draws nothing for
+// JPEG 2000, JBIG2 and CCITT fax images: the measurement can't see them and
+// the self-check can't miss them, so a cut could clip one off (a fax-coded
+// barcode at the bottom of a sheet). No label in use has them; a page that
+// draws one — or whose content can't be read to tell — is never cut.
+export class UnseenImageError extends Error {}
+const UNSEEN_FILTERS = new Set(['/JPXDecode', '/JBIG2Decode', '/CCITTFaxDecode']);
+function drawsUnseenImage(dict, lib, depth = 0) {
+  const { PDFName, PDFDict, PDFArray } = lib;
+  if (!dict || depth > 4) return false;
+  const filter = dict.lookup(PDFName.of('Filter'));
+  const filters = filter instanceof PDFArray ? filter.asArray().map((f) => dict.context.lookup(f)) : [filter];
+  if (filters.some((f) => f && UNSEEN_FILTERS.has(f.toString()))) return true;
+  const smask = dict.lookup(PDFName.of('SMask'));
+  if (smask?.dict && drawsUnseenImage(smask.dict, lib, depth + 1)) return true;
+  const xobjects = dict.lookupMaybe(PDFName.of('Resources'), PDFDict)?.lookupMaybe(PDFName.of('XObject'), PDFDict);
+  return !!xobjects && xobjects.entries().some(([, v]) => drawsUnseenImage(dict.context.lookup(v)?.dict, lib, depth + 1));
+}
+function pageDrawsUnseenImage(page, lib, text) {
+  const { PDFName, PDFDict } = lib;
+  // Inline images: only CCITT may be inline (/CCF or the full name).
+  if (text == null || /\/(?:CCF|CCITTFaxDecode)\b/.test(text)) return true;
+  const xobjects = page.node.Resources()?.lookupMaybe(PDFName.of('XObject'), PDFDict);
+  return !!xobjects && xobjects.entries().some(([, v]) => drawsUnseenImage(page.node.context.lookup(v)?.dict, lib));
+}
+
+// One page of a file as its own PDF, unchanged — carrying only that page's
+// own images (see dropUnusedXObjects).
+export async function pageAlonePdf(srcBytes, pageIndex) {
+  const lib = await import('pdf-lib');
+  const src = await lib.PDFDocument.load(srcBytes, { ignoreEncryption: true, updateMetadata: false });
+  const page = src.getPage(pageIndex);
+  try {
+    const text = pageContentText(page.node, lib);
+    if (text != null) dropUnusedXObjects(page, lib, text);
+  } catch { /* keep everything — bigger, never wrong */ }
+  const out = await lib.PDFDocument.create();
+  const [copy] = await out.copyPages(src, [pageIndex]);
+  out.addPage(copy);
+  return out.save();
+}
+
 // A one-page 4×6 PDF holding just `region` of a source page — lossless.
 export async function regionToLabelPdf(srcBytes, pageIndex, region) {
   const lib = await import('pdf-lib');
@@ -141,7 +189,12 @@ export async function regionToLabelPdf(srcBytes, pageIndex, region) {
   // embedded label would be garbage. Let the caller keep the original.
   if (src.isEncrypted) throw new Error('encrypted label PDF');
   const page = src.getPage(pageIndex);
-  try { dropUnusedXObjects(page, lib); } catch { /* keep everything — bigger, never wrong */ }
+  let text = null;
+  try { text = pageContentText(page.node, lib); } catch { /* unreadable content */ }
+  if (text != null) {
+    try { dropUnusedXObjects(page, lib, text); } catch { /* keep everything — bigger, never wrong */ }
+  }
+  if (pageDrawsUnseenImage(page, lib, text)) throw new UnseenImageError('the page draws an image this browser cannot measure');
   const out = await lib.PDFDocument.create();
   const embedded = await out.embedPage(page, region);
   out.addPage([LABEL_W_PT, LABEL_H_PT]).drawPage(embedded, placement(region));
