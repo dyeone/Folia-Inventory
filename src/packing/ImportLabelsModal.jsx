@@ -8,6 +8,13 @@ import { api } from '../api.js';
 import { shortBoxCode } from '../labels/boxCode.js';
 import { parseLabelFiles, terminateLabelParser } from './parseShippingLabel.js';
 import { matchLabelToBoxes } from './matchLabels.js';
+import { trackingLooksMisread } from '../labels/tracking.js';
+
+// A USPS tracking # with a wrong, missing or extra digit fails the USPS check
+// digit — saving it gives the box a number no scan will ever match
+// (2026-11-08: 17 OCR misreads, a 9 read as 0). Such a row is never saved
+// until it's corrected (the record-tracking API refuses it too).
+const misread = (tracking) => trackingLooksMisread(tracking);
 
 // Import Shipping Labels.
 //
@@ -36,7 +43,7 @@ const CONFIDENCE = {
   none: { cls: 'bg-rose-100 text-rose-800 ring-rose-300', label: 'No match — pick' },
 };
 
-export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, onClose, onDone, showToast }) {
+export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, shipFrom = null, onClose, onDone, showToast }) {
   const [phase, setPhase] = useState('drop'); // drop | parsing | review | saving | done
   const [progress, setProgress] = useState(null);
   const [rows, setRows] = useState([]);
@@ -73,13 +80,17 @@ export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, onClose, onD
     }
     setRows(parsed.map((label) => {
       if (label.error) return { ...label, boxId: '', include: false, confidence: 'none' };
-      const match = matchLabelToBoxes(label, openBoxes);
+      // shipFrom lets the matcher ignore our own sender block on the label.
+      const match = matchLabelToBoxes(label, openBoxes, { shipFrom });
       return {
         ...label,
         boxId: match.boxId || '',
         confidence: match.confidence,
         reasons: match.reasons,
-        include: !!(match.boxId && label.trackingNumber),
+        // Pre-ticked only on a near-certain match (exact username): a wrong
+        // assignment ships another customer's label. Weaker matches show the
+        // box but wait for the operator to tick Save.
+        include: !!(match.boxId && match.autoAssign && label.trackingNumber && !misread(label.trackingNumber)),
       };
     }));
     setPhase('review');
@@ -98,12 +109,12 @@ export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, onClose, onD
   const boxUsage = useMemo(() => {
     const m = {};
     for (const r of rows) {
-      if (r.include && r.boxId) m[r.boxId] = (m[r.boxId] || 0) + 1;
+      if (r.include && r.boxId && !misread(r.trackingNumber)) m[r.boxId] = (m[r.boxId] || 0) + 1;
     }
     return m;
   }, [rows]);
 
-  const readyRows = rows.filter((r) => r.include && r.boxId && (r.trackingNumber || '').trim());
+  const readyRows = rows.filter((r) => r.include && r.boxId && (r.trackingNumber || '').trim() && !misread(r.trackingNumber));
 
   const handleAssign = async () => {
     setPhase('saving');
@@ -129,6 +140,7 @@ export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, onClose, onD
 
   const matchedCount = rows.filter((r) => !r.error && r.boxId).length;
   const noBarcodeCount = rows.filter((r) => !r.error && !r.trackingNumber).length;
+  const misreadCount = rows.filter((r) => !r.error && r.trackingNumber && misread(r.trackingNumber)).length;
 
   return createPortal(
     <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-3 sm:p-6">
@@ -209,6 +221,12 @@ export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, onClose, onD
                   <>
                     <span className="text-gray-400">·</span>
                     <span className="text-amber-700">{noBarcodeCount} need a tracking #</span>
+                  </>
+                )}
+                {misreadCount > 0 && (
+                  <>
+                    <span className="text-gray-400">·</span>
+                    <span className="text-rose-700 font-medium">{misreadCount} tracking # misread — fix before saving</span>
                   </>
                 )}
               </div>
@@ -321,6 +339,7 @@ function LabelRow({ row, boxOptions, duplicate, replaces, onChange, onZoom }) {
   }
 
   const conf = CONFIDENCE[row.confidence] || CONFIDENCE.none;
+  const badCheck = misread(row.trackingNumber);
   const recipientPeek = (row.ocrText || '').replace(/\s+/g, ' ').trim().slice(0, 90);
 
   return (
@@ -360,15 +379,16 @@ function LabelRow({ row, boxOptions, duplicate, replaces, onChange, onZoom }) {
 
         {/* Tracking number */}
         <div className="flex items-center gap-2">
-          <ScanLine className={`w-4 h-4 shrink-0 ${row.trackingNumber ? 'text-emerald-600' : 'text-amber-500'}`} />
+          <ScanLine className={`w-4 h-4 shrink-0 ${badCheck ? 'text-rose-600' : row.trackingNumber ? 'text-emerald-600' : 'text-amber-500'}`} />
           <input
             value={row.trackingNumber || ''}
             onChange={(e) => {
               const trackingNumber = e.target.value;
-              onChange({ trackingNumber, include: row.include || (!!trackingNumber.trim() && !!row.boxId) });
+              const ok = !!trackingNumber.trim() && !misread(trackingNumber);
+              onChange({ trackingNumber, include: ok && (row.include || !!row.boxId) });
             }}
             placeholder="No barcode read — type tracking #"
-            className="flex-1 min-w-0 text-sm font-mono px-2 py-1.5 border border-gray-300 rounded-lg focus:outline-none focus:border-emerald-500"
+            className={`flex-1 min-w-0 text-sm font-mono px-2 py-1.5 border rounded-lg focus:outline-none ${badCheck ? 'border-rose-400 bg-rose-50 focus:border-rose-500' : 'border-gray-300 focus:border-emerald-500'}`}
             spellCheck={false}
           />
           {row.trackingNumber && (
@@ -385,7 +405,7 @@ function LabelRow({ row, boxOptions, duplicate, replaces, onChange, onZoom }) {
         <div className="flex items-center gap-2">
           <select
             value={row.boxId || ''}
-            onChange={(e) => onChange({ boxId: e.target.value, include: !!e.target.value && !!row.trackingNumber })}
+            onChange={(e) => onChange({ boxId: e.target.value, include: !!e.target.value && !!row.trackingNumber && !misread(row.trackingNumber) })}
             className={`flex-1 min-w-0 text-sm px-2 py-1.5 border rounded-lg bg-white focus:outline-none focus:border-emerald-500 ${
               row.boxId ? 'border-gray-300 text-gray-900' : 'border-amber-300 text-gray-500'
             }`}
@@ -398,15 +418,23 @@ function LabelRow({ row, boxOptions, duplicate, replaces, onChange, onZoom }) {
           <label className="flex items-center gap-1.5 text-sm text-gray-600 shrink-0 cursor-pointer select-none">
             <input
               type="checkbox"
-              checked={row.include}
+              checked={row.include && !badCheck}
+              disabled={badCheck}
+              title={badCheck ? 'Fix the tracking # first — it isn\'t a valid USPS number' : undefined}
               onChange={(e) => onChange({ include: e.target.checked })}
-              className="w-4 h-4 accent-emerald-600"
+              className="w-4 h-4 accent-emerald-600 disabled:opacity-40"
             />
             Save
           </label>
         </div>
 
         {/* Inline warnings */}
+        {badCheck && (
+          <div className="flex items-start gap-1.5 text-[11px] text-rose-700">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+            <span>This tracking # isn't a valid USPS number — a digit was misread, dropped or added (it fails the USPS check digit). Type it from the label to save it; a wrong # means the packer's label scan matches no box.</span>
+          </div>
+        )}
         {duplicate && (
           <div className="flex items-center gap-1.5 text-[11px] text-rose-700">
             <AlertTriangle className="w-3.5 h-3.5" /> Another label is also assigned to this box.

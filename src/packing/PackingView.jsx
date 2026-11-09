@@ -231,6 +231,9 @@ export function PackingView({
   // Box-size presets (from Shipping Settings) the operator picks from per
   // box when rate-shopping. Read-only here; edited in ShippingSettingsModal.
   const [boxSizes, setBoxSizes] = useState([]);
+  // Our ship-from address — Import labels ignores it when matching a label's
+  // text to a buyer (it's printed on every label as the sender).
+  const [shipFrom, setShipFrom] = useState(null);
   const [buyingFor, setBuyingFor] = useState(null);
   const [bulkBuyOpen, setBulkBuyOpen] = useState(false);
   const [combineOpen, setCombineOpen] = useState(false);
@@ -463,6 +466,7 @@ export function PackingView({
         const settings = await api.getSettings('shipping').catch(() => null);
         if (cancelled) return;
         setBoxSizes(Array.isArray(settings?.data?.boxSizes) ? settings.data.boxSizes : []);
+        setShipFrom(settings?.data?.shipFrom || null);
       } catch { /* no-op */ }
     })();
     return () => { cancelled = true; };
@@ -1723,6 +1727,7 @@ export function PackingView({
         <ImportLabelsModal
           openBoxes={groups.flatMap(g => g.boxes)}
           shipmentsByBox={shipmentsByBox}
+          shipFrom={shipFrom}
           onClose={() => setImportOpen(false)}
           onDone={async () => {
             await refreshShipments();

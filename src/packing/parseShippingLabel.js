@@ -16,9 +16,9 @@
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 import { jsPDF } from 'jspdf';
-import { canonicalTracking, extractTrackingFromText } from '../labels/tracking.js';
+import { canonicalTracking, extractTrackingFromText, looksLikeTracking } from '../labels/tracking.js';
 import { getPdfjs } from './pdfjsLoader.js';
-import { isFourBySix, inkBox, boxToRegion, placement, regionToLabelPdf, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
+import { isBiggerThanLabel, inkBox, boxToRegion, placement, regionToLabelPdf, cutKeepsInk, pageAlonePdf, UnseenImageError, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
 
 // ── lazy singletons ──────────────────────────────────────────────────────
 
@@ -62,6 +62,19 @@ function cropBottom(canvas, fraction) {
   return out;
 }
 
+// The same canvas without its left and right edges. A label's outer frame
+// line can run through the barcode rows, and ZXing (the only decoder in
+// Safari, which has no BarcodeDetector) then fails on every row of a framed
+// CODE-128; reading just inside the frame lets it decode.
+function insetX(canvas, fraction = 0.04) {
+  const dx = Math.round(canvas.width * fraction);
+  const out = document.createElement('canvas');
+  out.width = canvas.width - 2 * dx;
+  out.height = canvas.height;
+  out.getContext('2d').drawImage(canvas, dx, 0, out.width, canvas.height, 0, 0, out.width, canvas.height);
+  return out;
+}
+
 // Decode the tracking barcode from a rendered label. USPS prints it across
 // the bottom, so after a full-frame attempt we retry on just the bottom
 // slices — a smaller region decodes more reliably when the rest of the
@@ -72,8 +85,14 @@ function cropBottom(canvas, fraction) {
 // than ZXing-in-JS does off a rendered raster. ZXing is the fallback. Either
 // way this is best-effort — the human-readable tracking is OCR'd separately
 // as the guaranteed source (see parseLabelFiles).
+//
+// Only a decode that looks like a tracking number counts — a stray code on
+// the label (a QR, a short reference barcode) must never become the box's
+// tracking #.
 async function decodeBarcode(canvas) {
-  const targets = [canvas, cropBottom(canvas, 0.45), cropBottom(canvas, 0.28)];
+  const bottom45 = cropBottom(canvas, 0.45);
+  const bottom28 = cropBottom(canvas, 0.28);
+  const targets = [insetX(canvas), insetX(bottom45), insetX(bottom28), canvas, bottom45, bottom28];
 
   if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
     try {
@@ -84,7 +103,7 @@ async function decodeBarcode(canvas) {
         for (const target of targets) {
           try {
             const codes = await detector.detect(target);
-            const hit = codes?.find((c) => c.rawValue);
+            const hit = codes?.find((c) => c.rawValue && looksLikeTracking(c.rawValue));
             if (hit) return hit.rawValue;
           } catch { /* try next region */ }
         }
@@ -97,7 +116,7 @@ async function decodeBarcode(canvas) {
     try {
       const result = reader.decodeFromCanvas(target);
       const text = result?.getText?.();
-      if (text) return text;
+      if (text && looksLikeTracking(text)) return text;
     } catch { /* NotFoundException — try the next region */ }
   }
   return '';
@@ -173,7 +192,7 @@ function canvasToPagePdfBase64(canvas) {
 // A label cut out of an over-size page, rasterized — only used when the
 // lossless cut (pdf-lib) fails on a file. `box` is the ink box in canvas
 // pixels; `pxPerPt` the render scale, used to keep the same white pad.
-function canvasRegionToPagePdfBase64(canvas, box, pxPerPt) {
+function canvasRegionToPagePdf(canvas, box, pxPerPt) {
   const pad = Math.round(3 * pxPerPt);
   const x0 = Math.max(0, box.x0 - pad);
   const y0 = Math.max(0, box.y0 - pad);
@@ -190,33 +209,62 @@ function canvasRegionToPagePdfBase64(canvas, box, pxPerPt) {
   // jsPDF measures y from the top; placement() from the bottom.
   pdf.addImage(cut.toDataURL('image/jpeg', 0.92), 'JPEG', p.x, LABEL_H_PT - p.y - dh, dw, dh);
   cut.width = 0; cut.height = 0;
-  return pdf.output('datauristring').split(',')[1] || '';
+  return new Uint8Array(pdf.output('arraybuffer'));
 }
 
 // The PDF stored for one page of an upload.
-//   • A 4×6 page — as before: a one-page file keeps its original bytes, a
-//     page of a multi-page file is rendered into its own 4×6 PDF.
+//   • A page no bigger than 4×6 — as before: a one-page file keeps its
+//     original bytes, a page of a multi-page file is rendered into its own
+//     4×6 PDF.
 //   • A bigger sheet — Palmstreet's label download, since 2026-11-08,
 //     centers each true-size 4×6 label on an A4 page. Storing the sheet (or
 //     squeezing it onto 4×6, as the splitter used to) printed the label at
 //     half size. The label is cut out of the sheet instead, at full size, by
 //     embedding the original page clipped to the label (see labelFit.js).
-async function labelPdfBase64ForPage({ srcBytes, origBase64, pageCount, pageIndex, page, canvas }) {
-  const asBefore = () => (pageCount === 1 ? origBase64 : canvasToPagePdfBase64(canvas));
+// Returns { base64, labelBytes }: labelBytes is the cut-out label when the
+// page was a bigger sheet (null otherwise), so the caller can read the
+// barcode and text off the label at label resolution.
+async function labelPdfForPage({ srcBytes, origBase64, pageCount, pageIndex, page, canvas }) {
+  const asBefore = () => ({ base64: pageCount === 1 ? origBase64 : canvasToPagePdfBase64(canvas), labelBytes: null });
   const base = page.getViewport({ scale: 1 });
-  if (isFourBySix(base.width, base.height) || page.rotate % 360) return asBefore();
+  if (!isBiggerThanLabel(base.width, base.height) || page.rotate % 360) return asBefore();
   const box = inkBox(canvas);
   if (!box) return asBefore();
   const scale = renderScale(page);
-  const region = boxToRegion(page.getViewport({ scale }), box, page.view);
+  const viewport = page.getViewport({ scale });
+  const region = boxToRegion(viewport, box, page.view);
   if (region.right - region.left > region.top - region.bottom) return asBefore(); // landscape artwork
   try {
-    return arrayBufferToBase64(await regionToLabelPdf(srcBytes, pageIndex, region));
+    const cut = await regionToLabelPdf(srcBytes, pageIndex, region);
+    // Same self-check as printing: a cut that lost part of the label is not
+    // stored; the rendered page (which shows exactly what was read) is.
+    if (await cutKeepsInk(cut, { canvas, viewport, region })) return { base64: arrayBufferToBase64(cut), labelBytes: cut };
   } catch (e) {
+    // A page with an image pdf.js can't draw here: the rendered page would
+    // miss it too, so store the page as it came — complete, if small.
+    if (e instanceof UnseenImageError) {
+      return { base64: pageCount === 1 ? origBase64 : arrayBufferToBase64(await pageAlonePdf(srcBytes, pageIndex)), labelBytes: null };
+    }
     console.warn('[parseShippingLabel] lossless label cut failed — using the rendered page:', e?.message || e);
-    return canvasRegionToPagePdfBase64(canvas, box, scale);
+  }
+  // The raster cut is made from the sheet canvas itself, so reading stays
+  // there — re-rendering the same pixels larger can only lose detail.
+  const raster = canvasRegionToPagePdf(canvas, box, scale);
+  return { base64: arrayBufferToBase64(raster), labelBytes: null };
+}
+
+// Render a one-page label PDF (a cut-out label) the way a 4×6 upload page is
+// rendered, for reading its barcode and text.
+async function renderLabelBytes(bytes) {
+  const pdfjs = await getPdfjs();
+  const task = pdfjs.getDocument({ data: bytes.slice() });
+  try {
+    return await renderPage(await (await task.promise).getPage(1));
+  } finally {
+    try { await task.destroy(); } catch { /* best effort */ }
   }
 }
+
 
 function arrayBufferToBase64(buf) {
   const bytes = new Uint8Array(buf);
@@ -257,7 +305,7 @@ export async function parseLabelFiles(files, onProgress) {
     }
     const origBase64 = arrayBufferToBase64(buf);
     // pdf.js takes over the buffer it's given; keep a copy for cutting labels
-    // out of over-size pages (labelPdfBase64ForPage).
+    // out of over-size pages (labelPdfForPage).
     const srcBytes = new Uint8Array(buf.slice(0));
 
     let doc;
@@ -274,8 +322,20 @@ export async function parseLabelFiles(files, onProgress) {
       try {
         const page = await doc.getPage(p);
         const canvas = await renderPage(page);
-        const barcodeRaw = await decodeBarcode(canvas);
-        const ocrText = await ocrCanvas(canvas);
+        // What gets stored — and, for a label cut out of a bigger sheet, what
+        // gets READ: the cut-out label rendered like a 4×6 page (~288 dpi).
+        // The whole A4 sheet renders at ~150 dpi under the 1800 px cap, too
+        // coarse for the barcode, and the OCR fallback then misread digits:
+        // on 2026-11-08, 17 of 21 Palmstreet A4 labels were stored with a 9
+        // read as 0, so the packer's label scan matched no box.
+        const stored = await labelPdfForPage({ srcBytes, origBase64, pageCount, pageIndex: p - 1, page, canvas });
+        let readCanvas = canvas;
+        if (stored.labelBytes) {
+          try { readCanvas = await renderLabelBytes(stored.labelBytes); } catch { readCanvas = canvas; }
+        }
+        const barcodeRaw = await decodeBarcode(readCanvas)
+          || (readCanvas !== canvas ? await decodeBarcode(canvas) : '');
+        const ocrText = await ocrCanvas(readCanvas);
         // Tracking source: the barcode is exact when it decodes; otherwise
         // fall back to the human-readable tracking OCR'd off the label.
         const barcodeTracking = barcodeRaw ? canonicalTracking(barcodeRaw) : '';
@@ -292,9 +352,10 @@ export async function parseLabelFiles(files, onProgress) {
           carrier: detectCarrier(ocrText),
           weightOz: parseWeightOz(ocrText),
           ocrText,
-          thumbnailDataUrl: makeThumb(canvas),
-          pagePdfBase64: await labelPdfBase64ForPage({ srcBytes, origBase64, pageCount, pageIndex: p - 1, page, canvas }),
+          thumbnailDataUrl: makeThumb(readCanvas),
+          pagePdfBase64: stored.base64,
         });
+        if (readCanvas !== canvas) { readCanvas.width = 0; readCanvas.height = 0; }
         canvas.width = 0; canvas.height = 0; // release the backing store
       } catch {
         out.push({ id: uid(), fileName: file.name, page: p, pageCount, error: 'Could not render this page' });
