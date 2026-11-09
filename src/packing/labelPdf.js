@@ -1,5 +1,6 @@
 import { api } from '../api.js';
 import { bridgeOnlineNow, printPdfViaBridge, bytesToBase64, pdfToBase64 } from '../labels/useBridgePrint.js';
+import { fitLabelPdf } from './labelFit.js';
 
 // Safari (desktop + iOS) blocks silent scripted printing: window.print()
 // pops a "do you want to print this webpage?" confirmation and targets the
@@ -30,6 +31,13 @@ export async function urlToBytes(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`fetch ${res.status}`);
   return new Uint8Array(await res.arrayBuffer());
+}
+
+// A stored carrier label's bytes, ready for the 4×6 printer: enlarged onto
+// the sticker when the label doesn't fill its page (labelFit.js — e.g.
+// Palmstreet's A4 sheets), otherwise exactly as stored.
+export async function labelBytesForPrint(url) {
+  return fitLabelPdf(await urlToBytes(url));
 }
 
 // Print a same-origin PDF blob via a hidden iframe (Chromium/Firefox). The
@@ -88,13 +96,20 @@ export async function openLabelPdf(shipment, kind, showToast) {
   const win = safari ? window.open('', '_blank') : null;
   try {
     const url = await api.getLabelUrl(shipment.id, kind);
+    // Labels are fitted to the 4×6 sticker first (labelFit.js); slips print
+    // as stored. Loaded once, shared by the bridge and browser paths.
+    let loaded = null;
+    const load = () => (loaded ??= (async () => {
+      const raw = await urlToBytes(url);
+      return { raw, out: kind === 'slip' ? raw : await fitLabelPdf(raw) };
+    })());
 
     // 1) Direct print via the bridge (the Mac app). Force the 4×6 carrier-label
     //    media so it prints full size, not clipped to the printer's CUPS default.
     if (await bridgeOnlineNow()) {
       try {
         const res = await printPdfViaBridge({
-          pdfBase64: bytesToBase64(await urlToBytes(url)), role, media,
+          pdfBase64: bytesToBase64((await load()).out), role, media,
         });
         win?.close();
         showToast?.(`Sent ${kind} to ${res?.printer || 'printer'}`);
@@ -106,7 +121,21 @@ export async function openLabelPdf(shipment, kind, showToast) {
       }
     }
 
-    // 2) Browser fallback.
+    // 2) Browser fallback. A label that had to be enlarged prints from the
+    //    fitted bytes; everything else opens the stored file as before.
+    if (kind !== 'slip') {
+      const got = await load().catch(() => null);
+      if (got && got.out !== got.raw) {
+        const blobUrl = URL.createObjectURL(new Blob([got.out], { type: 'application/pdf' }));
+        if (safari) {
+          if (!win) { showToast?.('Allow pop-ups to print the label'); return; }
+          win.location.href = blobUrl;
+        } else {
+          printPdfBlob(blobUrl);
+        }
+        return;
+      }
+    }
     if (safari) {
       if (!win) { showToast?.('Allow pop-ups to print the label'); return; }
       // Signed Storage URLs render inline in Safari's PDF viewer. (data:
@@ -212,7 +241,7 @@ export async function printShippingLabels(boxIds, showToast) {
       try {
         const url = await api.getLabelUrl(id, 'label');
         const res = await printPdfViaBridge({
-          pdfBase64: bytesToBase64(await urlToBytes(url)), role: 'shipping', media: 'Custom.4x6in',
+          pdfBase64: bytesToBase64(await labelBytesForPrint(url)), role: 'shipping', media: 'Custom.4x6in',
         });
         printer = res?.printer || printer;
         printed++;
@@ -240,13 +269,7 @@ export async function printShippingLabels(boxIds, showToast) {
     for (const id of ids) {
       try {
         const url = await api.getLabelUrl(id, 'label');
-        if (url.startsWith('data:')) {
-          buffers.push(await dataUrlToBlob(url).arrayBuffer());
-        } else {
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`fetch ${res.status}`);
-          buffers.push(await res.arrayBuffer());
-        }
+        buffers.push(await labelBytesForPrint(url));
       } catch (e) {
         failed++;
         console.error('[printShippingLabels] could not load label for', id, e);

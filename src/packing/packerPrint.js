@@ -1,6 +1,6 @@
 import { api } from '../api.js';
 import { bridgeOnlineNow, printPdfViaBridge, bytesToBase64, pdfToBase64 } from '../labels/useBridgePrint.js';
-import { urlToBytes } from './labelPdf.js';
+import { urlToBytes, labelBytesForPrint } from './labelPdf.js';
 import { getPdfjs } from './pdfjsLoader.js';
 
 // Label printing from the packer's iPad.
@@ -121,9 +121,11 @@ async function pdfToPageImages(bytes) {
       canvas.width = 0; canvas.height = 0; // release the backing store
     }
   } finally {
-    // destroy(), not cleanup() — it frees the parsed document AND terminates
-    // the per-document worker; cleanup() leaks a Web Worker on every print.
-    try { await doc.destroy(); } catch { /* best effort */ }
+    // Destroy the loading task, not cleanup() — it frees the parsed document
+    // AND terminates the per-document worker; cleanup() leaks a Web Worker on
+    // every print. (pdf.js v6 removed PDFDocumentProxy.destroy(), so the old
+    // doc.destroy() call threw into this catch and leaked the worker too.)
+    try { await doc.loadingTask.destroy(); } catch { /* best effort */ }
   }
   if (urls.length === 0) throw new Error('The label PDF has no pages');
   return urls;
@@ -247,7 +249,8 @@ export async function printPackerUsdaSlip(box, trackingNumber, dest, showToast) 
 export async function printBoxLabel(boxId, dest, showToast) {
   try {
     const url = await api.getLabelUrl(boxId, 'label');
-    return await printPdfBytes(await urlToBytes(url), dest, showToast);
+    // Fitted to the 4×6 sticker when the stored label doesn't fill its page.
+    return await printPdfBytes(await labelBytesForPrint(url), dest, showToast);
   } catch (e) {
     showToast?.(e.message || 'Could not print the label', 4500);
     return false;
