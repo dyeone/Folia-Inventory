@@ -57,6 +57,19 @@ export function tracksMatch(a, b) {
   return shorter.length >= 12 && longer.includes(shorter);
 }
 
+// USPS tracking numbers (20 or 22 digits, starting with 9) end in a mod-10
+// check digit: weights 3,1,3,1… from the rightmost body digit. Every USPS
+// number stored by 2026-11-08 (410) passes; the 17 OCR misreads of that day
+// (a 9 read as 0) all fail — any single wrong digit always fails. Returns
+// true/false, or null when the value isn't a USPS-shaped number.
+export function uspsCheckDigitOk(raw) {
+  const d = canonicalTracking(raw);
+  if (!/^9\d{19}$|^9\d{21}$/.test(d)) return null;
+  let sum = 0;
+  for (let i = d.length - 2, w = 3; i >= 0; i--, w = 4 - w) sum += Number(d[i]) * w;
+  return (10 - (sum % 10)) % 10 === Number(d[d.length - 1]);
+}
+
 // Pull a tracking number out of OCR'd label text. The barcode is the exact
 // source when it decodes, but on image-only labels it often doesn't — and the
 // human-readable tracking ("9205 5903 7248 8900 6563 92") is printed in large
@@ -69,12 +82,26 @@ export function extractTrackingFromText(text) {
   if (ups) return ups[0];
 
   // Digit runs that may carry internal spaces/hyphens from the printed groups.
+  // OCR can glue a stray digit onto the printed USPS number or run it into
+  // the next line ("…6123 31" + "0" read as 23 digits), so a run holding a
+  // 9-led 22-digit number is searched for the window that passes the USPS
+  // check digit. A run with no passing window still yields its first 9-led
+  // 22 digits — the Import labels review flags that as misread.
   let best = '';
+  let uspsUnchecked = '';
   for (const m of s.matchAll(/\d[\d\s-]{8,}\d/g)) {
     const d = m[0].replace(/\D/g, '');
-    if (/9\d{21}/.test(d)) return canonicalTracking(d); // USPS — done
+    if (/9\d{21}/.test(d)) {
+      for (let i = 0; i + 22 <= d.length; i++) {
+        if (d[i] !== '9') continue;
+        const w = d.slice(i, i + 22);
+        if (uspsCheckDigitOk(w)) return w; // USPS — done
+        if (!uspsUnchecked) uspsUnchecked = w;
+      }
+    }
     if (d.length > best.length) best = d;
   }
+  if (uspsUnchecked) return uspsUnchecked;
   return best.length >= 12 ? canonicalTracking(best) : '';
 }
 
