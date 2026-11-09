@@ -18,7 +18,7 @@ import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 import { jsPDF } from 'jspdf';
 import { canonicalTracking, extractTrackingFromText } from '../labels/tracking.js';
 import { getPdfjs } from './pdfjsLoader.js';
-import { isFourBySix, inkBox, boxToRegion, placement, regionToLabelPdf, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
+import { isBiggerThanLabel, inkBox, boxToRegion, placement, regionToLabelPdf, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
 
 // ── lazy singletons ──────────────────────────────────────────────────────
 
@@ -194,8 +194,9 @@ function canvasRegionToPagePdfBase64(canvas, box, pxPerPt) {
 }
 
 // The PDF stored for one page of an upload.
-//   • A 4×6 page — as before: a one-page file keeps its original bytes, a
-//     page of a multi-page file is rendered into its own 4×6 PDF.
+//   • A page no bigger than 4×6 — as before: a one-page file keeps its
+//     original bytes, a page of a multi-page file is rendered into its own
+//     4×6 PDF.
 //   • A bigger sheet — Palmstreet's label download, since 2026-11-08,
 //     centers each true-size 4×6 label on an A4 page. Storing the sheet (or
 //     squeezing it onto 4×6, as the splitter used to) printed the label at
@@ -204,7 +205,7 @@ function canvasRegionToPagePdfBase64(canvas, box, pxPerPt) {
 async function labelPdfBase64ForPage({ srcBytes, origBase64, pageCount, pageIndex, page, canvas }) {
   const asBefore = () => (pageCount === 1 ? origBase64 : canvasToPagePdfBase64(canvas));
   const base = page.getViewport({ scale: 1 });
-  if (isFourBySix(base.width, base.height) || page.rotate % 360) return asBefore();
+  if (!isBiggerThanLabel(base.width, base.height) || page.rotate % 360) return asBefore();
   const box = inkBox(canvas);
   if (!box) return asBefore();
   const scale = renderScale(page);

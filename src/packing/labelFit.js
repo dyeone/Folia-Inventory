@@ -10,8 +10,11 @@
 // The fix finds the label on its page — the box around the dark ink — and
 // redraws only that region onto a 4×6 page with pdf-lib. Nothing is
 // re-rendered: the original page is embedded and clipped, so barcodes keep
-// the source's sharpness. A label that already fills its 4×6 page is left
-// byte for byte as it is.
+// the source's sharpness. Only two kinds of file are touched: a page bigger
+// than the sticker (the printer would shrink the whole sheet) and artwork
+// shrunk inside its page. Every other label — including pages a little
+// narrower than 4×6, like ShipStation's August 274×432 labels, which print at
+// true size — is left byte for byte as it is.
 import { getPdfjs } from './pdfjsLoader.js';
 
 export const LABEL_W_PT = 288; // 4 in
@@ -21,13 +24,16 @@ const INK_LUMA = 160;            // darker than this counts as ink
 const INK_MIN_PX = 2;            // a row/column needs this many ink pixels (ignores specks)
 const PAD_PT = 3;                // white kept around the label's outer frame
 const MEASURE_LONG_SIDE_PX = 900;
-const SHRUNK_GAIN = 1.2;         // a 4×6 page whose label could grow ≥20% is "shrunk"
+const SHRUNK_GAIN = 1.2;         // artwork that could grow ≥20% is "shrunk" inside its page
+const PAGE_TOLERANCE = 0.03;     // a page up to 3% over 4×6 still counts as sticker-size
 const FILL_TOLERANCE = 0.08;     // within 8% of the 2:3 shape → fill the sticker exactly
 
-// Is a page (points) a 4×6 label page, in either orientation?
-export function isFourBySix(w, h, tol = 0.03) {
-  const near = (a, b) => Math.abs(a - b) <= b * tol;
-  return (near(w, LABEL_W_PT) && near(h, LABEL_H_PT)) || (near(w, LABEL_H_PT) && near(h, LABEL_W_PT));
+// Would the printer have to shrink this page (points) to get it onto the 4×6
+// sticker? Compared in portrait, so a 6×4 landscape page counts as 4×6.
+export function isBiggerThanLabel(w, h, tol = PAGE_TOLERANCE) {
+  const short = Math.min(w, h);
+  const long = Math.max(w, h);
+  return short > LABEL_W_PT * (1 + tol) || long > LABEL_H_PT * (1 + tol);
 }
 
 // Pixel box around the dark ink of a rendered page, or null for a blank one.
@@ -108,10 +114,10 @@ async function measureRegion(page) {
 }
 
 // The bytes to send to the 4×6 printer for a stored carrier label: the file
-// as stored when its label already fills a 4×6 page (the same Uint8Array is
-// returned, so callers can tell nothing changed), otherwise the label cut out
-// and enlarged onto a 4×6 page. Never throws — on any failure the label
-// prints as stored, exactly as before this existed.
+// as stored (the same Uint8Array, so callers can tell nothing changed) unless
+// the page is bigger than the sticker or the artwork sits shrunk inside it —
+// then the label cut out and fitted onto a 4×6 page. Never throws — on any
+// failure the label prints as stored, exactly as before this existed.
 export async function fitLabelPdf(bytes) {
   let task = null;
   try {
@@ -130,7 +136,7 @@ export async function fitLabelPdf(bytes) {
     const h = region.top - region.bottom;
     if (w > h) return bytes; // landscape artwork — leave it to the printer
     const gain = Math.min(LABEL_W_PT / w, LABEL_H_PT / h);
-    if (isFourBySix(base.width, base.height) && gain < SHRUNK_GAIN) return bytes;
+    if (!isBiggerThanLabel(base.width, base.height) && gain < SHRUNK_GAIN) return bytes;
     return await regionToLabelPdf(bytes, 0, region);
   } catch (e) {
     console.warn('[labelFit] printing the label as stored —', e?.message || e);
