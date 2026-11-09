@@ -18,7 +18,7 @@ import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 import { jsPDF } from 'jspdf';
 import { canonicalTracking, extractTrackingFromText } from '../labels/tracking.js';
 import { getPdfjs } from './pdfjsLoader.js';
-import { isBiggerThanLabel, inkBox, boxToRegion, placement, regionToLabelPdf, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
+import { isBiggerThanLabel, inkBox, boxToRegion, placement, regionToLabelPdf, cutKeepsInk, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
 
 // ── lazy singletons ──────────────────────────────────────────────────────
 
@@ -209,14 +209,18 @@ async function labelPdfBase64ForPage({ srcBytes, origBase64, pageCount, pageInde
   const box = inkBox(canvas);
   if (!box) return asBefore();
   const scale = renderScale(page);
-  const region = boxToRegion(page.getViewport({ scale }), box, page.view);
+  const viewport = page.getViewport({ scale });
+  const region = boxToRegion(viewport, box, page.view);
   if (region.right - region.left > region.top - region.bottom) return asBefore(); // landscape artwork
   try {
-    return arrayBufferToBase64(await regionToLabelPdf(srcBytes, pageIndex, region));
+    const cut = await regionToLabelPdf(srcBytes, pageIndex, region);
+    // Same self-check as printing: a cut that lost part of the label is not
+    // stored; the rendered page (which shows exactly what was read) is.
+    if (await cutKeepsInk(cut, { canvas, viewport, region })) return arrayBufferToBase64(cut);
   } catch (e) {
     console.warn('[parseShippingLabel] lossless label cut failed — using the rendered page:', e?.message || e);
-    return canvasRegionToPagePdfBase64(canvas, box, scale);
   }
+  return canvasRegionToPagePdfBase64(canvas, box, scale);
 }
 
 function arrayBufferToBase64(buf) {
