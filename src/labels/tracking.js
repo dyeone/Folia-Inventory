@@ -14,6 +14,18 @@
 const USPS_22 = /^9\d{21}$/;
 const UPS_1Z = /1Z[0-9A-Z]{16}/;
 
+// USPS package numbers (IMpb PICs: 20, 22 or 26 digits) end in a mod-10
+// check digit: weights 3,1,3,1… from the rightmost body digit. Every USPS
+// number stored by 2026-11-08 (410) passes; the 17 OCR misreads of that day
+// (a 9 read as 0) all fail. Any single wrong digit — the first one included —
+// always fails.
+function mod10Ok(d) {
+  let sum = 0;
+  for (let i = d.length - 2, w = 3; i >= 0; i--, w = 4 - w) sum += Number(d[i]) * w;
+  return (10 - (sum % 10)) % 10 === Number(d[d.length - 1]);
+}
+const PIC_LENGTHS = [22, 26, 20];
+
 export function digitsOnly(s) {
   return String(s || '').replace(/\D/g, '');
 }
@@ -42,7 +54,10 @@ export function canonicalTracking(raw) {
 // routing prefix: compares canonical forms first, then falls back to digit
 // containment (the shorter human tracking is a substring of the longer
 // barcode payload). The 12-digit floor keeps short coincidental overlaps
-// from false-matching.
+// from false-matching. A USPS-looking value (9-led) only counts as the
+// contained side when it is a whole, check-valid PIC: labels bought together
+// share their first 20 digits, so a stored fragment would otherwise "match"
+// every label of the batch and let the wrong label pass the packer's check.
 export function tracksMatch(a, b) {
   const ca = canonicalTracking(a);
   const cb = canonicalTracking(b);
@@ -54,20 +69,10 @@ export function tracksMatch(a, b) {
   if (!da || !db) return false;
   const shorter = da.length <= db.length ? da : db;
   const longer = da.length <= db.length ? db : da;
-  return shorter.length >= 12 && longer.includes(shorter);
+  if (shorter.length < 12 || !longer.includes(shorter)) return false;
+  return shorter[0] !== '9' || (PIC_LENGTHS.includes(shorter.length) && mod10Ok(shorter));
 }
 
-// USPS package numbers (IMpb PICs: 20, 22 or 26 digits) end in a mod-10
-// check digit: weights 3,1,3,1… from the rightmost body digit. Every USPS
-// number stored by 2026-11-08 (410) passes; the 17 OCR misreads of that day
-// (a 9 read as 0) all fail. Any single wrong digit — the first one included —
-// always fails.
-function mod10Ok(d) {
-  let sum = 0;
-  for (let i = d.length - 2, w = 3; i >= 0; i--, w = 4 - w) sum += Number(d[i]) * w;
-  return (10 - (sum % 10)) % 10 === Number(d[d.length - 1]);
-}
-const PIC_LENGTHS = [22, 26, 20];
 
 // True/false for a 9-led 20- or 22-digit USPS number, null for anything else.
 export function uspsCheckDigitOk(raw) {
@@ -95,6 +100,7 @@ function uspsPic(digits) {
 //   • A letter inside a long number (an O typed for a 0): misread.
 //   • 19–26 digits: valid only as a 20-, 22- or 26-digit PIC that passes the
 //     check digit; a dropped/added digit or a failing check is a misread.
+//   • 12–18 digits starting with 9: a USPS number cut short — misread.
 //   • Anything shorter or longer (FedEx, DHL, S10 international…): not judged.
 // Mirrored in api/_lib/tracking.js (keep identical).
 export function trackingLooksMisread(raw) {
@@ -103,6 +109,10 @@ export function trackingLooksMisread(raw) {
   const compact = s.replace(/[\s-]/g, '');
   if (/[A-Z]/.test(compact)) return digitsOnly(compact).length >= 18;
   const d = uspsPic(digitsOnly(compact));
+  // A 9-led 12–18-digit value is a USPS number cut short (OCR split it, or a
+  // partial paste) — saved, it would match every label of its batch, since
+  // labels bought together share their first 20 digits.
+  if (d[0] === '9' && d.length >= 12 && d.length < 19) return true;
   if (d.length < 19 || d.length > 26) return false;
   return !PIC_LENGTHS.includes(d.length) || !mod10Ok(d);
 }

@@ -43,7 +43,7 @@ const CONFIDENCE = {
   none: { cls: 'bg-rose-100 text-rose-800 ring-rose-300', label: 'No match — pick' },
 };
 
-export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, onClose, onDone, showToast }) {
+export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, shipFrom = null, onClose, onDone, showToast }) {
   const [phase, setPhase] = useState('drop'); // drop | parsing | review | saving | done
   const [progress, setProgress] = useState(null);
   const [rows, setRows] = useState([]);
@@ -80,13 +80,17 @@ export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, onClose, onD
     }
     setRows(parsed.map((label) => {
       if (label.error) return { ...label, boxId: '', include: false, confidence: 'none' };
-      const match = matchLabelToBoxes(label, openBoxes);
+      // shipFrom lets the matcher ignore our own sender block on the label.
+      const match = matchLabelToBoxes(label, openBoxes, { shipFrom });
       return {
         ...label,
         boxId: match.boxId || '',
         confidence: match.confidence,
         reasons: match.reasons,
-        include: !!(match.boxId && label.trackingNumber && !misread(label.trackingNumber)),
+        // Pre-ticked only on a near-certain match (exact username): a wrong
+        // assignment ships another customer's label. Weaker matches show the
+        // box but wait for the operator to tick Save.
+        include: !!(match.boxId && match.autoAssign && label.trackingNumber && !misread(label.trackingNumber)),
       };
     }));
     setPhase('review');

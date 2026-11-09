@@ -32,6 +32,7 @@ function uspsPic(digits) {
 //   • A letter inside a long number (an O typed for a 0): misread.
 //   • 19–26 digits: valid only as a 20-, 22- or 26-digit PIC that passes the
 //     check digit; a dropped/added digit or a failing check is a misread.
+//   • 12–18 digits starting with 9: a USPS number cut short — misread.
 //   • Anything shorter or longer (FedEx, DHL, S10 international…): not judged.
 export function trackingLooksMisread(raw) {
   const s = String(raw || '').toUpperCase().trim();
@@ -39,6 +40,10 @@ export function trackingLooksMisread(raw) {
   const compact = s.replace(/[\s-]/g, '');
   if (/[A-Z]/.test(compact)) return digitsOnly(compact).length >= 18;
   const d = uspsPic(digitsOnly(compact));
+  // A 9-led 12–18-digit value is a USPS number cut short (OCR split it, or a
+  // partial paste) — saved, it would match every label of its batch, since
+  // labels bought together share their first 20 digits.
+  if (d[0] === '9' && d.length >= 12 && d.length < 19) return true;
   if (d.length < 19 || d.length > 26) return false;
   return !PIC_LENGTHS.includes(d.length) || !mod10Ok(d);
 }
