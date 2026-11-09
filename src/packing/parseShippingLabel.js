@@ -18,6 +18,7 @@ import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 import { jsPDF } from 'jspdf';
 import { canonicalTracking, extractTrackingFromText } from '../labels/tracking.js';
 import { getPdfjs } from './pdfjsLoader.js';
+import { isFourBySix, inkBox, boxToRegion, placement, regionToLabelPdf, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
 
 // ── lazy singletons ──────────────────────────────────────────────────────
 
@@ -169,6 +170,54 @@ function canvasToPagePdfBase64(canvas) {
   return pdf.output('datauristring').split(',')[1] || '';
 }
 
+// A label cut out of an over-size page, rasterized — only used when the
+// lossless cut (pdf-lib) fails on a file. `box` is the ink box in canvas
+// pixels; `pxPerPt` the render scale, used to keep the same white pad.
+function canvasRegionToPagePdfBase64(canvas, box, pxPerPt) {
+  const pad = Math.round(3 * pxPerPt);
+  const x0 = Math.max(0, box.x0 - pad);
+  const y0 = Math.max(0, box.y0 - pad);
+  const w = Math.min(canvas.width, box.x1 + 1 + pad) - x0;
+  const h = Math.min(canvas.height, box.y1 + 1 + pad) - y0;
+  const cut = document.createElement('canvas');
+  cut.width = w;
+  cut.height = h;
+  cut.getContext('2d').drawImage(canvas, x0, y0, w, h, 0, 0, w, h);
+  const p = placement({ left: 0, bottom: 0, right: w / pxPerPt, top: h / pxPerPt });
+  const pdf = new jsPDF({ unit: 'pt', format: [LABEL_W_PT, LABEL_H_PT], orientation: 'portrait' });
+  const dw = (w / pxPerPt) * p.xScale;
+  const dh = (h / pxPerPt) * p.yScale;
+  // jsPDF measures y from the top; placement() from the bottom.
+  pdf.addImage(cut.toDataURL('image/jpeg', 0.92), 'JPEG', p.x, LABEL_H_PT - p.y - dh, dw, dh);
+  cut.width = 0; cut.height = 0;
+  return pdf.output('datauristring').split(',')[1] || '';
+}
+
+// The PDF stored for one page of an upload.
+//   • A 4×6 page — as before: a one-page file keeps its original bytes, a
+//     page of a multi-page file is rendered into its own 4×6 PDF.
+//   • A bigger sheet — Palmstreet's label download, since 2026-11-08,
+//     centers each true-size 4×6 label on an A4 page. Storing the sheet (or
+//     squeezing it onto 4×6, as the splitter used to) printed the label at
+//     half size. The label is cut out of the sheet instead, at full size, by
+//     embedding the original page clipped to the label (see labelFit.js).
+async function labelPdfBase64ForPage({ srcBytes, origBase64, pageCount, pageIndex, page, canvas }) {
+  const asBefore = () => (pageCount === 1 ? origBase64 : canvasToPagePdfBase64(canvas));
+  const base = page.getViewport({ scale: 1 });
+  if (isFourBySix(base.width, base.height) || page.rotate % 360) return asBefore();
+  const box = inkBox(canvas);
+  if (!box) return asBefore();
+  const scale = renderScale(page);
+  const region = boxToRegion(page.getViewport({ scale }), box, page.view);
+  if (region.right - region.left > region.top - region.bottom) return asBefore(); // landscape artwork
+  try {
+    return arrayBufferToBase64(await regionToLabelPdf(srcBytes, pageIndex, region));
+  } catch (e) {
+    console.warn('[parseShippingLabel] lossless label cut failed — using the rendered page:', e?.message || e);
+    return canvasRegionToPagePdfBase64(canvas, box, scale);
+  }
+}
+
 function arrayBufferToBase64(buf) {
   const bytes = new Uint8Array(buf);
   let binary = '';
@@ -207,6 +256,9 @@ export async function parseLabelFiles(files, onProgress) {
       continue;
     }
     const origBase64 = arrayBufferToBase64(buf);
+    // pdf.js takes over the buffer it's given; keep a copy for cutting labels
+    // out of over-size pages (labelPdfBase64ForPage).
+    const srcBytes = new Uint8Array(buf.slice(0));
 
     let doc;
     try {
@@ -241,14 +293,15 @@ export async function parseLabelFiles(files, onProgress) {
           weightOz: parseWeightOz(ocrText),
           ocrText,
           thumbnailDataUrl: makeThumb(canvas),
-          pagePdfBase64: pageCount === 1 ? origBase64 : canvasToPagePdfBase64(canvas),
+          pagePdfBase64: await labelPdfBase64ForPage({ srcBytes, origBase64, pageCount, pageIndex: p - 1, page, canvas }),
         });
         canvas.width = 0; canvas.height = 0; // release the backing store
       } catch {
         out.push({ id: uid(), fileName: file.name, page: p, pageCount, error: 'Could not render this page' });
       }
     }
-    try { await doc.cleanup?.(); } catch { /* best effort */ }
+    // End this file's pdf.js worker (v6 tears down through the loading task).
+    try { await doc.loadingTask.destroy(); } catch { /* best effort */ }
   }
 
   return out;
