@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { trackingLooksMisread } from './_lib/tracking.js';
 
 // Routes:
 //   GET  /api/shipments?saleId=X
@@ -274,6 +275,11 @@ async function recordTracking(req, res, userId, brandId) {
 
   const trim = (trackingNumber || '').trim();
   if (!trim) { const e = new Error('trackingNumber required'); e.status = 400; throw e; }
+  // A misread/mistyped USPS number would never match the packer's label scan.
+  if (trackingLooksMisread(trim)) {
+    const e = new Error(`Tracking # ${trim} isn't a valid USPS number — a digit is wrong, missing or extra (it fails the USPS check digit). Check it against the label.`);
+    e.status = 422; throw e;
+  }
 
   if (!shipmentBoxId && matchByOrderId) {
     const { data: matches } = await supabase

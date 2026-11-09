@@ -16,7 +16,7 @@
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { DecodeHintType, BarcodeFormat } from '@zxing/library';
 import { jsPDF } from 'jspdf';
-import { canonicalTracking, extractTrackingFromText } from '../labels/tracking.js';
+import { canonicalTracking, extractTrackingFromText, looksLikeTracking } from '../labels/tracking.js';
 import { getPdfjs } from './pdfjsLoader.js';
 import { isBiggerThanLabel, inkBox, boxToRegion, placement, regionToLabelPdf, cutKeepsInk, pageAlonePdf, UnseenImageError, LABEL_W_PT, LABEL_H_PT } from './labelFit.js';
 
@@ -62,6 +62,19 @@ function cropBottom(canvas, fraction) {
   return out;
 }
 
+// The same canvas without its left and right edges. A label's outer frame
+// line can run through the barcode rows, and ZXing (the only decoder in
+// Safari, which has no BarcodeDetector) then fails on every row of a framed
+// CODE-128; reading just inside the frame lets it decode.
+function insetX(canvas, fraction = 0.04) {
+  const dx = Math.round(canvas.width * fraction);
+  const out = document.createElement('canvas');
+  out.width = canvas.width - 2 * dx;
+  out.height = canvas.height;
+  out.getContext('2d').drawImage(canvas, dx, 0, out.width, canvas.height, 0, 0, out.width, canvas.height);
+  return out;
+}
+
 // Decode the tracking barcode from a rendered label. USPS prints it across
 // the bottom, so after a full-frame attempt we retry on just the bottom
 // slices — a smaller region decodes more reliably when the rest of the
@@ -72,8 +85,14 @@ function cropBottom(canvas, fraction) {
 // than ZXing-in-JS does off a rendered raster. ZXing is the fallback. Either
 // way this is best-effort — the human-readable tracking is OCR'd separately
 // as the guaranteed source (see parseLabelFiles).
+//
+// Only a decode that looks like a tracking number counts — a stray code on
+// the label (a QR, a short reference barcode) must never become the box's
+// tracking #.
 async function decodeBarcode(canvas) {
-  const targets = [canvas, cropBottom(canvas, 0.45), cropBottom(canvas, 0.28)];
+  const bottom45 = cropBottom(canvas, 0.45);
+  const bottom28 = cropBottom(canvas, 0.28);
+  const targets = [insetX(canvas), insetX(bottom45), insetX(bottom28), canvas, bottom45, bottom28];
 
   if (typeof window !== 'undefined' && 'BarcodeDetector' in window) {
     try {
@@ -84,7 +103,7 @@ async function decodeBarcode(canvas) {
         for (const target of targets) {
           try {
             const codes = await detector.detect(target);
-            const hit = codes?.find((c) => c.rawValue);
+            const hit = codes?.find((c) => c.rawValue && looksLikeTracking(c.rawValue));
             if (hit) return hit.rawValue;
           } catch { /* try next region */ }
         }
@@ -97,7 +116,7 @@ async function decodeBarcode(canvas) {
     try {
       const result = reader.decodeFromCanvas(target);
       const text = result?.getText?.();
-      if (text) return text;
+      if (text && looksLikeTracking(text)) return text;
     } catch { /* NotFoundException — try the next region */ }
   }
   return '';
@@ -228,8 +247,10 @@ async function labelPdfForPage({ srcBytes, origBase64, pageCount, pageIndex, pag
     }
     console.warn('[parseShippingLabel] lossless label cut failed — using the rendered page:', e?.message || e);
   }
+  // The raster cut is made from the sheet canvas itself, so reading stays
+  // there — re-rendering the same pixels larger can only lose detail.
   const raster = canvasRegionToPagePdf(canvas, box, scale);
-  return { base64: arrayBufferToBase64(raster), labelBytes: raster };
+  return { base64: arrayBufferToBase64(raster), labelBytes: null };
 }
 
 // Render a one-page label PDF (a cut-out label) the way a 4×6 upload page is
@@ -312,7 +333,8 @@ export async function parseLabelFiles(files, onProgress) {
         if (stored.labelBytes) {
           try { readCanvas = await renderLabelBytes(stored.labelBytes); } catch { readCanvas = canvas; }
         }
-        const barcodeRaw = await decodeBarcode(readCanvas);
+        const barcodeRaw = await decodeBarcode(readCanvas)
+          || (readCanvas !== canvas ? await decodeBarcode(canvas) : '');
         const ocrText = await ocrCanvas(readCanvas);
         // Tracking source: the barcode is exact when it decodes; otherwise
         // fall back to the human-readable tracking OCR'd off the label.

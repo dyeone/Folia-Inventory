@@ -8,12 +8,13 @@ import { api } from '../api.js';
 import { shortBoxCode } from '../labels/boxCode.js';
 import { parseLabelFiles, terminateLabelParser } from './parseShippingLabel.js';
 import { matchLabelToBoxes } from './matchLabels.js';
-import { uspsCheckDigitOk } from '../labels/tracking.js';
+import { trackingLooksMisread } from '../labels/tracking.js';
 
-// A USPS tracking # whose check digit fails has a misread digit — saving it
-// gives the box a number no scan will ever match (2026-11-08: 17 OCR
-// misreads, a 9 read as 0). Such a row is never saved until it's corrected.
-const misread = (tracking) => uspsCheckDigitOk(tracking) === false;
+// A USPS tracking # with a wrong, missing or extra digit fails the USPS check
+// digit — saving it gives the box a number no scan will ever match
+// (2026-11-08: 17 OCR misreads, a 9 read as 0). Such a row is never saved
+// until it's corrected (the record-tracking API refuses it too).
+const misread = (tracking) => trackingLooksMisread(tracking);
 
 // Import Shipping Labels.
 //
@@ -104,7 +105,7 @@ export function ImportLabelsModal({ openBoxes, shipmentsByBox = {}, onClose, onD
   const boxUsage = useMemo(() => {
     const m = {};
     for (const r of rows) {
-      if (r.include && r.boxId) m[r.boxId] = (m[r.boxId] || 0) + 1;
+      if (r.include && r.boxId && !misread(r.trackingNumber)) m[r.boxId] = (m[r.boxId] || 0) + 1;
     }
     return m;
   }, [rows]);
@@ -400,7 +401,7 @@ function LabelRow({ row, boxOptions, duplicate, replaces, onChange, onZoom }) {
         <div className="flex items-center gap-2">
           <select
             value={row.boxId || ''}
-            onChange={(e) => onChange({ boxId: e.target.value, include: !!e.target.value && !!row.trackingNumber })}
+            onChange={(e) => onChange({ boxId: e.target.value, include: !!e.target.value && !!row.trackingNumber && !misread(row.trackingNumber) })}
             className={`flex-1 min-w-0 text-sm px-2 py-1.5 border rounded-lg bg-white focus:outline-none focus:border-emerald-500 ${
               row.boxId ? 'border-gray-300 text-gray-900' : 'border-amber-300 text-gray-500'
             }`}
@@ -415,7 +416,7 @@ function LabelRow({ row, boxOptions, duplicate, replaces, onChange, onZoom }) {
               type="checkbox"
               checked={row.include && !badCheck}
               disabled={badCheck}
-              title={badCheck ? 'Fix the tracking # first — it fails the USPS check digit' : undefined}
+              title={badCheck ? 'Fix the tracking # first — it isn\'t a valid USPS number' : undefined}
               onChange={(e) => onChange({ include: e.target.checked })}
               className="w-4 h-4 accent-emerald-600 disabled:opacity-40"
             />
@@ -427,7 +428,7 @@ function LabelRow({ row, boxOptions, duplicate, replaces, onChange, onZoom }) {
         {badCheck && (
           <div className="flex items-start gap-1.5 text-[11px] text-rose-700">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
-            <span>This tracking # fails the USPS check digit, so a digit was misread. Type it from the label (or the barcode) to save it — a wrong # means the packer's label scan matches no box.</span>
+            <span>This tracking # isn't a valid USPS number — a digit was misread, dropped or added (it fails the USPS check digit). Type it from the label to save it; a wrong # means the packer's label scan matches no box.</span>
           </div>
         )}
         {duplicate && (
