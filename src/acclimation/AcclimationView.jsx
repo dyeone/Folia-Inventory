@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Search, Download, Sprout, ScanLine, CheckSquare, Square, MinusSquare, Check, Loader2, X } from 'lucide-react';
+import { Search, Download, Sprout, ScanLine, CheckSquare, Square, MinusSquare, Check, Loader2, X, ListX } from 'lucide-react';
+import { api } from '../api.js';
 import { AcclimationModal } from '../inventory/AcclimationModal.jsx';
 
 // Acclimation tab: every plant currently in acclimation (TCs scanned in at
@@ -11,17 +12,22 @@ import { AcclimationModal } from '../inventory/AcclimationModal.jsx';
 // Selecting: click a checkbox, then shift-click another to select (or
 // clear) every row between them, as in a mail app. "Clear selection"
 // unticks everything — selecting never changes a plant by itself.
+//
+// Finishing: "Mark available" (the ticked plants) and "Clear list" (every
+// plant in acclimation, after a confirm) both mean "done acclimating": each
+// plant goes back to Available and leaves this list.
 
 const when = (t) => { try { return t ? new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' }) : ''; } catch { return ''; } };
 
-export function AcclimationView({ items, acclimatedRate, onStatusChange, showToast }) {
+export function AcclimationView({ items, acclimatedRate, onStatusChange, onItemsChanged, setConfirmDialog, showToast }) {
   const [q, setQ] = useState('');
   const [selected, setSelected] = useState(() => new Set());
   // The row the last plain click landed on — the start of a shift-click range.
   const [anchorId, setAnchorId] = useState(null);
   const [scanOpen, setScanOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [releasing, setReleasing] = useState(false);
+  // { kind: 'mark' | 'clear', done, total } while plants are being finished.
+  const [releasing, setReleasing] = useState(null);
 
   const all = useMemo(() => (items || [])
     .filter((i) => i.status === 'acclimated' && !i.deletedAt)
@@ -74,18 +80,52 @@ export function AcclimationView({ items, acclimatedRate, onStatusChange, showToa
     }
   };
 
-  const release = async () => {
-    const ids = selectedShown.map((i) => i.id);
-    if (!ids.length) return;
-    setReleasing(true);
+  // Done acclimating → Available, through the server's bulk acclimate action
+  // (revert: only a plant still in acclimation changes, so one sold in the
+  // meantime is left alone), 100 SKUs per call, then the list reloads from
+  // the server. The old path saved one plant at a time through the app's
+  // item list: slow for hundreds, and it only showed the LAST plant as
+  // changed until a reload — the list looked like it wouldn't clear.
+  const BATCH = 100;
+  const finish = async (plants, kind) => {
+    const skus = plants.map((i) => i.sku).filter(Boolean);
+    if (!skus.length) return;
+    setReleasing({ kind, done: 0, total: skus.length });
+    let ok = 0;
+    const skipped = [];
+    let failure = null;
     try {
-      for (const id of ids) await onStatusChange(id, 'available');
-      clearSelection();
-      showToast?.(`${ids.length} plant${ids.length === 1 ? '' : 's'} marked available`);
+      for (let k = 0; k < skus.length; k += BATCH) {
+        const r = await api.acclimateSkus(skus.slice(k, k + BATCH), { revert: true });
+        for (const x of r?.results || []) { if (x.ok) ok += 1; else skipped.push(x); }
+        setReleasing({ kind, done: Math.min(k + BATCH, skus.length), total: skus.length });
+      }
     } catch (e) {
-      showToast?.(e.message || 'Could not update', 'error');
-    } finally {
-      setReleasing(false);
+      failure = e;
+    }
+    try { await onItemsChanged?.(); } catch { /* the next load shows it */ }
+    clearSelection();
+    setReleasing(null);
+    const n = `${ok} plant${ok === 1 ? '' : 's'}`;
+    if (failure) showToast?.(`Stopped after ${n} — ${failure.message || 'could not update'}`, 'error');
+    else if (ok) showToast?.(`${n} marked available${skipped.length ? ` · ${skipped.length} skipped (${skipped[0].error})` : ''}`);
+    else showToast?.(`Nothing changed${skipped.length ? ` — ${skipped[0].error}` : ''}`, 'error');
+  };
+
+  const release = () => finish(selectedShown, 'mark');
+
+  // "Clear the list" = every plant in acclimation is done: all of them, not
+  // just what a search shows — the confirm says how many.
+  const clearList = () => {
+    const n = all.length;
+    if (!n) return;
+    const hidden = n - shown.length;
+    const message = `Each plant goes back to Available (ready to sell) and the acclimation list empties.${hidden > 0 ? ` This includes ${hidden} your search is hiding.` : ''}`;
+    const run = () => finish(all, 'clear');
+    if (setConfirmDialog) {
+      setConfirmDialog({ title: `Mark all ${n} plant${n === 1 ? '' : 's'} as acclimated and clear the list?`, message, confirmLabel: `Clear ${n}`, onConfirm: run });
+    } else if (window.confirm(message)) {
+      run();
     }
   };
 
@@ -102,8 +142,11 @@ export function AcclimationView({ items, acclimatedRate, onStatusChange, showToa
           <button type="button" onClick={exportXls} disabled={exporting || shown.length === 0} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50">
             {exporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Export XLS{selectedShown.length ? ` (${selectedShown.length})` : ''}
           </button>
-          <button type="button" onClick={release} disabled={releasing || selectedShown.length === 0} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">
-            {releasing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Mark available{selectedShown.length ? ` (${selectedShown.length})` : ''}
+          <button type="button" onClick={release} disabled={!!releasing || selectedShown.length === 0} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+            {releasing?.kind === 'mark' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Mark available{releasing?.kind === 'mark' ? ` ${releasing.done}/${releasing.total}` : selectedShown.length ? ` (${selectedShown.length})` : ''}
+          </button>
+          <button type="button" onClick={clearList} disabled={!!releasing || all.length === 0} title="Every plant in acclimation is done: all go back to Available and the list empties" className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-fuchsia-800 border border-fuchsia-300 bg-white rounded-lg hover:bg-fuchsia-50 disabled:opacity-50">
+            {releasing?.kind === 'clear' ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListX className="w-4 h-4" />} {releasing?.kind === 'clear' ? `Clearing ${releasing.done}/${releasing.total}` : 'Clear list'}
           </button>
         </div>
       </div>

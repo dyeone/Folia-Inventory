@@ -1340,6 +1340,8 @@ function StaffOrAdminInventory() {
             items={items}
             acclimatedRate={acclimatedRate}
             onStatusChange={changeItemStatus}
+            onItemsChanged={async () => { applyItemsFresh(await api.getItems()); }}
+            setConfirmDialog={setConfirmDialog}
             showToast={showToast}
           />
         )}
