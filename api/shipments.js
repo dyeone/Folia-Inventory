@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { trackingLooksMisread } from './_lib/tracking.js';
+import { fetchAllById } from './_lib/fetchAll.js';
 
 // Routes:
 //   GET  /api/shipments?saleId=X
@@ -76,14 +77,17 @@ export default wrap(async (req, res) => {
 
 async function list(req, res, brandId) {
   const saleId = req.query?.saleId;
-  let query = supabase
-    .from('shipments')
-    .select('id, "saleId", carrier, "carrierCode", "serviceCode", "trackingNumber", "labelCost", "labelStoragePath", "shippingSlipStoragePath", "isTestLabel", "purchasedAt", "voidedAt"')
-    .eq('brandId', brandId);
-  if (saleId) query = query.eq('saleId', saleId);
-  const { data, error } = await query;
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  return res.status(200).json({ shipments: data || [] });
+  // Every row: BAE passed 1,000 shipments on 2026-11-02 and the cap hid
+  // bought labels from the Shipping tab and the packer (see fetchAll.js).
+  const data = await fetchAllById(() => {
+    let query = supabase
+      .from('shipments')
+      .select('id, "saleId", carrier, "carrierCode", "serviceCode", "trackingNumber", "labelCost", "labelStoragePath", "shippingSlipStoragePath", "isTestLabel", "purchasedAt", "voidedAt"')
+      .eq('brandId', brandId);
+    if (saleId) query = query.eq('saleId', saleId);
+    return query;
+  });
+  return res.status(200).json({ shipments: data });
 }
 
 async function labelUrl(req, res, brandId) {
@@ -141,23 +145,26 @@ async function pending(req, res, brandId) {
   const carrier = req.query?.carrier || null; // 'usps' | 'ups' | null
 
   // Pull all candidate items (sold + has shipmentBoxId), grouped client-side.
-  let q = supabase
-    .from('inventory_items')
-    .select('id, sku, name, variety, quantity, "saleId", "shipmentBoxId", "shipmentCarrier", buyer, "buyerUsername", "buyerAddress", "orderId"')
-    .eq('brandId', brandId)
-    .not('shipmentBoxId', 'is', null);
-  if (saleId) q = q.eq('saleId', saleId);
-  if (carrier) q = q.eq('shipmentCarrier', carrier);
-  const { data: items, error: iErr } = await q;
-  if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
+  // Every row — thousands of boxed items, far past the 1000-row cap.
+  const items = await fetchAllById(() => {
+    let q = supabase
+      .from('inventory_items')
+      .select('id, sku, name, variety, quantity, "saleId", "shipmentBoxId", "shipmentCarrier", buyer, "buyerUsername", "buyerAddress", "orderId"')
+      .eq('brandId', brandId)
+      .is('deletedAt', null)   // a trashed row isn't in the box any more
+      .not('shipmentBoxId', 'is', null);
+    if (saleId) q = q.eq('saleId', saleId);
+    if (carrier) q = q.eq('shipmentCarrier', carrier);
+    return q;
+  });
 
-  // Existing non-voided shipments to subtract.
-  const { data: shipments, error: sErr } = await supabase
+  // Existing non-voided shipments to subtract — all of them, or a box whose
+  // label row fell past the cap would be queued to buy a second label.
+  const shipments = await fetchAllById(() => supabase
     .from('shipments')
     .select('id, "voidedAt"')
-    .eq('brandId', brandId);
-  if (sErr) { const e = new Error(sErr.message); e.status = 500; throw e; }
-  const hasActive = new Set((shipments || []).filter(s => !s.voidedAt).map(s => s.id));
+    .eq('brandId', brandId));
+  const hasActive = new Set(shipments.filter(s => !s.voidedAt).map(s => s.id));
 
   // Sale name lookup for nicer queue labels.
   const saleIds = [...new Set((items || []).map(i => i.saleId).filter(Boolean))];
@@ -208,23 +215,24 @@ async function pending(req, res, brandId) {
 async function withTracking(req, res, brandId) {
   const saleId = req.query?.saleId || null;
 
-  let q = supabase
-    .from('inventory_items')
-    .select('id, sku, name, variety, quantity, status, "saleId", "shipmentBoxId", "shipmentCarrier", buyer, "buyerUsername", "buyerAddress", "orderId"')
-    .eq('brandId', brandId)
-    .not('shipmentBoxId', 'is', null);
-  if (saleId) q = q.eq('saleId', saleId);
-  const { data: items, error: iErr } = await q;
-  if (iErr) { const e = new Error(iErr.message); e.status = 500; throw e; }
+  const items = await fetchAllById(() => {
+    let q = supabase
+      .from('inventory_items')
+      .select('id, sku, name, variety, quantity, status, "saleId", "shipmentBoxId", "shipmentCarrier", buyer, "buyerUsername", "buyerAddress", "orderId"')
+      .eq('brandId', brandId)
+      .is('deletedAt', null)   // a trashed row isn't in the box any more
+      .not('shipmentBoxId', 'is', null);
+    if (saleId) q = q.eq('saleId', saleId);
+    return q;
+  });
 
   // Active shipments that carry a tracking number, keyed by box id.
-  const { data: shipments, error: sErr } = await supabase
+  const shipments = await fetchAllById(() => supabase
     .from('shipments')
     .select('id, "trackingNumber", carrier, "carrierCode", "voidedAt"')
-    .eq('brandId', brandId);
-  if (sErr) { const e = new Error(sErr.message); e.status = 500; throw e; }
+    .eq('brandId', brandId));
   const trackingById = new Map();
-  for (const s of shipments || []) {
+  for (const s of shipments) {
     if (!s.voidedAt && s.trackingNumber) trackingById.set(s.id, s);
   }
 
@@ -599,27 +607,41 @@ async function phoneHandoff(req, res, userId) {
 // the map (client treats absence as "no note").
 async function boxNotes(req, res, brandId) {
   const saleId = req.query?.saleId;
-  let query = supabase
-    .from('shipment_boxes')
-    // '*' so a pre-migration missing carrierOverride column doesn't 400 and
-    // break all box note/packaging loading. Fields are read by name below.
-    .select('*')
-    .eq('brandId', brandId);
+  // Every box row, past the 1000-row cap. BAE crossed it on 2026-11-08 and
+  // the rows past it — including a box saved a moment ago, since an update
+  // moves a row to the end of the table — came back without their note,
+  // hold, pickup flag, size or insulation mark. A box marked Local pickup
+  // lost the flag on the next load (and the packer never saw it).
+  let rows;
   if (saleId) {
-    const { data: items, error: itemsErr } = await supabase
+    const items = await fetchAllById(() => supabase
       .from('inventory_items')
-      .select('"shipmentBoxId"')
+      .select('id, "shipmentBoxId"')
       .eq('brandId', brandId)
       .eq('saleId', saleId)
-      .not('shipmentBoxId', 'is', null);
-    if (itemsErr) { const e = new Error(itemsErr.message); e.status = 500; throw e; }
-    const ids = Array.from(new Set((items || []).map(i => i.shipmentBoxId).filter(Boolean)));
+      .not('shipmentBoxId', 'is', null));
+    const ids = Array.from(new Set(items.map(i => i.shipmentBoxId).filter(Boolean)));
     if (ids.length === 0) return res.status(200).json({ boxNotes: {} });
-    query = query.in('id', ids);
+    // .in() rides the URL; box ids are long (buyer + address), so batch.
+    rows = [];
+    for (let k = 0; k < ids.length; k += 50) {
+      const { data, error } = await supabase
+        .from('shipment_boxes')
+        .select('*')
+        .eq('brandId', brandId)
+        .in('id', ids.slice(k, k + 50));
+      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      rows.push(...(data || []));
+    }
+  } else {
+    rows = await fetchAllById(() => supabase
+      .from('shipment_boxes')
+      // '*' so a pre-migration missing carrierOverride column doesn't 400 and
+      // break all box note/packaging loading. Fields are read by name below.
+      .select('*')
+      .eq('brandId', brandId));
   }
-  const { data: rows, error: rowsErr } = await query;
-  if (rowsErr) { const e = new Error(rowsErr.message); e.status = 500; throw e; }
-  const map = Object.fromEntries((rows || []).map(r => [r.id, {
+  const map = Object.fromEntries(rows.map(r => [r.id, {
     note: r.note,
     boxSizeId: r.boxSizeId ?? null,
     weightOz: r.weightOz ?? null,

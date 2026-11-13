@@ -199,6 +199,7 @@ async function liveShowBuyers(brandId) {
     .from('inventory_items')
     .select('"buyerUsername", status, "salePrice", "listingPrice", "shipmentBoxId", "soldAt", "shippedAt"')
     .eq('brandId', brandId)
+    .is('deletedAt', null)   // trashed rows (a placeholder replaced by its plant) aren't sales
     .in('status', ['sold', 'shipped', 'delivered'])
     .not('buyerUsername', 'is', null));
   const acc = new Map();

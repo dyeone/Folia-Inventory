@@ -210,6 +210,7 @@ export function ShowBoard({ brandId, brands = [], onSwitchBrand, onClose }) {
   const buyerStats = useMemo(() => {
     const m = new Map();
     for (const it of items) {
+      if (it.deletedAt) continue; // trashed rows aren't sales
       const u = (it.buyerUsername || '').trim().toLowerCase();
       if (!u) continue;
       if (!['sold', 'shipped', 'delivered'].includes(it.status)) continue;

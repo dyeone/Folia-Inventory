@@ -65,7 +65,16 @@ function leadingIndex(title) {
   return m ? String(parseInt(m[1], 10)) : null;
 }
 
-function extractAllSkus(title) {
+// A SKU typed straight onto the plant name, no space: "G-ALO-C431locasia heart
+// ballon pink", "BAEGIN-ANT-10217Philodendron gloriosum". The \b the main
+// pattern needs after the number isn't there, so these lines matched nothing:
+// 81 bae-gin sales (Oct–Nov 2026) shipped as placeholders while the plant
+// itself stayed Available. Only at the start of the title (after an optional
+// lineup number), and only a full serial — 3+ digits or a letter + 3 digits —
+// so "UPS-2Day" or a stray "x-1a" in running text never reads as a SKU.
+const GLUED_SKU_PATTERN = /^\s*(?:\d{1,4}\s+)?((?:[A-Za-z]{1,8}-){0,2}[A-Za-z]{2,8}-(?:\d{3,}|[A-Za-z]\d{3}))(?=[A-Za-z])/;
+
+export function extractAllSkus(title) {
   const t = String(title || '');
   const seen = new Set();
   const out = [];
@@ -78,6 +87,10 @@ function extractAllSkus(title) {
     if (seen.has(norm)) continue;
     seen.add(norm);
     out.push(norm);
+  }
+  if (out.length === 0) {
+    const g = GLUED_SKU_PATTERN.exec(t);
+    if (g) out.push(normalizeSku(g[1]));
   }
   return out;
 }
@@ -301,6 +314,9 @@ export function parsePalmstreetOrdersDetailed(rows) {
       rowKey: `r${idx}`,
       title,
       sku: resolvedSku,
+      // Palmstreet's own SKU column, when the title carried a different one —
+      // the matcher tries it second instead of throwing it away.
+      altSku: sku && normalizeSku(sku) !== normalizeSku(resolvedSku) ? sku : '',
       lineupIndex,
       quantity,
       price,
