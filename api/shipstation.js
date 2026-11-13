@@ -223,7 +223,8 @@ async function buyLabel(req, res, userId, brandId) {
     .from('inventory_items')
     .select('id, sku, variety, buyer, "buyerUsername", "buyerAddress", "shipmentCarrier", "saleId"')
     .eq('brandId', brandId)
-    .eq('shipmentBoxId', shipmentBoxId);
+    .eq('shipmentBoxId', shipmentBoxId)
+    .is('deletedAt', null);
   if (itemsErr) { const e = new Error(itemsErr.message); e.status = 500; throw e; }
   if (!items || items.length === 0) {
     const e = new Error('No items found for this shipment box'); e.status = 404; throw e;

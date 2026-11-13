@@ -1,6 +1,8 @@
 import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, SKU_SUFFIX_END_RE } from './_lib/sku.js';
+import { fetchAllById } from './_lib/fetchAll.js';
+import { settleSyntheticSkus } from './_lib/syntheticSkus.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 // brandId is server-owned too: the active brand is forced from the request, so
@@ -629,7 +631,11 @@ export default wrap(async (req, res) => {
         .not('deletedAt', 'is', null)
         .lt('deletedAt', cutoff);
 
-      const data = await fetchAll(() =>
+      // Keyed on id, not offsets: this list is re-read every 8s while packers,
+      // the live show and Validate Sales write to it, and offset pages over
+      // rows that move mid-read drop some of them — a plant missing from one
+      // poll can be matched as "no such SKU" by a Validate Sales run then.
+      const data = await fetchAllById(() =>
         supabase.from('inventory_items').select('*').eq('brandId', brandId));
       // The packing bench never needs what plants COST — strip bought-price
       // fields for packer logins so the data doesn't reach that client at
@@ -688,25 +694,20 @@ export default wrap(async (req, res) => {
       // Server-generate SKUs for new items that don't have one.
       if (rawInserts.length > 0) await assignMissingSkus(rawInserts, brandId);
 
-      // Self-heal Validate-Sales placeholder rows. Each unmatched order
-      // line generates a deterministic UNMATCHED-<boxId>-<rowKey> SKU
-      // (see SalesUploadModal.handleApply). If an earlier upload of the
-      // same file left a row (alive or soft-deleted) with that SKU, the
-      // unique constraint on `sku` would reject the new insert. Hard-
-      // delete any existing row whose SKU collides with an incoming
-      // placeholder insert before proceeding. Placeholders are throwaway
-      // — nothing of value gets lost here.
-      const placeholderSkus = rawInserts
-        .map(i => i.sku)
-        .filter(s => typeof s === 'string' && s.startsWith('UNMATCHED-'));
-      if (placeholderSkus.length > 0) {
-        const { error: delErr } = await supabase
-          .from('inventory_items')
-          .delete()
-          .eq('brandId', brandId)
-          .in('sku', placeholderSkus);
-        if (delErr) { const e = new Error(delErr.message); e.status = 500; throw e; }
+      // Catch duplicate SKUs within the incoming payload before touching the
+      // DB — a save that's going to be refused must not have freed or
+      // renamed anything first.
+      const allSkus = [...rawInserts, ...rawUpdates].map(i => (i.sku ?? '').toString().trim()).filter(Boolean);
+      const dupeInBatch = allSkus.find((s, i) => allSkus.indexOf(s) !== i);
+      if (dupeInBatch) {
+        const e = new Error(`Duplicate SKU "${dupeInBatch}" in this save`); e.status = 409; throw e;
       }
+
+      // Placeholder / flagged-line SKUs (UNMATCHED-…, DBL-…) that are
+      // already taken: free or rename them before the insert hits the unique
+      // index. See settleSyntheticSkus — a collision never deletes another
+      // order line.
+      await settleSyntheticSkus(supabase, rawInserts, brandId);
 
       const now = new Date().toISOString();
       const inserts = rawInserts.map(item => ({
@@ -721,13 +722,6 @@ export default wrap(async (req, res) => {
         modifiedAt: now,
         modifiedBy: user.displayName,
       }));
-
-      // Catch duplicate SKUs within the incoming payload before hitting the DB.
-      const allSkus = [...inserts, ...updates].map(i => (i.sku ?? '').toString().trim()).filter(Boolean);
-      const dupeInBatch = allSkus.find((s, i) => allSkus.indexOf(s) !== i);
-      if (dupeInBatch) {
-        const e = new Error(`Duplicate SKU "${dupeInBatch}" in this save`); e.status = 409; throw e;
-      }
 
       if (inserts.length > 0) {
         // Batch in chunks of 500 so very large imports don't hit Postgres

@@ -5,20 +5,21 @@ import {
 import { shortBoxCode } from '../labels/boxCode.js';
 import { ItemNotes } from './ItemNotes.jsx';
 
-// Renders the parsed/matched preview of a Palmstreet orders upload.
-// Used by the Validate Sales modal (SalesUploadModal). Each box shows
-// its items along with whether the row's SKU exactly matches a row in
-// inventory. Manual linking is intentionally not offered — the SKU
-// must match exactly, by design.
+// Renders the planned preview of an orders upload (Validate Sales /
+// Validate TikTok). Every line shows what Update Inventory will do with it
+// (sales/validatePlan.js) — every line is kept, so no line reads "skipped".
+// Manual linking is intentionally not offered — the SKU must match exactly,
+// by design.
+const REAL_KINDS = new Set(['fresh', 'relink', 'topup', 'same_shipment']);
+const isRealPlant = (it) => REAL_KINDS.has(it.plan?.kind) && it.plan?.item && it.plan.item.lotKind !== 'unmatched';
+
 export function BoxesList({ boxes }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
   return (
     <div className="space-y-3">
       {boxes.map(box => {
         const isCollapsed = collapsed.has(box.id);
-        const matched = box.items.filter(
-          i => i.match?.item && !i.match?.alreadyInBox,
-        ).length;
+        const matched = box.items.filter(isRealPlant).length;
         const a = box;
         return (
           <div key={box.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden">
@@ -76,10 +77,12 @@ export function BoxesList({ boxes }) {
 }
 
 function BoxItemRow({ item }) {
-  const matchItem = item.match?.item;
-  const alreadyInBoxId = item.match?.alreadyInBox;
+  const plan = item.plan || {};
+  const inv = plan.item;
+  const settled = plan.kind === 'topup' || plan.kind === 'same_shipment';
+  const chip = 'mt-1.5 inline-flex items-center gap-1.5 text-xs px-2 py-0.5 rounded border';
   return (
-    <div className={`px-4 py-2.5 flex items-start gap-3 ${alreadyInBoxId ? 'opacity-60' : ''}`}>
+    <div className={`px-4 py-2.5 flex items-start gap-3 ${settled ? 'opacity-70' : ''}`}>
       {item.lineupIndex && (
         <span
           className="shrink-0 mt-0.5 min-w-[1.9rem] px-1.5 py-0.5 rounded-md bg-blue-600 text-white text-sm font-extrabold text-center tabular-nums"
@@ -96,22 +99,43 @@ function BoxItemRow({ item }) {
           <span>${item.price.toFixed(2)}</span>
           {item.sku && <><span>·</span><span className="font-mono">SKU {item.sku}</span></>}
         </div>
-        {alreadyInBoxId ? (
-          <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded border border-gray-300">
-            <SkipForward className="w-3 h-3" />
-            Already in box <span className="font-mono">{shortBoxCode(alreadyInBoxId)}</span> · {item.lotFix ? 'details topped up' : 'skipped'}
-          </div>
-        ) : matchItem ? (
-          <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded border border-emerald-200">
+        {plan.kind === 'fresh' || plan.kind === 'relink' ? (
+          <div className={`${chip} bg-emerald-50 text-emerald-800 border-emerald-200`}>
             <Check className="w-3 h-3" />
-            <span className="font-mono">{matchItem.sku}</span>
+            <span className="font-mono">{inv.sku}</span>
             <span className="opacity-70">·</span>
-            <span className="truncate max-w-[200px]">{matchItem.name}{matchItem.variety ? ` · ${matchItem.variety}` : ''}</span>
+            <span className="truncate max-w-[200px]">{inv.name}{inv.variety ? ` · ${inv.variety}` : ''}</span>
+            {plan.kind === 'relink' && (
+              <span className="opacity-80">· replaces the placeholder in box <span className="font-mono">{shortBoxCode(plan.replaces.shipmentBoxId)}</span>{(plan.replaces.status === 'shipped' || plan.replaces.status === 'delivered') ? ' (shipped)' : ''}</span>
+            )}
+          </div>
+        ) : settled ? (
+          <div className={`${chip} bg-gray-100 text-gray-700 border-gray-300`}>
+            <SkipForward className="w-3 h-3" />
+            {plan.kind === 'same_shipment' ? 'Already shipped in box' : 'Already in box'} <span className="font-mono">{shortBoxCode(inv.shipmentBoxId)}</span>
+            {' · kept'}{plan.kind === 'topup' ? (item.lotFix ? ', details topped up' : ', missing details filled') : ' as is'}
+          </div>
+        ) : plan.kind === 'double_sale' ? (
+          <div
+            className={`${chip} bg-red-50 text-red-800 border-red-200`}
+            title="One SKU is one plant. The line is kept and flagged; the plant's other sale is flagged too."
+          >
+            <AlertCircle className="w-3 h-3" />
+            {plan.rival
+              ? <>Plant <span className="font-mono">{inv.sku}</span> also bought by {plan.rival.buyer || `@${plan.rival.username}`} in this file</>
+              : <>Plant <span className="font-mono">{inv.sku}</span> already {inv.status === 'sold' ? 'sold' : 'shipped'}{inv.buyer ? ` to ${inv.buyer}` : ''}{inv.shipmentBoxId ? <> (box <span className="font-mono">{shortBoxCode(inv.shipmentBoxId)}</span>)</> : null}</>}
+            {' · added here as a flagged line'}
           </div>
         ) : (
-          <div className="mt-1.5 inline-flex items-center gap-1.5 text-xs bg-amber-50 text-amber-800 px-2 py-0.5 rounded border border-amber-200">
+          <div className={`${chip} bg-amber-50 text-amber-800 border-amber-200`}>
             <AlertCircle className="w-3 h-3" />
-            {item.sku ? `No inventory item with SKU ${item.sku}` : 'No SKU on this order line'}
+            {item.sku ? `No inventory item with SKU ${item.sku}` : 'No SKU on this order line'} · added as a placeholder line
+          </div>
+        )}
+        {plan.extra && (
+          <div className={`${chip} ml-1.5 bg-amber-50 text-amber-900 border-amber-200`}>
+            <AlertCircle className="w-3 h-3" />
+            Qty {item.quantity}: {plan.extra.row ? `${plan.extra.units} more unit${plan.extra.units === 1 ? '' : 's'} already on a placeholder line` : `+${plan.extra.units} more unit${plan.extra.units === 1 ? '' : 's'} as a placeholder line`}
           </div>
         )}
         {item.lotFix && (
