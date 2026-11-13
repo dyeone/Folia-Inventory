@@ -4,7 +4,7 @@ import { LogOut, Package, ScanLine, Check, ArrowLeft, AlertCircle, Camera, Truck
 import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
-import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
+import { shortBoxCode, normalizeBoxCode, normalizeSku, isBoxCode } from '../labels/boxCode.js';
 import { compareBoxesBySize } from './boxSort.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup, isHoldItem } from './holdInfo.js';
@@ -16,6 +16,7 @@ import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
 import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printBoxSlip, printPackerUsdaSticker, printPackerUsdaSlip, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
 import { isNigelBoxId } from './platform.js';
+import { scanMissMessage } from './scanMiss.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { ReceivingPane } from './ReceivingPane.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
@@ -38,6 +39,9 @@ import { useIsMobile } from '../ui/useIsMobile.js';
 // keyboard while still receiving the hardware scanner's keystrokes, and it
 // re-grabs focus aggressively so a stray tap never breaks scanning. The
 // camera remains as a secondary, tap-to-open option.
+
+// Clock reads for event handlers (kept out of the component body).
+const nowMs = () => Date.now();
 
 // Merge a fresh /items fetch into the packer's local list WITHOUT regressing
 // the forward progress (packed → shipped) the packer just made locally. The
@@ -351,11 +355,13 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
   // Returns the fetched list so callers (mount load) can use it without
   // waiting a render — the sweep-reset prune needs the active brand's item
   // ids alongside the stamp.
+  const lastFreshRef = useRef(0);   // when the item list was last read OK
   const refresh = async () => {
     setErr('');
     try {
       const fresh = await api.getItems();
       setItems((fresh || []).filter(i => !i.deletedAt));
+      lastFreshRef.current = Date.now();
       return fresh || [];
     } catch (e) {
       setErr(e.message || 'Failed to load');
@@ -458,6 +464,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
         announceHeatFlags(notesMeta.heat, fresh);
         maybeLocalHeatScan(fresh, notesMeta.boxNotes);
         setItems(prev => mergeItems(prev, (fresh || []).filter(i => !i.deletedAt)));
+        lastFreshRef.current = Date.now();
         setTrackingByBox(
           Object.fromEntries(
             (shipments || [])
@@ -914,12 +921,32 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     }
   };
 
+  // A scanned plant that's in no open box. Re-read the list first (unless it
+  // was read a moment ago) — the desk may have just validated the sale, or a
+  // poll stalled — then tell the packer WHY it isn't in a box and what to do
+  // (scanMiss.js). A found-on-refresh plant asks for a re-scan, so every
+  // normal check (wrong-grab, hold shelf) still runs on it.
+  const explainMiss = async (sku) => {
+    let list = items;
+    if (nowMs() - lastFreshRef.current > 4000) {
+      showToast(`Checking ${sku}…`, 4000);
+      try {
+        const fresh = (await api.getItems() || []).filter(i => !i.deletedAt);
+        setItems(prev => mergeItems(prev, fresh));
+        lastFreshRef.current = nowMs();
+        list = fresh;
+      } catch { /* offline — explain from the list we have */ }
+    }
+    if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+    showToast(scanMissMessage(sku, list, { activeBrand, brands }), 7000);
+  };
+
   // Landing scan: a box label (B-XXXXXX) opens the box; an item SKU resolves
   // which open box carries it and opens that box.
   const handleScanBox = (raw) => {
     const upper = String(raw || '').trim().toUpperCase().replace(/_/g, '-');
     if (!upper) return;
-    if (upper.startsWith('B-')) {
+    if (isBoxCode(upper)) {
       const code = normalizeBoxCode(raw);
       const match = boxesByCode[code];
       if (!match) { showToast(`No open box with code ${code}`, 3500); return; }
@@ -934,7 +961,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
         return;
       }
     }
-    showToast(`Nothing matches ${raw}`, 3500);
+    void explainMiss(sku);
   };
 
   // In-box scan: flip the matching item to packed. If the scanned plant
@@ -971,7 +998,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
         goToBox(other.id);
         return;
       }
-      showToast(`SKU ${sku} isn't in any open box`, 3500);
+      void explainMiss(sku);
       return;
     }
     if (candidate.status !== 'sold') { showToast(`SKU ${sku} is already ${candidate.status}`, 3500); return; }
@@ -1040,7 +1067,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
       showToast(`⚠ Wrong label — you're wrapping ${lot}${activeWrap.sku}, but this scan reads ${raw.slice(0, 24)}. Fix the label, or Cancel on the wrap card.`, 6000);
       return;
     }
-    if (/^B[-_]/i.test(raw)) {
+    if (isBoxCode(raw)) {
       // Box-tag muscle memory: open that box — the station is just another
       // way through the same work.
       const code = normalizeBoxCode(raw);
@@ -1079,7 +1106,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
       showToast(`SKU ${sku} is already ${it?.status || 'gone'}`, 3000);
       return;
     }
-    showToast(`SKU ${sku} isn't in any open box`, 3500);
+    void explainMiss(sku);
   };
 
   // Sweep scan: a FIND-scan, not a pack-scan — it only ticks a held or
@@ -1092,7 +1119,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     // answers, not "unknown SKU". A box tag exits to that box (landing
     // muscle memory) — unless the box is IN the sweep, whose pane just said
     // nothing in it gets packed today.
-    if (/^B[-_]/i.test(raw)) {
+    if (isBoxCode(raw)) {
       const code = normalizeBoxCode(raw);
       if (sweepBoxes.some(sb => sb.box.code === code)) {
         showToast(`Box ${code} is in this sweep — scan its plants (or tap Boxes to leave)`, 3500);
@@ -1136,7 +1163,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     if (already) { showToast(`${sku} already found ✓`, 2000); return; }
     const elsewhere = Object.values(boxesByCode).find(b => b.items.some(i => normalizeSku(i.sku) === sku));
     if (elsewhere) { showToast(`${sku} isn't in the sweep — leave it on the bench (box ${elsewhere.code})`, 3500); return; }
-    showToast(`SKU ${sku} isn't in any open box`, 3500);
+    void explainMiss(sku);
   };
 
   // Manual found-toggle, only for swept plants with no scannable barcode

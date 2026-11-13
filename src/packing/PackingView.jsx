@@ -31,7 +31,7 @@ import { isNigelBoxId } from './platform.js';
 import { buildNigelShippingRows, downloadNigelShippingCsv } from './nigelExport.js';
 import { buildTagRows, downloadTagsXlsx, needsTag, TAG_PRICE_MIN } from './tagList.js';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
-import { shortBoxCode, normalizeBoxCode, normalizeSku } from '../labels/boxCode.js';
+import { shortBoxCode, normalizeBoxCode, normalizeSku, isBoxCode } from '../labels/boxCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxHasHoldItem, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
 import { findDupeLots } from './dupeLots.js';
@@ -185,7 +185,9 @@ export function PackingView({
     const trimmed = String(raw || '').trim();
     if (!trimmed) return;
     const upper = trimmed.toUpperCase().replace(/_/g, '-');
-    if (/^B-/.test(upper)) {
+    // A box tag is exactly B- + 6 characters; a BAE plant SKU (B-ANT-…)
+    // starts with B- too and must reach the item path.
+    if (isBoxCode(upper)) {
       handleScannedBoxCode(trimmed);
       setScanFeedback({ kind: 'box', text: upper });
     } else if (looksLikeTracking(trimmed)) {

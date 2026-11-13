@@ -18,6 +18,15 @@ export function shortBoxCode(shipmentBoxId) {
   return `B-${base36.slice(-6)}`;
 }
 
+// Is this scan a box tag? Exactly "B-" + the 6-character code above. Not
+// just a "B-" prefix: BAE plant SKUs start with "B-" too since 2026-10-08
+// (B-ANT-9759, B-NC-ANT-A688) — a prefix test sent every BAE plant scan to
+// the box lookup ("No open box with code B-ANT-9759"). A SKU always has a
+// second hyphen after the brand letter; a box code never does.
+export function isBoxCode(raw) {
+  return /^B[-_][A-Z0-9]{6}$/i.test(String(raw || '').trim());
+}
+
 // Box codes are uppercase alphanumeric with a B- prefix. Normalize
 // operator input so trailing whitespace, case differences, the
 // hyphen-vs-underscore scanner quirk (see normalizeSku below), and a
