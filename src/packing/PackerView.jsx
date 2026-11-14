@@ -17,6 +17,7 @@ import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
 import { getPrintDests, savePrintDest, printBoxLabel, printBoxTag, printBoxSlip, printPackerUsdaSticker, printPackerUsdaSlip, printItemLabel, getWrapFlow, saveWrapFlow } from './packerPrint.js';
 import { isNigelBoxId } from './platform.js';
 import { scanMissMessage } from './scanMiss.js';
+import { linkCandidates, isLinkablePlant } from './placeholderLink.js';
 import { ItemNotes } from './ItemNotes.jsx';
 import { ReceivingPane } from './ReceivingPane.jsx';
 import { BoxContentBadges } from './BoxContentBadges.jsx';
@@ -127,6 +128,10 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     toastTimerRef.current = setTimeout(() => setToast(null), durationMs);
   };
   const [cameraMode, setCameraMode] = useState(null); // 'box' | 'item' | null
+  // A scanned plant that's in no box, offered onto a placeholder line it can
+  // fill: { plant, candidates: [{ line, score, sameLot, words }], inBox, more }.
+  const [linkOffer, setLinkOffer] = useState(null);
+  const [linkBusy, setLinkBusy] = useState(false);
   // Box-size catalog (from Shipping Settings) + the per-box selection map
   // (shipmentBoxId → boxSizeId), shared with the Shipping tab via
   // shipment_boxes. Loaded once on mount.
@@ -799,7 +804,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
   // input must not drive the (covered) packing flow behind it.
   // The acclimation pane owns its own scanner field, so it counts as an
   // overlay too: the hidden bench scanner must not take scans from it.
-  const overlayOpen = !!cameraMode || printerSheetOpen || acclimationOpen;
+  const overlayOpen = !!cameraMode || printerSheetOpen || acclimationOpen || !!linkOffer;
   const overlayRef = useRef(overlayOpen);
   useEffect(() => { overlayRef.current = overlayOpen; }, [overlayOpen]);
   useEffect(() => {
@@ -926,7 +931,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
   // poll stalled — then tell the packer WHY it isn't in a box and what to do
   // (scanMiss.js). A found-on-refresh plant asks for a re-scan, so every
   // normal check (wrong-grab, hold shelf) still runs on it.
-  const explainMiss = async (sku) => {
+  const explainMiss = async (sku, { offerLink = true } = {}) => {
     let list = items;
     if (nowMs() - lastFreshRef.current > 4000) {
       showToast(`Checking ${sku}…`, 4000);
@@ -937,8 +942,61 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
         list = fresh;
       } catch { /* offline — explain from the list we have */ }
     }
+    // An in-stock plant and placeholder lines it could be (placeholderLink.js):
+    // ask which — this box's lines when the packer is in one, else any open
+    // box's lines whose number or name agrees.
+    const plant = offerLink ? list.find(i => normalizeSku(i.sku) === sku && isLinkablePlant(i)) : null;
+    const note = scanMissMessage(sku, list, { activeBrand, brands });
+    if (plant) {
+      let inBox = !!activeBox;
+      let candidates = activeBox ? linkCandidates(plant, list, { boxId: activeBox.id }) : [];
+      if (!candidates.length) {
+        inBox = false;
+        // A plant in a show lineup most likely sold by its own number or SKU
+        // — that's Validate Sales' job (the note says so). Outside a box the
+        // packer opened, offer it only lines with its lineup number, never a
+        // look-alike's line by name.
+        candidates = linkCandidates(plant, list).filter(c => c.sameLot || !plant.saleId);
+      }
+      if (candidates.length) {
+        if (navigator.vibrate) navigator.vibrate(30);
+        clearTimeout(toastTimerRef.current);
+        setToast(null);
+        setLinkOffer({ plant, candidates: candidates.slice(0, 12), inBox, more: Math.max(0, candidates.length - 12), note });
+        return;
+      }
+    }
     if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
-    showToast(scanMissMessage(sku, list, { activeBrand, brands }), 7000);
+    showToast(note, 7000);
+  };
+
+  // Put the offered plant on the picked line — on the server, guarded
+  // (api/items.js link-to-line): a line another device just packed or used,
+  // or a plant just boxed elsewhere, is refused. The plant is left unpacked:
+  // its row now carries its own SKU, so its label prints with the QR (the
+  // row's print button, or the wrap station's re-scan) and a scan packs it.
+  const doLink = async (line) => {
+    const offer = linkOffer;
+    if (!offer || linkBusy) return;
+    setLinkBusy(true);
+    try {
+      await api.linkPlantToLine({ plantId: offer.plant.id, lineId: line.id });
+      setLinkOffer(null);
+      const title = String(line.name || 'the line').trim();
+      if (navigator.vibrate) navigator.vibrate(40);
+      showToast(`Linked — ${offer.plant.sku} is “${title}” in box ${shortBoxCode(line.shipmentBoxId)}. Print its label, then scan it to ${stationOpen ? 'wrap and pack it' : 'pack it'}.`, 6000);
+      if (!stationOpen && activeBoxId !== line.shipmentBoxId) goToBox(line.shipmentBoxId);
+    } catch (e) {
+      setLinkOffer(null);
+      showToast(e?.message || 'Could not put the plant on that line — try again', 5000);
+    } finally {
+      try {
+        const fresh = (await api.getItems() || []).filter(i => !i.deletedAt);
+        setItems(prev => mergeItems(prev, fresh));
+        lastFreshRef.current = nowMs();
+      } catch { /* the 8s poll catches up */ }
+      setLinkBusy(false);
+    }
   };
 
   // Landing scan: a box label (B-XXXXXX) opens the box; an item SKU resolves
@@ -1163,7 +1221,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     if (already) { showToast(`${sku} already found ✓`, 2000); return; }
     const elsewhere = Object.values(boxesByCode).find(b => b.items.some(i => normalizeSku(i.sku) === sku));
     if (elsewhere) { showToast(`${sku} isn't in the sweep — leave it on the bench (box ${elsewhere.code})`, 3500); return; }
-    void explainMiss(sku);
+    void explainMiss(sku, { offerLink: false });
   };
 
   // Manual found-toggle, only for swept plants with no scannable barcode
@@ -1187,6 +1245,9 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
   const submitScan = () => {
     const v = scanValue.trim();
     setScanValue('');
+    // The link sheet is asking which line a plant is: a stray scan must not
+    // drive the screen behind it.
+    if (v && linkOffer) { showToast('Pick a line or Cancel first', 2500); return; }
     if (v) {
       if (activeBox) {
         // A shipping-label barcode (long numeric / 1Z…) verifies the label;
@@ -1612,13 +1673,13 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
 
       {cameraMode && (cameraMode === 'box' || cameraMode === 'sweep' || cameraMode === 'station' || activeBox) && (
         <CameraScanner
-          onScan={
+          onScan={linkOffer ? () => showToast('Pick a line or Cancel first', 2500) : (
             cameraMode === 'box' ? handleScanBox
               : cameraMode === 'sweep' ? handleScanSweep
               : cameraMode === 'station' ? handleScanStation
               : cameraMode === 'label' ? handleScanLabel
                 : handleScanItem
-          }
+          )}
           onClose={() => setCameraMode(null)}
         />
       )}
@@ -1634,7 +1695,69 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
       )}
       {handoff && <PhoneHandoffOverlay box={handoff} onClose={() => setHandoff(null)} />}
       {success && <GoodJobOverlay info={success} />}
+      {linkOffer && (
+        <LinkPlantSheet
+          offer={linkOffer}
+          busy={linkBusy}
+          onPick={doLink}
+          onCancel={() => { if (!linkBusy) { const n = linkOffer.note; setLinkOffer(null); if (n) showToast(n, 7000); } }}
+        />
+      )}
       {toast && <Toast text={toast} />}
+    </div>
+  );
+}
+
+// "This plant isn't on any line yet — which one is it?" Big tap targets: the
+// packer is holding a pot and a scanner.
+function LinkPlantSheet({ offer, busy, onPick, onCancel }) {
+  const { plant, candidates, inBox, more, note } = offer;
+  const lot = plant.lotNumber ? `#${plant.lotNumber} · ` : '';
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center" onClick={onCancel}>
+      <div className="bg-white w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-4 pt-4 pb-3 border-b border-gray-100">
+          <div className="text-xs font-semibold uppercase tracking-wider text-violet-700">Not on any line yet</div>
+          <div className="text-base font-semibold text-gray-900 mt-0.5">{lot}{plant.sku} · {plant.name || 'plant'}</div>
+          <div className="text-sm text-gray-600 mt-1">
+            {inBox
+              ? 'Which of this box’s lines is it? It takes that line’s place — then print its label and scan it.'
+              : 'Which line is it? It takes that line’s place in its box — then print its label and scan it.'}
+          </div>
+          {plant.saleId && note && (
+            <div className="mt-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+              ⚠ {note}
+            </div>
+          )}
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-2">
+          {candidates.map(({ line, sameLot, words }) => (
+            <button
+              key={line.id}
+              type="button"
+              disabled={busy}
+              onClick={() => onPick(line)}
+              className="w-full text-left rounded-xl border-2 border-violet-200 bg-violet-50/50 hover:border-violet-400 active:bg-violet-100 disabled:opacity-60 px-3 py-2.5"
+            >
+              <div className="flex items-center gap-2">
+                {line.lotNumber && <span className="text-sm font-extrabold text-violet-800 tabular-nums">#{line.lotNumber}</span>}
+                <span className="font-medium text-gray-900 truncate">{line.name || 'Unnamed line'}</span>
+                {(sameLot || words > 0) && <span className="ml-auto text-[11px] font-semibold text-emerald-700 shrink-0">{sameLot ? 'same #' : 'name matches'}</span>}
+              </div>
+              <div className="text-xs text-gray-500 mt-0.5">
+                {!inBox && <>Box {shortBoxCode(line.shipmentBoxId)} · {line.buyer || line.buyerUsername || 'buyer'} · </>}
+                {line.salePrice != null ? `$${Number(line.salePrice).toFixed(2)}` : ''}{line.orderDate ? ` · ordered ${String(line.orderDate).slice(5, 10)}` : ''}
+              </div>
+            </button>
+          ))}
+          {more > 0 && <div className="text-xs text-gray-500 text-center py-1">+{more} more lines like these — any of them is fine for a look-alike plant</div>}
+        </div>
+        <div className="p-3 border-t border-gray-100">
+          <button type="button" onClick={onCancel} disabled={busy} className="w-full h-12 rounded-xl border border-gray-300 text-gray-700 font-medium disabled:opacity-60">
+            {busy ? 'Saving…' : 'Cancel'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

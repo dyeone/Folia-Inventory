@@ -1399,7 +1399,16 @@ function StaffOrAdminInventory() {
                 showToast(e.message || 'Failed to record export', 'error');
               }
             }}
-            onValidateSales={() => setShowValidateSales(true)}
+            onValidateSales={async () => {
+              // Fresh show list first: Validate Sales finds a SKU-less line's
+              // plant by its lineup number in the newest show, so a show
+              // created on another device since this page loaded must be in it.
+              try {
+                const fresh = await api.getSales();
+                setSales([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+              } catch { /* the modal still opens; unknown shows block a guess */ }
+              setShowValidateSales(true);
+            }}
             onValidateTikTok={() => setShowValidateTikTok(true)}
             onStartLiveScan={() => setShowLiveScan(true)}
             onGoLive={(sale) => setLiveSale(sale)}
@@ -1493,6 +1502,10 @@ function StaffOrAdminInventory() {
                   shipmentCarrier: null,
                   orderId: null,
                   orderDate: null,
+                  // Back on the bench: not packed or shipped (a plant re-sold later
+                  // must land in its next box unpacked).
+                  packedAt: null,
+                  shippedAt: null,
                 }));
                 if (updates.length > 0) await api.upsertItems(updates);
                 // Hard-delete unmatched placeholders — they reserve their
@@ -1536,6 +1549,10 @@ function StaffOrAdminInventory() {
                   shipmentCarrier: null,
                   orderId: null,
                   orderDate: null,
+                  // Back on the bench: not packed or shipped (a plant re-sold later
+                  // must land in its next box unpacked).
+                  packedAt: null,
+                  shippedAt: null,
                 }));
                 if (updates.length > 0) await api.upsertItems(updates);
                 if (unmatched.length > 0) await api.purgeItems(unmatched.map(i => i.id));
@@ -1576,6 +1593,10 @@ function StaffOrAdminInventory() {
                   shipmentCarrier: null,
                   orderId: null,
                   orderDate: null,
+                  // Back on the bench: not packed or shipped (a plant re-sold later
+                  // must land in its next box unpacked).
+                  packedAt: null,
+                  shippedAt: null,
                 }));
                 if (updates.length > 0) await api.upsertItems(updates);
                 if (unmatched.length > 0) await api.purgeItems(unmatched.map(i => i.id));
@@ -1900,6 +1921,7 @@ function StaffOrAdminInventory() {
       {showValidateSales && (
         <SalesUploadModal
           items={items}
+          sales={sales}
           onApply={async (updates) => {
             try {
               await api.upsertItems(updates);

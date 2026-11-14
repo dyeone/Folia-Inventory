@@ -121,6 +121,9 @@ export const api = {
   getLiveShow: (brandId) =>
     request(`/settings?action=live-show-get${brandId ? `&brandId=${encodeURIComponent(brandId)}` : ''}`),
   upsertItems: (items) => request('/items', { method: 'POST', body: { items } }),
+  // Packer: put the plant in hand on a placeholder line (api/items.js linkToLine).
+  linkPlantToLine: ({ plantId, lineId }) =>
+    request('/items', { method: 'POST', body: { action: 'link-to-line', plantId, lineId } }),
   assignItemsToSale: ({ itemIds, saleId }) =>
     request('/items', { method: 'POST', body: { action: 'assign-to-sale', itemIds, saleId } }),
   // Atomic server-side box merge: moves every still-sold item from the source

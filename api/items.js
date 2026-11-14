@@ -3,6 +3,7 @@ import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, SKU_SUFFIX_END_RE } from './_lib/sku.js';
 import { fetchAllById } from './_lib/fetchAll.js';
 import { settleSyntheticSkus } from './_lib/syntheticSkus.js';
+import { isOpenLine, isLinkablePlant, linkPatches } from './_lib/linkLine.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 // brandId is server-owned too: the active brand is forced from the request, so
@@ -315,6 +316,53 @@ async function acclimationRate(brandId) {
   return Number.isFinite(n) ? n : ACCLIMATE_DEFAULT_RATE;
 }
 
+// POST { action: 'link-to-line', plantId, lineId } — the packer puts the plant
+// in hand on a placeholder line (api/_lib/linkLine.js). Guarded, like
+// assign-to-sale: the line is claimed only while it's still live, unpacked
+// and the same quantity, and the plant only while it's still in no box, so
+// two devices can never put two plants on one line (or one plant on two).
+// If the plant step loses, the line claim is undone.
+async function linkToLine(req, res, user, brandId) {
+  const { plantId, lineId } = req.body || {};
+  if (!plantId || !lineId || typeof plantId !== 'string' || typeof lineId !== 'string' || plantId === lineId) {
+    const e = new Error('plantId and lineId required'); e.status = 400; throw e;
+  }
+  const { data: rows, error } = await supabase
+    .from('inventory_items').select('*').eq('brandId', brandId).in('id', [plantId, lineId]);
+  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  const plant = (rows || []).find((r) => r.id === plantId);
+  const line = (rows || []).find((r) => r.id === lineId);
+  if (!plant || !line) { const e = new Error('Plant or line not found'); e.status = 404; throw e; }
+  if (!isOpenLine(line)) { const e = new Error('That line was just packed, linked or removed — scan the plant again'); e.status = 409; throw e; }
+  if (!isLinkablePlant(plant)) { const e = new Error('That plant is already in a box'); e.status = 409; throw e; }
+
+  const now = new Date().toISOString();
+  const { plantPatch, linePatch } = linkPatches(plant, line, now);
+  const stamp = { modifiedAt: now, modifiedBy: user.displayName };
+  let lineQ = supabase.from('inventory_items').update({ ...linePatch, ...stamp })
+    .eq('brandId', brandId).eq('id', lineId)
+    .is('deletedAt', null).is('packedAt', null).eq('status', 'sold');
+  lineQ = line.quantity == null ? lineQ.is('quantity', null) : lineQ.eq('quantity', line.quantity);
+  const { data: gotLine, error: lErr } = await lineQ.select('id');
+  if (lErr) { const e = new Error(lErr.message); e.status = 500; throw e; }
+  if (!gotLine?.length) { const e = new Error('That line was just packed or linked on another device — scan the plant again'); e.status = 409; throw e; }
+
+  const { data: gotPlant, error: pErr } = await supabase.from('inventory_items')
+    .update({ ...plantPatch, ...stamp })
+    .eq('brandId', brandId).eq('id', plantId)
+    .is('deletedAt', null).is('shipmentBoxId', null).in('status', ['available', 'listed', 'acclimated', 'sold'])
+    .select('id');
+  if (pErr || !gotPlant?.length) {
+    // Undo the line claim: put back exactly what the patch changed.
+    const restore = Object.fromEntries(Object.keys(linePatch).map((k) => [k, line[k] ?? null]));
+    await supabase.from('inventory_items').update({ ...restore, modifiedAt: line.modifiedAt ?? null, modifiedBy: line.modifiedBy ?? null })
+      .eq('brandId', brandId).eq('id', lineId);
+    if (pErr) { const e = new Error(pErr.message); e.status = 500; throw e; }
+    const e = new Error('That plant was just put in a box on another device'); e.status = 409; throw e;
+  }
+  return res.status(200).json({ ok: true, plantId, lineId });
+}
+
 async function acclimateItems(req, res, user, brandId) {
   const raw = Array.isArray(req.body?.skus) ? req.body.skus : [];
   const skus = Array.from(new Set(raw.map((s) => String(s || '').trim().toUpperCase().replace(/_/g, '-')).filter(Boolean)));
@@ -603,6 +651,7 @@ export default wrap(async (req, res) => {
   if (action === 'transfers' && req.method === 'GET') return listTransfers(req, res, user, brandId);
   if (action === 'transfer' && req.method === 'POST') return transferItem(req, res, user, brandId);
   if (action === 'acclimate' && req.method === 'POST') return acclimateItems(req, res, user, brandId);
+  if (action === 'link-to-line' && req.method === 'POST') return linkToLine(req, res, user, brandId);
   // Consultant-safe stock list: what's on hand, with the list price and
   // never the cost. Any brand member. (The plain GET returns full rows with
   // costs to staff/admin — this is the narrow read for the pricing screen.)

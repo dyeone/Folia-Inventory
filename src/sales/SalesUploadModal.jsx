@@ -53,7 +53,7 @@ function lineupFixFor(it, plan, isTikTok) {
 // open TikTok box, never a Palmstreet one for the same client, and vice
 // versa), and the copy differ. TikTok box ids carry a `tt` prefix that marks
 // them for life (badges, future merges).
-export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstreet' }) {
+export function SalesUploadModal({ items, sales = [], onApply, onClose, platform = 'palmstreet' }) {
   const isTikTok = platform === 'tiktok';
   const [fileName, setFileName] = useState('');
   const [boxes, setBoxes] = useState(null);
@@ -93,11 +93,11 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
   // each line lands on exactly one row and no row takes two lines.
   const resolved = useMemo(() => {
     if (!boxes) return null;
-    return planValidation(boxes, items, { platform: isTikTok ? 'tiktok' : 'palmstreet' }).map(box => ({
+    return planValidation(boxes, items, { platform: isTikTok ? 'tiktok' : 'palmstreet', sales }).map(box => ({
       ...box,
       items: box.items.map(item => ({ ...item, lotFix: lineupFixFor(item, item.plan, isTikTok) })),
     }));
-  }, [boxes, items, isTikTok]);
+  }, [boxes, items, sales, isTikTok]);
 
   const summary = useMemo(() => {
     if (!resolved) return null;
@@ -356,7 +356,7 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
             <p className="text-xs text-gray-500 mt-0.5">
               {isTikTok
                 ? 'Match each TikTok order to inventory by the label number in the product name. New lines for a buyer with an open TikTok box merge into it — TikTok boxes are never combined with the same client\'s Palmstreet boxes, and carry their own TikTok mark in Shipping.'
-                : 'Match each Palmstreet order to inventory by exact SKU — every line of the file is kept. New lines for a buyer with an open box merge into it; a line already in a box is updated in place (order date, shipping fee, the lineup number from the title, missing details) without duplicating or moving it. A plant bought twice is kept on both lines, flagged.'}
+                : 'Match each Palmstreet order to inventory by exact SKU — or, when a listing was typed without one, by the lineup number on the pot\'s label — and every line of the file is kept. New lines for a buyer with an open box merge into it; a line already in a box is updated in place (order date, shipping fee, the lineup number from the title, missing details) without duplicating or moving it. A plant bought twice is kept on both lines, flagged.'}
             </p>
           </div>
           <button onClick={onClose} className="p-2 -mr-1 text-gray-500 hover:bg-gray-100 active:bg-gray-200 rounded-lg ml-2" aria-label="Close">
@@ -394,6 +394,7 @@ export function SalesUploadModal({ items, onApply, onClose, platform = 'palmstre
                 <ul className="space-y-0.5 list-disc list-inside">
                   <li><em>Every line of the file is kept</em> — each one ends up as its own line in a buyer's box</li>
                   <li>Matches each order row against the full inventory by <em>exact SKU</em> (case-insensitive), including a SKU typed straight onto the name</li>
+                  <li>A listing typed without a SKU ("553 rose belle") is matched by its <em>lineup number</em>: the plant with that number from the most recent show before the order</li>
                   <li>Marks matched items <em>sold</em> with the buyer's price, order date, shipping fee, order ID, and address</li>
                   <li>Re-uploading is safe: lines already in a box keep their place but get <em>topped up</em> with order date, shipping fee, and anything that was missing</li>
                   <li>A plant already sold to another order (or bought twice in this file) is added as a <em>flagged double-sale line</em> — never dropped</li>

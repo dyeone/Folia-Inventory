@@ -30,10 +30,19 @@
 //      file → a flagged double-sale line; nothing at all → a placeholder.
 // A fully refunded row (status 'refunded', still in its box) is the line's
 // own row: the line lands on it and nothing is added or replaced.
+//
+// A line with no SKU (a listing typed by hand: "553 rose belle") falls back to
+// its lineup number — the number on the pot's label. Numbers are fixed once
+// set and rotate through 1–1000 by week, so the plant is the in-stock one
+// with that number from the most recent show before the order (a name that
+// agrees wins a tie; a plant added after the order never counts). 2026-11-13:
+// 12 lines in open boxes had become placeholders this way, so their plants
+// showed Available and their own QR labels scanned as "not in a box".
 // Palmstreet gives every purchased line its own order # (4,177 BAE orders,
 // 14 with more than one line), so "this order #" is the line's identity.
 import { normalizeSku } from '../labels/boxCode.js';
 import { boxPlatform } from '../packing/platform.js';
+import { namesAgree } from '../packing/nameMatch.js';
 
 const PLACED = new Set(['sold', 'shipped', 'delivered']);
 // In stock: a sale line claims it. 'acclimated' is a TC still on the bench —
@@ -136,15 +145,22 @@ function rowOrder(rowKey) {
 //   replaces: relink — the placeholder being replaced
 //   extra:    { units, row } — Quantity N on a real plant: the other N−1
 //             units as one placeholder line (row = it exists already)
-export function planValidation(boxes, items, { platform = 'palmstreet' } = {}) {
+export function planValidation(boxes, items, { platform = 'palmstreet', sales = [] } = {}) {
   const live = (items || []).filter((i) => !i.deletedAt);
   const bySku = new Map();
   const byOrder = new Map();
+  const byLot = new Map();      // lineup number → plants (not synthetic rows)
+  const saleDate = new Map((sales || []).map((s) => [s.id, Date.parse(s.date || '')]));
   for (const i of live) {
     const k = normalizeSku(i.sku);
     if (k) {
       if (!bySku.has(k)) bySku.set(k, []);
       bySku.get(k).push(i);
+    }
+    if (i.lotNumber != null && i.lotNumber !== '' && !isSynthetic(i)) {
+      const n = String(i.lotNumber);
+      if (!byLot.has(n)) byLot.set(n, []);
+      byLot.get(n).push(i);
     }
     // Order rows count only on this upload's platform: a Palmstreet order #
     // never names a TikTok or Nigel box's line.
@@ -236,17 +252,60 @@ export function planValidation(boxes, items, { platform = 'palmstreet' } = {}) {
   // Of an order's free rows, the ones line L may take: never a row made for
   // another line of this file that hasn't been planned yet (it will claim its
   // own); the row made for L first, then placeholders, then anything else.
+  // A row carrying this line's lineup number (a plant an earlier upload
+  // matched by number) is this line's, not a sibling's.
+  const sameNum = (row, L) => (L.it.lineupIndex && row.lotNumber != null
+    && String(row.lotNumber) === String(L.it.lineupIndex) ? 1 : 0);
   const candidatesFor = (L, rows) => rows
     .map((row) => ({ row, owner: ownerOf(row, L) }))
     .filter(({ owner }) => !owner || owner === L || owner.plan)
-    .sort((a, b) => (b.owner === L) - (a.owner === L) || isSynthetic(b.row) - isSynthetic(a.row))
+    .sort((a, b) => (b.owner === L) - (a.owner === L)
+      || isSynthetic(b.row) - isSynthetic(a.row)
+      || sameNum(b.row, L) - sameNum(a.row, L))
     .map(({ row }) => row);
+  // Plants some line of this file names by SKU: never handed to a
+  // lineup-number guess, whatever the file order — exact evidence wins.
+  const skuNamed = new Set(lines.flatMap((L) => (L.keys.length ? hitsFor(L, { anyAge: true }) : [])).map((i) => i.id));
+  // No SKU on the line (or a SKU inventory doesn't have): the plant with the
+  // line's lineup number from the NEWEST show before the order, up to 35
+  // days back (a number is reused only after five weeks). Only that show's
+  // plant: if it's already taken, boxed or sold, the line stays a
+  // placeholder — never an older plant that happens to share the number, and
+  // a name never outranks the newest show. A name that disagrees is accepted
+  // only from a show within 3 days of the order, and never for a line that
+  // carries a SKU this brand doesn't have (another brand's file). Palmstreet
+  // only — TikTok's "lineup index" is its product name.
+  const lotStock = (L) => {
+    if (platform !== 'palmstreet' || !L.it.lineupIndex) return null;
+    const ordered = Date.parse(L.it.orderDate || '');
+    if (isNaN(ordered)) return null;
+    const same = (byLot.get(String(L.it.lineupIndex)) || []).filter((i) => bornBy(i, L.it.orderDate));
+    // A same-number plant in a show this list doesn't have (created since the
+    // sales list was read) can't be ranked — don't guess. (A deleted show
+    // leaves its plants' saleId behind too: 4 in-stock plants on 2026-11-13,
+    // none numbered.)
+    if (same.some((i) => i.saleId && !saleDate.has(i.saleId) && IN_STOCK.has(i.status))) return null;
+    const dated = same
+      .map((i) => ({ i, at: saleDate.get(i.saleId) }))
+      .filter(({ at }) => at != null && !isNaN(at) && at <= ordered + DAY_MS && at >= ordered - 35 * DAY_MS);
+    if (!dated.length) return null;
+    const newestAt = Math.max(...dated.map(({ at }) => at));
+    let newest = dated.filter(({ at }) => at === newestAt);
+    if (newest.length > 1) newest = newest.filter(({ i }) => namesAgree(L.it.title, i.name));
+    if (newest.length !== 1) return null;
+    const { i } = newest[0];
+    if (!free(i) || !IN_STOCK.has(i.status) || skuNamed.has(i.id)) return null;
+    if (!namesAgree(L.it.title, i.name) && (L.keys.length || ordered - newestAt > 3 * DAY_MS)) return null;
+    return i;
+  };
   // The line's own placeholder / flagged line from an earlier upload. If the
   // line's plant is in stock now (its SKU was fixed, or reads since the glued
   // SKU fix), the plant replaces the placeholder in that box; otherwise the
   // line stays as it is.
   const ownRow = (L, own) => {
-    const stock = isRefunded(own) ? null : hitsFor(L).find((i) => free(i) && isStock(i));
+    const hits = isRefunded(own) ? [] : hitsFor(L);
+    const stock = isRefunded(own) ? null
+      : hits.find((i) => free(i) && isStock(i)) || (hits.length ? null : lotStock(L));
     return stock
       ? { kind: 'relink', item: take(stock), replaces: take(own) }
       : { kind: landOn(own), item: take(own) };
@@ -260,7 +319,10 @@ export function planValidation(boxes, items, { platform = 'palmstreet' } = {}) {
     current = L;
     const hit = hitsFor(L, { anyAge: true }).find((i) => free(i) && isOwnBoxed(i) && norm(i.orderId) === L.ord)
       || hitsFor(L).find((i) => free(i) && inBox(i) && !i.orderId
-        && (isShipped(i) ? isSameShipment(L.box, L.it, i) : sameBuyer(L.box, i)));
+        && (isShipped(i) ? isSameShipment(L.box, L.it, i) : sameBuyer(L.box, i)))
+      // A line with no SKU: its order's plant carrying its lineup number (an
+      // earlier upload matched it by number).
+      || (L.keys.length ? null : (byOrder.get(L.ord) || []).find((i) => free(i) && !isSynthetic(i) && sameNum(i, L)));
     if (hit) L.plan = { kind: landOn(hit), item: take(hit) };
   }
 
@@ -297,7 +359,7 @@ export function planValidation(boxes, items, { platform = 'palmstreet' } = {}) {
     // a placeholder first (it IS this line, not yet linked to a plant).
     const orderRow = L.ord ? candidatesFor(L, (byOrder.get(L.ord) || []).filter(free))[0] || null : null;
 
-    const stock = hits.find((i) => free(i) && isStock(i));
+    const stock = hits.find((i) => free(i) && isStock(i)) || (hits.length ? null : lotStock(L));
     if (stock) {
       if (orderRow && isSynthetic(orderRow) && !isRefunded(orderRow)) {
         L.plan = { kind: 'relink', item: take(stock), replaces: take(orderRow) };
@@ -338,8 +400,17 @@ export function planValidation(boxes, items, { platform = 'palmstreet' } = {}) {
   // replaced placeholder's state, so a shipped or packed box stays whole.
   for (const L of lines) {
     const p = L.plan;
-    const units = Math.max(0, (parseInt(L.it.quantity, 10) || 1) - 1);
+    let units = Math.max(0, (parseInt(L.it.quantity, 10) || 1) - 1);
     const real = p.item && !isSynthetic(p.item) && ['fresh', 'relink', 'topup'].includes(p.kind);
+    if (units > 0 && real && !L.extraRow && L.ord) {
+      // Units the packer already put on this order (a look-alike linked onto
+      // the extra-units line, or onto a Quantity 2+ placeholder) are in the
+      // box as plants of this order — the line isn't added back.
+      const boxId = p.kind === 'relink' ? p.replaces.shipmentBoxId : p.item.shipmentBoxId;
+      const linked = (byOrder.get(L.ord) || []).filter((i) => i !== p.item && !isSynthetic(i)
+        && !claimed.has(i.id) && (!boxId || i.shipmentBoxId === boxId)).length;
+      units = Math.max(0, units - linked);
+    }
     if (units > 0 && real) p.extra = { units, row: L.extraRow || null };
     p.lineKey = L.lineKey;
     p.nth = L.nth;
