@@ -103,6 +103,10 @@ export function EditBoxItemsModal({ box, inventoryItems, onClose, onRefreshItems
           shipmentCarrier: null,
           orderId: null,
           orderDate: null,
+          // Back on the bench: not packed or shipped (a plant re-sold later
+          // must land in its next box unpacked).
+          packedAt: null,
+          shippedAt: null,
         }]);
       }
       await onRefreshItems?.();
