@@ -20,9 +20,13 @@
 
       <label>
         <span>User ID</span>
-        <input id="userId" type="text" placeholder="abc123def456" />
-        <small>From the Folia app's <code>localStorage</code> entry <code>session-current-user</code>.</small>
+        <input id="userId" type="text" readonly />
+        <small>Filled automatically after signing in.</small>
       </label>
+      <label><span>Folia username</span><input id="authUsername" type="text" autocomplete="username" /></label>
+      <label><span>Folia password</span><input id="authPassword" type="password" autocomplete="current-password" /></label>
+      <div class="row"><button id="signIn" type="button">Sign in</button><button id="signOut" type="button">Sign out</button></div>
+      <p id="authStatus" class="hint"></p>
       <label>
         <span>Brand</span>
         <select id="brandId">
@@ -215,6 +219,6 @@
     </div>
 
     <script src="scale.js"></script>
-    <script src="options.js"></script>
+    <script type="module" src="options.js"></script>
   </body>
 </html>

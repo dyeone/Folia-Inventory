@@ -33,6 +33,7 @@ async function sanitizeBrandIds(input) {
 export default wrap(async (req, res) => {
   switch (req.method) {
     case 'GET': {
+      await requireAdmin(req.query?.userId);
       const { data, error } = await supabase
         .from('users')
         .select('*')

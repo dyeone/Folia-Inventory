@@ -43,7 +43,7 @@ export const hasRole = (u, role) => rolesOf(u).includes(role);
 // read the role under its current name.
 export const stripUser = (u) => {
   if (!u) return null;
-  const { passwordHash, ...safe } = u;
+  const { passwordHash, bridgeToken, ...safe } = u;
   const roles = rolesOf(safe);
   return { ...safe, role: primaryRole(roles), roles };
 };

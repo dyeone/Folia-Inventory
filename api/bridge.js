@@ -13,8 +13,9 @@ import { randomBytes } from 'node:crypto';
 //   POST  ?action=complete         bridge → report done/failed   (bridge auth)
 //   GET   ?action=mac-version      mac app → latest published build (public)
 //
-// Bridge auth = Authorization: Bearer <users.bridgeToken>. User auth =
-// userId in query (GET) or body (POST), matching the rest of the API.
+// Bridge workers retain their own Bearer; browser actions use the signed
+// session enforced by wrap, with userId bound to its verified subject.
+const BRIDGE_AUTH_ACTIONS = new Set(['GET:next', 'POST:complete', 'GET:packing-status', 'GET:live-show', 'GET:mac-version']);
 
 // How long a 'running' job can sit before /next is allowed to re-claim
 // it. Covers a bridge crash mid-job. Tune up if real ADB sequences
@@ -57,7 +58,7 @@ export default wrap(async (req, res) => {
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
     }
   }
-});
+}, { sessionRequired: req => !BRIDGE_AUTH_ACTIONS.has(`${req.method}:${req.method === 'GET' ? req.query?.action : req.body?.action}`) });
 
 // Mint (or rotate) a bridge token for the calling user. Returns the
 // plaintext token once — there's no way to recover it later, since we
