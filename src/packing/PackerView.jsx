@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { AuthContext } from '../AuthContext.js';
 import { getRealtimeClient, REALTIME_CONFIGURED } from '../supabaseRealtime.js';
 import { shortBoxCode, normalizeBoxCode, normalizeSku, isBoxCode } from '../labels/boxCode.js';
+import { findBySaleCode } from '../forsale/saleCode.js';
 import { compareBoxesBySize } from './boxSort.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxIsLocalPickup, isHoldItem } from './holdInfo.js';
@@ -515,6 +516,21 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     };
     // Same: the 8s poll is created once; its helpers are event-style.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Shopify (For Sale tab): when the brand's store is connected, the bench
+  // pulls new Shopify orders every ~90 s (server-throttled) so their boxes
+  // land in the list above without anyone opening the admin app.
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    api.poolStatus().then((r) => {
+      if (cancelled || !r?.shopify?.configured) return;
+      const pull = () => { if (document.visibilityState === 'visible') api.poolSync().catch(() => { /* next round */ }); };
+      pull();
+      timer = setInterval(pull, 90_000);
+    }).catch(() => { /* not migrated / offline — nothing to pull */ });
+    return () => { cancelled = true; if (timer) clearInterval(timer); };
   }, []);
 
   // Open boxes, keyed by short code for scan lookup. A box is "open" while it
@@ -1242,8 +1258,13 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     }
   };
 
+  // A typed For Sale code ("KM42") stands for its plant's SKU. The tag's QR
+  // already carries the SKU; this is for reading the code off the pot or an
+  // order and typing it.
+  const codeToSku = (raw) => findBySaleCode(items, raw)?.sku || raw;
+
   const submitScan = () => {
-    const v = scanValue.trim();
+    const v = codeToSku(scanValue.trim());
     setScanValue('');
     // The link sheet is asking which line a plant is: a stray scan must not
     // drive the screen behind it.
@@ -1674,11 +1695,11 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
       {cameraMode && (cameraMode === 'box' || cameraMode === 'sweep' || cameraMode === 'station' || activeBox) && (
         <CameraScanner
           onScan={linkOffer ? () => showToast('Pick a line or Cancel first', 2500) : (
-            cameraMode === 'box' ? handleScanBox
-              : cameraMode === 'sweep' ? handleScanSweep
-              : cameraMode === 'station' ? handleScanStation
+            cameraMode === 'box' ? (t) => handleScanBox(codeToSku(t))
+              : cameraMode === 'sweep' ? (t) => handleScanSweep(codeToSku(t))
+              : cameraMode === 'station' ? (t) => handleScanStation(codeToSku(t))
               : cameraMode === 'label' ? handleScanLabel
-                : handleScanItem
+                : (t) => handleScanItem(codeToSku(t))
           )}
           onClose={() => setCameraMode(null)}
         />

@@ -121,11 +121,12 @@ export function SaleFormModal({ initial, onSave, onClose, isBae }) {
           </div>
         </Field>
         <Field label="Platform">
-          {/* Quick-picks for the two platforms we actually sell on; the
-              text input stays for anything else. TikTok lives sell TC, so
-              picking it flips the item types (still overridable above). */}
+          {/* Quick-picks for the platforms we actually sell on; the text
+              input stays for anything else. TikTok lives sell TC, so
+              picking it flips the item types (still overridable above).
+              Facebook sales come from the For Sale tab's calendar. */}
           <div className="flex gap-1.5 mb-1.5">
-            {['Palmstreet', 'TikTok'].map(p => (
+            {['Palmstreet', 'Facebook', 'TikTok'].map(p => (
               <button
                 key={p}
                 type="button"

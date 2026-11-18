@@ -31,6 +31,12 @@ export default wrap(async (req, res) => {
     const target = req.body?.target === 'item' ? 'item' : 'species';
     if (target === 'item') {
       if (action === 'upload')  return uploadItem(req, res, user, brandId);
+      // One listing video per plant (For Sale tab). Videos are too big for a
+      // function body (4.5 MB), so the phone uploads straight to Storage on
+      // a signed URL, then commits the path here.
+      if (action === 'video-upload-url') return videoUploadUrl(req, res, user, brandId);
+      if (action === 'video-commit')     return videoCommit(req, res, user, brandId);
+      if (action === 'video-delete')     return videoDelete(req, res, user, brandId);
       if (action === 'delete')  return removeItem(req, res, brandId);
       if (action === 'reorder') return reorderItem(req, res, brandId);
       const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e;
@@ -277,7 +283,9 @@ async function uploadItem(req, res, user, brandId) {
   // the Pre Sale tab — a freshly shot photo should replace whatever was
   // uploaded before). Existing photos shift down and stay in the gallery.
   // Default (false) appends, as the item editor's gallery expects.
-  const { itemId, fileBase64, contentType, filename, primary = false } = req.body || {};
+  // `replace` (For Sale tab): the plant keeps ONE photo — this one. The
+  // others are deleted from the gallery and from Storage once it's saved.
+  const { itemId, fileBase64, contentType, filename, primary = false, replace = false } = req.body || {};
   if (!itemId)      { const e = new Error('itemId required');      e.status = 400; throw e; }
   if (!fileBase64)  { const e = new Error('fileBase64 required');  e.status = 400; throw e; }
   if (!contentType) { const e = new Error('contentType required'); e.status = 400; throw e; }
@@ -296,7 +304,7 @@ async function uploadItem(req, res, user, brandId) {
   if (exErr) { const e = new Error(exErr.message); e.status = 500; throw e; }
   const prior = existing || [];
   let nextSort = prior.length ? prior[prior.length - 1].sortOrder + 1 : 0;
-  if (primary && prior.length) {
+  if ((primary || replace) && prior.length) {
     // Shift everything down one so the new photo takes slot 0 (= primary).
     for (let i = prior.length - 1; i >= 0; i--) {
       const { error } = await supabase
@@ -340,7 +348,18 @@ async function uploadItem(req, res, user, brandId) {
     .from(STORAGE_BUCKET)
     .createSignedUrl(storagePath, SIGNED_URL_TTL_SECONDS);
 
-  const itemImageUrl = await syncItemPrimaryImage(itemId, brandId, { force: !!primary });
+  if (replace) {
+    const others = prior.map((p) => p.id);
+    if (others.length) {
+      const { data: gone } = await supabase.from('item_photos')
+        .select('id, "storagePath"').in('id', others).eq('brandId', brandId);
+      const paths = (gone || []).map((g) => g.storagePath);
+      if (paths.length) await supabase.storage.from(STORAGE_BUCKET).remove(paths).catch(() => {});
+      await supabase.from('item_photos').delete().in('id', others).eq('brandId', brandId);
+    }
+  }
+
+  const itemImageUrl = await syncItemPrimaryImage(itemId, brandId, { force: !!primary || !!replace });
 
   return res.status(200).json({ photo: row, signedUrl: signed?.signedUrl || null, itemImageUrl, primary: !!primary });
 }
@@ -381,4 +400,87 @@ async function reorderItem(req, res, brandId) {
   }
   const itemImageUrl = await syncItemPrimaryImage(itemId, brandId);
   return res.status(200).json({ ok: true, itemImageUrl });
+}
+
+// ─── One listing video per plant (For Sale tab) ─────────────────────────────
+// Bucket `plant-videos` (public, 50 MB/file, video types — migration 0052).
+// Path: items/<itemId>/<id>.<ext>. inventory_items.videoUrl holds the public
+// URL (the Palmstreet CSV and Shopify read it). A new video replaces the
+// old one; abandoned uploads in the plant's folder are swept on commit.
+const VIDEO_BUCKET = 'plant-videos';
+const VIDEO_MAX_BYTES = 50 * 1024 * 1024;
+const VIDEO_TYPES = {
+  'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/x-m4v': 'm4v',
+};
+
+function videoErr(status, message) { const e = new Error(message); e.status = status; return e; }
+
+async function itemForVideo(itemId, brandId) {
+  if (!itemId || typeof itemId !== 'string') throw videoErr(400, 'itemId required');
+  const { data, error } = await supabase.from('inventory_items')
+    .select('id, "videoUrl"').eq('id', itemId).eq('brandId', brandId).maybeSingle();
+  if (error) {
+    if (/videoUrl/.test(error.message || '')) throw videoErr(409, 'Videos need migration 0052 (for_sale_pools) — run it in the Supabase SQL editor first');
+    throw videoErr(500, error.message);
+  }
+  if (!data) throw videoErr(404, 'Unknown item');
+  return data;
+}
+
+async function videoUploadUrl(req, res, user, brandId) {
+  const { itemId, contentType, size } = req.body || {};
+  await itemForVideo(itemId, brandId);
+  const type = String(contentType || '').toLowerCase().split(';')[0].trim();
+  const ext = VIDEO_TYPES[type];
+  if (!ext) throw videoErr(400, 'That file type isn\'t a video we can store (MP4, MOV or WebM)');
+  const bytes = Number(size) || 0;
+  if (bytes > VIDEO_MAX_BYTES) {
+    throw videoErr(413, `Video is ${(bytes / 1048576).toFixed(0)} MB — the limit is 50 MB. Record a shorter clip (about 30 seconds).`);
+  }
+  const path = `items/${itemId}/${newId()}.${ext}`;
+  const { data, error } = await supabase.storage.from(VIDEO_BUCKET).createSignedUploadUrl(path);
+  if (error) {
+    if (/bucket/i.test(error.message || '') && /not found|exist/i.test(error.message || '')) {
+      throw videoErr(409, 'Videos need migration 0052 (it creates the plant-videos bucket) — run it in the Supabase SQL editor first');
+    }
+    throw videoErr(500, error.message);
+  }
+  return res.status(200).json({ signedUrl: data.signedUrl, path, contentType: type });
+}
+
+async function videoCommit(req, res, user, brandId) {
+  const { itemId, path } = req.body || {};
+  const item = await itemForVideo(itemId, brandId);
+  const folder = `items/${itemId}`;
+  if (typeof path !== 'string' || !path.startsWith(`${folder}/`) || path.includes('..')) {
+    throw videoErr(400, 'Bad video path');
+  }
+  const { data: objs, error: lErr } = await supabase.storage.from(VIDEO_BUCKET).list(folder, { limit: 100 });
+  if (lErr) throw videoErr(500, lErr.message);
+  const name = path.slice(folder.length + 1);
+  if (!(objs || []).some((o) => o.name === name)) throw videoErr(409, 'The video didn\'t finish uploading — try again');
+
+  const videoUrl = supabase.storage.from(VIDEO_BUCKET).getPublicUrl(path).data.publicUrl;
+  const { error } = await supabase.from('inventory_items')
+    .update({ videoUrl, modifiedAt: new Date().toISOString(), modifiedBy: user.displayName })
+    .eq('id', itemId).eq('brandId', brandId);
+  if (error) throw videoErr(500, error.message);
+  // One video per plant: the previous one and any abandoned uploads go.
+  const stale = (objs || []).filter((o) => o.name !== name).map((o) => `${folder}/${o.name}`);
+  if (stale.length) await supabase.storage.from(VIDEO_BUCKET).remove(stale).catch(() => {});
+  return res.status(200).json({ videoUrl, previous: item.videoUrl || null });
+}
+
+async function videoDelete(req, res, user, brandId) {
+  const { itemId } = req.body || {};
+  await itemForVideo(itemId, brandId);
+  const folder = `items/${itemId}`;
+  const { data: objs } = await supabase.storage.from(VIDEO_BUCKET).list(folder, { limit: 100 });
+  const paths = (objs || []).map((o) => `${folder}/${o.name}`);
+  if (paths.length) await supabase.storage.from(VIDEO_BUCKET).remove(paths).catch(() => {});
+  const { error } = await supabase.from('inventory_items')
+    .update({ videoUrl: null, modifiedAt: new Date().toISOString(), modifiedBy: user.displayName })
+    .eq('id', itemId).eq('brandId', brandId);
+  if (error) throw videoErr(500, error.message);
+  return res.status(200).json({ ok: true });
 }

@@ -1,4 +1,4 @@
-import { Sprout, Flower2, Music2, Palmtree, Store, Tag } from 'lucide-react';
+import { Sprout, Flower2, Music2, Palmtree, Store, Tag, ShoppingBag } from 'lucide-react';
 import { boxPlatform } from './platform.js';
 import { tagItemsOf, TAG_PRICE_MIN } from './tagList.js';
 
@@ -55,6 +55,7 @@ const CHIP_PALETTES = {
   tiktok:     { bg: 'bg-black',      text: 'text-white',      ring: 'ring-gray-700',   Icon: Music2,   label: 'TikTok', iconClass: 'text-cyan-300' },
   nigel:      { bg: 'bg-[#ff69b4]',  text: 'text-white',      ring: 'ring-[#ff1493]',  Icon: Store,    label: 'Nigel', title: "Nigel's order (BoyGardening) — never combined with other boxes" },
   palmstreet: { bg: 'bg-green-100',  text: 'text-green-800',  ring: 'ring-green-300',  Icon: Palmtree, label: 'PS', title: 'Palmstreet order' },
+  shopify:    { bg: 'bg-lime-600',   text: 'text-white',      ring: 'ring-lime-700',   Icon: ShoppingBag, label: 'Shopify', title: 'Shopify order — never combined with Palmstreet boxes' },
   tags:       { bg: 'bg-amber-400',  text: 'text-amber-950',  ring: 'ring-amber-500',  Icon: Tag,      label: 'Tags' },
 };
 

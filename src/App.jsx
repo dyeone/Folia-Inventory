@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense }
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, PackageOpen, LineChart, Truck, ShoppingCart,
-  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award, Clock, Sprout,
+  MoreHorizontal, X as XIcon, RotateCcw, Globe, Film, Award, Clock, Sprout, Store,
 } from 'lucide-react';
 import { api, setAuthUserId, setAuthBrandId } from './api.js';
 import { AuthContext } from './AuthContext.js';
@@ -39,6 +39,7 @@ const UsersView = lazyNamed(() => import('./users/UsersView.jsx'), 'UsersView');
 const TasksView = lazyNamed(() => import('./tasks/TasksView.jsx'), 'TasksView');
 const ScheduleView = lazyNamed(() => import('./schedule/ScheduleView.jsx'), 'ScheduleView');
 const AcclimationView = lazyNamed(() => import('./acclimation/AcclimationView.jsx'), 'AcclimationView');
+const ForSaleView = lazyNamed(() => import('./forsale/ForSaleView.jsx'), 'ForSaleView');
 const StreamerView = lazyNamed(() => import('./streamer/StreamerView.jsx'), 'StreamerView');
 const CareCalendarView = lazyNamed(() => import('./care/CareCalendarView.jsx'), 'CareCalendarView');
 const BaeLandingEditor = lazyNamed(() => import('./landing/BaeLandingEditor.jsx'), 'BaeLandingEditor');
@@ -442,6 +443,26 @@ function StaffOrAdminInventory() {
     setDeletedItems(sorted.filter(i => i.deletedAt));
   };
 
+  // Fold server rows (For Sale tab actions return the rows they changed)
+  // into the list without a full reload. A row the list doesn't have yet is
+  // added at the top; a trashed one leaves.
+  const mergeItems = useCallback((rows) => {
+    if (!rows?.length) return;
+    const byId = new Map(rows.map(r => [r.id, r]));
+    setItems(prev => {
+      const seen = new Set();
+      const next = [];
+      for (const i of prev) {
+        const r = byId.get(i.id);
+        if (!r) { next.push(i); continue; }
+        seen.add(i.id);
+        if (!r.deletedAt) next.push({ ...i, ...r });
+      }
+      const added = rows.filter(r => !seen.has(r.id) && !r.deletedAt);
+      return added.length ? [...added, ...next] : next;
+    });
+  }, []);
+
   // Personal GTD tasks — optimistic, mirroring the rest of the app: update
   // local state first, reconcile with the server's sanitized response, and
   // reload on failure so the UI never lies about what was saved. The server
@@ -561,11 +582,24 @@ function StaffOrAdminInventory() {
   // pauses when the tab isn't visible or when the admin has switched
   // sections. Triggers an immediate fetch whenever the tab returns
   // to visible so coming back from a phone glance is instant.
+  // Shopify (For Sale tab): is a store connected for this brand? Then the
+  // Shipping tab's poll also pulls new Shopify orders (server-throttled), so
+  // their boxes show up without anyone opening the For Sale tab.
+  const [shopifyOn, setShopifyOn] = useState(false);
+  useEffect(() => {
+    api.poolStatus().then(r => setShopifyOn(!!r?.shopify?.configured)).catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (activeTab !== 'packing') return;
     let cancelled = false;
+    let lastShopifyPull = 0;
     const refetch = async () => {
       if (cancelled || document.visibilityState === 'hidden') return;
+      if (shopifyOn && Date.now() - lastShopifyPull > 90_000) {
+        lastShopifyPull = Date.now();
+        api.poolSync().catch(() => { /* next round retries */ });
+      }
       try {
         const fresh = await api.getItems();
         if (cancelled) return;
@@ -586,7 +620,7 @@ function StaffOrAdminInventory() {
       clearInterval(id);
       document.removeEventListener('visibilitychange', onVisible);
     };
-  }, [activeTab]);
+  }, [activeTab, shopifyOn]);
 
   useEffect(() => {
     (async () => {
@@ -851,6 +885,7 @@ function StaffOrAdminInventory() {
         const q = searchQuery.toLowerCase();
         return (
           item.sku?.toLowerCase().includes(q) ||
+          item.saleCode?.toLowerCase().includes(q) ||
           item.name?.toLowerCase().includes(q) ||
           item.variety?.toLowerCase().includes(q) ||
           item.source?.toLowerCase().includes(q) ||
@@ -952,6 +987,7 @@ function StaffOrAdminInventory() {
     { id: 'inventory', label: 'Inventory', icon: Archive },
     { id: 'acclimation', label: 'Acclimation', icon: Sprout },
     { id: 'sales', label: 'Sale', icon: Calendar },
+    { id: 'forsale', label: 'For Sale', icon: Store },
     { id: 'packing', label: 'Shipping', icon: Package },
     { id: 'calendar', label: 'Calendar', icon: CalendarDays },
     { id: 'plantcare', label: 'Plant Care', icon: Leaf },
@@ -1074,9 +1110,16 @@ function StaffOrAdminInventory() {
           indicator. */}
       {(() => {
         const PRIMARY_LIMIT = 5;
-        const showOverflow = tabs.length > PRIMARY_LIMIT;
-        const primary = showOverflow ? tabs.slice(0, PRIMARY_LIMIT - 1) : tabs;
-        const overflow = showOverflow ? tabs.slice(PRIMARY_LIMIT - 1) : [];
+        // Phone order: For Sale (shot and run from a phone) sits right after
+        // the Dashboard; the desktop tab bar keeps its own order.
+        const MOBILE_FIRST = ['dashboard', 'forsale'];
+        const mobileTabs = [
+          ...MOBILE_FIRST.map(id => tabs.find(t => t.id === id)).filter(Boolean),
+          ...tabs.filter(t => !MOBILE_FIRST.includes(t.id)),
+        ];
+        const showOverflow = mobileTabs.length > PRIMARY_LIMIT;
+        const primary = showOverflow ? mobileTabs.slice(0, PRIMARY_LIMIT - 1) : mobileTabs;
+        const overflow = showOverflow ? mobileTabs.slice(PRIMARY_LIMIT - 1) : [];
         const overflowActive = overflow.some(t => t.id === activeTab);
         const overflowBadgeTotal = overflow.reduce(
           (n, t) => n + (typeof t.badge === 'number' ? t.badge : 0),
@@ -1343,6 +1386,29 @@ function StaffOrAdminInventory() {
             onItemsChanged={async () => { applyItemsFresh(await api.getItems()); }}
             setConfirmDialog={setConfirmDialog}
             showToast={showToast}
+          />
+        )}
+        {activeTab === 'forsale' && (
+          <ForSaleView
+            items={items}
+            sales={sales}
+            isBae={activeBrand === 'bae'}
+            isAdmin={isAdmin}
+            showToast={showToast}
+            onItemsMerged={mergeItems}
+            onPrintLabels={(its) => { if (its.length) setLabelItems(its); }}
+            onSaveSale={async (data) => {
+              try {
+                await api.upsertSales([data]);
+                const fresh = await api.getSales();
+                setSales([...fresh].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)));
+                showToast('Sale event created');
+                return true;
+              } catch (e) {
+                showToast(e.message || 'Failed to create the event', 'error');
+                return false;
+              }
+            }}
           />
         )}
         {activeTab === 'sales' && (
