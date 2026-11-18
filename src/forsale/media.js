@@ -1,7 +1,8 @@
 import { api } from '../api.js';
+import { MAX_PHOTOS } from './pools.js';
 
-// Photo + video handling for the For Sale tab. Each plant keeps ONE photo
-// and ONE video.
+// Photo + video handling for the For Sale tab. Each plant keeps up to
+// MAX_PHOTOS photos (the first is its cover) and ONE video.
 //
 // Photos are shrunk on the phone before upload (long side 1600 px, JPEG):
 // a phone photo is 3–5 MB, over the API's request limit once base64'd and
@@ -46,11 +47,27 @@ export async function shrinkPhoto(file, maxPx = PHOTO_MAX_PX) {
   return { fileBase64, contentType: 'image/jpeg', filename: `${base}.jpg`, bytes: blob.size };
 }
 
-// The plant's one photo becomes this one; returns the new imageUrl.
-export async function savePlantPhoto(itemId, file) {
+// The changes a photo call made to the plant, ready to merge into the list.
+const photoPatch = (itemId, r) => ({
+  id: itemId,
+  imageUrl: r?.itemImageUrl ?? null,
+  ...(Array.isArray(r?.photoUrls) ? { photoUrls: r.photoUrls } : {}),
+});
+
+// Add one photo to the end of the plant's gallery. → patch for the plant.
+export async function addPlantPhoto(itemId, file) {
   const p = await shrinkPhoto(file);
-  const r = await api.uploadItemPhoto({ itemId, ...p, replace: true });
-  return r.itemImageUrl || null;
+  const r = await api.uploadItemPhoto({ itemId, ...p, forSale: true, maxPhotos: MAX_PHOTOS });
+  return photoPatch(itemId, r);
+}
+
+export async function deletePlantPhoto(itemId, photoId) {
+  return photoPatch(itemId, await api.deleteItemPhoto(photoId, { forSale: true }));
+}
+
+// Move one photo to the front: it becomes the cover (card, CSV, Shopify).
+export async function makeCoverPhoto(itemId, photoId) {
+  return photoPatch(itemId, await api.reorderItemPhotos(itemId, [photoId], { forSale: true }));
 }
 
 function videoType(file) {
@@ -60,13 +77,20 @@ function videoType(file) {
   return { mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', m4v: 'video/x-m4v' }[ext] || '';
 }
 
+// Why this file can't be the plant's video, or '' when it can.
+export function videoProblem(file) {
+  if (!videoType(file)) return 'That isn\'t a video we can use (MP4, MOV or WebM)';
+  if (file.size > VIDEO_MAX_BYTES) {
+    return `Video is ${Math.round(file.size / 1048576)} MB — the limit is 50 MB. Record a shorter clip (about 30 seconds).`;
+  }
+  return '';
+}
+
 // Upload the plant's one video; `onProgress(0..1)`. Returns the new videoUrl.
 export async function savePlantVideo(itemId, file, onProgress) {
+  const problem = videoProblem(file);
+  if (problem) throw new Error(problem);
   const contentType = videoType(file);
-  if (!contentType) throw new Error('That isn\'t a video we can use (MP4, MOV or WebM)');
-  if (file.size > VIDEO_MAX_BYTES) {
-    throw new Error(`Video is ${Math.round(file.size / 1048576)} MB — the limit is 50 MB. Record a shorter clip (about 30 seconds).`);
-  }
   const { signedUrl, path } = await api.videoUploadUrl({ itemId, contentType, size: file.size, filename: file.name });
   await new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();

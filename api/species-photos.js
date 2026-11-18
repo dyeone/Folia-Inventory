@@ -1,5 +1,6 @@
 import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { syncItemPhotos, photoPublicUrl } from './_lib/itemPhotos.js';
 
 // Photo CRUD for a catalog plant (species row). Actions:
 //   GET  ?action=signed-url&id=...    fresh 5-min signed URL
@@ -219,53 +220,23 @@ async function reorder(req, res, brandId) {
 // ─── Per-item photos (item_photos) ──────────────────────────────────────────
 // Same storage bucket as species photos; the `items/` path prefix keeps the
 // two namespaces from colliding. Gallery-only (no mother/father slots).
+// Every write ends in syncItemPhotos (api/_lib/itemPhotos.js), which keeps
+// the plant's imageUrl (cover) and photoUrls (all, in order) in step.
+// `forSale` (the For Sale tab): the photos the operator manages there ARE the
+// listing's photos, so the cover wins over a hand-pasted imageUrl.
 
-// Stable public URL for a stored object. Only resolves once the bucket is
-// public (migration 0021) — building the string never fails regardless.
-function publicUrlFor(path) {
-  const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-  return data?.publicUrl || null;
-}
-
-// Keep inventory_items.imageUrl (the Palmstreet CSV "Image URL") pointed at
-// the item's primary (lowest-sortOrder) photo, so dropped photos auto-fill
-// the export. Only manage imageUrl when it's empty or already one of this
-// item's photo URLs — a manually-entered URL is left untouched. Returns the
-// resulting imageUrl.
-// `force` (bulk photo assign): the operator just shot this plant, so the new
-// primary wins even over a hand-pasted external imageUrl.
-async function syncItemPrimaryImage(itemId, brandId, { force = false } = {}) {
-  const { data: rows } = await supabase
-    .from('item_photos')
-    .select('"storagePath"')
-    .eq('itemId', itemId)
-    .eq('brandId', brandId)
-    .order('sortOrder', { ascending: true })
-    .limit(1);
-  const primaryUrl = rows && rows[0] ? publicUrlFor(rows[0].storagePath) : null;
-
-  const { data: it } = await supabase
-    .from('inventory_items').select('"imageUrl"').eq('id', itemId).eq('brandId', brandId).maybeSingle();
-  const cur = it?.imageUrl || '';
-  const managedPrefix = publicUrlFor(`items/${itemId}/`) || '';
-  const isManaged = !cur || (managedPrefix && cur.startsWith(managedPrefix));
-  if ((force || isManaged) && cur !== (primaryUrl || '')) {
-    await supabase.from('inventory_items').update({ imageUrl: primaryUrl }).eq('id', itemId).eq('brandId', brandId);
-    return primaryUrl;
-  }
-  return cur || null;
-}
+const badReq = (status, message) => { const e = new Error(message); e.status = status; return e; };
 
 async function listItemPhotos(req, res, brandId) {
   const itemId = req.query?.itemId;
-  if (!itemId) { const e = new Error('itemId required'); e.status = 400; throw e; }
+  if (!itemId) throw badReq(400, 'itemId required');
   const { data: rows, error } = await supabase
     .from('item_photos')
     .select('id, "itemId", "storagePath", "sortOrder"')
     .eq('itemId', itemId)
     .eq('brandId', brandId)
     .order('sortOrder', { ascending: true });
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+  if (error) throw badReq(500, error.message);
 
   const photos = [];
   for (const r of rows || []) {
@@ -273,7 +244,7 @@ async function listItemPhotos(req, res, brandId) {
       .storage
       .from(STORAGE_BUCKET)
       .createSignedUrl(r.storagePath, SIGNED_URL_TTL_SECONDS);
-    photos.push({ ...r, signedUrl: signed?.signedUrl || null });
+    photos.push({ ...r, url: photoPublicUrl(r.storagePath), signedUrl: signed?.signedUrl || null });
   }
   return res.status(200).json({ photos });
 }
@@ -283,17 +254,20 @@ async function uploadItem(req, res, user, brandId) {
   // the Pre Sale tab — a freshly shot photo should replace whatever was
   // uploaded before). Existing photos shift down and stay in the gallery.
   // Default (false) appends, as the item editor's gallery expects.
-  // `replace` (For Sale tab): the plant keeps ONE photo — this one. The
-  // others are deleted from the gallery and from Storage once it's saved.
-  const { itemId, fileBase64, contentType, filename, primary = false, replace = false } = req.body || {};
-  if (!itemId)      { const e = new Error('itemId required');      e.status = 400; throw e; }
-  if (!fileBase64)  { const e = new Error('fileBase64 required');  e.status = 400; throw e; }
-  if (!contentType) { const e = new Error('contentType required'); e.status = 400; throw e; }
+  // `replace`: the plant keeps ONE photo — this one. The others are deleted
+  // from the gallery and from Storage once it's saved.
+  // `maxPhotos` (For Sale tab): refuse once the plant already has that many.
+  const {
+    itemId, fileBase64, contentType, filename, primary = false, replace = false, forSale = false, maxPhotos = null,
+  } = req.body || {};
+  if (!itemId)      throw badReq(400, 'itemId required');
+  if (!fileBase64)  throw badReq(400, 'fileBase64 required');
+  if (!contentType) throw badReq(400, 'contentType required');
 
   const { data: it, error: itErr } = await supabase
     .from('inventory_items').select('id').eq('id', itemId).eq('brandId', brandId).maybeSingle();
-  if (itErr) { const e = new Error(itErr.message); e.status = 500; throw e; }
-  if (!it)   { const e = new Error('Unknown item'); e.status = 404; throw e; }
+  if (itErr) throw badReq(500, itErr.message);
+  if (!it)   throw badReq(404, 'Unknown item');
 
   const { data: existing, error: exErr } = await supabase
     .from('item_photos')
@@ -301,21 +275,25 @@ async function uploadItem(req, res, user, brandId) {
     .eq('itemId', itemId)
     .eq('brandId', brandId)
     .order('sortOrder', { ascending: true });
-  if (exErr) { const e = new Error(exErr.message); e.status = 500; throw e; }
+  if (exErr) throw badReq(500, exErr.message);
   const prior = existing || [];
+  const cap = Number(maxPhotos);
+  if (!replace && Number.isFinite(cap) && cap > 0 && prior.length >= cap) {
+    throw badReq(409, `This plant already has ${prior.length} photos (the most is ${cap}) — delete one first`);
+  }
   let nextSort = prior.length ? prior[prior.length - 1].sortOrder + 1 : 0;
   if ((primary || replace) && prior.length) {
     // Shift everything down one so the new photo takes slot 0 (= primary).
     for (let i = prior.length - 1; i >= 0; i--) {
       const { error } = await supabase
         .from('item_photos').update({ sortOrder: i + 1 }).eq('id', prior[i].id).eq('brandId', brandId);
-      if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+      if (error) throw badReq(500, error.message);
     }
     nextSort = 0;
   }
 
   const buf = Buffer.from(String(fileBase64), 'base64');
-  if (buf.length === 0) { const e = new Error('Empty file'); e.status = 400; throw e; }
+  if (buf.length === 0) throw badReq(400, 'Empty file');
 
   const ext = (filename && filename.includes('.') ? filename.split('.').pop() : 'jpg')
     .toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -326,7 +304,7 @@ async function uploadItem(req, res, user, brandId) {
     .storage
     .from(STORAGE_BUCKET)
     .upload(storagePath, buf, { contentType, upsert: false });
-  if (upErr) { const e = new Error(upErr.message); e.status = 500; throw e; }
+  if (upErr) throw badReq(500, upErr.message);
 
   const row = {
     id,
@@ -340,7 +318,7 @@ async function uploadItem(req, res, user, brandId) {
   const { error: insErr } = await supabase.from('item_photos').insert(row);
   if (insErr) {
     await supabase.storage.from(STORAGE_BUCKET).remove([storagePath]).catch(() => {});
-    const e = new Error(insErr.message); e.status = 500; throw e;
+    throw badReq(500, insErr.message);
   }
 
   const { data: signed } = await supabase
@@ -359,47 +337,63 @@ async function uploadItem(req, res, user, brandId) {
     }
   }
 
-  const itemImageUrl = await syncItemPrimaryImage(itemId, brandId, { force: !!primary || !!replace });
+  const synced = await syncItemPhotos(itemId, brandId, { force: !!primary || !!replace || !!forSale });
 
-  return res.status(200).json({ photo: row, signedUrl: signed?.signedUrl || null, itemImageUrl, primary: !!primary });
+  return res.status(200).json({
+    photo: row, signedUrl: signed?.signedUrl || null, itemImageUrl: synced.imageUrl, photoUrls: synced.photoUrls, primary: !!primary,
+  });
 }
 
 async function removeItem(req, res, brandId) {
-  const { id } = req.body || {};
-  if (!id) { const e = new Error('id required'); e.status = 400; throw e; }
+  const { id, forSale = false } = req.body || {};
+  if (!id) throw badReq(400, 'id required');
   const { data: row, error } = await supabase
     .from('item_photos')
     .select('id, "itemId", "storagePath"')
     .eq('id', id)
     .eq('brandId', brandId)
     .maybeSingle();
-  if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  if (!row)  { const e = new Error('Photo not found'); e.status = 404; throw e; }
+  if (error) throw badReq(500, error.message);
+  if (!row)  throw badReq(404, 'Photo not found');
 
   await supabase.storage.from(STORAGE_BUCKET).remove([row.storagePath]).catch(() => {});
   const { error: delErr } = await supabase.from('item_photos').delete().eq('id', id).eq('brandId', brandId);
-  if (delErr) { const e = new Error(delErr.message); e.status = 500; throw e; }
-  const itemImageUrl = await syncItemPrimaryImage(row.itemId, brandId);
-  return res.status(200).json({ ok: true, itemImageUrl });
+  if (delErr) throw badReq(500, delErr.message);
+  const synced = await syncItemPhotos(row.itemId, brandId, { force: !!forSale });
+  return res.status(200).json({ ok: true, itemId: row.itemId, itemImageUrl: synced.imageUrl, photoUrls: synced.photoUrls });
 }
 
+// The listed photos go first, in the order given; any the caller didn't
+// know about (a stale gallery) keep their order behind them, so two photos
+// never share a slot.
 async function reorderItem(req, res, brandId) {
-  const { itemId, orderedPhotoIds } = req.body || {};
-  if (!itemId) { const e = new Error('itemId required'); e.status = 400; throw e; }
-  if (!Array.isArray(orderedPhotoIds)) {
-    const e = new Error('orderedPhotoIds must be an array'); e.status = 400; throw e;
-  }
-  for (let i = 0; i < orderedPhotoIds.length; i++) {
+  const { itemId, orderedPhotoIds, forSale = false } = req.body || {};
+  if (!itemId) throw badReq(400, 'itemId required');
+  if (!Array.isArray(orderedPhotoIds)) throw badReq(400, 'orderedPhotoIds must be an array');
+  const { data: rows, error: lErr } = await supabase
+    .from('item_photos')
+    .select('id, "sortOrder"')
+    .eq('itemId', itemId)
+    .eq('brandId', brandId)
+    .order('sortOrder', { ascending: true });
+  if (lErr) throw badReq(500, lErr.message);
+  const known = new Set((rows || []).map((r) => r.id));
+  const first = [...new Set(orderedPhotoIds)].filter((id) => known.has(id));
+  const rest = (rows || []).map((r) => r.id).filter((id) => !first.includes(id));
+  const order = [...first, ...rest];
+  const sortOf = new Map((rows || []).map((r) => [r.id, r.sortOrder]));
+  for (let i = 0; i < order.length; i++) {
+    if (sortOf.get(order[i]) === i) continue;
     const { error } = await supabase
       .from('item_photos')
       .update({ sortOrder: i })
-      .eq('id', orderedPhotoIds[i])
+      .eq('id', order[i])
       .eq('itemId', itemId)
       .eq('brandId', brandId);
-    if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+    if (error) throw badReq(500, error.message);
   }
-  const itemImageUrl = await syncItemPrimaryImage(itemId, brandId);
-  return res.status(200).json({ ok: true, itemImageUrl });
+  const synced = await syncItemPhotos(itemId, brandId, { force: !!forSale });
+  return res.status(200).json({ ok: true, itemImageUrl: synced.imageUrl, photoUrls: synced.photoUrls });
 }
 
 // ─── One listing video per plant (For Sale tab) ─────────────────────────────

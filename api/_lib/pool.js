@@ -9,6 +9,7 @@ import { supabase } from './supabase.js';
 import { fetchAllById } from './fetchAll.js';
 import { pickSaleCodes } from './saleCode.js';
 import { shopifyConfig, shopifyPublicState, reconcileShopify, pullShopifyOrders, dismissShopifyProblems, eventHolds } from './shopify.js';
+import { refreshPhotoUrls } from './itemPhotos.js';
 
 export const POOLS = ['palmstreet', 'shopify'];
 // A plant can join a pool while it's in stock and in no box.
@@ -63,11 +64,14 @@ async function ensureMigrated(brandId) {
   if (error) throw dbFail(error);
 }
 
-// GET ?action=pool-status — is the migration in, and how is Shopify doing.
+// GET ?action=pool-status — are the migrations in, and how is Shopify doing.
+// photosMigrated: 0053 (photoUrls) — without it a plant's extra photos are
+// kept but the CSV and Shopify only get the cover.
 export async function poolStatus(req, res, user, brandId) {
   const { error } = await supabase.from('inventory_items').select('id, "saleCode"').eq('brandId', brandId).limit(1);
   if (error && !isUnmigrated(error)) throw fail(500, error.message);
-  return res.status(200).json({ migrated: !error, shopify: await shopifyPublicState(brandId) });
+  const { error: pErr } = await supabase.from('inventory_items').select('id, "photoUrls"').eq('brandId', brandId).limit(1);
+  return res.status(200).json({ migrated: !error, photosMigrated: !pErr, shopify: await shopifyPublicState(brandId) });
 }
 
 // Give every plant in `rows` without a code a fresh one. The write is
@@ -140,6 +144,8 @@ export async function poolSet(req, res, user, brandId) {
       }
       const got = new Set(changed);
       for (const r of ok) if (!got.has(r.id)) skipped.push({ id: r.id, sku: r.sku, reason: 'changed under you — reload' });
+      // Photos it already has (the Pre Sale gallery) all go to its listing.
+      await refreshPhotoUrls(brandId, changed);
     }
   } else {
     for (let k = 0; k < ids.length; k += 200) {
@@ -308,7 +314,22 @@ export async function mediaCleanup(req, res, user, brandId) {
     if (error) throw fail(500, error.message);
     for (const i of data || []) items.set(i.id, i);
   }
-  const photoTargets = photos.filter((p) => { const i = items.get(p.itemId); return !i || done(i); });
+  // A file can be another plant's photo too (a copied row keeps the URL):
+  // never delete one a plant still for sale points at.
+  const inUse = new Set();
+  {
+    const base = supabase.storage.from(PHOTO_BUCKET).getPublicUrl('').data.publicUrl.replace(/\/$/, '');
+    const pathOf = (u) => (typeof u === 'string' && u.startsWith(`${base}/`) ? u.slice(base.length + 1).split('?')[0] : null);
+    const refs = await fetchAllById(() => supabase.from('inventory_items')
+      .select('id, status, "deletedAt", "shippedAt", "imageUrl", "photoUrls"').eq('brandId', brandId).not('imageUrl', 'is', null))
+      .catch(() => fetchAllById(() => supabase.from('inventory_items')      // before 0053
+        .select('id, status, "deletedAt", "shippedAt", "imageUrl"').eq('brandId', brandId).not('imageUrl', 'is', null)));
+    for (const r of refs) {
+      if (done(r)) continue;
+      for (const u of [r.imageUrl, ...(Array.isArray(r.photoUrls) ? r.photoUrls : [])]) { const p = pathOf(u); if (p) inUse.add(p); }
+    }
+  }
+  const photoTargets = photos.filter((p) => { const i = items.get(p.itemId); return (!i || done(i)) && !inUse.has(p.storagePath); });
 
   let videoRows = [];
   {
@@ -337,6 +358,8 @@ export async function mediaCleanup(req, res, user, brandId) {
   for (let k = 0; k < clearImage.length; k += 200) {
     await supabase.from('inventory_items').update({ imageUrl: null }).in('id', clearImage.slice(k, k + 200));
   }
+  // Their photo lists follow what's left (0053; a no-op before it).
+  await refreshPhotoUrls(brandId, [...new Set(photoTargets.map((p) => p.itemId))]);
 
   let videosDeleted = 0;
   for (const v of videoRows) {

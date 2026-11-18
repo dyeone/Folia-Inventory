@@ -1,7 +1,7 @@
 import { useMemo, useState, lazy, Suspense } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Download, Copy, X, Loader2, Search, Video } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
-import { platformStyle, saleDay, ymd, money, isForSale, POOLS, facebookPost, eventHolds, isUnsoldInEvent } from './pools.js';
+import { platformStyle, saleDay, ymd, money, isForSale, POOLS, facebookPost, eventHolds, isUnsoldInEvent, photosOf } from './pools.js';
 
 const SaleFormModal = lazy(() => import('../sales/SaleFormModal.jsx').then((m) => ({ default: m.SaleFormModal })));
 
@@ -250,7 +250,7 @@ function EventSheet({ sale, items, sales, showToast, onClose, onEventAssign, onE
               return (
                 <div key={i.id} className="flex items-center gap-2.5 px-3 py-2 bg-white">
                   <button type="button" onClick={() => onOpenPlant(i)} className="shrink-0 relative">
-                    {i.imageUrl ? <img src={i.imageUrl} alt="" className="w-12 h-12 rounded-lg object-cover" /> : <div className="w-12 h-12 rounded-lg bg-gray-100" />}
+                    {photosOf(i)[0] ? <img src={photosOf(i)[0]} alt="" className="w-12 h-12 rounded-lg object-cover" /> : <div className="w-12 h-12 rounded-lg bg-gray-100" />}
                     {i.videoUrl && <Video className="w-3.5 h-3.5 text-white absolute bottom-0.5 right-0.5 drop-shadow" />}
                   </button>
                   <div className="min-w-0 flex-1">
@@ -359,8 +359,8 @@ function EventPicker({ sale, items, sales, onClose, onAdd }) {
                 key={i.id} type="button" disabled={!!blocked} onClick={() => toggle(i.id)}
                 className={`relative rounded-lg overflow-hidden border-2 text-left ${on ? 'border-emerald-500' : 'border-transparent'} disabled:opacity-40`}
               >
-                <div className="aspect-square bg-gray-100">
-                  {i.imageUrl && <img src={i.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover" />}
+                <div className="relative aspect-square bg-gray-100 overflow-hidden">
+                  {photosOf(i)[0] && <img src={photosOf(i)[0]} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />}
                 </div>
                 {i.saleCode && <span className="absolute top-1 left-1 px-1.5 rounded bg-black/80 text-white font-mono font-bold text-xs">{i.saleCode}</span>}
                 {on && <span className="absolute top-1 right-1 w-5 h-5 rounded-full bg-emerald-500 text-white text-xs flex items-center justify-center">✓</span>}

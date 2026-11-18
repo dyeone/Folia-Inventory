@@ -1,23 +1,19 @@
-import { useRef, useState } from 'react';
-import { Camera, Video, Printer, Trash2, RefreshCw, Loader2, CalendarDays } from 'lucide-react';
+import { useState } from 'react';
+import { Printer, Trash2, RefreshCw, Loader2, CalendarDays } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { api } from '../api.js';
-import { savePlantPhoto, savePlantVideo } from './media.js';
+import { MediaEditor } from './MediaEditor.jsx';
 import { POOLS, shopifyBadge, money } from './pools.js';
 
 const TONE_TEXT = { ok: 'text-green-700', wait: 'text-gray-600', warn: 'text-amber-700', error: 'text-red-700' };
 
-// One plant's For Sale details: its one photo and one video (shoot or pick
-// on the phone), price, pool, tag, and — in the Shopify pool — what its
-// listing is doing.
+// One plant's For Sale details: its photos and video (shoot or pick on the
+// phone — they upload in the background), price, pool, tag, and — in the
+// Shopify pool — what its listing is doing.
 export function PlantSheet({
-  item, sales, openSaleIds, shopifyConnected, showToast,
+  item, sales, openSaleIds, shopifyConnected, showToast, uploads,
   onClose, onMerged, onSyncShopify, onPrintLabel, onSetPool,
 }) {
-  const photoRef = useRef(null);
-  const videoRef = useRef(null);
-  const [photoBusy, setPhotoBusy] = useState(false);
-  const [videoPct, setVideoPct] = useState(null);   // null = idle, 0..1 uploading
   const [price, setPrice] = useState(item.listingPrice != null && Number(item.listingPrice) > 0 ? String(item.listingPrice) : '');
   const [priceBusy, setPriceBusy] = useState(false);
   const [poolBusy, setPoolBusy] = useState(false);
@@ -26,54 +22,6 @@ export function PlantSheet({
   const event = item.saleId ? (sales || []).find((s) => s.id === item.saleId) : null;
   const openEvent = event && openSaleIds.has(event.id) ? event : null;
   const badge = item.salePool === 'shopify' ? shopifyBadge(item, openSaleIds, shopifyConnected) : null;
-
-  const pickPhoto = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setPhotoBusy(true);
-    try {
-      const imageUrl = await savePlantPhoto(item.id, file);
-      onMerged([{ id: item.id, imageUrl }]);
-      showToast('Photo saved');
-      followShopify();
-    } catch (err) {
-      showToast(err.message || 'Photo upload failed', 'error');
-    } finally {
-      setPhotoBusy(false);
-    }
-  };
-
-  const pickVideo = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-    setVideoPct(0);
-    try {
-      const videoUrl = await savePlantVideo(item.id, file, setVideoPct);
-      onMerged([{ id: item.id, videoUrl }]);
-      showToast('Video saved');
-      followShopify();
-    } catch (err) {
-      showToast(err.message || 'Video upload failed', 'error');
-    } finally {
-      setVideoPct(null);
-    }
-  };
-
-  const removeVideo = async () => {
-    if (!window.confirm('Delete this plant\'s video?')) return;
-    setVideoPct(0);
-    try {
-      await api.videoDelete(item.id);
-      onMerged([{ id: item.id, videoUrl: null }]);
-      followShopify();
-    } catch (err) {
-      showToast(err.message || 'Could not delete the video', 'error');
-    } finally {
-      setVideoPct(null);
-    }
-  };
 
   const savePrice = async () => {
     const v = parseFloat(price);
@@ -110,53 +58,7 @@ export function PlantSheet({
   return (
     <Modal title={`${item.saleCode ? `${item.saleCode} · ` : ''}${title}`} onClose={onClose} size="lg">
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
-          {/* Photo */}
-          <div className="space-y-1.5">
-            <div className="aspect-square rounded-xl bg-gray-100 overflow-hidden flex items-center justify-center relative">
-              {item.imageUrl
-                ? <img src={item.imageUrl} alt="" className="w-full h-full object-cover" />
-                : <Camera className="w-8 h-8 text-gray-300" />}
-              {photoBusy && (
-                <div className="absolute inset-0 bg-white/70 flex items-center justify-center">
-                  <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
-                </div>
-              )}
-            </div>
-            <input ref={photoRef} type="file" accept="image/*" className="hidden" onChange={pickPhoto} />
-            <button
-              type="button" disabled={photoBusy} onClick={() => photoRef.current?.click()}
-              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-emerald-600 active:bg-emerald-700 text-white text-sm font-semibold disabled:opacity-50"
-            >
-              <Camera className="w-4 h-4" /> {item.imageUrl ? 'Replace photo' : 'Add photo'}
-            </button>
-          </div>
-          {/* Video */}
-          <div className="space-y-1.5">
-            <div className="aspect-square rounded-xl bg-gray-900 overflow-hidden flex items-center justify-center relative">
-              {item.videoUrl
-                ? <video src={item.videoUrl} controls playsInline preload="metadata" className="w-full h-full object-cover" />
-                : <Video className="w-8 h-8 text-gray-600" />}
-              {videoPct !== null && (
-                <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center gap-2 text-white text-xs">
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                  <span>{videoPct > 0 ? `Uploading ${Math.round(videoPct * 100)}%` : 'Working…'}</span>
-                </div>
-              )}
-            </div>
-            <input ref={videoRef} type="file" accept="video/*" className="hidden" onChange={pickVideo} />
-            <button
-              type="button" disabled={videoPct !== null} onClick={() => videoRef.current?.click()}
-              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-gray-900 active:bg-black text-white text-sm font-semibold disabled:opacity-50"
-            >
-              <Video className="w-4 h-4" /> {item.videoUrl ? 'Replace video' : 'Add video'}
-            </button>
-            {item.videoUrl && videoPct === null && (
-              <button type="button" onClick={removeVideo} className="w-full text-xs text-gray-500 underline">Delete video</button>
-            )}
-          </div>
-        </div>
-        <p className="text-[11px] text-gray-500 -mt-2">One photo and one video per plant — a new one replaces the old. Keep videos short (about 30 s, 50 MB max).</p>
+        <MediaEditor item={item} uploads={uploads} showToast={showToast} onMerged={onMerged} onChanged={followShopify} />
 
         {/* Price */}
         <div>

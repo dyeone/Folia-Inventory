@@ -1,4 +1,5 @@
 import { lotTag } from './lotBlock.js';
+import { photosOf } from '../forsale/pools.js';
 // Build a Palmstreet CSV — for a single sale event, or for the entire
 // "available" inventory ready to be listed. Both modes share the same
 // header set so Palmstreet ingests them identically.
@@ -93,10 +94,11 @@ const DEFAULT_IMAGE_BY_BRAND = {
   bae: 'https://folia-inventory.vercel.app/bae-mystery-tile.png',
 };
 
-// The Image URL cell: the plant's photo, then its video when it has one
-// (For Sale tab, migration 0052), joined by the operator's chosen separator
-// — Palmstreet's template doesn't document how two media share the cell, so
-// the separator is a setting (src/forsale/ForSaleView.jsx, per device).
+// The Image URL cell: every photo of the plant, cover first (For Sale tab,
+// migration 0053), then its video when it has one (0052), joined by the
+// operator's chosen separator — Palmstreet's template doesn't document how
+// several media share the cell, so the separator is a setting
+// (src/forsale/ForSaleView.jsx, per device).
 export const MEDIA_SEPARATORS = {
   comma: { label: 'Comma', sep: ',' },
   semicolon: { label: 'Semicolon', sep: ';' },
@@ -104,15 +106,16 @@ export const MEDIA_SEPARATORS = {
   space: { label: 'Space', sep: ' ' },
 };
 export function mediaCell(item, separator = 'comma') {
-  const photo = item.imageUrl || DEFAULT_IMAGE_BY_BRAND[item.brandId] || '';
+  const photos = photosOf(item);
+  if (!photos.length && DEFAULT_IMAGE_BY_BRAND[item.brandId]) photos.push(DEFAULT_IMAGE_BY_BRAND[item.brandId]);
   const sep = (MEDIA_SEPARATORS[separator] || MEDIA_SEPARATORS.comma).sep;
-  return [photo, item.videoUrl || ''].filter(Boolean).join(sep);
+  return [...photos, item.videoUrl || ''].filter(Boolean).join(sep);
 }
 
 // One 14-column row in the template's exact order. `title` overrides the
 // lineup-number title (the For Sale pool titles by plant code instead).
-// The video joins the photo only when a `separator` is given (the For Sale
-// tab's exports); every other export keeps the single photo URL.
+// All photos + the video go in only when a `separator` is given (the For
+// Sale tab's exports); every other export keeps the single cover URL.
 function baseRow(item, price, { separator = null, title } = {}) {
   return [
     title ?? buildTitle(item),
@@ -229,7 +232,7 @@ export function buildPoolTitle(item) {
 }
 
 // The Palmstreet pool (For Sale tab): every priced plant in it as one CSV,
-// photo + video in the Image URL cell. A plant without a price is left out
+// its photos + video in the Image URL cell. A plant without a price is left out
 // (a $0 row would list it at $0) and counted in `unpriced`.
 export function exportPoolToPalmstreet(items, { separator = 'comma' } = {}) {
   const priced = items.filter(i => parseFloat(i.listingPrice) > 0);

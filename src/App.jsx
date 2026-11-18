@@ -448,7 +448,9 @@ function StaffOrAdminInventory() {
 
   // Fold server rows (For Sale tab actions return the rows they changed)
   // into the list without a full reload. A row the list doesn't have yet is
-  // added at the top; a trashed one leaves.
+  // added at the top; a trashed one leaves. Partial patches ({ id, imageUrl }
+  // from an upload that finished after a brand switch) only update rows the
+  // list has — a full row always carries its sku.
   const mergeItems = useCallback((rows) => {
     if (!rows?.length) return;
     const byId = new Map(rows.map(r => [r.id, r]));
@@ -461,7 +463,7 @@ function StaffOrAdminInventory() {
         seen.add(i.id);
         if (!r.deletedAt) next.push({ ...i, ...r });
       }
-      const added = rows.filter(r => !seen.has(r.id) && !r.deletedAt);
+      const added = rows.filter(r => !seen.has(r.id) && !r.deletedAt && r.sku);
       return added.length ? [...added, ...next] : next;
     });
   }, []);

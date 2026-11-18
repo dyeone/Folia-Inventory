@@ -1,8 +1,8 @@
 // Shopify sync for the For Sale tab's Shopify pool (Admin GraphQL API).
 //
-// Each plant in the pool is a one-off product: quantity 1, its one photo and
-// one video, its price, its SKU, and its short code in the title so the
-// packer can find the pot. The plants are the source of truth; reconcile()
+// Each plant in the pool is a one-off product: quantity 1, its photos (cover
+// first) and its video, its price, its SKU, and its short code in the title
+// so the packer can find the pot. The plants are the source of truth; reconcile()
 // brings the store in line with them:
 //   in the pool, for sale, priced, photographed  → ACTIVE, 1 in stock
 //   in the pool but sitting in an open sale event, or missing price/photo,
@@ -257,6 +257,23 @@ const priceOf = (item) => {
   return Number.isFinite(p) && p > 0 ? p.toFixed(2) : null;
 };
 
+// The plant's photos, cover first: its photo list (0053). A cover that isn't
+// one of them (a pasted URL, a copied row's photo — or any cover before
+// 0053) still leads: it's the picture the plant shows everywhere else.
+export function photosOf(item) {
+  const list = Array.isArray(item?.photoUrls) ? item.photoUrls.filter((u) => typeof u === 'string' && u) : [];
+  const cover = typeof item?.imageUrl === 'string' && item.imageUrl ? item.imageUrl : null;
+  return cover && !list.includes(cover) ? [cover, ...list] : list;
+}
+// The photos the product carries, as last synced (listings made before
+// multi-photo stored just the one).
+function listedPhotos(sh) {
+  if (Array.isArray(sh?.photoUrls)) return sh.photoUrls;
+  return sh?.imageUrl ? [sh.imageUrl] : [];
+}
+const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+const mediaBehind = (item, sh) => !sameList(photosOf(item), listedPhotos(sh)) || (item.videoUrl || null) !== (sh.videoUrl || null);
+
 function fingerprint(item) {
   return crypto.createHash('sha1')
     .update(JSON.stringify([shopifyTitle(item), shopifyDescription(item), priceOf(item), item.sku]))
@@ -270,7 +287,7 @@ export function desiredListing(item, openSaleIds) {
   if (item.salePool !== 'shopify') return { want: 'paused', reason: 'not in the Shopify pool' };
   if (item.saleId && openSaleIds.has(item.saleId)) return { want: 'paused', reason: 'in an upcoming sale event' };
   if (!priceOf(item)) return { want: 'paused', reason: 'needs a price' };
-  if (!item.imageUrl) return { want: 'paused', reason: 'needs a photo' };
+  if (!photosOf(item).length) return { want: 'paused', reason: 'needs a photo' };
   return { want: 'active', reason: '' };
 }
 
@@ -292,14 +309,13 @@ async function ensurePublication(cfg, state) {
   return hit ? hit.id : null;
 }
 
-const MEDIA_FIELDS = 'media(first: 10) { nodes { id mediaContentType } }';
+// Up to 10 photos + 1 video per plant; room to spare for strays.
+const MEDIA_FIELDS = 'media(first: 50) { nodes { id mediaContentType } }';
+const isVideoMedia = (n) => n.mediaContentType === 'VIDEO' || n.mediaContentType === 'EXTERNAL_VIDEO';
 
-function mediaIds(product) {
-  const nodes = product?.media?.nodes || [];
-  return {
-    imageMediaId: nodes.find((n) => n.mediaContentType === 'IMAGE')?.id || null,
-    videoMediaId: nodes.find((n) => n.mediaContentType === 'VIDEO')?.id || null,
-  };
+async function productMedia(cfg, productId) {
+  const d = await gql(cfg, `query PM($id: ID!) { product(id: $id) { id ${MEDIA_FIELDS} } }`, { id: productId });
+  return d?.product?.media?.nodes || [];
 }
 
 // Shopify won't fetch a video from a URL — it has to be staged: ask for an
@@ -361,8 +377,10 @@ async function setStatus(cfg, productId, status) {
 
 async function createListing(cfg, state, item) {
   const title = shopifyTitle(item);
-  const media = [];
-  if (item.imageUrl) media.push({ originalSource: item.imageUrl, mediaContentType: 'IMAGE', alt: title });
+  const photos = photosOf(item);
+  // Photos in gallery order (the first is the product's featured image),
+  // then the video.
+  const media = photos.map((url) => ({ originalSource: url, mediaContentType: 'IMAGE', alt: title }));
   if (item.videoUrl) media.push({ originalSource: await stageVideo(cfg, item.videoUrl, item), mediaContentType: 'VIDEO', alt: title });
   const d = await gql(cfg, `mutation Create($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
     productCreate(product: $product, media: $media) {
@@ -386,8 +404,7 @@ async function createListing(cfg, state, item) {
     variantId: v?.id || null,
     inventoryItemId: v?.inventoryItem?.id || null,
     status: 'DRAFT',
-    ...mediaIds(p),
-    imageUrl: item.imageUrl || null,
+    photoUrls: photos,
     videoUrl: item.videoUrl || null,
     // Title + description went up with exactly these values.
     fp: fingerprint(item),
@@ -414,35 +431,44 @@ async function applyActive(cfg, state, item, sh) {
     const ue = userErrorText(d?.productUpdate?.userErrors);
     if (ue) throw fail(502, `Shopify: ${ue}`);
   }
-  // One photo, one video: replace whichever changed.
-  const add = [];
-  const drop = [];
-  if ((item.imageUrl || null) !== (sh.imageUrl || null)) {
-    if (sh.imageMediaId) drop.push(sh.imageMediaId);
-    if (item.imageUrl) add.push({ originalSource: item.imageUrl, mediaContentType: 'IMAGE', alt: shopifyTitle(item) });
-  }
-  if ((item.videoUrl || null) !== (sh.videoUrl || null)) {
-    if (sh.videoMediaId) drop.push(sh.videoMediaId);
-    if (item.videoUrl) add.push({ originalSource: await stageVideo(cfg, item.videoUrl, item), mediaContentType: 'VIDEO', alt: shopifyTitle(item) });
-  }
-  if (drop.length) {
-    const d = await gql(cfg, `mutation Del($ids: [ID!]!) { fileDelete(fileIds: $ids) { deletedFileIds userErrors { field message } } }`, { ids: drop });
-    const ue = userErrorText(d?.fileDelete?.userErrors);
-    if (ue && !/not found|does not exist/i.test(ue)) throw fail(502, `Shopify media: ${ue}`);
-  }
-  if (add.length || drop.length) {
-    const d = await gql(cfg, `mutation Media($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
-      productUpdate(product: $product, media: $media) { product { id ${MEDIA_FIELDS} } userErrors { field message } }
-    }`, { product: { id: sh.productId }, media: add });
-    const ue = userErrorText(d?.productUpdate?.userErrors);
-    if (ue) throw fail(502, `Shopify media: ${ue}`);
-    Object.assign(sh, mediaIds(d?.productUpdate?.product));
-    sh.imageUrl = item.imageUrl || null;
+  // Photos and video. Whatever changed is swapped out whole — the photos as
+  // a set (≤ 10, Shopify fetches them from our public URLs), the video on
+  // its own — against what the product holds right now, so media left by a
+  // run that died half way is cleared too. The new media goes up BEFORE the
+  // old comes down, so a failed add leaves the old photos showing, never an
+  // empty listing. Then photos first, video last.
+  const photos = photosOf(item);
+  const photosChanged = !sameList(photos, listedPhotos(sh));
+  const videoChanged = (item.videoUrl || null) !== (sh.videoUrl || null);
+  if (photosChanged || videoChanged) {
+    const alt = shopifyTitle(item);
+    const now = await productMedia(cfg, sh.productId);
+    const drop = now.filter((n) => (photosChanged && n.mediaContentType === 'IMAGE') || (videoChanged && isVideoMedia(n))).map((n) => n.id);
+    const add = photosChanged ? photos.map((url) => ({ originalSource: url, mediaContentType: 'IMAGE', alt })) : [];
+    if (videoChanged && item.videoUrl) add.push({ originalSource: await stageVideo(cfg, item.videoUrl, item), mediaContentType: 'VIDEO', alt });
+    let nodes = now;
+    if (add.length) {
+      const d = await gql(cfg, `mutation Media($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
+        productUpdate(product: $product, media: $media) { product { id ${MEDIA_FIELDS} } userErrors { field message } }
+      }`, { product: { id: sh.productId }, media: add });
+      const ue = userErrorText(d?.productUpdate?.userErrors);
+      if (ue) throw fail(502, `Shopify media: ${ue}`);
+      nodes = d?.productUpdate?.product?.media?.nodes || [];
+    }
+    if (drop.length) {
+      const d = await gql(cfg, `mutation Del($ids: [ID!]!) { fileDelete(fileIds: $ids) { deletedFileIds userErrors { field message } } }`, { ids: drop });
+      const ue = userErrorText(d?.fileDelete?.userErrors);
+      if (ue && !/not found|does not exist/i.test(ue)) throw fail(502, `Shopify media: ${ue}`);
+    }
+    nodes = nodes.filter((n) => !drop.includes(n.id));
+    sh.photoUrls = photos;
     sh.videoUrl = item.videoUrl || null;
-    // A new photo lands after the video; put it back in front.
-    if (add.some((m) => m.mediaContentType === 'IMAGE') && sh.videoMediaId && sh.imageMediaId) {
+    delete sh.imageUrl; delete sh.imageMediaId; delete sh.videoMediaId;
+    // New photos land after a kept video; move the video back to the end.
+    const vid = nodes.findIndex(isVideoMedia);
+    if (vid >= 0 && vid !== nodes.length - 1) {
       await gql(cfg, `mutation Ord($id: ID!, $moves: [MoveInput!]!) { productReorderMedia(id: $id, moves: $moves) { userErrors { field message } } }`,
-        { id: sh.productId, moves: [{ id: sh.imageMediaId, newPosition: '0' }] }).catch(() => {});
+        { id: sh.productId, moves: [{ id: nodes[vid].id, newPosition: String(nodes.length - 1) }] }).catch(() => {});
     }
   }
   if (sh.qty !== 1) {
@@ -548,7 +574,7 @@ export async function reconcileShopify(brandId, { itemIds = null, user = null, b
       const listed = !!sh.productId;
       let needs;
       if (want === 'active') needs = !listed || sh.status !== 'ACTIVE' || sh.fp !== fingerprint(item) || sh.qty !== 1
-        || !sh.published || (item.imageUrl || null) !== (sh.imageUrl || null) || (item.videoUrl || null) !== (sh.videoUrl || null)
+        || !sh.published || mediaBehind(item, sh)
         || sh.price !== priceOf(item) || sh.sku !== item.sku;
       else if (want === 'paused') needs = listed && sh.status !== 'DRAFT' && sh.status !== 'ARCHIVED';
       else needs = listed && sh.status !== 'ARCHIVED';

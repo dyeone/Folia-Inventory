@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Plus, Search, Download, RefreshCw, Printer, Store, CalendarDays, LayoutGrid, AlertTriangle, Loader2, X, HardDrive,
+  Plus, Search, Download, RefreshCw, Printer, Store, CalendarDays, LayoutGrid, AlertTriangle, Loader2, X, HardDrive, Camera,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { PlantCard } from './PlantCard.jsx';
 import { PlantSheet } from './PlantSheet.jsx';
 import { AddPlantsSheet } from './AddPlantsSheet.jsx';
 import { SaleCalendar } from './SaleCalendar.jsx';
-import { POOLS, poolItems, openSaleIdSet, readiness } from './pools.js';
+import { MediaWalkthrough } from './MediaWalkthrough.jsx';
+import { useMediaUploads } from './useMediaUploads.js';
+import { POOLS, poolItems, openSaleIdSet, readiness, photosOf } from './pools.js';
 import { exportPoolToPalmstreet, exportPalmstreetCsv, MEDIA_SEPARATORS } from '../sales/palmstreetExport.js';
 
 const SYNC_EVERY_MS = 2 * 60 * 1000;
@@ -28,9 +30,11 @@ const FILTERS = [
 ];
 
 // The For Sale tab: plants ready to sell, in two product pools — Palmstreet
-// (exported as the CSV, photo + video in the Image URL cell) and Shopify
-// (synced automatically) — each with its short code, one photo and one
+// (exported as the CSV, photos + video in the Image URL cell) and Shopify
+// (synced automatically) — each with its short code, several photos and one
 // video; plus a calendar of sale events to put plants into. Phone first.
+// Adding plants goes straight on to their photos (MediaWalkthrough); every
+// upload runs in the tab's background uploader (useMediaUploads).
 export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMerged, onPrintLabels, onSaveSale }) {
   const [view, setView] = useStored('forsale.view', 'pools', ['pools', 'calendar']);
   const [pool, setPool] = useStored('forsale.pool', 'palmstreet', ['palmstreet', 'shopify']);
@@ -42,6 +46,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   const [openId, setOpenId] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [justAdded, setJustAdded] = useState([]);
+  const [walk, setWalk] = useState(null);   // plant ids going through photos & video
   const syncingRef = useRef(false);
   const pendingRef = useRef(new Set());   // plants to sync once the running sync ends
 
@@ -105,6 +110,22 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   const runSyncRef = useRef(null);
   useEffect(() => { runSyncRef.current = runSync; }, [runSync]);
 
+  // A Shopify-pool plant's listing follows its photo / video / price edits.
+  const itemsRef = useRef(items);
+  useEffect(() => { itemsRef.current = items; });
+  const followShopify = useCallback((id) => {
+    const it = (itemsRef.current || []).find((i) => i.id === id);
+    if (it?.salePool === 'shopify') runSyncRef.current?.({ itemIds: [id], quiet: true });
+  }, []);
+  // Before migration 0053 the server can't keep a plant's photo list, so
+  // don't show one this session only to lose it on reload.
+  const photosMigratedRef = useRef(true);
+  useEffect(() => { photosMigratedRef.current = status?.photosMigrated !== false; });
+  const mergeMedia = useCallback((rows) => onItemsMerged(photosMigratedRef.current
+    ? rows : rows.map(({ photoUrls: _drop, ...r }) => r)), [onItemsMerged]);
+  const uploads = useMediaUploads({ onMerged: mergeMedia, onSettled: followShopify, showToast });
+  const uploadingIds = useMemo(() => new Set(uploads.jobs.map((j) => j.itemId)), [uploads.jobs]);
+
   useEffect(() => {
     if (!shopifyOn) return undefined;
     const first = setTimeout(() => runSync({ quiet: true }), 0);
@@ -132,12 +153,15 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
     }
   }, [onItemsMerged, showToast]);
 
-  const addToPool = async (ids, toPool) => {
+  const addToPool = async (ids, toPool, { media = false } = {}) => {
     const r = await setPoolFor(ids, toPool);
     if (!r) return false;
     setPool(toPool);
     setView('pools');
-    setJustAdded((r.items || []).map((i) => i.id));
+    const added = (r.items || []).map((i) => i.id);
+    setJustAdded(added);
+    // In the order they were scanned (the picker lists newest first).
+    if (media && added.length) setWalk([...ids].reverse().filter((id) => added.includes(id)));
     return true;
   };
 
@@ -181,7 +205,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
       .filter((i) => !s || [i.saleCode, i.sku, i.name, i.variety, i.listingDetails?.title].some((f) => String(f || '').toLowerCase().includes(s)));
   }, [inPool, q, filter]);
   const needs = useMemo(() => ({
-    photo: inPool.filter((i) => !i.imageUrl).length,
+    photo: inPool.filter((i) => !photosOf(i).length).length,
     video: inPool.filter((i) => !i.videoUrl).length,
     price: inPool.filter((i) => !(Number(i.listingPrice) > 0)).length,
   }), [inPool]);
@@ -210,13 +234,16 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
 
   const openItem = openId ? byId.get(openId) : null;
   const unmigrated = status && status.migrated === false;
+  const photosUnmigrated = status && status.migrated !== false && status.photosMigrated === false;
+  // Shown plants still missing a photo or the video — "Photos & video" walks them.
+  const needMedia = useMemo(() => shown.filter((i) => readiness(i).some((m) => m === 'photo' || m === 'video')), [shown]);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">For Sale</h2>
-          <p className="text-xs text-gray-500 hidden sm:block">Plants ready to sell — one photo, one video and a short code each.</p>
+          <p className="text-xs text-gray-500 hidden sm:block">Plants ready to sell — photos, a video and a short code each.</p>
         </div>
         <div className="inline-flex rounded-xl bg-gray-100 p-1">
           {[{ id: 'pools', label: 'Pools', icon: LayoutGrid }, { id: 'calendar', label: 'Calendar', icon: CalendarDays }].map((t) => {
@@ -237,6 +264,18 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
         <div className="flex gap-2 items-start bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-3 py-2.5 text-sm">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>The For Sale tab needs migration <b>0052_for_sale_pools</b>. Run it in the Supabase SQL editor, then reload.</span>
+        </div>
+      )}
+      {photosUnmigrated && (
+        <div className="flex gap-2 items-start bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-3 py-2.5 text-sm">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>Run migration <b>0053_plant_photo_urls</b> in the Supabase SQL editor — until then extra photos are saved, but the CSV and Shopify only get each plant's cover photo.</span>
+        </div>
+      )}
+      {uploads.jobs.length > 0 && (
+        <div className="flex items-center gap-2 bg-gray-900 text-white rounded-xl px-3 py-2 text-xs">
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+          <span className="flex-1">Uploading {uploads.jobs.length} file{uploads.jobs.length === 1 ? '' : 's'} — keep the app open until it's done.</span>
         </div>
       )}
 
@@ -287,6 +326,14 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
             >
               <Plus className="w-4 h-4" /> Add plants
             </button>
+            {needMedia.length > 0 && (
+              <button
+                type="button" onClick={() => setWalk(needMedia.map((i) => i.id))}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm font-semibold text-gray-800 active:bg-gray-100"
+              >
+                <Camera className="w-4 h-4" /> Photos &amp; video ({needMedia.length})
+              </button>
+            )}
             {pool === 'palmstreet' && (
               <span className="inline-flex items-stretch rounded-lg border border-gray-300 overflow-hidden">
                 <button type="button" onClick={exportPool} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold text-gray-800 active:bg-gray-100">
@@ -297,7 +344,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                   title="How the photo and video URLs share the Image URL cell"
                   className="border-l border-gray-300 bg-gray-50 text-xs text-gray-700 px-1.5"
                 >
-                  {Object.entries(MEDIA_SEPARATORS).map(([k, v]) => <option key={k} value={k}>Photo{v.label === 'New line' ? '↵' : v.sep === ' ' ? '␣' : v.sep}video</option>)}
+                  {Object.entries(MEDIA_SEPARATORS).map(([k, v]) => <option key={k} value={k}>Photos{v.label === 'New line' ? '↵' : v.sep === ' ' ? '␣' : v.sep}video</option>)}
                 </select>
               </span>
             )}
@@ -349,6 +396,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                   eventName={i.saleId && openSaleIds.has(i.saleId) ? saleName.get(i.saleId) : null}
                   openSaleIds={openSaleIds}
                   shopifyConnected={shopifyOn}
+                  uploading={uploadingIds.has(i.id)}
                   onClick={() => setOpenId(i.id)}
                 />
               ))}
@@ -368,6 +416,17 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
       {adding && (
         <AddPlantsSheet items={items} pool={pool} onAdd={addToPool} onClose={() => setAdding(false)} showToast={showToast} />
       )}
+      {walk && (
+        <MediaWalkthrough
+          ids={walk}
+          items={items}
+          uploads={uploads}
+          showToast={showToast}
+          onMerged={onItemsMerged}
+          onChanged={followShopify}
+          onClose={() => setWalk(null)}
+        />
+      )}
       {openItem && (
         <PlantSheet
           key={openItem.id}
@@ -376,6 +435,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
           openSaleIds={openSaleIds}
           shopifyConnected={shopifyOn}
           showToast={showToast}
+          uploads={uploads}
           onClose={() => setOpenId(null)}
           onMerged={onItemsMerged}
           onSyncShopify={(ids) => runSync({ itemIds: ids })}
