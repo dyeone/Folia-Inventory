@@ -117,7 +117,7 @@ export default wrap(async (req, res) => {
     default:
       return methodNotAllowed(res, ['GET', 'PUT']);
   }
-});
+}, { sessionRequired: req => !(req.method === 'GET' && req.query?.action === 'landing-public') });
 
 // ----------------------------------------------------------------------------
 // Live show monitor — one brand-scoped row (id `live_show:<brandId>`) holding

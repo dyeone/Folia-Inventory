@@ -1,7 +1,12 @@
 // Background service worker. Centralizes Folia API calls so the
-// extension's auth (userId) and the API base URL aren't repeated
+// extension's signed session and the API base URL aren't repeated
 // across pages. Also keeps an UNPACKED install current: see the
 // self-reload section at the bottom.
+import { SESSION_KEY, sessionHeaders } from './api-auth.js';
+
+// Palmstreet content scripts ask the worker to make requests; they never need
+// direct access to the stored session token.
+chrome.storage.local.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' });
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg?.type?.startsWith('api:')) return false;
@@ -96,8 +101,11 @@ async function get(settings, path) {
   // brandId scopes the call to the chosen 3babes brand (Folia, BAE, …). When
   // unset the server defaults to Folia, so older extension configs keep working.
   const brand = settings.brandId ? `&brandId=${encodeURIComponent(settings.brandId)}` : '';
-  const res = await fetch(`${settings.apiBase}${path}${sep}userId=${encodeURIComponent(settings.userId)}${brand}`);
+  const res = await fetch(`${settings.apiBase}${path}${sep}userId=${encodeURIComponent(settings.userId)}${brand}`, {
+    headers: await sessionHeaders(settings), credentials: 'omit',
+  });
   const data = await res.json().catch(() => null);
+  if (res.status === 401) await chrome.storage.local.remove(SESSION_KEY);
   if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
   return data;
 }
@@ -105,10 +113,12 @@ async function get(settings, path) {
 async function post(settings, path, body) {
   const res = await fetch(`${settings.apiBase}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...await sessionHeaders(settings) },
+    credentials: 'omit',
     body: JSON.stringify({ ...body, userId: settings.userId, brandId: settings.brandId || undefined }),
   });
   const data = await res.json().catch(() => null);
+  if (res.status === 401) await chrome.storage.local.remove(SESSION_KEY);
   if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
   return data;
 }
