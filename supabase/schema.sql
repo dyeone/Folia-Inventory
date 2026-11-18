@@ -88,6 +88,9 @@ create unique index if not exists inventory_items_brand_sale_code
   on inventory_items ("brandId", "saleCode") where "saleCode" is not null;
 create index if not exists inventory_items_brand_sale_pool
   on inventory_items ("brandId", "salePool") where "salePool" is not null;
+-- Every photo of the plant, cover first, as public URLs (0053) — the server's
+-- copy of item_photos for the For Sale exports and the Shopify sync.
+alter table inventory_items add column if not exists "photoUrls" jsonb;
 
 -- ─── Sales Events ─────────────────────────────────────────────────────────────
 

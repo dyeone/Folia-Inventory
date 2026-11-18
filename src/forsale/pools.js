@@ -34,6 +34,31 @@ export const openSaleIdSet = (sales) => new Set((sales || []).filter((s) => even
 
 const priced = (i) => Number(i.listingPrice) > 0;
 
+// Photos per plant in the For Sale tab (the server refuses past it too).
+export const MAX_PHOTOS = 10;
+
+// The plant's photos, cover first: its photo list (0053). A cover that isn't
+// one of them (a pasted URL, a copied row's photo — or any cover before
+// 0053) still leads: it's the picture the plant shows everywhere else.
+// Mirrors photosOf in api/_lib/shopify.js.
+export function photosOf(item) {
+  const list = Array.isArray(item?.photoUrls) ? item.photoUrls.filter((u) => typeof u === 'string' && u) : [];
+  const cover = typeof item?.imageUrl === 'string' && item.imageUrl ? item.imageUrl : null;
+  return cover && !list.includes(cover) ? [cover, ...list] : list;
+}
+
+// A stored photo's id from its URL (…/plant-photos/items/<itemId>/<id>.<ext>);
+// null for a pasted URL, which the gallery shows but can't delete or move.
+export function photoIdOf(url, itemId) {
+  const m = /\/plant-photos\/items\/([\w-]+)\/([\w-]+)\.[a-z0-9]+(?:\?|$)/i.exec(String(url || ''));
+  return m && m[1] === String(itemId) ? m[2] : null;
+}
+
+function listedPhotos(sh) {
+  if (Array.isArray(sh?.photoUrls)) return sh.photoUrls;
+  return sh?.imageUrl ? [sh.imageUrl] : [];
+}
+
 // What a Shopify-pool plant's listing is doing, for its card. Mirrors
 // desiredListing() in api/_lib/shopify.js plus the stored sync state.
 // tone: 'ok' | 'wait' | 'warn' | 'error'
@@ -43,9 +68,9 @@ export function shopifyBadge(item, openSaleIds, connected) {
   if (sh.error) return { tone: 'error', label: 'Sync failed', detail: sh.error };
   if (item.saleId && openSaleIds.has(item.saleId)) return { tone: 'warn', label: 'Paused', detail: 'In an upcoming sale event — hidden on Shopify until it\'s back' };
   if (!priced(item)) return { tone: 'warn', label: 'Needs price', detail: 'Set a price to list it' };
-  if (!item.imageUrl) return { tone: 'warn', label: 'Needs photo', detail: 'Add a photo to list it' };
+  if (!photosOf(item).length) return { tone: 'warn', label: 'Needs photo', detail: 'Add a photo to list it' };
   if (sh.productId && sh.status === 'ACTIVE' && sh.qty === 1 && sh.published) {
-    const behind = (item.imageUrl || null) !== (sh.imageUrl || null) || (item.videoUrl || null) !== (sh.videoUrl || null)
+    const behind = photosOf(item).join('\n') !== listedPhotos(sh).join('\n') || (item.videoUrl || null) !== (sh.videoUrl || null)
       || sh.price !== Number(item.listingPrice).toFixed(2);
     return behind ? { tone: 'wait', label: 'Updating…', detail: 'Changes go to Shopify on the next sync' } : { tone: 'ok', label: 'Live', detail: 'Listed on Shopify' };
   }
@@ -55,7 +80,7 @@ export function shopifyBadge(item, openSaleIds, connected) {
 // What's missing before a plant is ready to list anywhere.
 export function readiness(item) {
   const missing = [];
-  if (!item.imageUrl) missing.push('photo');
+  if (!photosOf(item).length) missing.push('photo');
   if (!item.videoUrl) missing.push('video');
   if (!priced(item)) missing.push('price');
   return missing;

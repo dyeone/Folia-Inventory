@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, Search, X, Loader2 } from 'lucide-react';
+import { Camera, Search, X, Loader2, ChevronRight } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { CameraScanner } from '../packing/CameraScanner.jsx';
 import { POOLS, isForSale, money } from './pools.js';
@@ -7,9 +7,10 @@ import { findBySaleCode } from './saleCode.js';
 
 const POOL_LABEL = Object.fromEntries(POOLS.map((p) => [p.id, p.label]));
 
-// Put in-stock plants into a pool: scan their tag (camera or the bench
-// scanner) or search by SKU / name, collect a list, add them in one go.
-// Each one gets its short code on the way in.
+// Step 1 of adding plants: scan their tags (camera or the bench scanner) or
+// search by SKU / name, collect a list, add them to a pool in one go — each
+// gets its short code on the way in. Step 2 (MediaWalkthrough, opened by the
+// tab) goes through them one by one for photos, video and price.
 export function AddPlantsSheet({ items, pool: initialPool, onAdd, onClose, showToast }) {
   const [pool, setPool] = useState(initialPool || 'palmstreet');
   const [q, setQ] = useState('');
@@ -69,11 +70,11 @@ export function AddPlantsSheet({ items, pool: initialPool, onAdd, onClose, showT
   };
 
 
-  const add = async () => {
+  const add = async (media) => {
     if (!picked.length) return;
-    setBusy(true);
+    setBusy(media ? 'media' : 'plain');
     try {
-      const ok = await onAdd(picked, pool);
+      const ok = await onAdd(picked, pool, { media });
       if (ok) onClose();
     } finally {
       setBusy(false);
@@ -163,13 +164,21 @@ export function AddPlantsSheet({ items, pool: initialPool, onAdd, onClose, showT
         </div>
 
         <button
-          type="button" onClick={add} disabled={busy || !pickedItems.length}
+          type="button" onClick={() => add(true)} disabled={!!busy || !pickedItems.length}
           className="w-full py-3 rounded-xl bg-emerald-600 active:bg-emerald-700 text-white font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
         >
-          {busy && <Loader2 className="w-4 h-4 animate-spin" />}
-          Add {pickedItems.length || ''} to {POOL_LABEL[pool]}
+          {busy === 'media' && <Loader2 className="w-4 h-4 animate-spin" />}
+          Add {pickedItems.length || ''} to {POOL_LABEL[pool]} · next: photos &amp; video
+          <ChevronRight className="w-4 h-4" />
         </button>
-        <p className="text-[11px] text-gray-500 text-center">Each plant gets a short code (like KM42) for its tag. Print tags from the pool afterwards.</p>
+        <button
+          type="button" onClick={() => add(false)} disabled={!!busy || !pickedItems.length}
+          className="w-full text-xs text-gray-500 underline disabled:opacity-40 disabled:no-underline flex items-center justify-center gap-1.5"
+        >
+          {busy === 'plain' && <Loader2 className="w-3 h-3 animate-spin" />}
+          Just add them — photos later
+        </button>
+        <p className="text-[11px] text-gray-500 text-center">Each plant gets a short code (like KM42) for its tag. Next you'll go through them one by one: several photos, one video and a price each.</p>
       </div>
       {camera && (
         <CameraScanner

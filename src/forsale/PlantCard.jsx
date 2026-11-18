@@ -1,5 +1,5 @@
-import { Camera, Video, CalendarDays } from 'lucide-react';
-import { money, readiness, shopifyBadge } from './pools.js';
+import { Camera, Video, CalendarDays, Images, Loader2 } from 'lucide-react';
+import { money, readiness, shopifyBadge, photosOf } from './pools.js';
 
 const TONE = {
   ok: 'bg-green-600 text-white',
@@ -8,11 +8,13 @@ const TONE = {
   error: 'bg-red-600 text-white',
 };
 
-// One plant in a pool grid: its photo, code (big — it's how the packer finds
-// the pot), name, price, what's missing, and for Shopify what its listing is
-// doing. Tap → PlantSheet.
-export function PlantCard({ item, pool, eventName, openSaleIds, shopifyConnected, selected, onClick }) {
+// One plant in a pool grid: its cover photo (and how many it has), code
+// (big — it's how the packer finds the pot), name, price, what's missing,
+// and for Shopify what its listing is doing. Tap → PlantSheet.
+export function PlantCard({ item, pool, eventName, openSaleIds, shopifyConnected, selected, uploading, onClick }) {
   const missing = readiness(item);
+  const shots = photosOf(item);
+  const photoCount = shots.length;
   const badge = pool === 'shopify' ? shopifyBadge(item, openSaleIds, shopifyConnected) : null;
   return (
     <button
@@ -22,9 +24,11 @@ export function PlantCard({ item, pool, eventName, openSaleIds, shopifyConnected
         selected ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-gray-200 hover:border-gray-300'
       }`}
     >
-      <div className="relative aspect-square bg-gray-100">
-        {item.imageUrl ? (
-          <img src={item.imageUrl} alt="" loading="lazy" className="w-full h-full object-cover" />
+      {/* overflow-hidden: without it a tall (portrait) photo stretches the
+          square — an aspect-ratio box grows to fit its content. */}
+      <div className="relative aspect-square bg-gray-100 overflow-hidden">
+        {shots[0] ? (
+          <img src={shots[0]} alt="" loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 gap-1">
             <Camera className="w-7 h-7" />
@@ -44,6 +48,12 @@ export function PlantCard({ item, pool, eventName, openSaleIds, shopifyConnected
         {badge && (
           <span className={`absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${TONE[badge.tone]}`} title={badge.detail}>
             {badge.label}
+          </span>
+        )}
+        {(uploading || photoCount > 1) && (
+          <span className="absolute bottom-1.5 right-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/70 text-white text-[10px] font-semibold" title={uploading ? 'Uploading' : `${photoCount} photos`}>
+            {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Images className="w-3 h-3" />}
+            {photoCount > 1 ? photoCount : ''}
           </span>
         )}
       </div>

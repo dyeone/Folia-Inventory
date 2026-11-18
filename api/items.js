@@ -37,7 +37,9 @@ async function fetchAll(buildQuery) {
 // loaded before its code / video / Shopify listing existed would null them —
 // a printed tag's code gone, a fresh video dropped, a live Shopify product
 // orphaned (and listed twice on the next sync). They never ride this path.
-const POOL_OWNED = ['saleCode', 'salePool', 'poolAddedAt', 'videoUrl', 'shopify'];
+// photoUrls (0053) is the server's copy of the plant's photo gallery
+// (api/_lib/itemPhotos.js) — same reason.
+const POOL_OWNED = ['saleCode', 'salePool', 'poolAddedAt', 'videoUrl', 'shopify', 'photoUrls'];
 
 function stripServerOwned(item) {
   const clean = { ...item };
@@ -981,8 +983,10 @@ async function convertItem(req, res, user, brandId) {
     saleId: null,
     lotNumber: null,
     // The new plant isn't in a pool yet: a code is unique per brand (the
-    // TC keeps its own), and the listing / video belong to the TC row.
+    // TC keeps its own), and the listing / video / photo list belong to the
+    // TC row (its photos stay in the TC's gallery).
     ...('saleCode' in tc ? { saleCode: null, salePool: null, poolAddedAt: null, shopify: null, videoUrl: null } : {}),
+    ...('photoUrls' in tc ? { photoUrls: null } : {}),
     variety,
     convertedFromTcId: tc.id,
     convertedFromSku: tc.sku,

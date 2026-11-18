@@ -271,8 +271,13 @@ export const api = {
   listItemPhotos: (itemId) =>
     request(`/species-photos?action=list&target=item&itemId=${encodeURIComponent(itemId)}`).then(r => r.photos),
   // primary: make this the plant's main photo (bulk assign); default appends.
-  uploadItemPhoto: ({ itemId, fileBase64, contentType, filename, primary = false, replace = false }) =>
-    request('/species-photos', { method: 'POST', body: { action: 'upload', target: 'item', itemId, fileBase64, contentType, filename, primary, replace } }),
+  // forSale: the For Sale tab manages this plant's listing photos (its cover
+  // becomes imageUrl); maxPhotos: refuse past that many. Responses carry the
+  // plant's new imageUrl (itemImageUrl) and photoUrls.
+  uploadItemPhoto: ({ itemId, fileBase64, contentType, filename, primary = false, replace = false, forSale = false, maxPhotos = null }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'upload', target: 'item', itemId, fileBase64, contentType, filename, primary, replace, forSale, maxPhotos } }),
+  reorderItemPhotos: (itemId, orderedPhotoIds, { forSale = false } = {}) =>
+    request('/species-photos', { method: 'POST', body: { action: 'reorder', target: 'item', itemId, orderedPhotoIds, forSale } }),
   // One listing video per plant (For Sale tab): ask for a signed upload URL,
   // PUT the file straight to Storage (src/forsale/media.js), then commit.
   videoUploadUrl: ({ itemId, contentType, size, filename }) =>
@@ -281,8 +286,8 @@ export const api = {
     request('/species-photos', { method: 'POST', body: { action: 'video-commit', target: 'item', itemId, path } }),
   videoDelete: (itemId) =>
     request('/species-photos', { method: 'POST', body: { action: 'video-delete', target: 'item', itemId } }),
-  deleteItemPhoto: (id) =>
-    request('/species-photos', { method: 'POST', body: { action: 'delete', target: 'item', id } }),
+  deleteItemPhoto: (id, { forSale = false } = {}) =>
+    request('/species-photos', { method: 'POST', body: { action: 'delete', target: 'item', id, forSale } }),
 
   // App settings — single-row JSON blob keyed by id.
   // GET returns { id, data, updatedAt, updatedBy } (data may be {} if unset).
