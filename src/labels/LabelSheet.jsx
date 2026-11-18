@@ -7,7 +7,7 @@ import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 // boxLabelPdf.js) so non-component code — the packer's burrito-wrap reprint —
 // can share them without this component file exporting non-components.
 import {
-  buildItemLabelPdf, brandTag, realSku, lotStr, labelTitle, weekTag,
+  buildItemLabelPdf, brandTag, realSku, lotStr, bigMark, topLine, labelTitle, weekTag,
   qrDataUrl, QR_SIZE_LOT, QR_SIZE_FULL,
 } from './itemLabelPdf.js';
 
@@ -15,7 +15,7 @@ function Label({ item, tag, sellerName, week }) {
   const sku = realSku(item);
   // Consignment plants print the seller's name alongside the brand tag so the
   // bench knows whose plant it is (the SKU carries the seller code too).
-  const top = [tag, sellerName].filter(Boolean).join(' · ');
+  const top = topLine(item, tag, sellerName);
 
   // QR, not CODE128 — same swap as the PDF builder (see itemLabelPdf.js):
   // a barcode squeezed into the 2"×1" label was too fine to print/scan.
@@ -28,11 +28,14 @@ function Label({ item, tag, sellerName, week }) {
   );
 
   const lot = lotStr(item);
+  // The big left mark: the lineup number, else the plant's For Sale code.
+  const big = bigMark(item);
+  const isCode = !!big && !lot;
   const titleLine = labelTitle(item);
   // The PDF prints the whole name: smaller when long, on two lines when
   // longer still. The preview mirrors that in CSS — a long title drops a
   // size and may take two lines.
-  const longTitle = titleLine.length > (lot ? 22 : 34);
+  const longTitle = titleLine.length > (big ? 22 : 34);
 
   // Sized to a standard 2" x 1" thermal label. This is both the on-screen
   // preview and the printed size. When the plant has a lineup number, it fills
@@ -44,12 +47,12 @@ function Label({ item, tag, sellerName, week }) {
   return (
     <div className="folia-label bg-white border border-gray-300"
          style={{ width: '2in', height: '1in', padding: '0.06in', boxSizing: 'border-box' }}>
-      {lot ? (
+      {big ? (
         <div className="flex items-stretch h-full w-full">
           <div className="flex flex-col items-center justify-center pr-1 border-r border-gray-300" style={{ width: '0.78in' }}>
             <span className="font-extrabold text-black leading-none"
-                  style={{ fontSize: lot.length >= 4 ? '30pt' : lot.length === 3 ? '38pt' : '46pt' }}>{lot}</span>
-            {week && (
+                  style={{ fontSize: isCode ? '18pt' : big.length >= 4 ? '30pt' : big.length === 3 ? '38pt' : '46pt' }}>{big}</span>
+            {week && !isCode && (
               <span className="font-bold text-black leading-none"
                     style={{ fontSize: '8pt', marginTop: '0.02in', padding: '0.02in 0.05in', border: '0.012in solid #000', borderRadius: '0.03in' }}>
                 {week}

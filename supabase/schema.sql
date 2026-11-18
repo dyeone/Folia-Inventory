@@ -70,6 +70,24 @@ create table if not exists inventory_items (
 -- When the plant was staged onto its current sale (0042) — un-numbered
 -- staged rows sort by this so the scan order survives reloads.
 alter table inventory_items add column if not exists "stagedAt" timestamptz;
+-- For Sale tab (0052): short plant code, product pool, one video, Shopify
+-- sync state. The plant-videos bucket is created by the migration file.
+alter table inventory_items add column if not exists "saleCode" text;
+alter table inventory_items add column if not exists "salePool" text;
+alter table inventory_items add column if not exists "poolAddedAt" timestamptz;
+alter table inventory_items add column if not exists "videoUrl" text;
+alter table inventory_items add column if not exists "shopify" jsonb;
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'inventory_items_sale_pool_check') then
+    alter table inventory_items add constraint inventory_items_sale_pool_check
+      check ("salePool" is null or "salePool" in ('palmstreet', 'shopify'));
+  end if;
+end $$;
+create unique index if not exists inventory_items_brand_sale_code
+  on inventory_items ("brandId", "saleCode") where "saleCode" is not null;
+create index if not exists inventory_items_brand_sale_pool
+  on inventory_items ("brandId", "salePool") where "salePool" is not null;
 
 -- ─── Sales Events ─────────────────────────────────────────────────────────────
 

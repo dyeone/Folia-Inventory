@@ -126,6 +126,21 @@ export const api = {
     request('/items', { method: 'POST', body: { action: 'link-to-line', plantId, lineId } }),
   assignItemsToSale: ({ itemIds, saleId }) =>
     request('/items', { method: 'POST', body: { action: 'assign-to-sale', itemIds, saleId } }),
+  // For Sale tab (api/_lib/pool.js + shopify.js). pool: 'palmstreet' |
+  // 'shopify' | null (out of the tab). Joining a pool mints the plant's code.
+  poolStatus: () => request('/items?action=pool-status'),
+  poolSet: ({ itemIds, pool }) =>
+    request('/items', { method: 'POST', body: { action: 'pool-set', itemIds, pool } }),
+  // Shopify both ways (orders in, listings out); server-throttled. itemIds
+  // = just these plants' listings; omitted = every listing that's behind.
+  poolSync: ({ itemIds, force = false, dismissProblems } = {}) =>
+    request('/items', { method: 'POST', body: { action: 'pool-sync', itemIds, force, dismissProblems } }),
+  eventAssign: ({ saleId, itemIds }) =>
+    request('/items', { method: 'POST', body: { action: 'event-assign', saleId, itemIds } }),
+  eventUnassign: ({ saleId, itemIds }) =>
+    request('/items', { method: 'POST', body: { action: 'event-unassign', saleId, itemIds } }),
+  mediaCleanup: ({ dryRun = true, days = 14 } = {}) =>
+    request('/items', { method: 'POST', body: { action: 'media-cleanup', dryRun, days } }),
   // Atomic server-side box merge: moves every still-sold item from the source
   // boxes into the target box (identity re-stamped server-side). 409s when
   // any involved box has an active label.
@@ -256,8 +271,16 @@ export const api = {
   listItemPhotos: (itemId) =>
     request(`/species-photos?action=list&target=item&itemId=${encodeURIComponent(itemId)}`).then(r => r.photos),
   // primary: make this the plant's main photo (bulk assign); default appends.
-  uploadItemPhoto: ({ itemId, fileBase64, contentType, filename, primary = false }) =>
-    request('/species-photos', { method: 'POST', body: { action: 'upload', target: 'item', itemId, fileBase64, contentType, filename, primary } }),
+  uploadItemPhoto: ({ itemId, fileBase64, contentType, filename, primary = false, replace = false }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'upload', target: 'item', itemId, fileBase64, contentType, filename, primary, replace } }),
+  // One listing video per plant (For Sale tab): ask for a signed upload URL,
+  // PUT the file straight to Storage (src/forsale/media.js), then commit.
+  videoUploadUrl: ({ itemId, contentType, size, filename }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'video-upload-url', target: 'item', itemId, contentType, size, filename } }),
+  videoCommit: ({ itemId, path }) =>
+    request('/species-photos', { method: 'POST', body: { action: 'video-commit', target: 'item', itemId, path } }),
+  videoDelete: (itemId) =>
+    request('/species-photos', { method: 'POST', body: { action: 'video-delete', target: 'item', itemId } }),
   deleteItemPhoto: (id) =>
     request('/species-photos', { method: 'POST', body: { action: 'delete', target: 'item', id } }),
 

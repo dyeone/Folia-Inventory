@@ -24,6 +24,27 @@ export function lotStr(item) {
   return Number.isFinite(n) && n > 0 ? String(n) : '';
 }
 
+// The plant's short For Sale code ("KM42", migration 0052) or ''. A plant
+// with no lineup number prints its code big in the left column instead (the
+// packer finds Shopify / Palmstreet-store orders by it); one that has both
+// prints the number big and the code in the top line.
+export function codeStr(item) {
+  const c = String(item?.saleCode || '').trim().toUpperCase();
+  return /^[A-Z]{2}\d{2,3}$/.test(c) ? c : '';
+}
+
+// The big left-column mark: the lineup number, else the code.
+export function bigMark(item) {
+  return lotStr(item) || codeStr(item);
+}
+
+// Top line: brand tag, the code when the number took the big slot, the
+// consignment seller.
+export function topLine(item, tag, sellerName) {
+  const code = lotStr(item) ? codeStr(item) : '';
+  return [tag, code, sellerName].filter(Boolean).join(' · ');
+}
+
 // ISO-8601 week number (Monday-based, 1–53) of a date. Date-only strings
 // ("2026-07-17") are parsed as LOCAL calendar dates — new Date() would read
 // them as UTC midnight, which in US timezones lands on the previous local
@@ -301,24 +322,27 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
     // SKUs/varieties, so non-bae-gin labels are marked to avoid bench mix-ups;
     // bae-gin (the default, no sellers) prints without a top line.
     const sellerName = item.sellerId && sellerNameById ? sellerNameById.get(item.sellerId) : null;
-    const topTag = [tag, sellerName].filter(Boolean).join(' · ').slice(0, 28);
+    const topTag = topLine(item, tag, sellerName).slice(0, 28);
     const title = labelTitle(item);
     const sku = realSku(item);
     const lot = lotStr(item);
+    const big = bigMark(item);
 
-    if (lot) {
+    if (big) {
       // Combined layout: the big lineup number fills the wide left column (easy
       // to read across the room during a live), with name / SKU / QR stacked
       // in the right column. A thin divider separates the two. A bold "WK N"
       // chip under the number says which week's lineup this is — numbers can
       // repeat across weeks on the bench, and the chip has to read at arm's
       // length (its tiny gray predecessor didn't).
-      const week = weekTag(item, saleById);
+      // A code (no lineup number) has no week — it's the plant's for good.
+      const week = lot ? weekTag(item, saleById) : '';
       const DIV = 0.82;                 // left column width / divider x
       pdf.setFont('helvetica', 'bold');
       pdf.setTextColor(0);
-      pdf.setFontSize(lotFontPt(lot));
-      pdf.text(lot, DIV / 2, week ? 0.68 : 0.74, { align: 'center' });
+      if (lot) pdf.setFontSize(lotFontPt(lot));
+      else pdf.setFontSize(fitFontPt(pdf, big, 24, DIV - 0.08));
+      pdf.text(big, DIV / 2, week ? 0.68 : lot ? 0.74 : 0.62, { align: 'center' });
       if (week) {
         pdf.setFontSize(8);
         const chipW = pdf.getTextWidth(week) + 0.1;
@@ -334,10 +358,14 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
       const cx = DIV + (LABEL_W - DIV) / 2; // center of the right column
       const cw = LABEL_W - DIV - 0.04;      // right column text width
       if (topTag) {
+        // One line, shrunk to fit (brand · code · seller can run long; a
+        // wrapped second line would print over the title).
         pdf.setFont('helvetica', 'bold');
-        pdf.setFontSize(6.5);
+        pdf.setFontSize(fitFontPt(pdf, topTag, 6.5, cw));
+        let top = topTag;   // still too wide at the 6 pt floor: trim the end (the seller name)
+        while (top.length > 4 && pdf.getTextWidth(top) > cw) top = top.slice(0, -1);
         pdf.setTextColor(0);
-        pdf.text(topTag, cx, 0.15, { align: 'center', maxWidth: cw });
+        pdf.text(top, cx, 0.15, { align: 'center' });
       }
       const titleLines = drawTitle(pdf, canvas, title, { centerX: cx, baselineY: topTag ? 0.29 : 0.22, fontPt: 7, minPt: 6, maxWidthIn: cw });
       // A two-line title under a brand tag reaches the SKU's cap line: the

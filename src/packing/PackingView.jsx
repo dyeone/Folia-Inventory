@@ -32,6 +32,7 @@ import { buildNigelShippingRows, downloadNigelShippingCsv } from './nigelExport.
 import { buildTagRows, downloadTagsXlsx, needsTag, TAG_PRICE_MIN } from './tagList.js';
 import { ShippingSlipSheet } from '../labels/ShippingSlipSheet.jsx';
 import { shortBoxCode, normalizeBoxCode, normalizeSku, isBoxCode } from '../labels/boxCode.js';
+import { findBySaleCode } from '../forsale/saleCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxHasHoldItem, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
 import { findDupeLots } from './dupeLots.js';
@@ -195,8 +196,10 @@ export function PackingView({
       // box it's assigned to rather than treating it as an item SKU.
       handleScannedTracking(trimmed);
     } else {
-      handleScannedItemSku(trimmed);
-      setScanFeedback({ kind: 'item', text: upper });
+      // A typed For Sale code ("KM42") stands for its plant's SKU.
+      const sku = findBySaleCode(inventoryItems, trimmed)?.sku || trimmed;
+      handleScannedItemSku(sku);
+      setScanFeedback({ kind: 'item', text: sku.toUpperCase() });
     }
     setScanInput('');
     // Clear the flash after a moment, then re-grab focus for the next

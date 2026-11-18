@@ -93,12 +93,31 @@ const DEFAULT_IMAGE_BY_BRAND = {
   bae: 'https://folia-inventory.vercel.app/bae-mystery-tile.png',
 };
 
-// One 14-column row in the template's exact order.
-function baseRow(item, price) {
+// The Image URL cell: the plant's photo, then its video when it has one
+// (For Sale tab, migration 0052), joined by the operator's chosen separator
+// — Palmstreet's template doesn't document how two media share the cell, so
+// the separator is a setting (src/forsale/ForSaleView.jsx, per device).
+export const MEDIA_SEPARATORS = {
+  comma: { label: 'Comma', sep: ',' },
+  semicolon: { label: 'Semicolon', sep: ';' },
+  newline: { label: 'New line', sep: '\n' },
+  space: { label: 'Space', sep: ' ' },
+};
+export function mediaCell(item, separator = 'comma') {
+  const photo = item.imageUrl || DEFAULT_IMAGE_BY_BRAND[item.brandId] || '';
+  const sep = (MEDIA_SEPARATORS[separator] || MEDIA_SEPARATORS.comma).sep;
+  return [photo, item.videoUrl || ''].filter(Boolean).join(sep);
+}
+
+// One 14-column row in the template's exact order. `title` overrides the
+// lineup-number title (the For Sale pool titles by plant code instead).
+// The video joins the photo only when a `separator` is given (the For Sale
+// tab's exports); every other export keeps the single photo URL.
+function baseRow(item, price, { separator = null, title } = {}) {
   return [
-    buildTitle(item),
+    title ?? buildTitle(item),
     buildDescription(item),
-    item.imageUrl || DEFAULT_IMAGE_BY_BRAND[item.brandId] || '',
+    separator ? mediaCell(item, separator) : (item.imageUrl || DEFAULT_IMAGE_BY_BRAND[item.brandId] || ''),
     price,
     parseInt(item.quantity) || 1,
     ...variationCells(item),
@@ -125,7 +144,7 @@ function download(csv, filename) {
   URL.revokeObjectURL(url);
 }
 
-export function exportPalmstreetCsv(sale, items) {
+export function exportPalmstreetCsv(sale, items, { separator = null } = {}) {
   const saleItems = items
     .filter(i => i.saleId === sale.id && i.lotKind !== 'giveaway')
     .sort((a, b) => {
@@ -138,7 +157,7 @@ export function exportPalmstreetCsv(sale, items) {
     return { ok: false, reason: 'No sale lots in this event yet.' };
   }
 
-  const rows = saleItems.map(item => baseRow(item, parseFloat(item.listingPrice) || 0));
+  const rows = saleItems.map(item => baseRow(item, parseFloat(item.listingPrice) || 0, { separator }));
   const safeName = (sale.name || 'sale').replace(/[^a-z0-9]+/gi, '-').toLowerCase();
   download(toCsv(rows), `palmstreet-${safeName}-${sale.date || 'event'}.csv`);
   return { ok: true, count: saleItems.length };
@@ -196,4 +215,31 @@ export function exportAvailableToPalmstreet(items, varieties = [], species = [],
   const stamp = new Date().toISOString().slice(0, 10);
   download(toCsv(rows), `palmstreet-inventory-${stamp}.csv`);
   return { ok: true, count: eligible.length, pricedFromIdeal, priceless };
+}
+
+// "KM42 Anthurium crystallinum" — the For Sale pool's title: the plant's
+// short code first (the packer finds the pot by it, like a lineup number in
+// a live), then the operator's title override or the name. Capped at 80.
+export function buildPoolTitle(item) {
+  const override = (details(item).title != null ? String(details(item).title) : '').trim();
+  const name = override || item.name || '';
+  const code = String(item.saleCode || '').trim();
+  const t = code && !name.toUpperCase().startsWith(code) ? `${code} ${name}`.trim() : name;
+  return t.length > 80 ? t.slice(0, 80) : t;
+}
+
+// The Palmstreet pool (For Sale tab): every priced plant in it as one CSV,
+// photo + video in the Image URL cell. A plant without a price is left out
+// (a $0 row would list it at $0) and counted in `unpriced`.
+export function exportPoolToPalmstreet(items, { separator = 'comma' } = {}) {
+  const priced = items.filter(i => parseFloat(i.listingPrice) > 0);
+  const unpriced = items.length - priced.length;
+  if (items.length === 0) return { ok: false, reason: 'The Palmstreet pool is empty.' };
+  if (priced.length === 0) return { ok: false, reason: `None of the ${items.length} plants has a price yet.` };
+  const rows = [...priced]
+    .sort((a, b) => String(a.saleCode || '').localeCompare(String(b.saleCode || '')))
+    .map(item => baseRow(item, parseFloat(item.listingPrice), { separator, title: buildPoolTitle(item) }));
+  const stamp = new Date().toISOString().slice(0, 10);
+  download(toCsv(rows), `palmstreet-pool-${stamp}.csv`);
+  return { ok: true, count: rows.length, unpriced, withVideo: priced.filter(i => i.videoUrl).length };
 }

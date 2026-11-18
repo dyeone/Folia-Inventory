@@ -4,6 +4,8 @@ import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, SKU_SUFFIX_END_RE } fro
 import { fetchAllById } from './_lib/fetchAll.js';
 import { settleSyntheticSkus } from './_lib/syntheticSkus.js';
 import { isOpenLine, isLinkablePlant, linkPatches } from './_lib/linkLine.js';
+import { poolStatus, poolSet, poolSync, eventAssign, eventUnassign, mediaCleanup, followShopify } from './_lib/pool.js';
+import { retireShopifyListing } from './_lib/shopify.js';
 
 // Fields the client must never be able to set directly. The server owns these.
 // brandId is server-owned too: the active brand is forced from the request, so
@@ -29,9 +31,18 @@ async function fetchAll(buildQuery) {
   return all;
 }
 
+// For Sale tab fields (migration 0052) are written only by their own actions
+// (api/_lib/pool.js, species-photos video-*, the Shopify sync). The generic
+// save sends WHOLE rows from the client's copy, so a plant edited from a copy
+// loaded before its code / video / Shopify listing existed would null them —
+// a printed tag's code gone, a fresh video dropped, a live Shopify product
+// orphaned (and listed twice on the next sync). They never ride this path.
+const POOL_OWNED = ['saleCode', 'salePool', 'poolAddedAt', 'videoUrl', 'shopify'];
+
 function stripServerOwned(item) {
   const clean = { ...item };
   for (const k of SERVER_OWNED) delete clean[k];
+  for (const k of POOL_OWNED) delete clean[k];
   return clean;
 }
 
@@ -137,6 +148,12 @@ async function combineBoxes(req, res, user, brandId) {
   }
 
   const allIds = [targetBoxId, ...sourceBoxIds];
+  // A Shopify order's box ships as that order (its tracking fulfils it in
+  // Shopify); folding it into another platform's box mixes two orders.
+  const shopifyBoxes = allIds.filter(id => id.startsWith('shopify-'));
+  if (shopifyBoxes.length && shopifyBoxes.length !== allIds.length) {
+    const e = new Error('Shopify boxes can only be combined with other Shopify boxes'); e.status = 409; throw e;
+  }
   const { data: ships, error: shipErr } = await supabase
     .from('shipments')
     .select('id, "voidedAt"')
@@ -612,6 +629,10 @@ async function transferItem(req, res, user, brandId) {
       variety: sp?.varietyName || item.variety,
       saleId: null, lotNumber: null, lotKind: 'sale', stagedAt: null,
       sellerId: null, commissionPct: null,     // consignment is per brand; the plant is ours to sell here
+      // Pools and plant codes are per brand (codes are unique per brand, so
+      // one can't travel); the new brand codes it when it joins a pool.
+      // Only sent once migration 0052 is in (the row carries the columns).
+      ...('saleCode' in item ? { saleCode: null, salePool: null, poolAddedAt: null, shopify: null } : {}),
       modifiedAt: now,
       modifiedBy: user.displayName,
     })
@@ -629,6 +650,8 @@ async function transferItem(req, res, user, brandId) {
   // Its photos follow it (best effort — a miss only hides them until the
   // next move; the transfer itself is complete).
   try { await supabase.from('item_photos').update({ brandId }).eq('itemId', item.id); } catch { /* see above */ }
+  // A Shopify listing in the old brand's store comes down (best effort).
+  if (item.shopify?.productId) await retireShopifyListing(fromBrandId, item.shopify).catch(() => {});
   return res.status(200).json({ ok: true, item: moved[0], relabel, transferId, speciesCreated: !!sp?.created, fromSale });
 }
 
@@ -652,6 +675,14 @@ export default wrap(async (req, res) => {
   if (action === 'transfer' && req.method === 'POST') return transferItem(req, res, user, brandId);
   if (action === 'acclimate' && req.method === 'POST') return acclimateItems(req, res, user, brandId);
   if (action === 'link-to-line' && req.method === 'POST') return linkToLine(req, res, user, brandId);
+  // For Sale tab (api/_lib/pool.js): product pools, plant codes, sale-event
+  // staging from the calendar, Shopify sync, storage cleanup.
+  if (action === 'pool-status' && req.method === 'GET') return poolStatus(req, res, user, brandId);
+  if (action === 'pool-set' && req.method === 'POST') return poolSet(req, res, user, brandId);
+  if (action === 'pool-sync' && req.method === 'POST') return poolSync(req, res, user, brandId);
+  if (action === 'event-assign' && req.method === 'POST') return eventAssign(req, res, user, brandId);
+  if (action === 'event-unassign' && req.method === 'POST') return eventUnassign(req, res, user, brandId);
+  if (action === 'media-cleanup' && req.method === 'POST') return mediaCleanup(req, res, user, brandId);
   // Consultant-safe stock list: what's on hand, with the list price and
   // never the cost. Any brand member. (The plain GET returns full rows with
   // costs to staff/admin — this is the narrow read for the pricing screen.)
@@ -727,6 +758,7 @@ export default wrap(async (req, res) => {
           .is('deletedAt', null)
           .select('id');
         if (error) { const e = new Error(error.message); e.status = 500; throw e; }
+        await followShopify(brandId, (claimed || []).map(c => c.id), user);
         return res.status(200).json({ assignedIds: (claimed || []).map(c => c.id) });
       }
 
@@ -803,6 +835,13 @@ export default wrap(async (req, res) => {
           // "not set here", so leave the column alone; an explicit '' still
           // clears it (the item form sends '' when the field is emptied).
           if (patch.imageUrl == null) delete patch.imageUrl;
+          // A URL of this plant's own stored photo is the server's to set
+          // (the For Sale tab's replace deletes the old file): a stale copy
+          // writing an old one back would point listings at a dead file.
+          else if (typeof patch.imageUrl === 'string'
+            && patch.imageUrl.startsWith(supabase.storage.from('plant-photos').getPublicUrl(`items/${id}/`).data.publicUrl)) {
+            delete patch.imageUrl;
+          }
           const { error } = await supabase
             .from('inventory_items')
             .update(patch)
@@ -819,6 +858,9 @@ export default wrap(async (req, res) => {
       // Return the server-assigned ids of the rows we inserted so the client
       // can identify exactly this batch (e.g. CSV-import undo / label print)
       // without a fragile id-diff that a concurrent insert/restore could taint.
+      // Shopify-pool plants this save sold / staged / repriced: their
+      // listings follow now (best effort, short — the poll is the backstop).
+      if (updates.length > 0) await followShopify(brandId, updates.map(u => u.id), user);
       return res.status(200).json({
         ok: true,
         inserted: inserts.length,
@@ -862,7 +904,17 @@ export default wrap(async (req, res) => {
       }
       if (purge) {
         // Hard delete — bypass the 30-day grace. Used by the Recently
-        // Deleted tab's "Delete forever" action.
+        // Deleted tab's "Delete forever" action. A Shopify listing still up
+        // comes down first (or is queued) — once the row is gone nothing
+        // would know about it.
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const { data: doomed, error: dErr } = await supabase
+            .from('inventory_items').select('id, shopify').eq('brandId', brandId).in('id', ids.slice(i, i + CHUNK));
+          if (dErr) break;   // before migration 0052 there's nothing to retire
+          for (const r of doomed || []) {
+            if (r.shopify?.productId && r.shopify.status !== 'ARCHIVED') await retireShopifyListing(brandId, r.shopify, user);
+          }
+        }
         for (let i = 0; i < ids.length; i += CHUNK) {
           const batch = ids.slice(i, i + CHUNK);
           const { error } = await supabase
@@ -883,6 +935,7 @@ export default wrap(async (req, res) => {
           .from('inventory_items').update(patch).eq('brandId', brandId).in('id', batch);
         if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       }
+      await followShopify(brandId, ids, user);   // trashed → its listing comes down
       return res.status(200).json({ ok: true, deleted: ids.length });
     }
 
@@ -927,6 +980,9 @@ async function convertItem(req, res, user, brandId) {
     status: 'available',
     saleId: null,
     lotNumber: null,
+    // The new plant isn't in a pool yet: a code is unique per brand (the
+    // TC keeps its own), and the listing / video belong to the TC row.
+    ...('saleCode' in tc ? { saleCode: null, salePool: null, poolAddedAt: null, shopify: null, videoUrl: null } : {}),
     variety,
     convertedFromTcId: tc.id,
     convertedFromSku: tc.sku,
