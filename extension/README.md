@@ -5,6 +5,16 @@ Reads the box weight from a USB postal scale, captures the shipping
 label + packing slip PDFs, and syncs the tracking number back to Folia
 Inventory — all without manually retyping anything.
 
+## Sign in
+
+Version 0.6.11 requires a real Folia session. In extension Settings, enter the
+HTTPS API origin and your existing Folia username/password, then click **Sign in**.
+The user ID is filled automatically. Passwords are never saved; the signed token
+stays in device-local extension storage and expires after 12 hours. Sign in again
+when requested. API settings still sync between devices, but credentials do not.
+Existing installations must update and sign in; a copied user ID no longer grants
+API access. The separate Mac bridge token continues to work unchanged.
+
 ## Flow
 
 The extension automates this 8-step Palmstreet sequence per order:

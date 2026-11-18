@@ -677,8 +677,15 @@ const ORDERS_QUERY = `query Orders($q: String!, $after: String) {
   }
 }`;
 
-const SELLABLE_FINANCIAL = new Set(['PAID', 'PARTIALLY_PAID', 'PARTIALLY_REFUNDED', 'AUTHORIZED', 'PENDING']);
 const PULL_BUDGET_MS = 45000;
+
+function requirePaidForShipping(order) {
+  if (!order) throw fail(502, 'Order was not returned — check the order and app access in Shopify before shipping');
+  if (order.cancelledAt) throw fail(409, 'Order is cancelled — review it in Shopify before shipping');
+  if (order.displayFinancialStatus !== 'PAID') {
+    throw fail(409, `Payment is ${String(order.displayFinancialStatus || 'unknown').toLowerCase()} — only paid orders can be fulfilled or send tracking updates`);
+  }
+}
 
 function groupKeyOf(a) {
   return [a.name, a.address1, a.city, a.provinceCode, a.zip].map((x) => String(x || '').trim().toLowerCase()).join('|');
@@ -714,7 +721,7 @@ async function ingestOrder(brandId, order, openBoxes, problems, out, user) {
     return pl && pl.orderId === order.name && pl.status === 'sold' ? pl : null;
   };
 
-  if (order.cancelledAt || !SELLABLE_FINANCIAL.has(order.displayFinancialStatus)) {
+  if (order.cancelledAt || order.displayFinancialStatus !== 'PAID') {
     for (const sku of skus) {
       const pl = stillSoldHere(sku);
       if (pl) p('cancelled', sku, `${order.name} was ${order.cancelledAt ? 'cancelled' : String(order.displayFinancialStatus || '').toLowerCase()} — ${pl.saleCode || pl.sku} is still marked sold. Take it out of its box if it shouldn't ship.`);
@@ -737,8 +744,6 @@ async function ingestOrder(brandId, order, openBoxes, problems, out, user) {
     street1: a.address1 || '', street2: a.address2 || '', city: a.city || '', state: a.provinceCode || '',
     zip: a.zip || '', country: a.countryCodeV2 || 'US', shipmentMethod: order.shippingLines?.nodes?.[0]?.title || '',
   };
-  const paidNote = order.displayFinancialStatus === 'PAID' || order.displayFinancialStatus === 'PARTIALLY_REFUNDED'
-    ? '' : ` · payment ${String(order.displayFinancialStatus).toLowerCase()} — check before shipping`;
   let feeLeft = Number(order.totalShippingPriceSet?.shopMoney?.amount) || 0;
   const now = new Date().toISOString();
 
@@ -765,7 +770,7 @@ async function ingestOrder(brandId, order, openBoxes, problems, out, user) {
       orderId: order.name,
       orderDate: order.processedAt || order.createdAt || now,
       orderShippingFee: feeLeft,
-      notes: [pl.notes, `Shopify ${order.name}${paidNote}`].filter(Boolean).join(' · ').slice(0, 1000),
+      notes: [pl.notes, `Shopify ${order.name}`].filter(Boolean).join(' · ').slice(0, 1000),
       shopify: { ...(pl.shopify || {}), orderGid: order.id, orderName: order.name },
       modifiedAt: now,
       modifiedBy: user?.displayName || 'shopify-sync',
@@ -806,7 +811,8 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
   }
   const problem = (orderGid, name, kind, message) => problems.push({ key: `${orderGid}|${kind}`, at: new Date().toISOString(), kind, order: name || null, sku: null, message });
   const stamp = async (r, patch) => {
-    await supabase.from('inventory_items').update({ shopify: { ...r.shopify, ...patch } }).eq('id', r.id).eq('brandId', brandId);
+    const { error } = await supabase.from('inventory_items').update({ shopify: { ...r.shopify, ...patch } }).eq('id', r.id).eq('brandId', brandId);
+    if (error) throw fail(500, error.message);
     changedIds.push(r.id);
   };
 
@@ -824,9 +830,26 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
     if (Date.now() > deadline) break;
     const name = its[0]?.shopify?.orderName;
     try {
-      const d = await gql(cfg, `query FO($id: ID!) { order(id: $id) { name fulfillmentOrders(first: 5) { nodes { id status lineItems(first: 20) { nodes { id remainingQuantity lineItem { sku } } } } } } }`, { id: orderGid });
-      const skus = new Set(its.map((r) => r.sku));
-      const fos = d?.order?.fulfillmentOrders?.nodes || [];
+      const d = await gql(cfg, `query FO($id: ID!) {
+        order(id: $id) {
+          name displayFinancialStatus cancelledAt
+          fulfillmentOrders(first: 5) {
+            pageInfo { hasNextPage }
+            nodes { id status lineItems(first: 20) {
+              pageInfo { hasNextPage }
+              nodes { id remainingQuantity lineItem { sku } }
+            } }
+          }
+        }
+      }`, { id: orderGid });
+      requirePaidForShipping(d?.order);
+      const connection = d.order.fulfillmentOrders;
+      const fos = connection?.nodes || [];
+      if (connection?.pageInfo?.hasNextPage !== false || fos.some((fo) => fo.lineItems?.pageInfo?.hasNextPage !== false)) {
+        throw fail(409, 'Fulfillment data is incomplete or exceeds the sync limit — review and fulfill the order in Shopify before retrying');
+      }
+      const skus = new Set(its.map((r) => String(r.sku || '').trim()).filter(Boolean));
+      if (skus.size !== its.length) throw fail(409, 'Plants have missing or duplicate SKUs — correct them before fulfilling this order');
       const mine = (fo) => (fo.lineItems?.nodes || []).filter((li) => skus.has(String(li.lineItem?.sku || '').trim()) && li.remainingQuantity > 0);
       if (fos.some((fo) => ['ON_HOLD', 'SCHEDULED'].includes(fo.status) && mine(fo).length)) {
         problem(orderGid, name, 'fulfil', `${name || 'An order'} is on hold in Shopify — release it there and it'll be marked shipped on the next sync`);
@@ -835,16 +858,19 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
       const input = fos.filter((fo) => ['OPEN', 'IN_PROGRESS'].includes(fo.status))
         .map((fo) => ({ fulfillmentOrderId: fo.id, fulfillmentOrderLineItems: mine(fo).map((li) => ({ id: li.id, quantity: li.remainingQuantity })) }))
         .filter((x) => x.fulfillmentOrderLineItems.length);
-      let fulfillmentId = null;
-      if (input.length) {
-        const f = await gql(cfg, `mutation Ful($fulfillment: FulfillmentInput!) {
-          fulfillmentCreate(fulfillment: $fulfillment) { fulfillment { id } userErrors { field message } }
-        }`, { fulfillment: { lineItemsByFulfillmentOrder: input, trackingInfo: { company: carrierName(t.carrier), number: t.trackingNumber }, notifyCustomer: true } });
-        const ue = userErrorText(f?.fulfillmentCreate?.userErrors);
-        if (ue) throw fail(502, ue);
-        fulfillmentId = f?.fulfillmentCreate?.fulfillment?.id || null;
+      const readySkus = new Set(fos.filter((fo) => ['OPEN', 'IN_PROGRESS'].includes(fo.status))
+        .flatMap(mine).map((li) => String(li.lineItem.sku).trim()));
+      const missing = [...skus].filter((sku) => !readySkus.has(sku));
+      if (!input.length || missing.length) {
+        throw fail(409, `No open fulfillment lines for ${missing.join(', ') || [...skus].join(', ')} — verify the order's fulfillment and app access in Shopify before retrying`);
       }
-      // Nothing left open for these lines = already fulfilled in Shopify.
+      const f = await gql(cfg, `mutation Ful($fulfillment: FulfillmentInput!) {
+        fulfillmentCreate(fulfillment: $fulfillment) { fulfillment { id } userErrors { field message } }
+      }`, { fulfillment: { lineItemsByFulfillmentOrder: input, trackingInfo: { company: carrierName(t.carrier), number: t.trackingNumber }, notifyCustomer: true } });
+      const ue = userErrorText(f?.fulfillmentCreate?.userErrors);
+      if (ue) throw fail(502, ue);
+      const fulfillmentId = f?.fulfillmentCreate?.fulfillment?.id;
+      if (!fulfillmentId) throw fail(502, 'Shopify did not confirm a fulfillment — check the order in Shopify before retrying');
       const at = new Date().toISOString();
       for (const r of its) await stamp(r, { fulfilledAt: at, fulfillmentId, trackingNumber: t.trackingNumber });
     } catch (e) {
@@ -863,11 +889,18 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
   for (const [fulfillmentId, { t, rows: its }] of moved) {
     if (Date.now() > deadline) break;
     try {
+      const d = await gql(cfg, `query OrderPayment($id: ID!) {
+        order(id: $id) { name displayFinancialStatus cancelledAt }
+      }`, { id: its[0].shopify.orderGid });
+      requirePaidForShipping(d?.order);
       const u = await gql(cfg, `mutation Trk($id: ID!, $info: FulfillmentTrackingInput!) {
         fulfillmentTrackingInfoUpdate(fulfillmentId: $id, trackingInfoInput: $info, notifyCustomer: true) { fulfillment { id } userErrors { field message } }
       }`, { id: fulfillmentId, info: { company: carrierName(t.carrier), number: t.trackingNumber } });
       const ue = userErrorText(u?.fulfillmentTrackingInfoUpdate?.userErrors);
       if (ue) throw fail(502, ue);
+      if (u?.fulfillmentTrackingInfoUpdate?.fulfillment?.id !== fulfillmentId) {
+        throw fail(502, 'Shopify did not confirm the tracking update — check the fulfillment in Shopify before retrying');
+      }
       for (const r of its) await stamp(r, { trackingNumber: t.trackingNumber });
     } catch (e) {
       problem(its[0].shopify.orderGid, its[0].shopify.orderName, 'tracking', `Couldn't update the tracking number on ${its[0].shopify.orderName || 'an order'} in Shopify: ${String(e.message || e).slice(0, 200)}`);

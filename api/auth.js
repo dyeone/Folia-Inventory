@@ -8,6 +8,9 @@
 import { supabase, stripUser } from './_lib/supabase.js';
 import { hashPassword, verifyPassword } from './_lib/hash.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
+import { clearSessionCookie, issueSessionToken, sessionSecret, setSessionCookie } from './_lib/session.js';
+
+const PUBLIC_ACTIONS = new Set(['GET:has-users', 'POST:register', 'POST:login', 'POST:logout']);
 
 export default wrap(async (req, res) => {
   const action = req.method === 'GET' ? req.query?.action : req.body?.action;
@@ -18,10 +21,11 @@ export default wrap(async (req, res) => {
     case 'register': return register(req, res);
     case 'login': return login(req, res);
     case 'session': return session(req, res);
+    case 'logout': return logout(req, res);
     case 'change-password': return changePassword(req, res);
     default: { const e = new Error(`Unknown action: ${action}`); e.status = 400; throw e; }
   }
-});
+}, { sessionRequired: req => !PUBLIC_ACTIONS.has(`${req.method}:${req.method === 'GET' ? req.query?.action : req.body?.action}`) });
 
 async function hasUsers(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
@@ -33,6 +37,7 @@ async function hasUsers(req, res) {
 
 async function register(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+  sessionSecret(); // Fail before creating an account if the deployment has no key.
   const { username, password, displayName, registrationPassword } = req.body || {};
 
   // Gate new registrations behind a shared secret so random visitors
@@ -83,6 +88,7 @@ async function register(req, res) {
   const { error } = await supabase.from('users').insert(newUser);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
 
+  setSessionCookie(res, issueSessionToken(newUser));
   res.status(201).json({ user: stripUser(newUser) });
 }
 
@@ -113,6 +119,7 @@ async function isLockedOut(username) {
 
 async function login(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+  sessionSecret();
   const { username, password } = req.body || {};
   if (!username?.trim() || !password) {
     const e = new Error('Username and password required'); e.status = 400; throw e;
@@ -146,28 +153,31 @@ async function login(req, res) {
 
   await recordAttempt(normalized, true, ip);
 
-  // Opportunistic upgrade from legacy SHA-256 to pbkdf2 — fire and forget.
+  // Finish the legacy upgrade before signing: sessions bind to passwordHash,
+  // so an admin password reset invalidates every previously issued token.
   if (needsRehash) {
-    supabase.from('users').update({ passwordHash: hashPassword(password) }).eq('id', user.id)
-      .then(() => {}, () => {});
+    const passwordHash = hashPassword(password);
+    const { error } = await supabase.from('users').update({ passwordHash }).eq('id', user.id);
+    if (!error) user.passwordHash = passwordHash;
   }
 
+  const token = issueSessionToken(user);
+  // Non-cookie clients explicitly request a Bearer after the SAME password
+  // check. Normal browser login responses never expose the session to JS.
+  if (req.body?.sessionMode === 'token') return res.status(200).json({ user: stripUser(user), sessionToken: token });
+  setSessionCookie(res, token);
   res.status(200).json({ user: stripUser(user) });
 }
 
 async function session(req, res) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
-  const { userId } = req.body || {};
-  if (!userId) { const e = new Error('userId required'); e.status = 400; throw e; }
+  res.status(200).json({ user: stripUser(req.authUser) });
+}
 
-  const { data: user } = await supabase
-    .from('users')
-    .select('*')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (!user || !user.active) { const e = new Error('Session not found'); e.status = 404; throw e; }
-  res.status(200).json({ user: stripUser(user) });
+async function logout(req, res) {
+  if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
+  clearSessionCookie(res);
+  res.status(200).json({ ok: true });
 }
 
 async function changePassword(req, res) {
@@ -190,11 +200,14 @@ async function changePassword(req, res) {
   const { valid } = verifyPassword(currentPassword, user.passwordHash);
   if (!valid) { const e = new Error('Current password is incorrect'); e.status = 401; throw e; }
 
+  const passwordHash = hashPassword(newPassword);
   const { error } = await supabase
     .from('users')
-    .update({ passwordHash: hashPassword(newPassword) })
+    .update({ passwordHash })
     .eq('id', userId);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
 
+  // Keep this device signed in; all other password-bound sessions expire.
+  setSessionCookie(res, issueSessionToken({ ...req.authUser, passwordHash }));
   res.status(200).json({ ok: true });
 }

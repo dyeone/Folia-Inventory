@@ -165,7 +165,10 @@ export default function InventoryApp() {
     localStorage.setItem('session-current-user', JSON.stringify({ id: user.id }));
   };
 
-  const logout = () => {
+  const logout = async () => {
+    // Do not leave an authenticated browser cookie behind on a failed request.
+    // Keep the user signed in so they can retry instead of showing false logout.
+    try { await api.logout(); } catch (e) { window.alert(e.message || 'Could not sign out. Please try again.'); return; }
     setCurrentUser(null);
     setActiveBrand(null);
     setAuthUserId(null);

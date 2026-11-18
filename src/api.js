@@ -3,8 +3,8 @@ import { setSkuBrand } from './constants.js';
 // Thin fetch wrapper around the /api/* routes.
 // Each call returns parsed JSON on success and throws Error(message) on failure.
 
-// The server uses this to identify the caller. Set after login and on
-// session restore; cleared on logout.
+// Compatibility actor field. The server authenticates a signed HttpOnly cookie
+// and rejects any ID that disagrees with it. Set on login/session restore.
 let authUserId = null;
 export function setAuthUserId(id) { authUserId = id; }
 
@@ -76,6 +76,7 @@ export const api = {
     request('/auth', { method: 'POST', body: { action: 'login', username, password } }).then(r => r.user),
   session: (userId) =>
     request('/auth', { method: 'POST', body: { action: 'session', userId } }).then(r => r.user),
+  logout: () => request('/auth', { method: 'POST', body: { action: 'logout' } }),
   changePassword: (userId, currentPassword, newPassword) =>
     request('/auth', { method: 'POST', body: { action: 'change-password', userId, currentPassword, newPassword } }),
 
