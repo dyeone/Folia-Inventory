@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Search, Download, ArrowRightLeft, ArrowLeftRight, Edit2, Trash2, Archive, Printer, X, Plus, Sprout, ScanLine, Pencil, FileText, DollarSign } from 'lucide-react';
 import { VendorPriceModal } from './VendorPriceModal.jsx';
 import { SharedStockModal } from './SharedStockModal.jsx';
@@ -12,6 +12,17 @@ import { StatusChangeModal } from './StatusChangeModal.jsx';
 import { DeleteScanModal } from './DeleteScanModal.jsx';
 import { BulkRenameModal } from './BulkRenameModal.jsx';
 import { InvoiceModal } from './InvoiceModal.jsx';
+
+// One collator for the group sort: localeCompare builds a fresh one per call,
+// which is most of the sort's cost over ~1,500 names.
+const byName = new Intl.Collator().compare;
+
+// The list paints in slices of about this many rows (a group header counts
+// one, an expanded group adds its plants), the next slice as the operator
+// scrolls near the end. BAE had ~1,500 groups / ~6,800 plants on 2026-11-19;
+// painting them all froze slower laptops and iPads for a second on opening
+// the tab and on every letter typed in the search box.
+const ROWS_PER_SLICE = 120;
 
 // e.g. "May 8, 3:45 PM" (same year) or "May 8, 2024" (prior year).
 function fmtAddedAt(iso) {
@@ -61,7 +72,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
       map.get(key).push(item);
     }
     return [...map.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
+      .sort(([a], [b]) => byName(a, b))
       .map(([name, list]) => ({ name, items: list }));
   }, [items]);
 
@@ -81,6 +92,45 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
   };
   const expandAll = () => setExpandedGroups(new Set(groups.map(g => g.name)));
   const collapseAll = () => setExpandedGroups(new Set());
+
+  // How much of the list is painted (see ROWS_PER_SLICE). Starts over at one
+  // slice whenever the search or a filter changes; list refreshes (polls,
+  // edits) keep what's already shown, so the list never shrinks under the
+  // operator mid-scroll. Always a leading run of groups, so a shift+click
+  // range between two painted rows never takes in an unpainted one.
+  const sliceKey = [searchQuery, filterType, filterStatus, filterSale, varietyTab].join('\u0000');
+  const [slices, setSlices] = useState({ key: sliceKey, n: 1 });
+  const sliceCount = slices.key === sliceKey ? slices.n : 1;
+  const shownGroups = useMemo(() => {
+    const budget = sliceCount * ROWS_PER_SLICE;
+    const out = [];
+    let rows = 0;
+    for (const g of groups) {
+      if (out.length && rows >= budget) break;
+      out.push(g);
+      rows += 1 + (expandedGroups.has(g.name) ? g.items.length : 0);
+    }
+    return out;
+  }, [groups, expandedGroups, sliceCount]);
+  const hiddenGroups = groups.length - shownGroups.length;
+  const hasMore = hiddenGroups > 0;
+  const showMore = () => setSlices(s => ({ key: sliceKey, n: (s.key === sliceKey ? s.n : 1) + 1 }));
+  const showMoreRef = useRef(showMore);
+  useEffect(() => { showMoreRef.current = showMore; });
+  const moreRef = useRef(null);
+  // Paint the next slice once the end of the list comes within ~1.5 screens.
+  // Re-observed after each slice, so a tall screen keeps filling until the
+  // list reaches past the bottom edge.
+  useEffect(() => {
+    const el = moreRef.current;
+    if (!el || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some(e => e.isIntersecting)) showMoreRef.current(); },
+      { rootMargin: '0px 0px 1200px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [shownGroups, hasMore]);
 
   // Plain click toggles every item in a group and drops the group range
   // anchor on that header. Shift+click extends from the anchor group: every
@@ -483,7 +533,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               viewports so the desktop <table> below doesn't double the DOM. */}
           {isMobile && (
           <div className="space-y-4">
-            {groups.map(group => {
+            {shownGroups.map(group => {
               const isCollapsed = !isGroupExpanded(group.name);
               const groupIds = group.items.map(i => i.id);
               const allInGroupSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.has(id));
@@ -710,7 +760,7 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
                     <th className="px-3 py-2.5"></th>
                   </tr>
                 </thead>
-                {groups.map(group => {
+                {shownGroups.map(group => {
                   const isCollapsed = !isGroupExpanded(group.name);
                   const groupIds = group.items.map(i => i.id);
                   const allInGroupSelected = groupIds.length > 0 && groupIds.every(id => selectedIds.has(id));
@@ -919,6 +969,15 @@ export function InventoryView({ items: filteredItems, allItems, sales, varieties
               </table>
             </div>
           </div>
+          )}
+
+          {hasMore && (
+            <div ref={moreRef} className="flex items-center justify-center gap-3 py-4 text-xs text-gray-500">
+              <span>{hiddenGroups} more {hiddenGroups === 1 ? 'group' : 'groups'} below</span>
+              <button onClick={showMore} className="px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-gray-700 hover:bg-gray-50">
+                Show more
+              </button>
+            </div>
           )}
         </>
       )}

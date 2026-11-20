@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useContext, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useMemo, useContext, useCallback, useDeferredValue, lazy, Suspense } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, PackageOpen, LineChart, Truck, ShoppingCart,
@@ -878,6 +878,10 @@ function StaffOrAdminInventory() {
     }
   };
 
+  // The search box updates at once; the list filters a beat behind, in a
+  // render React drops when the next letter arrives — so typing never waits
+  // on re-filtering and re-painting thousands of plants.
+  const listQuery = useDeferredValue(searchQuery);
   const filteredItems = useMemo(() => {
     return items.filter(item => {
       if (filterType !== 'all' && item.type !== filterType) return false;
@@ -886,8 +890,8 @@ function StaffOrAdminInventory() {
         if (filterSale === 'none' && item.saleId) return false;
         if (filterSale !== 'none' && item.saleId !== filterSale) return false;
       }
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase();
+      if (listQuery) {
+        const q = listQuery.toLowerCase();
         return (
           item.sku?.toLowerCase().includes(q) ||
           item.saleCode?.toLowerCase().includes(q) ||
@@ -899,7 +903,7 @@ function StaffOrAdminInventory() {
       }
       return true;
     });
-  }, [items, searchQuery, filterType, filterStatus, filterSale]);
+  }, [items, listQuery, filterType, filterStatus, filterSale]);
 
   const stats = useMemo(() => {
     const now = new Date();

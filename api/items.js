@@ -1,7 +1,7 @@
 import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, SKU_SUFFIX_END_RE } from './_lib/sku.js';
-import { fetchAllById } from './_lib/fetchAll.js';
+import { fetchWideById } from './_lib/fetchAll.js';
 import { settleSyntheticSkus } from './_lib/syntheticSkus.js';
 import { isOpenLine, isLinkablePlant, linkPatches } from './_lib/linkLine.js';
 import { poolStatus, poolSet, poolSync, eventAssign, eventUnassign, mediaCleanup, followShopify } from './_lib/pool.js';
@@ -717,8 +717,8 @@ export default wrap(async (req, res) => {
       // the live show and Validate Sales write to it, and offset pages over
       // rows that move mid-read drop some of them — a plant missing from one
       // poll can be matched as "no such SKU" by a Validate Sales run then.
-      const data = await fetchAllById(() =>
-        supabase.from('inventory_items').select('*').eq('brandId', brandId));
+      const data = await fetchWideById((columns) =>
+        supabase.from('inventory_items').select(columns).eq('brandId', brandId));
       // The packing bench never needs what plants COST — strip bought-price
       // fields for packer logins so the data doesn't reach that client at
       // all (mirrors the purchase-orders API; staff/admin keep full rows).
