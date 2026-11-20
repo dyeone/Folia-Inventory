@@ -14,6 +14,7 @@ import { MediaWalkthrough } from './MediaWalkthrough.jsx';
 import { useMediaUploads } from './useMediaUploads.js';
 import { IN_POOL, ON_WEBSITE, poolItems, onWebsite, openSaleIdSet, pauseSaleIdSet, openEvents, readiness, photosOf, videosOf } from './pools.js';
 import { exportPoolToPalmstreet, exportPalmstreetCsv, MEDIA_SEPARATORS } from '../sales/palmstreetExport.js';
+import { parseSeriesCode, nextSeries, seriesMax, seriesCode, codeRange } from './saleCode.js';
 
 const SYNC_EVERY_MS = 2 * 60 * 1000;
 
@@ -60,6 +61,8 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   const [openId, setOpenId] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [justAdded, setJustAdded] = useState([]);
+  const [justVerb, setJustVerb] = useState('Added');   // what the print prompt says happened
+  const [renumbering, setRenumbering] = useState(false);
   const [walk, setWalk] = useState(null);   // plant ids going through photos & video
   const syncingRef = useRef(false);
   const pendingRef = useRef(new Set());   // plants to sync once the running sync ends
@@ -170,7 +173,8 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
         showToast(`Pushed ${n} to the website${!shopifyOn ? ' — it goes up once Shopify is connected for this brand'
           : notReady ? ` · ${notReady} need${notReady === 1 ? 's' : ''} a price or photo before showing` : ''}`);
       } else if (toPool) {
-        showToast(ids.some((id) => onWebsite(byIdRef.current.get(id))) ? `Took ${n} off the website — still in the pool` : `${n} added to For Sale`);
+        const range = codeRange((r.items || []).map((i) => i.saleCode));
+        showToast(ids.some((id) => onWebsite(byIdRef.current.get(id))) ? `Took ${n} off the website — still in the pool` : `${n} added to For Sale${range ? ` — ${range}` : ''}`);
       } else {
         showToast('Taken out of For Sale');
       }
@@ -182,12 +186,16 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
     }
   }, [onItemsMerged, showToast, shopifyOn]);
 
+  // ids come newest first (the picker's order); they're sent in scan order
+  // so the codes count up the way the plants were scanned.
   const addToPool = async (ids, { media = false } = {}) => {
-    const r = await setPoolFor(ids, IN_POOL);
+    const r = await setPoolFor([...ids].reverse(), IN_POOL);
     if (!r) return false;
     setView('pools');
     const added = (r.items || []).map((i) => i.id);
     setJustAdded(added);
+    setJustVerb('Added');
+    loadStatus();
     // In the order they were scanned (the picker lists newest first).
     if (media && added.length) setWalk([...ids].reverse().filter((id) => added.includes(id)));
     return true;
@@ -307,6 +315,39 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
       return;
     }
     showToast(`Exported ${r.count} plants${r.unpriced ? ` · ${r.unpriced} left out (no price)` : ''}${held ? ` · ${held} in an upcoming event` : ''}${web ? ` · ${web} on the website left out` : ''}`);
+  };
+
+  // Codes: A1, A2 … — the brand's current letter comes from the server
+  // (status.codes); once the pool is empty the next plant starts the next
+  // letter (a letter that only just started stays a minute).
+  const codeState = status?.codes || null;
+  const oldCoded = useMemo(() => inPool.filter((i) => !parseSeriesCode(i.saleCode)), [inPool]);
+  // The codes a switch would give them ("A1–A19").
+  const renumberTo = useMemo(() => {
+    const series = codeState?.series || 'A';
+    const from = seriesMax((items || []).map((i) => i.saleCode), series) + 1;
+    const to = from + oldCoded.length - 1;
+    return to > from ? `${seriesCode(series, from)}–${seriesCode(series, to)}` : seriesCode(series, from);
+  }, [codeState, items, oldCoded.length]);
+  const nextLetter = !codeState ? 'A'
+    : nowMs() - Date.parse(codeState.startedAt || 0) < 60 * 1000 ? codeState.series : nextSeries(codeState.series);
+  const renumber = async () => {
+    if (renumbering) return;
+    if (!window.confirm(`Give the ${oldCoded.length} plant${oldCoded.length === 1 ? '' : 's'} with old codes ${renumberTo}? Their tags need printing again.`)) return;
+    setRenumbering(true);
+    try {
+      const r = await api.poolRenumber();
+      if (r.items?.length) onItemsMerged(r.items);
+      const ids = (r.items || []).map((i) => i.id);
+      const range = codeRange((r.items || []).map((i) => i.saleCode));
+      showToast(`Renumbered ${ids.length}${range ? ` — ${range}` : ''}`);
+      if (ids.length) { setJustAdded(ids); setJustVerb('Renumbered'); }
+      loadStatus();
+    } catch (e) {
+      showToast(e.message || 'Could not renumber', 'error');
+    } finally {
+      setRenumbering(false);
+    }
   };
 
   const cleanup = async () => {
@@ -442,9 +483,20 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
             )}
           </div>
 
+          {oldCoded.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 bg-sky-50 border border-sky-200 rounded-xl px-3 py-2 text-sm text-sky-900">
+              <span className="flex-1 min-w-[12rem]">
+                {oldCoded.length} plant{oldCoded.length === 1 ? ' still has an old code' : 's still have old codes'} ({oldCoded[0].saleCode}{oldCoded.length > 1 ? ' …' : ''}). Switch {oldCoded.length === 1 ? 'it' : 'them'} to {renumberTo}? The tags need printing again.
+              </span>
+              <button type="button" onClick={renumber} disabled={renumbering} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-700 text-white text-xs font-semibold disabled:opacity-50">
+                {renumbering && <Loader2 className="w-3.5 h-3.5 animate-spin" />} Switch to {renumberTo}
+              </button>
+            </div>
+          )}
+
           {justAdded.length > 0 && (
             <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 text-sm text-emerald-900">
-              <span className="flex-1">Added {justAdded.length}. Print their tags so the codes are on the pots.</span>
+              <span className="flex-1">{justVerb} {justAdded.length}. Print their tags so the {justVerb === 'Renumbered' ? 'new ' : ''}codes are on the pots.</span>
               <button type="button" onClick={() => { onPrintLabels(justAdded.map((id) => byId.get(id)).filter(Boolean)); setJustAdded([]); }} className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-semibold">
                 Print {justAdded.length}
               </button>
@@ -538,7 +590,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
 
           {shown.length === 0 ? (
             <div className="text-center text-sm text-gray-400 bg-white border border-dashed border-gray-200 rounded-2xl py-10 px-4">
-              {inPool.length ? 'Nothing matches.' : 'The pool is empty — tap Add plants and scan their tags.'}
+              {inPool.length ? 'Nothing matches.' : `The pool is empty — tap Add plants and scan their tags. New plants start at ${nextLetter}1.`}
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
