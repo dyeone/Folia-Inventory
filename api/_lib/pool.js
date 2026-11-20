@@ -218,15 +218,17 @@ export async function poolSync(req, res, user, brandId) {
   return res.status(200).json({ configured: true, orders, listing, items: items.map(stripCosts(user)) });
 }
 
-// POST { action: 'event-assign', saleId, itemIds } — put plants into a sale
-// event from the calendar. Same write as the Pre Sale tab (un-numbered,
-// stagedAt = now; Palmstreet lineups are numbered there). A plant already in
-// another OPEN event stays put (it's in someone's upcoming lineup); one left
-// over from a closed event moves. Compare-and-set on the plant's current
-// saleId so two devices can't both claim it.
+// POST { action: 'event-assign', saleId, itemIds, move? } — put plants into a
+// sale event from the calendar or a plant's sheet. Same write as the Pre Sale
+// tab (un-numbered, stagedAt = now; Palmstreet lineups are numbered there). A
+// plant already in another OPEN event stays put (it's in someone's upcoming
+// lineup) unless `move` — the person picked this event for it on purpose;
+// one left over from a closed event moves. Compare-and-set on the plant's
+// current saleId so two devices can't both claim it.
 export async function eventAssign(req, res, user, brandId) {
   requireForSaleUser(user);
   const ids = idList(req.body?.itemIds);
+  const move = req.body?.move === true;
   const saleId = req.body?.saleId;
   if (!saleId || typeof saleId !== 'string') throw fail(400, 'saleId required');
   const { data: sale, error: sErr } = await supabase.from('sales')
@@ -255,7 +257,7 @@ export async function eventAssign(req, res, user, brandId) {
     else if (r.shipmentBoxId) reason = 'in a shipping box';
     else if (!EVENT_STATUSES.includes(r.status)) reason = `is ${r.status}`;
     else if (r.saleId === saleId) reason = 'already in this event';
-    else if (openOther.has(r.saleId)) reason = `in ${openOther.get(r.saleId) || 'another event'}`;
+    else if (openOther.has(r.saleId) && !move) reason = `in ${openOther.get(r.saleId) || 'another event'}`;
     else if (sale.itemTypes === 'tc' && r.type !== 'tc') reason = 'not a TC (TC-only event)';
     else if (sale.itemTypes === 'plant' && r.type !== 'plant') reason = 'not a plant (plants-only event)';
     if (reason) { skipped.push({ id: r.id, sku: r.sku, reason }); continue; }
@@ -281,7 +283,8 @@ export async function eventAssign(req, res, user, brandId) {
     if (!got.has(r.id) && !skipped.some((s) => s.id === r.id)) skipped.push({ id: r.id, sku: r.sku, reason: 'changed under you — reload' });
   }
 
-  // A Shopify listing pauses while its plant sits in an open event.
+  // A Shopify listing pauses while its plant sits in an open event (not a
+  // website sale) — and comes back when it moves into one.
   const shopIds = rows.filter((r) => got.has(r.id) && r.salePool === 'shopify').map((r) => r.id);
   const shopify = shopIds.length && shopifyConfig(brandId)
     ? await reconcileShopify(brandId, { itemIds: shopIds, user, budgetMs: 20000 }).catch((e) => ({ error: e.message }))

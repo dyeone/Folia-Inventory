@@ -1,28 +1,48 @@
-import { useState } from 'react';
-import { Printer, Trash2, RefreshCw, Loader2, CalendarDays, Globe, Undo2 } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Printer, Trash2, RefreshCw, Loader2, Globe, Undo2 } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { api } from '../api.js';
 import { MediaEditor } from './MediaEditor.jsx';
-import { IN_POOL, ON_WEBSITE, onWebsite, shopifyBadge, money } from './pools.js';
+import { IN_POOL, ON_WEBSITE, onWebsite, shopifyBadge, money, openEvents, isWebsiteSale } from './pools.js';
+import { EventChoices } from './EventChoices.jsx';
 
 const TONE_TEXT = { ok: 'text-green-700', wait: 'text-gray-600', warn: 'text-amber-700', error: 'text-red-700' };
 
+// Statuses a sale event takes (api/_lib/pool.js EVENT_STATUSES).
+const EVENT_STATUSES = ['available', 'listed'];
+
 // One plant's For Sale details: its photos and video (shoot or pick on the
-// phone — they upload in the background), price, tag, and the website:
-// push it there / take it off, and what its listing is doing.
+// phone — they upload in the background), price, the website (push it there
+// / take it off, and what its listing is doing), its sale event, and tag.
 export function PlantSheet({
-  item, sales, openSaleIds, shopifyConnected, showToast, uploads,
-  onClose, onMerged, onSyncShopify, onPrintLabel, onSetPool,
+  item, sales, openSaleIds, pausedSaleIds, shopifyConnected, showToast, uploads,
+  onClose, onMerged, onSyncShopify, onPrintLabel, onSetPool, onEventAssign, onEventUnassign,
 }) {
   const [price, setPrice] = useState(item.listingPrice != null && Number(item.listingPrice) > 0 ? String(item.listingPrice) : '');
   const [priceBusy, setPriceBusy] = useState(false);
   const [poolBusy, setPoolBusy] = useState(false);
+  const [eventBusy, setEventBusy] = useState(null);
 
   const web = onWebsite(item);
   const followShopify = () => { if (web) onSyncShopify([item.id]); };
-  const event = item.saleId ? (sales || []).find((s) => s.id === item.saleId) : null;
-  const openEvent = event && openSaleIds.has(event.id) ? event : null;
-  const badge = web ? shopifyBadge(item, openSaleIds, shopifyConnected) : null;
+  const events = useMemo(() => openEvents(sales), [sales]);
+  const openEvent = item.saleId && openSaleIds.has(item.saleId) ? events.find((s) => s.id === item.saleId) || null : null;
+  const badge = web ? shopifyBadge(item, pausedSaleIds, shopifyConnected) : null;
+  const eventable = EVENT_STATUSES.includes(item.status);
+
+  // Into an event (moving it out of the one it's in, on purpose), or out.
+  const pickEvent = async (saleId) => {
+    if (saleId === (openEvent?.id ?? null)) return;
+    const code = item.saleCode || item.sku;
+    if (openEvent && item.lotNumber && !window.confirm(`${code} is #${item.lotNumber} in ${openEvent.name}'s lineup. ${saleId ? 'Move it' : 'Take it out'} anyway?`)) return;
+    setEventBusy(saleId ?? 'none');
+    try {
+      if (saleId) await onEventAssign(saleId, [item.id], { move: true });
+      else await onEventUnassign(openEvent.id, [item.id]);
+    } finally {
+      setEventBusy(null);
+    }
+  };
 
   const savePrice = async () => {
     const v = parseFloat(price);
@@ -114,12 +134,21 @@ export function PlantSheet({
           )}
         </div>
 
-        {openEvent && (
-          <div className="flex items-center gap-2 text-sm text-blue-800 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-            <CalendarDays className="w-4 h-4 shrink-0" />
-            <span>In <b>{openEvent.name}</b>{openEvent.date ? ` · ${openEvent.date}` : ''}</span>
-          </div>
-        )}
+        {/* Sale event */}
+        <div>
+          <label className="block text-xs font-semibold text-gray-600 mb-1">Sale event</label>
+          {eventable ? (
+            <EventChoices events={events} value={openEvent?.id ?? null} busy={eventBusy} onPick={pickEvent} />
+          ) : (
+            <p className="text-xs text-gray-500">A plant that's {item.status} can't go in a sale event — make it available first.</p>
+          )}
+          {openEvent && isWebsiteSale(openEvent) && !web && (
+            <p className="mt-1.5 text-xs text-indigo-700">In a website sale — push it to the website above so it's listed there.</p>
+          )}
+          {openEvent && !isWebsiteSale(openEvent) && web && (
+            <p className="mt-1.5 text-xs text-amber-700">Hidden on the website while it's in {openEvent.name}.</p>
+          )}
+        </div>
 
         <div className="text-xs text-gray-500 space-y-0.5">
           <div>SKU <span className="font-mono text-gray-700">{item.sku}</span> · {item.status}{item.variety ? ` · ${item.variety}` : ''}</div>

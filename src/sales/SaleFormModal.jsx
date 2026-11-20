@@ -2,6 +2,16 @@ import { useState } from 'react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
 
+// Event kinds offered as quick picks (the text box takes anything else).
+// Mirrors EVENT_PLATFORMS in src/forsale/pools.js.
+const PLATFORM_PICKS = [
+  { id: 'Palmstreet', label: 'Palmstreet live' },
+  { id: 'Palmstreet purge', label: 'Palmstreet purge' },
+  { id: 'Website', label: 'Website sale' },
+  { id: 'Facebook', label: 'Facebook' },
+  { id: 'TikTok', label: 'TikTok' },
+];
+
 // Combine the date + HH:MM strings into an ISO timestamp (local time).
 // Returns null if either input is empty.
 function toIsoLocal(date, time) {
@@ -124,9 +134,11 @@ export function SaleFormModal({ initial, onSave, onClose, isBae }) {
           {/* Quick-picks for the platforms we actually sell on; the text
               input stays for anything else. TikTok lives sell TC, so
               picking it flips the item types (still overridable above).
-              Facebook sales come from the For Sale tab's calendar. */}
-          <div className="flex gap-1.5 mb-1.5">
-            {['Palmstreet', 'Facebook', 'TikTok'].map(p => (
+              Facebook sales come from the For Sale tab's calendar. A purge
+              is a Palmstreet event too (it gets the Palmstreet CSV); a
+              website sale keeps its plants listed on the website. */}
+          <div className="flex flex-wrap gap-1.5 mb-1.5">
+            {PLATFORM_PICKS.map(({ id: p, label }) => (
               <button
                 key={p}
                 type="button"
@@ -144,7 +156,7 @@ export function SaleFormModal({ initial, onSave, onClose, isBae }) {
                     : 'border-gray-200 text-gray-600 hover:border-gray-300'
                 }`}
               >
-                {p}
+                {label}
               </button>
             ))}
           </div>
