@@ -1,15 +1,15 @@
 import { useState } from 'react';
-import { Printer, Trash2, RefreshCw, Loader2, CalendarDays } from 'lucide-react';
+import { Printer, Trash2, RefreshCw, Loader2, CalendarDays, Globe, Undo2 } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { api } from '../api.js';
 import { MediaEditor } from './MediaEditor.jsx';
-import { POOLS, shopifyBadge, money } from './pools.js';
+import { IN_POOL, ON_WEBSITE, onWebsite, shopifyBadge, money } from './pools.js';
 
 const TONE_TEXT = { ok: 'text-green-700', wait: 'text-gray-600', warn: 'text-amber-700', error: 'text-red-700' };
 
 // One plant's For Sale details: its photos and video (shoot or pick on the
-// phone — they upload in the background), price, pool, tag, and — in the
-// Shopify pool — what its listing is doing.
+// phone — they upload in the background), price, tag, and the website:
+// push it there / take it off, and what its listing is doing.
 export function PlantSheet({
   item, sales, openSaleIds, shopifyConnected, showToast, uploads,
   onClose, onMerged, onSyncShopify, onPrintLabel, onSetPool,
@@ -18,10 +18,11 @@ export function PlantSheet({
   const [priceBusy, setPriceBusy] = useState(false);
   const [poolBusy, setPoolBusy] = useState(false);
 
-  const followShopify = () => { if (item.salePool === 'shopify') onSyncShopify([item.id]); };
+  const web = onWebsite(item);
+  const followShopify = () => { if (web) onSyncShopify([item.id]); };
   const event = item.saleId ? (sales || []).find((s) => s.id === item.saleId) : null;
   const openEvent = event && openSaleIds.has(event.id) ? event : null;
-  const badge = item.salePool === 'shopify' ? shopifyBadge(item, openSaleIds, shopifyConnected) : null;
+  const badge = web ? shopifyBadge(item, openSaleIds, shopifyConnected) : null;
 
   const savePrice = async () => {
     const v = parseFloat(price);
@@ -42,7 +43,7 @@ export function PlantSheet({
 
   const setPool = async (pool) => {
     if (pool === item.salePool) return;
-    if (pool === null && !window.confirm(`Take ${item.saleCode || item.sku} out of For Sale?${item.salePool === 'shopify' ? ' Its Shopify listing is hidden.' : ''}`)) return;
+    if (pool === null && !window.confirm(`Take ${item.saleCode || item.sku} out of For Sale?${web ? ' It comes off the website too.' : ''}`)) return;
     setPoolBusy(true);
     try {
       await onSetPool([item.id], pool);
@@ -82,24 +83,27 @@ export function PlantSheet({
           </div>
         </div>
 
-        {/* Pool */}
+        {/* Website */}
         <div>
-          <label className="block text-xs font-semibold text-gray-600 mb-1">Pool</label>
-          <div className="grid grid-cols-2 gap-2">
-            {POOLS.map((p) => (
-              <button
-                key={p.id} type="button" disabled={poolBusy} onClick={() => setPool(p.id)}
-                className={`py-2.5 rounded-lg border-2 text-sm font-semibold ${
-                  item.salePool === p.id ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'border-gray-200 text-gray-600'
-                } disabled:opacity-50`}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+          <label className="block text-xs font-semibold text-gray-600 mb-1">Website</label>
+          {web ? (
+            <button
+              type="button" disabled={poolBusy} onClick={() => setPool(IN_POOL)}
+              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg border-2 border-gray-200 text-sm font-semibold text-gray-700 active:bg-gray-50 disabled:opacity-50"
+            >
+              {poolBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />} Take off website — keep in the pool
+            </button>
+          ) : (
+            <button
+              type="button" disabled={poolBusy} onClick={() => setPool(ON_WEBSITE)}
+              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-emerald-600 active:bg-emerald-700 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              {poolBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />} Push to website
+            </button>
+          )}
           {badge && (
             <div className={`mt-2 text-xs ${TONE_TEXT[badge.tone]} flex items-start gap-2`}>
-              <span className="font-semibold shrink-0">Shopify: {badge.label}.</span>
+              <span className="font-semibold shrink-0">On the website: {badge.label}.</span>
               <span className="flex-1">{badge.detail}</span>
               {shopifyConnected && (
                 <button type="button" onClick={() => onSyncShopify([item.id])} className="shrink-0 inline-flex items-center gap-1 text-gray-600 underline">

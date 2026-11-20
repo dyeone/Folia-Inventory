@@ -260,8 +260,10 @@ function InventorySystem() {
   // the bench with a switch to the streamer screen (and back); the rest get
   // their own screen. Consultants: a mobile-only pricing screen over the
   // wholesale orders (list price + seller note per species), nothing else.
+  // The CEO: the full app cut down to the Inventory and For Sale tabs.
   const roles = rolesOf(currentUser);
   if (!roles.includes('admin')) {
+    if (roles.includes('ceo')) return <StaffOrAdminInventory />;
     if (roles.includes('packer') && roles.includes('streamer')) return <DualRoute />;
     if (roles.includes('packer')) return <PackerRoute />;
     if (roles.includes('streamer')) return <StreamerRoute />;
@@ -305,11 +307,15 @@ function DualRoute() {
   return <PackerView onLogout={logout} onSwitchToStreamer={() => go('streamer')} />;
 }
 
+// The CEO's tabs (roles.js 'ceo').
+const CEO_TABS = ['inventory', 'forsale'];
+
 function StaffOrAdminInventory() {
   const { currentUser, logout, activeBrand, brands, switchBrand } = useContext(AuthContext);
   const isAdmin = currentUser.role === 'admin';
+  const isCeo = !isAdmin && rolesOf(currentUser).includes('ceo');
 
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(isCeo ? 'inventory' : 'dashboard');
   const [items, setItems] = useState([]);
   const [deletedItems, setDeletedItems] = useState([]);
   const [sales, setSales] = useState([]);
@@ -1018,6 +1024,8 @@ function StaffOrAdminInventory() {
   // Shift schedule — the team's weekly availability + the admin's plan.
   if (isAdmin) tabs.push({ id: 'schedule', label: 'Schedule', icon: Clock });
   if (isAdmin) tabs.push({ id: 'users', label: 'Users', icon: Users });
+  // The CEO sees only these two.
+  if (isCeo) tabs.splice(0, tabs.length, ...tabs.filter((t) => CEO_TABS.includes(t.id)));
 
   return (
     <div className="min-h-screen bg-gray-50">

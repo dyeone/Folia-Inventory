@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Plus, Search, Download, RefreshCw, Printer, Store, CalendarDays, LayoutGrid, AlertTriangle, Loader2, X, HardDrive, Camera,
+  CheckSquare, Globe, Undo2,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { PlantCard } from './PlantCard.jsx';
@@ -9,7 +10,7 @@ import { AddPlantsSheet } from './AddPlantsSheet.jsx';
 import { SaleCalendar } from './SaleCalendar.jsx';
 import { MediaWalkthrough } from './MediaWalkthrough.jsx';
 import { useMediaUploads } from './useMediaUploads.js';
-import { POOLS, poolItems, openSaleIdSet, readiness, photosOf } from './pools.js';
+import { IN_POOL, ON_WEBSITE, poolItems, onWebsite, openSaleIdSet, readiness, photosOf } from './pools.js';
 import { exportPoolToPalmstreet, exportPalmstreetCsv, MEDIA_SEPARATORS } from '../sales/palmstreetExport.js';
 
 const SYNC_EVERY_MS = 2 * 60 * 1000;
@@ -24,20 +25,26 @@ function useStored(key, fallback, allowed) {
 
 const FILTERS = [
   { id: 'all', label: 'All' },
+  { id: 'web', label: 'On website' },
+  { id: 'notweb', label: 'Not on website' },
   { id: 'photo', label: 'Needs photo' },
   { id: 'video', label: 'Needs video' },
   { id: 'price', label: 'Needs price' },
 ];
 
-// The For Sale tab: plants ready to sell, in two product pools — Palmstreet
-// (exported as the CSV, photos + video in the Image URL cell) and Shopify
-// (synced automatically) — each with its short code, several photos and one
-// video; plus a calendar of sale events to put plants into. Phone first.
-// Adding plants goes straight on to their photos (MediaWalkthrough); every
-// upload runs in the tab's background uploader (useMediaUploads).
+// The For Sale tab: plants ready to sell, in ONE pool (2026-11-19, operator:
+// "only have one pool… select some and click push to website, then sync the
+// selected ones to Shopify, others keep in the pool"), each with its short
+// code, several photos and one video. Select plants → Push to website lists
+// them on the Shopify store; the rest stay in the pool (the Palmstreet CSV,
+// sale events). Plus a calendar of sale events to put plants into. Phone
+// first. Adding plants goes straight on to their photos (MediaWalkthrough);
+// every upload runs in the tab's background uploader (useMediaUploads).
 export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMerged, onPrintLabels, onSaveSale }) {
   const [view, setView] = useStored('forsale.view', 'pools', ['pools', 'calendar']);
-  const [pool, setPool] = useStored('forsale.pool', 'palmstreet', ['palmstreet', 'shopify']);
+  const [selecting, setSelecting] = useState(false);
+  const [sel, setSel] = useState(() => new Set());
+  const [moving, setMoving] = useState(null);   // 'push' | 'pull' while a website change runs
   const [separator, setSeparator] = useStored('forsale.mediaSep', 'comma', Object.keys(MEDIA_SEPARATORS));
   const [status, setStatus] = useState(null);
   const [q, setQ] = useState('');
@@ -54,6 +61,8 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   const openSaleIds = useMemo(() => openSaleIdSet(sales), [sales]);
   const saleName = useMemo(() => new Map((sales || []).map((s) => [s.id, s.name])), [sales]);
   const byId = useMemo(() => new Map((items || []).map((i) => [i.id, i])), [items]);
+  const byIdRef = useRef(byId);
+  useEffect(() => { byIdRef.current = byId; });
 
   // A failed status read keeps the last good one (a blip must not switch
   // the Shopify sync off until the tab is reopened).
@@ -115,7 +124,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   useEffect(() => { itemsRef.current = items; });
   const followShopify = useCallback((id) => {
     const it = (itemsRef.current || []).find((i) => i.id === id);
-    if (it?.salePool === 'shopify') runSyncRef.current?.({ itemIds: [id], quiet: true });
+    if (onWebsite(it)) runSyncRef.current?.({ itemIds: [id], quiet: true });
   }, []);
   // Before migration 0053 the server can't keep a plant's photo list, so
   // don't show one this session only to lose it on reload.
@@ -133,15 +142,22 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
     return () => { clearTimeout(first); clearInterval(id); };
   }, [shopifyOn, runSync]);
 
+  // pool: IN_POOL (join the pool, or come off the website), ON_WEBSITE
+  // (push to the website) or null (out of For Sale).
   const setPoolFor = useCallback(async (ids, toPool) => {
     try {
       const r = await api.poolSet({ itemIds: ids, pool: toPool });
       if (r.items?.length) onItemsMerged(r.items);
+      const n = r.items?.length || 0;
       if (r.skipped?.length) {
         const first = r.skipped[0];
-        showToast(`${r.skipped.length} skipped — ${first.sku || 'a plant'} ${first.reason}`, 'error');
+        showToast(`${n ? `${n} done · ` : ''}${r.skipped.length} skipped — ${first.sku || 'a plant'} ${first.reason}`, 'error');
+      } else if (toPool === ON_WEBSITE) {
+        const notReady = (r.items || []).filter((i) => readiness(i).some((m) => m === 'photo' || m === 'price')).length;
+        showToast(`Pushed ${n} to the website${!shopifyOn ? ' — it goes up once Shopify is connected for this brand'
+          : notReady ? ` · ${notReady} need${notReady === 1 ? 's' : ''} a price or photo before showing` : ''}`);
       } else if (toPool) {
-        showToast(`${r.items.length} in the ${POOLS.find((p) => p.id === toPool)?.label} pool`);
+        showToast(ids.some((id) => onWebsite(byIdRef.current.get(id))) ? `Took ${n} off the website — still in the pool` : `${n} added to For Sale`);
       } else {
         showToast('Taken out of For Sale');
       }
@@ -151,12 +167,11 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
       showToast(e.message || 'Could not update the pool', 'error');
       return null;
     }
-  }, [onItemsMerged, showToast]);
+  }, [onItemsMerged, showToast, shopifyOn]);
 
-  const addToPool = async (ids, toPool, { media = false } = {}) => {
-    const r = await setPoolFor(ids, toPool);
+  const addToPool = async (ids, { media = false } = {}) => {
+    const r = await setPoolFor(ids, IN_POOL);
     if (!r) return false;
-    setPool(toPool);
     setView('pools');
     const added = (r.items || []).map((i) => i.id);
     setJustAdded(added);
@@ -195,29 +210,58 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
     showToast(r.ok ? `Exported ${r.count} lots` : r.reason, r.ok ? 'success' : 'error');
   };
 
-  const inPool = useMemo(() => poolItems(items, pool)
-    .sort((a, b) => String(b.poolAddedAt || '').localeCompare(String(a.poolAddedAt || ''))), [items, pool]);
-  const counts = useMemo(() => Object.fromEntries(POOLS.map((p) => [p.id, poolItems(items, p.id).length])), [items]);
+  const inPool = useMemo(() => poolItems(items)
+    .sort((a, b) => String(b.poolAddedAt || '').localeCompare(String(a.poolAddedAt || ''))), [items]);
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
     return inPool
-      .filter((i) => filter === 'all' || readiness(i).includes(filter))
+      .filter((i) => filter === 'all' || (filter === 'web' ? onWebsite(i) : filter === 'notweb' ? !onWebsite(i) : readiness(i).includes(filter)))
       .filter((i) => !s || [i.saleCode, i.sku, i.name, i.variety, i.listingDetails?.title].some((f) => String(f || '').toLowerCase().includes(s)));
   }, [inPool, q, filter]);
   const needs = useMemo(() => ({
+    web: inPool.filter(onWebsite).length,
+    notweb: inPool.filter((i) => !onWebsite(i)).length,
     photo: inPool.filter((i) => !photosOf(i).length).length,
     video: inPool.filter((i) => !i.videoUrl).length,
     price: inPool.filter((i) => !(Number(i.listingPrice) > 0)).length,
   }), [inPool]);
 
-  // Plants lined up in an upcoming event are left out of the store CSV —
-  // they sell in that event.
+  // Selection (Select → tap plants → Push to website / Take off website).
+  // Only plants still in the pool count — one sold meanwhile drops out.
+  const picked = useMemo(() => inPool.filter((i) => sel.has(i.id)), [inPool, sel]);
+  const toPush = picked.filter((i) => !onWebsite(i));
+  const toPull = picked.filter(onWebsite);
+  const toggleSel = (id) => setSel((cur) => { const next = new Set(cur); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const stopSelecting = () => { setSelecting(false); setSel(new Set()); };
+  const allShownPicked = shown.length > 0 && shown.every((i) => sel.has(i.id));
+  const moveWebsite = async (dir) => {
+    const list = dir === 'push' ? toPush : toPull;
+    if (!list.length || moving) return;
+    setMoving(dir);
+    try {
+      const r = await setPoolFor(list.map((i) => i.id), dir === 'push' ? ON_WEBSITE : IN_POOL);
+      if (r) stopSelecting();
+    } finally {
+      setMoving(null);
+    }
+  };
+
+  // The Palmstreet CSV: the pool's plants that aren't on the website (one
+  // plant listed in two stores could sell twice) and aren't lined up in an
+  // upcoming event (they sell in that event).
   const exportPool = () => {
-    const listable = inPool.filter((i) => !(i.saleId && openSaleIds.has(i.saleId)));
-    const held = inPool.length - listable.length;
+    const offSite = inPool.filter((i) => !onWebsite(i));
+    const listable = offSite.filter((i) => !(i.saleId && openSaleIds.has(i.saleId)));
+    const held = offSite.length - listable.length;
+    const web = inPool.length - offSite.length;
     const r = exportPoolToPalmstreet(listable, { separator });
-    if (!r.ok) { showToast(held && !listable.length ? `All ${held} are in an upcoming sale event` : r.reason, 'error'); return; }
-    showToast(`Exported ${r.count} plants${r.unpriced ? ` · ${r.unpriced} left out (no price)` : ''}${held ? ` · ${held} in an upcoming event` : ''}`);
+    if (!r.ok) {
+      showToast(!listable.length && (held || web)
+        ? `Nothing to export — ${[held && `${held} in an upcoming sale event`, web && `${web} on the website`].filter(Boolean).join(', ')}`
+        : r.reason, 'error');
+      return;
+    }
+    showToast(`Exported ${r.count} plants${r.unpriced ? ` · ${r.unpriced} left out (no price)` : ''}${held ? ` · ${held} in an upcoming event` : ''}${web ? ` · ${web} on the website left out` : ''}`);
   };
 
   const cleanup = async () => {
@@ -243,10 +287,10 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">For Sale</h2>
-          <p className="text-xs text-gray-500 hidden sm:block">Plants ready to sell — photos, a video and a short code each.</p>
+          <p className="text-xs text-gray-500 hidden sm:block">Plants ready to sell — select some and push them to the website.</p>
         </div>
         <div className="inline-flex rounded-xl bg-gray-100 p-1">
-          {[{ id: 'pools', label: 'Pools', icon: LayoutGrid }, { id: 'calendar', label: 'Calendar', icon: CalendarDays }].map((t) => {
+          {[{ id: 'pools', label: 'Pool', icon: LayoutGrid }, { id: 'calendar', label: 'Calendar', icon: CalendarDays }].map((t) => {
             const Icon = t.icon;
             return (
               <button
@@ -293,24 +337,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
         />
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-2">
-            {POOLS.map((p) => (
-              <button
-                key={p.id} type="button" onClick={() => setPool(p.id)}
-                className={`flex items-center justify-between px-3 py-2.5 rounded-xl border-2 text-left ${
-                  pool === p.id ? 'border-emerald-500 bg-emerald-50' : 'border-gray-200 bg-white'
-                }`}
-              >
-                <span>
-                  <span className={`block text-sm font-semibold ${pool === p.id ? 'text-emerald-900' : 'text-gray-800'}`}>{p.label}</span>
-                  <span className="block text-[11px] text-gray-500">{p.hint}</span>
-                </span>
-                <span className={`text-lg font-bold ${pool === p.id ? 'text-emerald-700' : 'text-gray-400'}`}>{counts[p.id]}</span>
-              </button>
-            ))}
-          </div>
-
-          {pool === 'shopify' && (
+          {(shopifyOn || needs.web > 0) && (
             <ShopifyPanel status={status?.shopify} syncing={syncing} isAdmin={isAdmin}
               onSync={() => runSync({ force: true })}
               onDismiss={async (keys) => {
@@ -326,6 +353,14 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
             >
               <Plus className="w-4 h-4" /> Add plants
             </button>
+            {inPool.length > 0 && (
+              <button
+                type="button" onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+                className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm font-semibold ${selecting ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-300 text-gray-800 active:bg-gray-100'}`}
+              >
+                <CheckSquare className="w-4 h-4" /> {selecting ? 'Done' : 'Select'}
+              </button>
+            )}
             {needMedia.length > 0 && (
               <button
                 type="button" onClick={() => setWalk(needMedia.map((i) => i.id))}
@@ -334,9 +369,9 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                 <Camera className="w-4 h-4" /> Photos &amp; video ({needMedia.length})
               </button>
             )}
-            {pool === 'palmstreet' && (
+            {needs.notweb > 0 && (
               <span className="inline-flex items-stretch rounded-lg border border-gray-300 overflow-hidden">
-                <button type="button" onClick={exportPool} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold text-gray-800 active:bg-gray-100">
+                <button type="button" onClick={exportPool} title="The Palmstreet CSV of the plants not on the website" className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold text-gray-800 active:bg-gray-100">
                   <Download className="w-4 h-4" /> Export CSV
                 </button>
                 <select
@@ -376,15 +411,62 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                   key={f.id} type="button" onClick={() => setFilter(f.id)}
                   className={`shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border ${filter === f.id ? 'bg-gray-900 text-white border-gray-900' : 'bg-white border-gray-200 text-gray-600'}`}
                 >
-                  {f.label}{f.id !== 'all' && needs[f.id] ? ` · ${needs[f.id]}` : ''}
+                  {f.label}{f.id === 'all' ? ` · ${inPool.length}` : needs[f.id] ? ` · ${needs[f.id]}` : ''}
                 </button>
               ))}
             </div>
           </div>
 
+          {selecting && (
+            <div className="sticky top-16 sm:top-28 z-20 bg-gray-900 text-white rounded-xl px-3 py-2 shadow-md space-y-2">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="font-semibold">{picked.length ? `${picked.length} selected` : 'Tap plants to select them'}</span>
+                <span className="flex-1" />
+                {shown.length > 0 && (
+                  <button
+                    type="button" className="text-xs underline text-gray-300"
+                    onClick={() => setSel(allShownPicked ? new Set() : new Set(shown.map((i) => i.id)))}
+                  >
+                    {allShownPicked ? 'Clear' : `Select all ${shown.length}`}
+                  </button>
+                )}
+                <button type="button" aria-label="Stop selecting" onClick={stopSelecting} className="p-1 text-gray-300"><X className="w-4 h-4" /></button>
+              </div>
+              {picked.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button" onClick={() => moveWebsite('push')} disabled={!toPush.length || !!moving}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500 active:bg-emerald-600 text-white text-sm font-semibold disabled:opacity-40"
+                  >
+                    {moving === 'push' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
+                    Push to website{toPush.length ? ` (${toPush.length})` : ''}
+                  </button>
+                  {toPull.length > 0 && (
+                    <button
+                      type="button" onClick={() => moveWebsite('pull')} disabled={!!moving}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 active:bg-white/25 text-sm font-semibold disabled:opacity-40"
+                    >
+                      {moving === 'pull' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Undo2 className="w-4 h-4" />}
+                      Take off website ({toPull.length})
+                    </button>
+                  )}
+                  <button
+                    type="button" onClick={() => onPrintLabels(picked)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 active:bg-white/25 text-sm font-semibold"
+                  >
+                    <Printer className="w-4 h-4" /> Tags ({picked.length})
+                  </button>
+                </div>
+              )}
+              {picked.length > 0 && !toPush.length && (
+                <div className="text-[11px] text-gray-300">All selected plants are already on the website.</div>
+              )}
+            </div>
+          )}
+
           {shown.length === 0 ? (
             <div className="text-center text-sm text-gray-400 bg-white border border-dashed border-gray-200 rounded-2xl py-10 px-4">
-              {inPool.length ? 'Nothing matches.' : `The ${POOLS.find((p) => p.id === pool)?.label} pool is empty — tap Add plants and scan their tags.`}
+              {inPool.length ? 'Nothing matches.' : 'The pool is empty — tap Add plants and scan their tags.'}
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5">
@@ -392,12 +474,13 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                 <PlantCard
                   key={i.id}
                   item={i}
-                  pool={pool}
                   eventName={i.saleId && openSaleIds.has(i.saleId) ? saleName.get(i.saleId) : null}
                   openSaleIds={openSaleIds}
                   shopifyConnected={shopifyOn}
                   uploading={uploadingIds.has(i.id)}
-                  onClick={() => setOpenId(i.id)}
+                  selecting={selecting}
+                  selected={selecting && sel.has(i.id)}
+                  onClick={() => (selecting ? toggleSel(i.id) : setOpenId(i.id))}
                 />
               ))}
             </div>
@@ -414,7 +497,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
       )}
 
       {adding && (
-        <AddPlantsSheet items={items} pool={pool} onAdd={addToPool} onClose={() => setAdding(false)} showToast={showToast} />
+        <AddPlantsSheet items={items} onAdd={addToPool} onClose={() => setAdding(false)} showToast={showToast} />
       )}
       {walk && (
         <MediaWalkthrough
@@ -463,12 +546,19 @@ function ago(iso) {
 // orders, unknown SKUs).
 function ShopifyPanel({ status, syncing, isAdmin, onSync, onDismiss }) {
   if (!status) return null;
+  if (!status.configured && !isAdmin) {
+    return (
+      <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2.5 text-sm text-gray-700">
+        <Store className="w-4 h-4 shrink-0" /> The website (Shopify) isn't connected for this brand yet — plants pushed to it wait here until it is.
+      </div>
+    );
+  }
   if (!status.configured) {
     return (
       <div className="bg-white border border-gray-200 rounded-xl px-3 py-3 text-sm text-gray-700 space-y-1.5">
         <div className="flex items-center gap-2 font-semibold text-gray-900"><Store className="w-4 h-4" /> Shopify isn't connected</div>
         <p className="text-xs text-gray-600">
-          Plants in this pool are kept here until the store is connected. To connect: in Shopify's Dev Dashboard create an app for this store
+          Plants pushed to the website wait here until the store is connected. To connect: in Shopify's Dev Dashboard create an app for this store
           (scopes: products, inventory, files, publications, locations, orders, customers, fulfillment orders), install it, then add these
           Vercel environment variables and redeploy:
         </p>
@@ -500,7 +590,7 @@ function ShopifyPanel({ status, syncing, isAdmin, onSync, onDismiss }) {
             <div key={p.key} className="flex items-start gap-2 text-xs bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 text-amber-900">
               <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
               <span className="flex-1">{p.message}</span>
-              {isAdmin && <button type="button" onClick={() => onDismiss([p.key])} aria-label="Dismiss" className="shrink-0 p-0.5"><X className="w-3.5 h-3.5" /></button>}
+              <button type="button" onClick={() => onDismiss([p.key])} aria-label="Dismiss" className="shrink-0 p-0.5"><X className="w-3.5 h-3.5" /></button>
             </div>
           ))}
           {problems.length > 8 && <div className="text-[11px] text-gray-500">+{problems.length - 8} more</div>}

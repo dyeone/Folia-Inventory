@@ -1,4 +1,4 @@
-import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, hasRole } from './_lib/supabase.js';
+import { supabase, requireAdmin, requireBrand, brandIdFromReq, newId, hasRole, seesCosts } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
 // Catalog of species/cultivar rows under a variety. Any active user can
@@ -208,9 +208,10 @@ export default wrap(async (req, res) => {
       // (their inventory screen) and never see a cost either.
       // Roles are a set now: an admin sees everything; a streamer or
       // consultant (even one who also packs) keeps the list price + note;
-      // a packer-only login gets neither price.
-      const stripForPacker = !hasRole(user, 'admin') && !hasRole(user, 'streamer') && !hasRole(user, 'consultant');
-      const stripCost = !hasRole(user, 'admin');
+      // a packer-only login gets neither price. The CEO sees both, like an
+      // admin (the Inventory tab shows costs).
+      const stripCost = !seesCosts(user);
+      const stripForPacker = stripCost && !hasRole(user, 'streamer') && !hasRole(user, 'consultant');
       const out = (species || []).map(s => {
         let row = s;
         if (stripForPacker) row = (({ wholesalePrice, idealSellingPrice, ...rest }) => rest)(row);

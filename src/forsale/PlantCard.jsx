@@ -1,5 +1,5 @@
-import { Camera, Video, CalendarDays, Images, Loader2 } from 'lucide-react';
-import { money, readiness, shopifyBadge, photosOf } from './pools.js';
+import { Camera, Video, CalendarDays, Images, Loader2, Globe, Check } from 'lucide-react';
+import { money, readiness, shopifyBadge, photosOf, onWebsite } from './pools.js';
 
 const TONE = {
   ok: 'bg-green-600 text-white',
@@ -8,18 +8,20 @@ const TONE = {
   error: 'bg-red-600 text-white',
 };
 
-// One plant in a pool grid: its cover photo (and how many it has), code
+// One plant in the pool grid: its cover photo (and how many it has), code
 // (big — it's how the packer finds the pot), name, price, what's missing,
-// and for Shopify what its listing is doing. Tap → PlantSheet.
-export function PlantCard({ item, pool, eventName, openSaleIds, shopifyConnected, selected, uploading, onClick }) {
+// and — once pushed to the website — what its listing is doing. Tap →
+// PlantSheet, or (selecting) ticks it.
+export function PlantCard({ item, eventName, openSaleIds, shopifyConnected, selecting, selected, uploading, onClick }) {
   const missing = readiness(item);
   const shots = photosOf(item);
   const photoCount = shots.length;
-  const badge = pool === 'shopify' ? shopifyBadge(item, openSaleIds, shopifyConnected) : null;
+  const badge = onWebsite(item) ? shopifyBadge(item, openSaleIds, shopifyConnected) : null;
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={selecting ? !!selected : undefined}
       className={`text-left bg-white rounded-xl border overflow-hidden flex flex-col active:scale-[0.99] transition ${
         selected ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-gray-200 hover:border-gray-300'
       }`}
@@ -40,14 +42,18 @@ export function PlantCard({ item, pool, eventName, openSaleIds, shopifyConnected
             {item.saleCode}
           </span>
         )}
-        {item.videoUrl && (
+        {selecting ? (
+          <span className={`absolute top-1.5 right-1.5 w-6 h-6 rounded-full border-2 flex items-center justify-center ${selected ? 'bg-emerald-500 border-emerald-500 text-white' : 'bg-white/80 border-white'}`}>
+            {selected && <Check className="w-4 h-4" strokeWidth={3} />}
+          </span>
+        ) : item.videoUrl && (
           <span className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-white" title="Has a video">
             <Video className="w-3.5 h-3.5" />
           </span>
         )}
         {badge && (
-          <span className={`absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded text-[10px] font-semibold ${TONE[badge.tone]}`} title={badge.detail}>
-            {badge.label}
+          <span className={`absolute bottom-1.5 left-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold ${TONE[badge.tone]}`} title={`Website: ${badge.detail}`}>
+            <Globe className="w-3 h-3" /> {badge.label}
           </span>
         )}
         {(uploading || photoCount > 1) && (

@@ -1,17 +1,18 @@
 // For Sale tab rules on the client side. The server (api/_lib/pool.js,
 // api/_lib/shopify.js) is authoritative; these mirror it for display.
 
-export const POOLS = [
-  { id: 'palmstreet', label: 'Palmstreet', hint: 'exported as the Palmstreet CSV' },
-  { id: 'shopify', label: 'Shopify', hint: 'synced to the Shopify store' },
-];
+// ONE pool (2026-11-19). A plant's salePool says whether it's also on the
+// website (the values predate the single pool; see api/_lib/pool.js):
+export const IN_POOL = 'palmstreet';    // in the pool only — Palmstreet CSV, sale events
+export const ON_WEBSITE = 'shopify';    // pushed to the website (the Shopify store)
 export const FOR_SALE_STATUSES = ['available', 'listed', 'acclimated'];
 
 export const isForSale = (i) => !!i && !i.deletedAt && FOR_SALE_STATUSES.includes(i.status) && !i.shipmentBoxId;
+export const onWebsite = (i) => i?.salePool === ON_WEBSITE;
 
-// Plants in a pool right now (sold / boxed / trashed ones drop out).
-export function poolItems(items, pool) {
-  return (items || []).filter((i) => i.salePool === pool && isForSale(i));
+// Plants in the pool right now (sold / boxed / trashed ones drop out).
+export function poolItems(items) {
+  return (items || []).filter((i) => i.salePool && isForSale(i));
 }
 
 // Plants that can join a pool: in stock, not in one yet.
@@ -59,22 +60,22 @@ function listedPhotos(sh) {
   return sh?.imageUrl ? [sh.imageUrl] : [];
 }
 
-// What a Shopify-pool plant's listing is doing, for its card. Mirrors
+// What a website plant's listing is doing, for its card. Mirrors
 // desiredListing() in api/_lib/shopify.js plus the stored sync state.
 // tone: 'ok' | 'wait' | 'warn' | 'error'
 export function shopifyBadge(item, openSaleIds, connected) {
   const sh = item.shopify || {};
-  if (!connected) return { tone: 'wait', label: 'Not synced', detail: 'Shopify isn\'t connected yet' };
+  if (!connected) return { tone: 'wait', label: 'Waiting', detail: 'Shopify isn\'t connected for this brand yet — it goes up once it is' };
   if (sh.error) return { tone: 'error', label: 'Sync failed', detail: sh.error };
-  if (item.saleId && openSaleIds.has(item.saleId)) return { tone: 'warn', label: 'Paused', detail: 'In an upcoming sale event — hidden on Shopify until it\'s back' };
+  if (item.saleId && openSaleIds.has(item.saleId)) return { tone: 'warn', label: 'Paused', detail: 'In an upcoming sale event — hidden on the website until it\'s back' };
   if (!priced(item)) return { tone: 'warn', label: 'Needs price', detail: 'Set a price to list it' };
   if (!photosOf(item).length) return { tone: 'warn', label: 'Needs photo', detail: 'Add a photo to list it' };
   if (sh.productId && sh.status === 'ACTIVE' && sh.qty === 1 && sh.published) {
     const behind = photosOf(item).join('\n') !== listedPhotos(sh).join('\n') || (item.videoUrl || null) !== (sh.videoUrl || null)
       || sh.price !== Number(item.listingPrice).toFixed(2);
-    return behind ? { tone: 'wait', label: 'Updating…', detail: 'Changes go to Shopify on the next sync' } : { tone: 'ok', label: 'Live', detail: 'Listed on Shopify' };
+    return behind ? { tone: 'wait', label: 'Updating…', detail: 'Changes go to the website on the next sync' } : { tone: 'ok', label: 'Live', detail: 'Listed on the website' };
   }
-  return { tone: 'wait', label: 'Listing…', detail: 'Goes up on the next sync' };
+  return { tone: 'wait', label: 'Going up…', detail: 'Goes up on the next sync' };
 }
 
 // What's missing before a plant is ready to list anywhere.

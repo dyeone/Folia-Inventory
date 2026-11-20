@@ -2,17 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, Search, X, Loader2, ChevronRight } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { CameraScanner } from '../packing/CameraScanner.jsx';
-import { POOLS, isForSale, money } from './pools.js';
+import { isForSale, money } from './pools.js';
 import { findBySaleCode } from './saleCode.js';
 
-const POOL_LABEL = Object.fromEntries(POOLS.map((p) => [p.id, p.label]));
-
 // Step 1 of adding plants: scan their tags (camera or the bench scanner) or
-// search by SKU / name, collect a list, add them to a pool in one go — each
-// gets its short code on the way in. Step 2 (MediaWalkthrough, opened by the
-// tab) goes through them one by one for photos, video and price.
-export function AddPlantsSheet({ items, pool: initialPool, onAdd, onClose, showToast }) {
-  const [pool, setPool] = useState(initialPool || 'palmstreet');
+// search by SKU / name, collect a list, add them to the pool in one go —
+// each gets its short code on the way in. Step 2 (MediaWalkthrough, opened by
+// the tab) goes through them one by one for photos, video and price. Pushing
+// to the website is a separate step (select them in the pool).
+export function AddPlantsSheet({ items, onAdd, onClose, showToast }) {
   const [q, setQ] = useState('');
   const [picked, setPicked] = useState([]);       // ids, newest first
   const [camera, setCamera] = useState(false);
@@ -33,7 +31,7 @@ export function AddPlantsSheet({ items, pool: initialPool, onAdd, onClose, showT
   // Why a plant can't be picked, or '' when it can.
   const blocker = (i) => {
     if (!isForSale(i)) return i.shipmentBoxId ? 'in a shipping box' : `is ${i.status}`;
-    if (i.salePool) return `already in the ${POOL_LABEL[i.salePool] || i.salePool} pool`;
+    if (i.salePool) return 'already in For Sale';
     return '';
   };
 
@@ -74,7 +72,7 @@ export function AddPlantsSheet({ items, pool: initialPool, onAdd, onClose, showT
     if (!picked.length) return;
     setBusy(media ? 'media' : 'plain');
     try {
-      const ok = await onAdd(picked, pool, { media });
+      const ok = await onAdd(picked, { media });
       if (ok) onClose();
     } finally {
       setBusy(false);
@@ -86,19 +84,6 @@ export function AddPlantsSheet({ items, pool: initialPool, onAdd, onClose, showT
   return (
     <Modal title="Add plants to For Sale" onClose={onClose} size="lg">
       <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-2">
-          {POOLS.map((p) => (
-            <button
-              key={p.id} type="button" onClick={() => setPool(p.id)}
-              className={`py-2 rounded-lg border-2 text-sm font-semibold ${
-                pool === p.id ? 'border-emerald-500 bg-emerald-50 text-emerald-800' : 'border-gray-200 text-gray-600'
-              }`}
-            >
-              {p.label} pool
-            </button>
-          ))}
-        </div>
-
         <div className="flex gap-2">
           <div className="relative flex-1">
             <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -168,7 +153,7 @@ export function AddPlantsSheet({ items, pool: initialPool, onAdd, onClose, showT
           className="w-full py-3 rounded-xl bg-emerald-600 active:bg-emerald-700 text-white font-semibold disabled:opacity-40 flex items-center justify-center gap-2"
         >
           {busy === 'media' && <Loader2 className="w-4 h-4 animate-spin" />}
-          Add {pickedItems.length || ''} to {POOL_LABEL[pool]} · next: photos &amp; video
+          Add {pickedItems.length || ''} to For Sale · next: photos &amp; video
           <ChevronRight className="w-4 h-4" />
         </button>
         <button

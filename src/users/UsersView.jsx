@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ROLES, rolesOf } from '../roles.js';
+import { ROLES, rolesOf, toggleRoleIn } from '../roles.js';
 import { UserPlus, Key, Eye, EyeOff, Trash2 } from 'lucide-react';
 import { api } from '../api.js';
 import { BRANDS } from '../brands.js';
@@ -31,14 +31,10 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
   }, [showToast]);
 
   // Roles are a set: tap a pill to add or remove that role (at least one
-  // stays). Admin is exclusive — it already includes everything.
+  // stays). Admin and CEO stand alone (toggleRoleIn).
   const toggleRole = async (user, roleId) => {
     if (user.id === currentUser.id) return showToast("You can't change your own roles", 'error');
-    const cur = rolesOf(user);
-    let next;
-    if (roleId === 'admin') next = cur.includes('admin') ? ['packer'] : ['admin'];
-    else if (cur.includes(roleId)) next = cur.filter(r => r !== roleId);
-    else next = [...cur.filter(r => r !== 'admin'), roleId];
+    const next = toggleRoleIn(rolesOf(user), roleId);
     if (!next.length) return showToast('A user needs at least one role', 'error');
     try {
       const r = await api.updateUser({ id: user.id, patch: { roles: next }, adminUserId: currentUser.id });
@@ -150,7 +146,7 @@ export function UsersView({ currentUser, setConfirmDialog, showToast }) {
                     <div className="flex flex-wrap gap-1">
                       {ROLES.map((r) => {
                         const on = rolesOf(user).includes(r.id);
-                        const tone = r.id === 'admin' ? 'bg-violet-600 border-violet-600' : r.id === 'packer' ? 'bg-amber-500 border-amber-500' : r.id === 'streamer' ? 'bg-rose-500 border-rose-500' : 'bg-teal-600 border-teal-600';
+                        const tone = r.id === 'admin' ? 'bg-violet-600 border-violet-600' : r.id === 'ceo' ? 'bg-slate-800 border-slate-800' : r.id === 'packer' ? 'bg-amber-500 border-amber-500' : r.id === 'streamer' ? 'bg-rose-500 border-rose-500' : 'bg-teal-600 border-teal-600';
                         return (
                           <button
                             key={r.id}
