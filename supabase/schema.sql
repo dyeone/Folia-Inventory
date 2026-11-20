@@ -91,6 +91,10 @@ create index if not exists inventory_items_brand_sale_pool
 -- Every photo of the plant, cover first, as public URLs (0053) — the server's
 -- copy of item_photos for the For Sale exports and the Shopify sync.
 alter table inventory_items add column if not exists "photoUrls" jsonb;
+-- Every video of the plant, in the order added (videoUrl = the first), and
+-- the team's note on it — never exported (0055).
+alter table inventory_items add column if not exists "videoUrls" jsonb;
+alter table inventory_items add column if not exists "staffNote" text;
 
 -- ─── Sales Events ─────────────────────────────────────────────────────────────
 

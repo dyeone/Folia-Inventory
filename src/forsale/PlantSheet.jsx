@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Printer, Trash2, RefreshCw, Loader2, Globe, Undo2 } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { api } from '../api.js';
@@ -11,15 +11,21 @@ const TONE_TEXT = { ok: 'text-green-700', wait: 'text-gray-600', warn: 'text-amb
 // Statuses a sale event takes (api/_lib/pool.js EVENT_STATUSES).
 const EVENT_STATUSES = ['available', 'listed'];
 
-// One plant's For Sale details: its photos and video (shoot or pick on the
-// phone — they upload in the background), price, the website (push it there
-// / take it off, and what its listing is doing), its sale event, and tag.
+// One plant's For Sale details: its photos and videos (shoot or pick on the
+// phone — they upload in the background), price, the team's note on it, the
+// website (push it there / take it off — admins only — and what its listing
+// is doing), its sale event, and tag.
+// canWebsite: may push to / take off the website (the CEO can't, 2026-11-20).
+// notesOn: migration 0055 is in (staffNote exists).
 export function PlantSheet({
-  item, sales, openSaleIds, pausedSaleIds, shopifyConnected, showToast, uploads,
+  item, sales, openSaleIds, pausedSaleIds, shopifyConnected, canWebsite, notesOn, showToast, uploads,
   onClose, onMerged, onSyncShopify, onPrintLabel, onSetPool, onEventAssign, onEventUnassign,
 }) {
   const [price, setPrice] = useState(item.listingPrice != null && Number(item.listingPrice) > 0 ? String(item.listingPrice) : '');
   const [priceBusy, setPriceBusy] = useState(false);
+  const [note, setNote] = useState(item.staffNote || '');
+  const [noteBusy, setNoteBusy] = useState(false);
+  const savedNote = useRef(item.staffNote || '');
   const [poolBusy, setPoolBusy] = useState(false);
   const [eventBusy, setEventBusy] = useState(null);
 
@@ -60,6 +66,31 @@ export function PlantSheet({
       setPriceBusy(false);
     }
   };
+
+  // The note saves on Save, when the box loses focus, and when the sheet
+  // closes with it unsaved. Never exported — not in the Palmstreet CSV, not
+  // on the website.
+  const saveNote = async () => {
+    const v = note.trim();
+    if (v === savedNote.current.trim() || !notesOn) return;
+    const before = savedNote.current;
+    savedNote.current = v;
+    setNoteBusy(true);
+    try {
+      await api.upsertItems([{ id: item.id, staffNote: v || null }]);
+      onMerged([{ id: item.id, staffNote: v || null }]);
+      showToast(v ? 'Note saved' : 'Note cleared');
+    } catch (err) {
+      savedNote.current = before;
+      showToast(/staffNote/.test(err.message || '') ? 'Notes need migration 0055 — run it in the Supabase SQL editor first' : (err.message || 'Could not save the note'), 'error');
+    } finally {
+      setNoteBusy(false);
+    }
+  };
+  const noteDirty = note.trim() !== (item.staffNote || '').trim();
+  const saveNoteRef = useRef(saveNote);
+  useEffect(() => { saveNoteRef.current = saveNote; });
+  useEffect(() => () => { saveNoteRef.current(); }, []);
 
   const setPool = async (pool) => {
     if (pool === item.salePool) return;
@@ -103,10 +134,42 @@ export function PlantSheet({
           </div>
         </div>
 
+        {/* Note */}
+        <div>
+          <label className="block text-xs font-semibold text-gray-600 mb-1">
+            Note <span className="font-normal text-gray-400">· for the team, never shown to buyers</span>
+          </label>
+          {notesOn ? (
+            <>
+              <textarea
+                value={note} onChange={(e) => setNote(e.target.value)} onBlur={saveNote}
+                rows={2} maxLength={1000} placeholder="Anything the team should know about this plant"
+                className="input text-base resize-y"
+              />
+              {(noteDirty || noteBusy) && (
+                <div className="mt-1.5 flex justify-end">
+                  <button
+                    type="button" onClick={saveNote} disabled={noteBusy}
+                    className="px-4 py-1.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold disabled:opacity-50"
+                  >
+                    {noteBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save note'}
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-gray-500">Notes need migration <b>0055_plant_videos_notes</b> — run it in the Supabase SQL editor.</p>
+          )}
+        </div>
+
         {/* Website */}
         <div>
           <label className="block text-xs font-semibold text-gray-600 mb-1">Website</label>
-          {web ? (
+          {!canWebsite ? (
+            <p className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2">
+              {web ? 'On the website.' : 'Not on the website.'} <span className="text-gray-500">Only an admin can {web ? 'take it off' : 'push it there'}.</span>
+            </p>
+          ) : web ? (
             <button
               type="button" disabled={poolBusy} onClick={() => setPool(IN_POOL)}
               className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg border-2 border-gray-200 text-sm font-semibold text-gray-700 active:bg-gray-50 disabled:opacity-50"
@@ -143,7 +206,7 @@ export function PlantSheet({
             <p className="text-xs text-gray-500">A plant that's {item.status} can't go in a sale event — make it available first.</p>
           )}
           {openEvent && isWebsiteSale(openEvent) && !web && (
-            <p className="mt-1.5 text-xs text-indigo-700">In a website sale — push it to the website above so it's listed there.</p>
+            <p className="mt-1.5 text-xs text-indigo-700">In a website sale — {canWebsite ? 'push it to the website above' : 'an admin needs to push it to the website'} so it's listed there.</p>
           )}
           {openEvent && !isWebsiteSale(openEvent) && web && (
             <p className="mt-1.5 text-xs text-amber-700">Hidden on the website while it's in {openEvent.name}.</p>
@@ -162,12 +225,14 @@ export function PlantSheet({
           >
             <Printer className="w-4 h-4" /> Print tag
           </button>
-          <button
-            type="button" disabled={poolBusy} onClick={() => setPool(null)}
-            className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border border-red-200 text-sm font-semibold text-red-700 active:bg-red-50 disabled:opacity-50"
-          >
-            <Trash2 className="w-4 h-4" /> Remove
-          </button>
+          {(canWebsite || !web) && (
+            <button
+              type="button" disabled={poolBusy} onClick={() => setPool(null)}
+              className="flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg border border-red-200 text-sm font-semibold text-red-700 active:bg-red-50 disabled:opacity-50"
+            >
+              <Trash2 className="w-4 h-4" /> Remove
+            </button>
+          )}
         </div>
       </div>
     </Modal>

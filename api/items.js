@@ -39,7 +39,7 @@ async function fetchAll(buildQuery) {
 // orphaned (and listed twice on the next sync). They never ride this path.
 // photoUrls (0053) is the server's copy of the plant's photo gallery
 // (api/_lib/itemPhotos.js) — same reason.
-const POOL_OWNED = ['saleCode', 'salePool', 'poolAddedAt', 'videoUrl', 'shopify', 'photoUrls'];
+const POOL_OWNED = ['saleCode', 'salePool', 'poolAddedAt', 'videoUrl', 'videoUrls', 'shopify', 'photoUrls'];
 
 function stripServerOwned(item) {
   const clean = { ...item };
@@ -987,6 +987,7 @@ async function convertItem(req, res, user, brandId) {
     // TC row (its photos stay in the TC's gallery).
     ...('saleCode' in tc ? { saleCode: null, salePool: null, poolAddedAt: null, shopify: null, videoUrl: null } : {}),
     ...('photoUrls' in tc ? { photoUrls: null } : {}),
+    ...('videoUrls' in tc ? { videoUrls: null } : {}),
     variety,
     convertedFromTcId: tc.id,
     convertedFromSku: tc.sku,

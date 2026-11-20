@@ -277,8 +277,20 @@ function listedPhotos(sh) {
   if (Array.isArray(sh?.photoUrls)) return sh.photoUrls;
   return sh?.imageUrl ? [sh.imageUrl] : [];
 }
+// The plant's videos in order (0055: several; videoUrl is the first).
+export function videosOf(item) {
+  const list = Array.isArray(item?.videoUrls) ? item.videoUrls.filter((u) => typeof u === 'string' && u) : [];
+  const first = typeof item?.videoUrl === 'string' && item.videoUrl ? item.videoUrl : null;
+  return first && !list.includes(first) ? [first, ...list] : list;
+}
+// The videos the product carries, as last synced (listings made before
+// several videos stored just the one).
+function listedVideos(sh) {
+  if (Array.isArray(sh?.videoUrls)) return sh.videoUrls;
+  return sh?.videoUrl ? [sh.videoUrl] : [];
+}
 const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
-const mediaBehind = (item, sh) => !sameList(photosOf(item), listedPhotos(sh)) || (item.videoUrl || null) !== (sh.videoUrl || null);
+const mediaBehind = (item, sh) => !sameList(photosOf(item), listedPhotos(sh)) || !sameList(videosOf(item), listedVideos(sh));
 
 function fingerprint(item) {
   return crypto.createHash('sha1')
@@ -315,7 +327,7 @@ async function ensurePublication(cfg, state) {
   return hit ? hit.id : null;
 }
 
-// Up to 10 photos + 1 video per plant; room to spare for strays.
+// Up to 10 photos + 5 videos per plant; room to spare for strays.
 const MEDIA_FIELDS = 'media(first: 50) { nodes { id mediaContentType } }';
 const isVideoMedia = (n) => n.mediaContentType === 'VIDEO' || n.mediaContentType === 'EXTERNAL_VIDEO';
 
@@ -384,10 +396,11 @@ async function setStatus(cfg, productId, status) {
 async function createListing(cfg, state, item) {
   const title = shopifyTitle(item);
   const photos = photosOf(item);
+  const videos = videosOf(item);
   // Photos in gallery order (the first is the product's featured image),
-  // then the video.
+  // then the videos.
   const media = photos.map((url) => ({ originalSource: url, mediaContentType: 'IMAGE', alt: title }));
-  if (item.videoUrl) media.push({ originalSource: await stageVideo(cfg, item.videoUrl, item), mediaContentType: 'VIDEO', alt: title });
+  for (const url of videos) media.push({ originalSource: await stageVideo(cfg, url, item), mediaContentType: 'VIDEO', alt: title });
   const d = await gql(cfg, `mutation Create($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
     productCreate(product: $product, media: $media) {
       product { id handle variants(first: 1) { nodes { id inventoryItem { id } } } ${MEDIA_FIELDS} }
@@ -411,7 +424,8 @@ async function createListing(cfg, state, item) {
     inventoryItemId: v?.inventoryItem?.id || null,
     status: 'DRAFT',
     photoUrls: photos,
-    videoUrl: item.videoUrl || null,
+    videoUrls: videos,
+    videoUrl: videos[0] || null,
     // Title + description went up with exactly these values.
     fp: fingerprint(item),
     createdAt: new Date().toISOString(),
@@ -437,21 +451,22 @@ async function applyActive(cfg, state, item, sh) {
     const ue = userErrorText(d?.productUpdate?.userErrors);
     if (ue) throw fail(502, `Shopify: ${ue}`);
   }
-  // Photos and video. Whatever changed is swapped out whole — the photos as
-  // a set (≤ 10, Shopify fetches them from our public URLs), the video on
-  // its own — against what the product holds right now, so media left by a
-  // run that died half way is cleared too. The new media goes up BEFORE the
-  // old comes down, so a failed add leaves the old photos showing, never an
-  // empty listing. Then photos first, video last.
+  // Photos and videos. Whatever changed is swapped out whole — the photos
+  // as a set (≤ 10, Shopify fetches them from our public URLs), the videos
+  // as a set (staged one by one) — against what the product holds right
+  // now, so media left by a run that died half way is cleared too. The new
+  // media goes up BEFORE the old comes down, so a failed add leaves the old
+  // photos showing, never an empty listing. Then photos first, videos last.
   const photos = photosOf(item);
+  const videos = videosOf(item);
   const photosChanged = !sameList(photos, listedPhotos(sh));
-  const videoChanged = (item.videoUrl || null) !== (sh.videoUrl || null);
+  const videoChanged = !sameList(videos, listedVideos(sh));
   if (photosChanged || videoChanged) {
     const alt = shopifyTitle(item);
     const now = await productMedia(cfg, sh.productId);
     const drop = now.filter((n) => (photosChanged && n.mediaContentType === 'IMAGE') || (videoChanged && isVideoMedia(n))).map((n) => n.id);
     const add = photosChanged ? photos.map((url) => ({ originalSource: url, mediaContentType: 'IMAGE', alt })) : [];
-    if (videoChanged && item.videoUrl) add.push({ originalSource: await stageVideo(cfg, item.videoUrl, item), mediaContentType: 'VIDEO', alt });
+    if (videoChanged) for (const url of videos) add.push({ originalSource: await stageVideo(cfg, url, item), mediaContentType: 'VIDEO', alt });
     let nodes = now;
     if (add.length) {
       const d = await gql(cfg, `mutation Media($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
@@ -468,13 +483,17 @@ async function applyActive(cfg, state, item, sh) {
     }
     nodes = nodes.filter((n) => !drop.includes(n.id));
     sh.photoUrls = photos;
-    sh.videoUrl = item.videoUrl || null;
+    sh.videoUrls = videos;
+    sh.videoUrl = videos[0] || null;
     delete sh.imageUrl; delete sh.imageMediaId; delete sh.videoMediaId;
-    // New photos land after a kept video; move the video back to the end.
-    const vid = nodes.findIndex(isVideoMedia);
-    if (vid >= 0 && vid !== nodes.length - 1) {
+    // New photos land after kept videos; move the videos back to the end,
+    // in their order. The moves run one after another, so sending each
+    // video to the last slot in turn leaves them last, still in order.
+    const vids = nodes.filter(isVideoMedia);
+    const firstVid = nodes.findIndex(isVideoMedia);
+    if (vids.length && firstVid !== nodes.length - vids.length) {
       await gql(cfg, `mutation Ord($id: ID!, $moves: [MoveInput!]!) { productReorderMedia(id: $id, moves: $moves) { userErrors { field message } } }`,
-        { id: sh.productId, moves: [{ id: nodes[vid].id, newPosition: String(nodes.length - 1) }] }).catch(() => {});
+        { id: sh.productId, moves: vids.map((v) => ({ id: v.id, newPosition: String(nodes.length - 1) })) }).catch(() => {});
     }
   }
   if (sh.qty !== 1) {

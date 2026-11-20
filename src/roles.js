@@ -11,15 +11,16 @@
 //   consultant  the mobile wholesale-pricing screen (list price + seller
 //               note); never sees a cost.
 //   ceo         the Inventory and For Sale tabs only — what an admin sees
-//               there, costs included, and the For Sale workflow; no admin
-//               powers elsewhere (migration 0054).
+//               there, costs included, and the For Sale workflow except the
+//               website (no Push to / Take off website, 2026-11-20); no
+//               admin powers elsewhere (migration 0054).
 //
 // 'teammember' (2026-10-02) and 'staff' no longer exist. The API reads old
 // rows under the new names until migration 0049 renames them; normalizeRole
 // does the same for anything cached on this side.
 export const ROLES = [
   { id: 'admin', label: 'Admin', hint: 'full access' },
-  { id: 'ceo', label: 'CEO', hint: 'Inventory and For Sale tabs only (sees costs)' },
+  { id: 'ceo', label: 'CEO', hint: 'Inventory and For Sale tabs only (sees costs; can\'t push to the website)' },
   { id: 'packer', label: 'Packer', hint: 'packing bench only — shipping, labels, receiving, TC acclimation; no prices' },
   { id: 'streamer', label: 'Streamer', hint: 'availability, schedule, available inventory with list prices + sell notes' },
   { id: 'consultant', label: 'Consultant', hint: 'wholesale pricing only (list price + seller note, mobile)' },

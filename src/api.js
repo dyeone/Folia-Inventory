@@ -285,8 +285,9 @@ export const api = {
     request('/species-photos', { method: 'POST', body: { action: 'video-upload-url', target: 'item', itemId, contentType, size, filename } }),
   videoCommit: ({ itemId, path }) =>
     request('/species-photos', { method: 'POST', body: { action: 'video-commit', target: 'item', itemId, path } }),
-  videoDelete: (itemId) =>
-    request('/species-photos', { method: 'POST', body: { action: 'video-delete', target: 'item', itemId } }),
+  // url: that one video (without it, all of the plant's videos).
+  videoDelete: (itemId, url = null) =>
+    request('/species-photos', { method: 'POST', body: { action: 'video-delete', target: 'item', itemId, ...(url ? { url } : {}) } }),
   deleteItemPhoto: (id, { forSale = false } = {}) =>
     request('/species-photos', { method: 'POST', body: { action: 'delete', target: 'item', id, forSale } }),
 
