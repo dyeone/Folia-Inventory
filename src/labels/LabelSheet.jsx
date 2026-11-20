@@ -7,15 +7,15 @@ import { useAutoBridgePrint, printChunked } from './useBridgePrint.js';
 // boxLabelPdf.js) so non-component code — the packer's burrito-wrap reprint —
 // can share them without this component file exporting non-components.
 import {
-  buildItemLabelPdf, brandTag, realSku, lotStr, bigMark, topLine, labelTitle, weekTag,
-  qrDataUrl, QR_SIZE_LOT, QR_SIZE_FULL,
+  buildItemLabelPdf, brandTag, realSku, lotStr, codeStr, labelLayout, topLine, labelTitle, weekTag,
+  qrDataUrl, QR_SIZE_LOT, QR_SIZE_FULL, QR_SIZE_CODE, CODE_DIV, codeFontPt,
 } from './itemLabelPdf.js';
 
-function Label({ item, tag, sellerName, week }) {
+function Label({ item, tag, sellerName, week, prefer }) {
   const sku = realSku(item);
   // Consignment plants print the seller's name alongside the brand tag so the
   // bench knows whose plant it is (the SKU carries the seller code too).
-  const top = topLine(item, tag, sellerName);
+  const top = topLine(item, tag, sellerName, prefer);
 
   // QR, not CODE128 — same swap as the PDF builder (see itemLabelPdf.js):
   // a barcode squeezed into the 2"×1" label was too fine to print/scan.
@@ -28,9 +28,10 @@ function Label({ item, tag, sellerName, week }) {
   );
 
   const lot = lotStr(item);
-  // The big left mark: the lineup number, else the plant's For Sale code.
-  const big = bigMark(item);
-  const isCode = !!big && !lot;
+  const layout = labelLayout(item, prefer);
+  const code = codeStr(item);
+  // The big left mark of the lineup layout.
+  const big = layout === 'lot' ? lot : '';
   const titleLine = labelTitle(item);
   // The PDF prints the whole name: smaller when long, on two lines when
   // longer still. The preview mirrors that in CSS — a long title drops a
@@ -47,12 +48,26 @@ function Label({ item, tag, sellerName, week }) {
   return (
     <div className="folia-label bg-white border border-gray-300"
          style={{ width: '2in', height: '1in', padding: '0.06in', boxSizing: 'border-box' }}>
-      {big ? (
+      {layout === 'code' ? (
+        <div className="flex items-stretch h-full w-full">
+          <div className="flex flex-col items-center justify-center border-r border-gray-300 min-w-0" style={{ width: `${CODE_DIV - 0.06}in`, paddingRight: '0.04in' }}>
+            <span className="font-bold text-black leading-none" style={{ fontSize: `${codeFontPt(code)}pt`, fontFamily: 'Helvetica, Arial, sans-serif' }}>{code}</span>
+            <div className={`${titleLine.length > 30 ? 'text-[6pt]' : 'text-[7pt]'} leading-tight text-gray-700 line-clamp-2 break-words w-full text-center`} style={{ marginTop: '0.05in' }}>{titleLine}</div>
+          </div>
+          <div className="flex-1 min-w-0 flex flex-col items-center justify-between text-center pl-1">
+            {top ? <div className="text-[6pt] font-bold text-black leading-none truncate w-full">{top}</div> : <div />}
+            {/* Courier, shrunk to the column like the PDF's fitFontPt (0.6 em a character). */}
+            <div className="font-bold text-black leading-none whitespace-nowrap"
+                 style={{ fontFamily: 'Courier New, Courier, monospace', fontSize: `${Math.min(9, (0.6 * 72) / (Math.max(1, sku.length) * 0.6))}pt` }}>{sku}</div>
+            {qrSrc && <img src={qrSrc} alt="" style={{ width: `${QR_SIZE_CODE}in`, height: `${QR_SIZE_CODE}in` }} />}
+          </div>
+        </div>
+      ) : big ? (
         <div className="flex items-stretch h-full w-full">
           <div className="flex flex-col items-center justify-center pr-1 border-r border-gray-300" style={{ width: '0.78in' }}>
             <span className="font-extrabold text-black leading-none"
-                  style={{ fontSize: isCode ? '18pt' : big.length >= 4 ? '30pt' : big.length === 3 ? '38pt' : '46pt' }}>{big}</span>
-            {week && !isCode && (
+                  style={{ fontSize: big.length >= 4 ? '30pt' : big.length === 3 ? '38pt' : '46pt' }}>{big}</span>
+            {week && (
               <span className="font-bold text-black leading-none"
                     style={{ fontSize: '8pt', marginTop: '0.02in', padding: '0.02in 0.05in', border: '0.012in solid #000', borderRadius: '0.03in' }}>
                 {week}
@@ -78,7 +93,9 @@ function Label({ item, tag, sellerName, week }) {
   );
 }
 
-export function LabelSheet({ items, sellers, sales, onClose, showToast }) {
+// prefer: 'code' — tags printed from the For Sale tab put the plant's code
+// first even when it also has a lineup number (itemLabelPdf labelLayout).
+export function LabelSheet({ items, sellers, sales, onClose, showToast, prefer = 'lot' }) {
   // Resolve sellerId → name once so both the preview and the PDF can print the
   // seller on consignment labels. Empty for Folia / any non-consignment batch.
   const sellerNameById = useMemo(
@@ -92,7 +109,7 @@ export function LabelSheet({ items, sellers, sales, onClose, showToast }) {
     () => new Map((sales || []).map(s => [s.id, s])),
     [sales],
   );
-  const buildLabelPdf = (its) => buildItemLabelPdf(its, sellerNameById, saleById);
+  const buildLabelPdf = (its) => buildItemLabelPdf(its, sellerNameById, saleById, { prefer });
 
   // Print directly on open when the printer's ready — skip the preview grid.
   // Only when the bridge is offline (or the direct print fails) do we fall back
@@ -170,6 +187,7 @@ export function LabelSheet({ items, sellers, sales, onClose, showToast }) {
             tag={brandTag()}
             sellerName={item.sellerId ? sellerNameById.get(item.sellerId) : null}
             week={weekTag(item, saleById)}
+            prefer={prefer}
           />
         ))}
       </div>

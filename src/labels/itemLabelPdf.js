@@ -1,5 +1,6 @@
 import QRCode from 'qrcode';
 import { jsPDF } from 'jspdf';
+import { isSaleCode } from '../forsale/saleCode.js';
 
 // The 2"×1" plant-label PDF builder plus its display helpers, in their own
 // module (like boxLabelPdf.js) so non-component code — LabelSheet's preview,
@@ -24,25 +25,53 @@ export function lotStr(item) {
   return Number.isFinite(n) && n > 0 ? String(n) : '';
 }
 
-// The plant's short For Sale code ("KM42", migration 0052) or ''. A plant
-// with no lineup number prints its code big in the left column instead (the
-// packer finds Shopify / Palmstreet-store orders by it); one that has both
-// prints the number big and the code in the top line.
+// The plant's short For Sale code ("A12" — or an older "KM42") or ''.
 export function codeStr(item) {
   const c = String(item?.saleCode || '').trim().toUpperCase();
-  return /^[A-Z]{2}\d{2,3}$/.test(c) ? c : '';
+  return isSaleCode(c) ? c : '';
 }
 
-// The big left-column mark: the lineup number, else the code.
-export function bigMark(item) {
-  return lotStr(item) || codeStr(item);
+// Which layout a tag takes:
+//   'code'  the For Sale code fills the left two-thirds, as big as it fits
+//           (2026-11-20, operator: "tags for the plants in for sale pool
+//           should list the numbers large and clear, so the packer can find
+//           them easily") — a plant with a code and no lineup number, or
+//           any coded plant when `prefer` is 'code' (printed from the For
+//           Sale tab);
+//   'lot'   the lineup number fills the left column (lives; Pre Sale);
+//   'plain' name, big SKU, QR across the label.
+export function labelLayout(item, prefer = 'lot') {
+  const code = codeStr(item);
+  const lot = lotStr(item);
+  if (code && (!lot || prefer === 'code')) return 'code';
+  return lot ? 'lot' : 'plain';
 }
 
-// Top line: brand tag, the code when the number took the big slot, the
-// consignment seller.
-export function topLine(item, tag, sellerName) {
-  const code = lotStr(item) ? codeStr(item) : '';
-  return [tag, code, sellerName].filter(Boolean).join(' · ');
+// Top line: brand tag, the other number (the code on a lineup tag, "#12"
+// on a code tag), the consignment seller.
+export function topLine(item, tag, sellerName, prefer = 'lot') {
+  const layout = labelLayout(item, prefer);
+  const other = layout === 'lot' ? codeStr(item) : layout === 'code' && lotStr(item) ? `#${lotStr(item)}` : '';
+  return [tag, other, sellerName].filter(Boolean).join(' · ');
+}
+
+// The code tag's geometry (inches), shared with LabelSheet's preview. The
+// code column is as wide as the QR column allows; the code takes the
+// largest Helvetica-Bold size that fits its width, capped so its caps stay
+// half the label tall (A1 ≈ 50 pt, A12 ≈ 44 pt, A999 ≈ 34 pt).
+export const CODE_DIV = 1.28;          // divider x: code column | SKU + QR column
+export const CODE_TEXT_W = 1.12;       // the code's width budget
+export const QR_SIZE_CODE = 0.46;
+const CODE_MAX_PT = 50;
+// Helvetica-Bold advance widths (1/1000 em) for the characters a code uses.
+const HB_WIDTH = {
+  A: 722, B: 722, C: 722, D: 722, E: 667, F: 611, G: 778, H: 722, J: 556, K: 722, L: 611, M: 833, N: 722,
+  P: 667, R: 722, S: 667, T: 611, U: 722, V: 667, W: 944, X: 667, Y: 667, Z: 611,
+};
+export function codeFontPt(code) {
+  const em = Array.from(String(code || '')).reduce((w, ch) => w + (HB_WIDTH[ch] || 556), 0) / 1000;
+  if (!em) return CODE_MAX_PT;
+  return Math.min(CODE_MAX_PT, Math.floor((CODE_TEXT_W * 72 / em) * 10) / 10);
 }
 
 // ISO-8601 week number (Monday-based, 1–53) of a date. Date-only strings
@@ -305,7 +334,9 @@ export function qrDataUrl(canvas, value) {
 // The burrito-wrap reprint calls this without seller/sale context: the maps
 // default empty, so the consignment seller line is omitted and the WK chip
 // falls back to soldAt — same week as the sale for anything sold in a live.
-export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = new Map()) {
+// prefer: 'code' prints every coded plant with the code layout (the For
+// Sale tab's tags), else a lineup number wins (labelLayout).
+export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = new Map(), { prefer = 'lot' } = {}) {
   const pdf = new jsPDF({
     unit: 'in',
     format: [LABEL_W, LABEL_H],
@@ -322,27 +353,63 @@ export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = 
     // SKUs/varieties, so non-bae-gin labels are marked to avoid bench mix-ups;
     // bae-gin (the default, no sellers) prints without a top line.
     const sellerName = item.sellerId && sellerNameById ? sellerNameById.get(item.sellerId) : null;
-    const topTag = topLine(item, tag, sellerName).slice(0, 28);
+    const topTag = topLine(item, tag, sellerName, prefer).slice(0, 28);
     const title = labelTitle(item);
     const sku = realSku(item);
     const lot = lotStr(item);
-    const big = bigMark(item);
+    const layout = labelLayout(item, prefer);
 
-    if (big) {
+    if (layout === 'code') {
+      // Code layout: the code as big as it fits on the left (the packer
+      // spots the pot by it), the name under it; brand tag, SKU and the QR
+      // the scanner reads on the right.
+      const code = codeStr(item);
+      const pt = codeFontPt(code);
+      const capH = (pt / 72) * 0.718;   // Helvetica-Bold cap height
+      const left = 0.06 + (CODE_DIV - 0.06) / 2;
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(pt);
+      pdf.setTextColor(0);
+      pdf.text(code, left, 0.37 + capH / 2, { align: 'center' });
+      drawTitle(pdf, canvas, title, { centerX: left, baselineY: 0.84, fontPt: 7, minPt: 6, maxWidthIn: CODE_DIV - 0.14 });
+      pdf.setDrawColor(170);
+      pdf.setLineWidth(0.008);
+      pdf.line(CODE_DIV, 0.1, CODE_DIV, 0.9);
+
+      const cx = CODE_DIV + (LABEL_W - CODE_DIV) / 2;
+      const cw = LABEL_W - CODE_DIV - 0.06;
+      pdf.setTextColor(0);   // the name above left it gray — a thermal head dithers gray
+      if (topTag) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(fitFontPt(pdf, topTag, 6.5, cw));
+        let top = topTag;
+        while (top.length > 4 && pdf.getTextWidth(top) > cw) top = top.slice(0, -1);
+        pdf.text(top, cx, 0.15, { align: 'center' });
+      }
+      pdf.setFont('courier', 'bold');
+      pdf.setFontSize(fitFontPt(pdf, sku, 9, cw));
+      pdf.text(sku, cx, 0.33, { align: 'center' });
+      if (sku) {
+        const dataUrl = qrDataUrl(canvas, sku);
+        if (dataUrl) pdf.addImage(dataUrl, 'PNG', cx - QR_SIZE_CODE / 2, 0.40, QR_SIZE_CODE, QR_SIZE_CODE, undefined, 'FAST');
+      }
+      return;
+    }
+
+    if (layout === 'lot') {
+      const big = lot;
       // Combined layout: the big lineup number fills the wide left column (easy
       // to read across the room during a live), with name / SKU / QR stacked
       // in the right column. A thin divider separates the two. A bold "WK N"
       // chip under the number says which week's lineup this is — numbers can
       // repeat across weeks on the bench, and the chip has to read at arm's
       // length (its tiny gray predecessor didn't).
-      // A code (no lineup number) has no week — it's the plant's for good.
-      const week = lot ? weekTag(item, saleById) : '';
+      const week = weekTag(item, saleById);
       const DIV = 0.82;                 // left column width / divider x
       pdf.setFont('helvetica', 'bold');
       pdf.setTextColor(0);
-      if (lot) pdf.setFontSize(lotFontPt(lot));
-      else pdf.setFontSize(fitFontPt(pdf, big, 24, DIV - 0.08));
-      pdf.text(big, DIV / 2, week ? 0.68 : lot ? 0.74 : 0.62, { align: 'center' });
+      pdf.setFontSize(lotFontPt(lot));
+      pdf.text(big, DIV / 2, week ? 0.68 : 0.74, { align: 'center' });
       if (week) {
         pdf.setFontSize(8);
         const chipW = pdf.getTextWidth(week) + 0.1;
