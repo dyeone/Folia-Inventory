@@ -420,6 +420,8 @@ function StaffOrAdminInventory() {
   const [filterSale, setFilterSale] = useState('all');
   const [toast, setToast] = useState(null);
   const [labelItems, setLabelItems] = useState(null);
+  // 'code': tags printed from the For Sale tab lead with the plant's code.
+  const [labelPrefer, setLabelPrefer] = useState('lot');
   const [boxLabelBoxes, setBoxLabelBoxes] = useState(null);
   // { items: [...], title: 'Added N items' } — summary dialog after creation
   const [addSummary, setAddSummary] = useState(null);
@@ -1413,7 +1415,7 @@ function StaffOrAdminInventory() {
             isAdmin={isAdmin}
             showToast={showToast}
             onItemsMerged={mergeItems}
-            onPrintLabels={(its) => { if (its.length) setLabelItems(its); }}
+            onPrintLabels={(its) => { if (its.length) { setLabelPrefer('code'); setLabelItems(its); } }}
             onSaveSale={async (data) => {
               try {
                 await api.upsertSales([data]);
@@ -2211,7 +2213,7 @@ function StaffOrAdminInventory() {
         <BoxLabelSheet boxes={boxLabelBoxes} onClose={() => setBoxLabelBoxes(null)} showToast={showToast} />
       )}
       {labelItems && labelItems.length > 0 && (
-        <LabelSheet items={labelItems} sellers={sellers} sales={sales} onClose={() => setLabelItems(null)} showToast={showToast} />
+        <LabelSheet items={labelItems} sellers={sellers} sales={sales} prefer={labelPrefer} onClose={() => { setLabelItems(null); setLabelPrefer('lot'); }} showToast={showToast} />
       )}
       </Suspense>
 
