@@ -1,7 +1,7 @@
 import { useMemo, useState, lazy, Suspense } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Download, Copy, X, Loader2, Search, Video } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
-import { platformStyle, saleDay, ymd, money, isForSale, POOLS, facebookPost, eventHolds, isUnsoldInEvent, photosOf } from './pools.js';
+import { platformStyle, saleDay, ymd, money, isForSale, facebookPost, eventHolds, isUnsoldInEvent, photosOf } from './pools.js';
 
 const SaleFormModal = lazy(() => import('../sales/SaleFormModal.jsx').then((m) => ({ default: m.SaleFormModal })));
 
@@ -292,9 +292,8 @@ function EventSheet({ sale, items, sales, showToast, onClose, onEventAssign, onE
   );
 }
 
-// Choose plants for an event from the For Sale pools.
+// Choose plants for an event from the For Sale pool.
 function EventPicker({ sale, items, sales, onClose, onAdd }) {
-  const [pool, setPool] = useState('all');
   const [q, setQ] = useState('');
   const [sel, setSel] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -305,10 +304,9 @@ function EventPicker({ sale, items, sales, onClose, onAdd }) {
     const s = q.trim().toLowerCase();
     return (items || [])
       .filter((i) => i.salePool && isForSale(i) && ['available', 'listed'].includes(i.status) && i.saleId !== sale.id)
-      .filter((i) => pool === 'all' || i.salePool === pool)
       .filter((i) => !s || [i.sku, i.name, i.saleCode, i.variety, i.listingDetails?.title].some((f) => String(f || '').toLowerCase().includes(s)))
       .sort((a, b) => String(a.saleCode || '').localeCompare(String(b.saleCode || '')));
-  }, [items, pool, q, sale.id]);
+  }, [items, q, sale.id]);
 
   const why = (i) => {
     if (i.saleId && openOther.has(i.saleId)) return `in ${openOther.get(i.saleId)}`;
@@ -323,22 +321,12 @@ function EventPicker({ sale, items, sales, onClose, onAdd }) {
   return (
     <Modal title={`Add plants · ${sale.name}`} onClose={onClose} size="lg">
       <div className="space-y-3">
-        <div className="flex gap-1.5">
-          {[{ id: 'all', label: 'Both pools' }, ...POOLS].map((p) => (
-            <button
-              key={p.id} type="button" onClick={() => setPool(p.id)}
-              className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${pool === p.id ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-600'}`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
         <div className="relative">
           <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code, SKU or name" className="input pl-9 text-base" />
         </div>
         <div className="flex items-center justify-between text-xs text-gray-500">
-          <span>{list.length} in the pools · {sel.length} picked</span>
+          <span>{list.length} in the pool · {sel.length} picked</span>
           {pickable.length > 0 && (
             <button
               type="button" className="underline"

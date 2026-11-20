@@ -13,7 +13,7 @@ create table if not exists users (
   username      text        unique not null,
   "displayName" text,
   "passwordHash" text       not null,
-  role          text        not null default 'packer' check (role in ('admin','packer','streamer','consultant')),   -- 0049: packer (bench) + streamer; 'teammember'/'staff' gone. PRIMARY role; the set is `roles` (0050)
+  role          text        not null default 'packer' check (role in ('admin','ceo','packer','streamer','consultant')),   -- 0049: packer (bench) + streamer; 'teammember'/'staff' gone; 0054: ceo. PRIMARY role; the set is `roles` (0050)
   active        boolean     not null default true,
   "createdAt"   timestamptz not null default now()
 );

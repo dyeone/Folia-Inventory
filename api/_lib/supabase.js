@@ -16,10 +16,14 @@ export const supabase = createClient(url, key, {
 // shipping + TC acclimation, no prices), 'streamer' (the mobile screen:
 // availability, the schedule, the available inventory with list prices and
 // sell notes — never costs) and 'consultant' (the mobile pricing screen).
+// 'ceo' (2026-11-19, migration 0054): the Inventory and For Sale tabs only —
+// sees what an admin sees there (costs too) and runs the For Sale tab, but
+// no admin powers (users, deleting plants, the other tabs). Second in the
+// order so a CEO who also holds another role is routed as the CEO.
 // 'teammember' (2026-10-02) and 'staff' are gone; rows still carrying them
 // (until migration 0049 runs) are read as 'packer' here, so no login lands
 // on the wrong screen in between.
-export const ROLES = ['admin', 'packer', 'streamer', 'consultant'];
+export const ROLES = ['admin', 'ceo', 'packer', 'streamer', 'consultant'];
 export function normalizeRole(role) {
   if (role === 'teammember' || role === 'staff') return 'packer';
   return role;
@@ -38,6 +42,11 @@ export function rolesOf(u) {
 }
 export const primaryRole = (roles) => (roles.includes('admin') ? 'admin' : roles[0]);
 export const hasRole = (u, role) => rolesOf(u).includes(role);
+// Who may see what plants COST (grossCost / netCost / cost, a species'
+// wholesalePrice): admins and the CEO. Everyone else gets rows without them.
+export const seesCosts = (u) => hasRole(u, 'admin') || hasRole(u, 'ceo');
+// Who runs the For Sale tab (pools, the website push, sale events).
+export const runsForSale = (u) => hasRole(u, 'admin') || hasRole(u, 'ceo');
 
 // Remove sensitive fields before sending a user object to the client, and
 // read the role under its current name.

@@ -1,11 +1,16 @@
 // For Sale tab server actions (routed from api/items.js — the function cap
-// means no new api file). Plants ready for sale join one of two product
-// pools: 'palmstreet' (exported as the Palmstreet CSV) or 'shopify' (synced
-// to the brand's Shopify store by api/_lib/shopify.js). Joining a pool gives
-// the plant its short code (api/_lib/saleCode.js). Sale events on the tab's
-// calendar are ordinary `sales` rows; putting plants into one is the same
-// staging write the Pre Sale tab makes (saleId, un-numbered).
-import { supabase } from './supabase.js';
+// means no new api file). Plants ready for sale join ONE pool (2026-11-19,
+// operator: "only have one pool… select some and push to website"); the
+// salePool value says whether the plant is also on the website:
+//   'palmstreet'  in the pool only (the Palmstreet CSV, sale events)
+//   'shopify'     pushed to the website — synced to the brand's Shopify
+//                 store by api/_lib/shopify.js
+// (the values predate the single pool; the 0052 check constraint keeps
+// them). Joining the pool gives the plant its short code
+// (api/_lib/saleCode.js). Sale events on the tab's calendar are ordinary
+// `sales` rows; putting plants into one is the same staging write the Pre
+// Sale tab makes (saleId, un-numbered).
+import { supabase, seesCosts, runsForSale } from './supabase.js';
 import { fetchAllById } from './fetchAll.js';
 import { pickSaleCodes } from './saleCode.js';
 import { shopifyConfig, shopifyPublicState, reconcileShopify, pullShopifyOrders, dismissShopifyProblems, eventHolds } from './shopify.js';
@@ -29,14 +34,19 @@ const dbFail = (error) => (isUnmigrated(error) ? unmigrated() : fail(500, error.
 
 function stripCosts(user) {
   return (row) => {
-    if (user.role === 'admin') return row;
+    if (seesCosts(user)) return row;
     const { grossCost, netCost, cost, ...rest } = row;
     return rest;
   };
 }
 
+// Admins and the CEO run the For Sale tab.
+function requireForSaleUser(user) {
+  if (!runsForSale(user)) throw fail(403, 'Only admins and the CEO can change For Sale');
+}
+
 function requireAdminUser(user) {
-  if (user.role !== 'admin') throw fail(403, 'Only admins can change the For Sale pools');
+  if (user.role !== 'admin') throw fail(403, 'Only admins can do that');
 }
 
 function idList(raw) {
@@ -105,12 +115,13 @@ async function assignCodes(brandId, rows, user) {
 }
 
 // POST { action: 'pool-set', itemIds, pool: 'palmstreet' | 'shopify' | null }
-// Put plants into a pool (coding them on the way in), move them between
-// pools, or take them out. Shopify listings follow right away when the
-// store is connected (best effort — a failure is stored on the plant and
-// retried by the next sync).
+// Put plants into the pool (coding them on the way in), push them to the
+// website ('shopify') or take them off it ('palmstreet'), or take them out
+// of For Sale (null). Shopify listings follow right away when the store is
+// connected (best effort — a failure is stored on the plant and retried by
+// the next sync).
 export async function poolSet(req, res, user, brandId) {
-  requireAdminUser(user);
+  requireForSaleUser(user);
   const ids = idList(req.body?.itemIds);
   const pool = req.body?.pool ?? null;
   if (pool !== null && !POOLS.includes(pool)) throw fail(400, 'pool must be palmstreet, shopify or null');
@@ -133,14 +144,26 @@ export async function poolSet(req, res, user, brandId) {
     }
     if (ok.length) {
       await assignCodes(brandId, ok, user);
-      for (let k = 0; k < ok.length; k += 200) {
-        const { data, error } = await supabase.from('inventory_items')
-          .update({ salePool: pool, poolAddedAt: now, modifiedAt: now, modifiedBy: user.displayName })
-          .eq('brandId', brandId).in('id', ok.slice(k, k + 200).map((r) => r.id))
-          .is('deletedAt', null).is('shipmentBoxId', null).in('status', FOR_SALE_STATUSES)
-          .select('id');
-        if (error) throw dbFail(error);
-        changed.push(...(data || []).map((d) => d.id));
+      // A plant already in the pool keeps its poolAddedAt (the tab lists
+      // newest first — pushing one to the website mustn't reorder it); one
+      // joining now is stamped. Each write is guarded on the plant still
+      // being in (or out of) the pool, as read above.
+      const joining = ok.filter((r) => !r.salePool).map((r) => r.id);
+      const moving = ok.filter((r) => r.salePool).map((r) => r.id);
+      for (const [list, patch, inPool] of [
+        [joining, { salePool: pool, poolAddedAt: now }, false],
+        [moving, { salePool: pool }, true],
+      ]) {
+        for (let k = 0; k < list.length; k += 200) {
+          let q = supabase.from('inventory_items')
+            .update({ ...patch, modifiedAt: now, modifiedBy: user.displayName })
+            .eq('brandId', brandId).in('id', list.slice(k, k + 200))
+            .is('deletedAt', null).is('shipmentBoxId', null).in('status', FOR_SALE_STATUSES);
+          q = inPool ? q.not('salePool', 'is', null) : q.is('salePool', null);
+          const { data, error } = await q.select('id');
+          if (error) throw dbFail(error);
+          changed.push(...(data || []).map((d) => d.id));
+        }
       }
       const got = new Set(changed);
       for (const r of ok) if (!got.has(r.id)) skipped.push({ id: r.id, sku: r.sku, reason: 'changed under you — reload' });
@@ -174,10 +197,10 @@ export async function poolSet(req, res, user, brandId) {
 // Any brand member (the packer screen calls it too); throttled server-side.
 export async function poolSync(req, res, user, brandId) {
   if (!shopifyConfig(brandId)) return res.status(200).json({ configured: false });
-  const force = !!req.body?.force && user.role === 'admin';
+  const force = !!req.body?.force && runsForSale(user);
   // Dismissing a problem is just that — no sync rides along.
   if (Array.isArray(req.body?.dismissProblems) && req.body.dismissProblems.length) {
-    if (user.role !== 'admin') throw fail(403, 'Only admins can dismiss Shopify problems');
+    if (!runsForSale(user)) throw fail(403, 'Only admins and the CEO can dismiss Shopify problems');
     await dismissShopifyProblems(brandId, req.body.dismissProblems.filter((x) => typeof x === 'string'), user);
     return res.status(200).json({ configured: true, dismissed: true, items: [] });
   }
@@ -202,7 +225,7 @@ export async function poolSync(req, res, user, brandId) {
 // over from a closed event moves. Compare-and-set on the plant's current
 // saleId so two devices can't both claim it.
 export async function eventAssign(req, res, user, brandId) {
-  requireAdminUser(user);
+  requireForSaleUser(user);
   const ids = idList(req.body?.itemIds);
   const saleId = req.body?.saleId;
   if (!saleId || typeof saleId !== 'string') throw fail(400, 'saleId required');
@@ -270,7 +293,7 @@ export async function eventAssign(req, res, user, brandId) {
 // POST { action: 'event-unassign', saleId, itemIds } — take unsold plants
 // back out of an event (their staging is cleared, like Pre Sale's remove).
 export async function eventUnassign(req, res, user, brandId) {
-  requireAdminUser(user);
+  requireForSaleUser(user);
   const ids = idList(req.body?.itemIds);
   const saleId = req.body?.saleId;
   if (!saleId || typeof saleId !== 'string') throw fail(400, 'saleId required');

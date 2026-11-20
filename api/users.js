@@ -14,6 +14,15 @@ function rolesFromBody(body) {
 // with the primary role only when a single role was asked for; a real
 // multi-role assignment can't be stored yet, so say which migration.
 const isMissingRolesColumn = (error) => !!error && /roles/.test(error.message || '') && /PGRST204|42703|schema cache|does not exist|column/i.test(`${error.code} ${error.message}`);
+
+// A role the users_role_check constraint doesn't know yet (the CEO role
+// before migration 0054): say which migration, not a raw constraint error.
+function roleCheckError(error) {
+  if (!error || error.code !== '23514' || !/users_role_check/.test(error.message || '')) return null;
+  const e = new Error('The CEO role needs migration 0054 (ceo_role) — run it in the Supabase SQL editor first');
+  e.status = 409;
+  return e;
+}
 import { hashPassword } from './_lib/hash.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 
@@ -29,6 +38,7 @@ async function sanitizeBrandIds(input) {
 
 // consultant (migration 0045): prices wholesale orders from a mobile-only
 // screen — list price + seller note per species; no inventory/sales/costs.
+// ceo (migration 0054): the Inventory and For Sale tabs only.
 
 export default wrap(async (req, res) => {
   switch (req.method) {
@@ -78,6 +88,7 @@ export default wrap(async (req, res) => {
         const { roles: _omit, ...single } = user;
         ({ error } = await supabase.from('users').insert(single));
       }
+      if (roleCheckError(error)) throw roleCheckError(error);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(201).json({ user: stripUser(user) });
     }
@@ -127,6 +138,7 @@ export default wrap(async (req, res) => {
         const { roles: _omit, ...single } = update;
         ({ error } = await supabase.from('users').update(single).eq('id', id));
       }
+      if (roleCheckError(error)) throw roleCheckError(error);
       if (error) { const e = new Error(error.message); e.status = 500; throw e; }
       return res.status(200).json({ ok: true, roles: update.roles, role: update.role });
     }

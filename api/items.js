@@ -1,4 +1,4 @@
-import { supabase, requireBrand, brandIdFromReq, newId } from './_lib/supabase.js';
+import { supabase, requireBrand, brandIdFromReq, newId, seesCosts } from './_lib/supabase.js';
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, SKU_SUFFIX_END_RE } from './_lib/sku.js';
 import { fetchWideById } from './_lib/fetchAll.js';
@@ -232,7 +232,7 @@ function isMissingTransfersTable(error) {
 }
 
 function stripCostsForRole(user, rows) {
-  if (user.role === 'admin') return rows;
+  if (seesCosts(user)) return rows;
   return rows.map(({ grossCost, netCost, cost, ...rest }) => rest);
 }
 
@@ -478,7 +478,7 @@ async function listTransfers(req, res, user, brandId) {
     if (isMissingTransfersTable(error)) return res.status(200).json({ transfers: [], unsupported: true });
     const e = new Error(error.message); e.status = 500; throw e;
   }
-  const rows = user.role === 'admin' ? (data || []) : (data || []).map(({ grossCost, netCost, ...r }) => r);
+  const rows = seesCosts(user) ? (data || []) : (data || []).map(({ grossCost, netCost, ...r }) => r);
   const ids = Array.from(new Set(rows.flatMap((t) => [t.fromBrandId, t.toBrandId])));
   return res.status(200).json({ transfers: rows, brands: await brandNames(ids) });
 }
@@ -720,9 +720,9 @@ export default wrap(async (req, res) => {
       const data = await fetchWideById((columns) =>
         supabase.from('inventory_items').select(columns).eq('brandId', brandId));
       // The packing bench never needs what plants COST — strip bought-price
-      // fields for packer logins so the data doesn't reach that client at
-      // all (mirrors the purchase-orders API; staff/admin keep full rows).
-      if (user.role !== 'admin') {
+      // fields for every login but admin and CEO so the data doesn't reach
+      // that client at all (mirrors the purchase-orders API).
+      if (!seesCosts(user)) {
         return res.status(200).json({
           items: (data || []).map(({ grossCost, netCost, cost, ...rest }) => rest),
         });

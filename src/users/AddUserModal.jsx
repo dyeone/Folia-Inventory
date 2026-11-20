@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ROLES, DEFAULT_NEW_ROLE } from '../roles.js';
+import { ROLES, DEFAULT_NEW_ROLE, toggleRoleIn } from '../roles.js';
 import { AlertCircle } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
 import { Field } from '../ui/Field.jsx';
@@ -13,8 +13,7 @@ export function AddUserModal({ existingUsers, onSave, onClose }) {
   const [password, setPassword] = useState('');
   const [roles, setRoles] = useState([DEFAULT_NEW_ROLE]);
   const toggleRole = (id) => setRoles((cur) => {
-    if (id === 'admin') return cur.includes('admin') ? [DEFAULT_NEW_ROLE] : ['admin'];
-    const next = cur.includes(id) ? cur.filter((r) => r !== id) : [...cur.filter((r) => r !== 'admin'), id];
+    const next = toggleRoleIn(cur, id);
     return next.length ? next : [DEFAULT_NEW_ROLE];
   });
   const [brandIds, setBrandIds] = useState([DEFAULT_BRAND]);
