@@ -53,6 +53,24 @@ export function findBySaleCode(items, raw) {
   return (items || []).find((i) => !i.deletedAt && String(i.saleCode || '').toUpperCase() === code) || null;
 }
 
+// Tag / print order (2026-11-20, operator: tags printed out of order are
+// hard for the packer to stick on): A1, A2 … A999, B1 … (letters in
+// CODE_LETTERS order), then old "KM42"-style codes alphabetically, then
+// plants without a code by SKU.
+function codeSortKey(item) {
+  const code = String(item?.saleCode || '').toUpperCase();
+  const p = parseSeriesCode(code);
+  if (p) return [0, CODE_LETTERS.indexOf(p.series), p.n, ''];
+  if (code) return [1, 0, 0, code];
+  return [2, 0, 0, String(item?.sku || '')];
+}
+export function compareByCode(a, b) {
+  const ka = codeSortKey(a), kb = codeSortKey(b);
+  for (let i = 0; i < 3; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+  return ka[3].localeCompare(kb[3], undefined, { numeric: true });
+}
+export const sortByCode = (items) => [...(items || [])].sort(compareByCode);
+
 // "A20–A22" for a batch of fresh codes in one series (or the single code);
 // '' when they aren't all series codes of one letter.
 export function codeRange(codes) {

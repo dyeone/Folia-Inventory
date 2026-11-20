@@ -14,7 +14,7 @@ import { MediaWalkthrough } from './MediaWalkthrough.jsx';
 import { useMediaUploads } from './useMediaUploads.js';
 import { IN_POOL, ON_WEBSITE, poolItems, onWebsite, openSaleIdSet, pauseSaleIdSet, openEvents, readiness, photosOf, videosOf } from './pools.js';
 import { exportPoolToPalmstreet, exportPalmstreetCsv, MEDIA_SEPARATORS } from '../sales/palmstreetExport.js';
-import { parseSeriesCode, nextSeries, seriesMax, seriesCode, codeRange } from './saleCode.js';
+import { parseSeriesCode, nextSeries, seriesMax, seriesCode, codeRange, sortByCode } from './saleCode.js';
 
 const SYNC_EVERY_MS = 2 * 60 * 1000;
 
@@ -68,6 +68,9 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   const pendingRef = useRef(new Set());   // plants to sync once the running sync ends
 
   const shopifyOn = !!status?.shopify?.configured;
+  // Tags always print in code order (A1, A2, A3 …) so the packer can peel
+  // them off in the order the pots stand, whatever order the list shows.
+  const printTags = useCallback((its) => onPrintLabels(sortByCode(its)), [onPrintLabels]);
   const canWebsite = !!isAdmin;   // the server checks too (api/_lib/pool.js)
   // Migration 0055: several videos per plant + the team note (assumed in
   // until the status read says otherwise — the server copes either way).
@@ -477,7 +480,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
               </span>
             )}
             {shown.length > 0 && (
-              <button type="button" onClick={() => onPrintLabels(shown)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm font-semibold text-gray-800 active:bg-gray-100">
+              <button type="button" onClick={() => printTags(shown)} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 text-sm font-semibold text-gray-800 active:bg-gray-100">
                 <Printer className="w-4 h-4" /> Tags ({shown.length})
               </button>
             )}
@@ -497,7 +500,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
           {justAdded.length > 0 && (
             <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 text-sm text-emerald-900">
               <span className="flex-1">{justVerb} {justAdded.length}. Print their tags so the {justVerb === 'Renumbered' ? 'new ' : ''}codes are on the pots.</span>
-              <button type="button" onClick={() => { onPrintLabels(justAdded.map((id) => byId.get(id)).filter(Boolean)); setJustAdded([]); }} className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-semibold">
+              <button type="button" onClick={() => { printTags(justAdded.map((id) => byId.get(id)).filter(Boolean)); setJustAdded([]); }} className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-semibold">
                 Print {justAdded.length}
               </button>
               <button type="button" aria-label="Dismiss" onClick={() => setJustAdded([])} className="p-1 text-emerald-700"><X className="w-4 h-4" /></button>
@@ -575,7 +578,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                     <CalendarDays className="w-4 h-4" /> Sale event ({picked.length})
                   </button>
                   <button
-                    type="button" onClick={() => onPrintLabels(picked)}
+                    type="button" onClick={() => printTags(picked)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 active:bg-white/25 text-sm font-semibold"
                   >
                     <Printer className="w-4 h-4" /> Tags ({picked.length})
@@ -649,7 +652,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
           onClose={() => setOpenId(null)}
           onMerged={onItemsMerged}
           onSyncShopify={(ids) => runSync({ itemIds: ids })}
-          onPrintLabel={(i) => onPrintLabels([i])}
+          onPrintLabel={(i) => printTags([i])}
           onSetPool={setPoolFor}
           onEventAssign={onEventAssign}
           onEventUnassign={onEventUnassign}
