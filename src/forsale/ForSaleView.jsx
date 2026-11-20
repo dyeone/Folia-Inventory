@@ -14,7 +14,7 @@ import { MediaWalkthrough } from './MediaWalkthrough.jsx';
 import { useMediaUploads } from './useMediaUploads.js';
 import { IN_POOL, ON_WEBSITE, poolItems, onWebsite, openSaleIdSet, pauseSaleIdSet, openEvents, readiness, photosOf, videosOf } from './pools.js';
 import { exportPoolToPalmstreet, exportPalmstreetCsv, MEDIA_SEPARATORS } from '../sales/palmstreetExport.js';
-import { parseSeriesCode, nextSeries, seriesMax, seriesCode, codeRange, sortByCode } from './saleCode.js';
+import { parseSeriesCode, nextSeries, seriesMax, seriesCode, codeRange, sortByCode, compareByCode } from './saleCode.js';
 
 const SYNC_EVERY_MS = 2 * 60 * 1000;
 
@@ -237,8 +237,10 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
     showToast(r.ok ? `Exported ${r.count} lots` : r.reason, r.ok ? 'success' : 'error');
   };
 
-  const inPool = useMemo(() => poolItems(items)
-    .sort((a, b) => String(b.poolAddedAt || '').localeCompare(String(a.poolAddedAt || ''))), [items]);
+  // In code order, A1, A2, A3 … (2026-11-20, operator: "为什么这里的顺序不是
+  // 从小到大") — the same order the tags print in. (Newest-first left plants
+  // added in one batch in random order: they share one poolAddedAt.)
+  const inPool = useMemo(() => poolItems(items).sort(compareByCode), [items]);
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
     const evOf = (i) => (i.saleId && openSaleIds.has(i.saleId) ? i.saleId : 'none');
