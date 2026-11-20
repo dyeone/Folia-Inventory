@@ -1,30 +1,33 @@
 import { useRef, useState } from 'react';
 import { Camera, ImagePlus, Video, Loader2, Star, Trash2 } from 'lucide-react';
-import { api } from '../api.js';
-import { deletePlantPhoto, makeCoverPhoto } from './media.js';
-import { MAX_PHOTOS, photosOf, photoIdOf } from './pools.js';
+import { deletePlantPhoto, makeCoverPhoto, deletePlantVideo } from './media.js';
+import { MAX_PHOTOS, MAX_VIDEOS, photosOf, photoIdOf, videosOf } from './pools.js';
 
 // One plant's listing media: its photos (up to MAX_PHOTOS, the first is the
-// cover) and its one video. Picks go to the tab's background uploader
-// (useMediaUploads), so the sheet can move on while they upload. Tap a photo
-// for Cover / Delete — those wait their turn behind photos still uploading
-// (one photo write at a time per tab), and the uploader merges the result.
-// `onChanged` is for the video delete (photo writes follow Shopify via the
-// uploader).
+// cover) and its videos (up to MAX_VIDEOS — one before migration 0055).
+// Picks go to the tab's background uploader (useMediaUploads), so the sheet
+// can move on while they upload. Tap a photo for Cover / Delete — those wait
+// their turn behind photos still uploading (one photo write at a time per
+// tab), and the uploader merges the result. `onChanged` is for a video
+// delete (uploads follow Shopify via the uploader).
 export function MediaEditor({ item, uploads, showToast, onMerged, onChanged }) {
   const photoRef = useRef(null);
   const videoRef = useRef(null);
   const [selected, setSelected] = useState(null);   // photo id showing its actions
   const [busyId, setBusyId] = useState(null);
-  const [videoBusy, setVideoBusy] = useState(false);
+  const [videoBusy, setVideoBusy] = useState(null);   // the video being deleted
 
   const label = item.saleCode || item.sku;
   const photos = photosOf(item).map((url) => ({ url, id: photoIdOf(url, item.id) }));
   const mine = uploads.jobs.filter((j) => j.itemId === item.id);
   const pendingPhotos = mine.filter((j) => j.kind === 'photo');
-  const videoJob = mine.find((j) => j.kind === 'video');
+  const videoJobs = mine.filter((j) => j.kind === 'video');
   const count = photos.length + pendingPhotos.length;
   const full = count >= MAX_PHOTOS;
+  const multi = uploads.multiVideo !== false;
+  const videos = videosOf(item);
+  const videoCount = videos.length + (multi ? videoJobs.length : 0);
+  const videosFull = multi && videoCount >= MAX_VIDEOS;
 
   const pickPhotos = (e) => {
     const files = [...(e.target.files || [])];
@@ -32,10 +35,10 @@ export function MediaEditor({ item, uploads, showToast, onMerged, onChanged }) {
     if (files.length) uploads.addPhotos(item, files, label);
   };
 
-  const pickVideo = (e) => {
-    const file = e.target.files?.[0];
+  const pickVideos = (e) => {
+    const files = [...(e.target.files || [])];
     e.target.value = '';
-    if (file) uploads.setVideo(item, file, label);
+    if (files.length) uploads.addVideos(item, files, label);
   };
 
   const act = async (photoId, fn, done) => {
@@ -56,17 +59,16 @@ export function MediaEditor({ item, uploads, showToast, onMerged, onChanged }) {
     act(photoId, () => deletePlantPhoto(item.id, photoId), 'Photo deleted');
   };
 
-  const removeVideo = async () => {
-    if (!window.confirm('Delete this plant\'s video?')) return;
-    setVideoBusy(true);
+  const removeVideo = async (url) => {
+    if (!window.confirm('Delete this video?')) return;
+    setVideoBusy(url);
     try {
-      await api.videoDelete(item.id);
-      onMerged([{ id: item.id, videoUrl: null }]);
+      onMerged([await deletePlantVideo(item.id, multi ? url : null)]);
       onChanged?.(item.id);
     } catch (err) {
       showToast(err.message || 'Could not delete the video', 'error');
     } finally {
-      setVideoBusy(false);
+      setVideoBusy(null);
     }
   };
 
@@ -136,35 +138,49 @@ export function MediaEditor({ item, uploads, showToast, onMerged, onChanged }) {
         <input ref={photoRef} type="file" accept="image/*" multiple className="hidden" onChange={pickPhotos} />
       </div>
 
-      {/* Video */}
+      {/* Videos */}
       <div>
-        <div className="text-xs font-semibold text-gray-600 mb-1.5">Video</div>
-        <div className="flex gap-3 items-stretch">
-          <div className="relative w-32 sm:w-40 aspect-[3/4] rounded-xl bg-gray-900 overflow-hidden flex items-center justify-center shrink-0">
-            {item.videoUrl
-              ? <video key={item.videoUrl} src={item.videoUrl} controls playsInline preload="metadata" className="w-full h-full object-cover" />
-              : <Video className="w-7 h-7 text-gray-600" />}
-            {(videoJob || videoBusy) && (
-              <div className="absolute inset-0 bg-black/65 flex flex-col items-center justify-center gap-1.5 text-white text-xs">
-                <Loader2 className="w-6 h-6 animate-spin" />
-                <span>{videoBusy ? 'Working…' : videoJob.state === 'queued' ? 'Waiting…' : videoJob.pct > 0 ? `Uploading ${Math.round(videoJob.pct * 100)}%` : 'Starting…'}</span>
-              </div>
-            )}
-          </div>
-          <div className="flex-1 flex flex-col gap-2 justify-center">
-            <button
-              type="button" disabled={videoBusy} onClick={() => videoRef.current?.click()}
-              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-gray-900 active:bg-black text-white text-sm font-semibold disabled:opacity-50"
-            >
-              <Video className="w-4 h-4" /> {item.videoUrl || videoJob ? 'Replace video' : 'Add video'}
-            </button>
-            {item.videoUrl && !videoJob && (
-              <button type="button" disabled={videoBusy} onClick={removeVideo} className="text-xs text-gray-500 underline disabled:opacity-50">Delete video</button>
-            )}
-            <p className="text-[11px] text-gray-500">One video per plant, about 30 seconds (50 MB max).</p>
-          </div>
+        <div className="flex items-baseline justify-between mb-1.5">
+          <span className="text-xs font-semibold text-gray-600">
+            {multi ? <>Videos <span className="font-normal text-gray-400">{videoCount}/{MAX_VIDEOS}</span></> : 'Video'}
+          </span>
+          <span className="text-[11px] text-gray-400">About 30 seconds each · 50 MB max</span>
         </div>
-        <input ref={videoRef} type="file" accept="video/*" className="hidden" onChange={pickVideo} />
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {videos.map((url) => (
+            <div key={url} className="relative aspect-[3/4] rounded-xl bg-gray-900 overflow-hidden">
+              <video src={url} controls playsInline preload="metadata" className="absolute inset-0 w-full h-full object-cover" />
+              {videoBusy === url ? (
+                <div className="absolute inset-0 bg-black/65 flex flex-col items-center justify-center gap-1.5 text-white text-xs">
+                  <Loader2 className="w-6 h-6 animate-spin" /> Deleting…
+                </div>
+              ) : (
+                <button
+                  type="button" disabled={!!videoBusy} onClick={() => removeVideo(url)} aria-label="Delete this video"
+                  className="absolute top-1.5 right-1.5 p-1.5 rounded-full bg-black/70 text-white disabled:opacity-50"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          ))}
+          {videoJobs.map((j) => (
+            <div key={j.key} className="relative aspect-[3/4] rounded-xl bg-gray-900 flex flex-col items-center justify-center gap-1.5 text-white text-xs">
+              <Loader2 className="w-6 h-6 animate-spin" />
+              <span>{j.state === 'queued' ? 'Waiting…' : j.pct > 0 ? `Uploading ${Math.round(j.pct * 100)}%` : 'Starting…'}</span>
+            </div>
+          ))}
+          {!videosFull && (
+            <button
+              type="button" onClick={() => videoRef.current?.click()}
+              className="aspect-[3/4] rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 text-gray-700 flex flex-col items-center justify-center gap-1 active:bg-gray-100"
+            >
+              <Video className="w-6 h-6" />
+              <span className="text-xs font-semibold">{!videos.length && !videoJobs.length ? 'Add video' : multi ? 'Add another' : 'Replace video'}</span>
+            </button>
+          )}
+        </div>
+        <input ref={videoRef} type="file" accept="video/*" multiple={multi} className="hidden" onChange={pickVideos} />
       </div>
     </div>
   );

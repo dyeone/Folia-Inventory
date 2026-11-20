@@ -32,7 +32,7 @@ export default wrap(async (req, res) => {
     const target = req.body?.target === 'item' ? 'item' : 'species';
     if (target === 'item') {
       if (action === 'upload')  return uploadItem(req, res, user, brandId);
-      // One listing video per plant (For Sale tab). Videos are too big for a
+      // Listing videos (For Sale tab). Videos are too big for a
       // function body (4.5 MB), so the phone uploads straight to Storage on
       // a signed URL, then commits the path here.
       if (action === 'video-upload-url') return videoUploadUrl(req, res, user, brandId);
@@ -396,34 +396,82 @@ async function reorderItem(req, res, brandId) {
   return res.status(200).json({ ok: true, itemImageUrl: synced.imageUrl, photoUrls: synced.photoUrls });
 }
 
-// ─── One listing video per plant (For Sale tab) ─────────────────────────────
+// ─── Listing videos (For Sale tab) ──────────────────────────────────────────
 // Bucket `plant-videos` (public, 50 MB/file, video types — migration 0052).
-// Path: items/<itemId>/<id>.<ext>. inventory_items.videoUrl holds the public
-// URL (the Palmstreet CSV and Shopify read it). A new video replaces the
-// old one; abandoned uploads in the plant's folder are swept on commit.
+// Path: items/<itemId>/<id>.<ext>. A plant holds up to MAX_VIDEOS (2026-11-20,
+// operator: "each item can add more than … 1 video"): videoUrls lists their
+// public URLs in the order added (0055) and videoUrl stays the first — what
+// everything showing "has a video" reads. The Palmstreet CSV and Shopify put
+// up every one. Before 0055 a plant keeps one video and a new one replaces it.
 const VIDEO_BUCKET = 'plant-videos';
 const VIDEO_MAX_BYTES = 50 * 1024 * 1024;
+const MAX_VIDEOS = 5;   // keep in step with src/forsale/pools.js
+// An upload never committed (the phone lost signal) is swept once it's this
+// old — a younger one may be another phone's upload still on its way.
+const ABANDONED_MS = 60 * 60 * 1000;
 const VIDEO_TYPES = {
   'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/x-m4v': 'm4v',
 };
 
 function videoErr(status, message) { const e = new Error(message); e.status = status; return e; }
 
+const videoUrlsMissing = (error) => !!error
+  && (error.code === '42703' || error.code === 'PGRST204' || /videoUrls/.test(error.message || ''));
+
+// The plant's videos in order: its list, led by videoUrl if that isn't in it.
+function videosOf(row) {
+  const list = Array.isArray(row?.videoUrls) ? row.videoUrls.filter((u) => typeof u === 'string' && u) : [];
+  const first = typeof row?.videoUrl === 'string' && row.videoUrl ? row.videoUrl : null;
+  return first && !list.includes(first) ? [first, ...list] : list;
+}
+
+// → { row, multi, videos } — multi: 0055 is in, the plant can hold several.
 async function itemForVideo(itemId, brandId) {
   if (!itemId || typeof itemId !== 'string') throw videoErr(400, 'itemId required');
-  const { data, error } = await supabase.from('inventory_items')
-    .select('id, "videoUrl"').eq('id', itemId).eq('brandId', brandId).maybeSingle();
+  const read = (cols) => supabase.from('inventory_items')
+    .select(cols).eq('id', itemId).eq('brandId', brandId).maybeSingle();
+  let multi = true;
+  let { data, error } = await read('id, "videoUrl", "videoUrls"');
+  if (videoUrlsMissing(error)) {
+    multi = false;
+    ({ data, error } = await read('id, "videoUrl"'));
+  }
   if (error) {
     if (/videoUrl/.test(error.message || '')) throw videoErr(409, 'Videos need migration 0052 (for_sale_pools) — run it in the Supabase SQL editor first');
     throw videoErr(500, error.message);
   }
   if (!data) throw videoErr(404, 'Unknown item');
-  return data;
+  return { row: data, multi, videos: videosOf(data) };
 }
+
+// Change the plant's video list (videoUrl follows its first). The write is
+// a compare-and-set on the list as read, so two phones changing one plant's
+// videos at once can't drop each other's: the loser reads again and redoes
+// its change. `edit(current)` → the new list, or null for no change.
+async function changeVideos(itemId, brandId, user, edit) {
+  for (let round = 0; round < 4; round++) {
+    const { row } = await itemForVideo(itemId, brandId);
+    const cur = videosOf(row);
+    const next = edit(cur);
+    if (!next) return cur;
+    let q = supabase.from('inventory_items')
+      .update({ videoUrls: next.length ? next : null, videoUrl: next[0] || null, modifiedAt: new Date().toISOString(), modifiedBy: user.displayName })
+      .eq('id', itemId).eq('brandId', brandId);
+    q = row.videoUrls == null ? q.is('videoUrls', null) : q.eq('videoUrls', JSON.stringify(row.videoUrls));
+    q = row.videoUrl == null ? q.is('videoUrl', null) : q.eq('videoUrl', row.videoUrl);
+    const { data, error } = await q.select('id');
+    if (error) throw videoErr(500, error.message);
+    if (data && data.length) return next;
+  }
+  throw videoErr(409, 'Someone else is changing this plant\'s videos right now — try again');
+}
+
+const fullMessage = (n) => `This plant already has ${n} videos (the most is ${MAX_VIDEOS}) — delete one first`;
 
 async function videoUploadUrl(req, res, user, brandId) {
   const { itemId, contentType, size } = req.body || {};
-  await itemForVideo(itemId, brandId);
+  const { multi, videos } = await itemForVideo(itemId, brandId);
+  if (multi && videos.length >= MAX_VIDEOS) throw videoErr(409, fullMessage(videos.length));
   const type = String(contentType || '').toLowerCase().split(';')[0].trim();
   const ext = VIDEO_TYPES[type];
   if (!ext) throw videoErr(400, 'That file type isn\'t a video we can store (MP4, MOV or WebM)');
@@ -442,9 +490,11 @@ async function videoUploadUrl(req, res, user, brandId) {
   return res.status(200).json({ signedUrl: data.signedUrl, path, contentType: type });
 }
 
+// The uploaded file joins the plant's videos (before 0055 it replaces the
+// one video). → { videoUrl (the first), videoUrls (all, after 0055) }
 async function videoCommit(req, res, user, brandId) {
   const { itemId, path } = req.body || {};
-  const item = await itemForVideo(itemId, brandId);
+  const { multi } = await itemForVideo(itemId, brandId);
   const folder = `items/${itemId}`;
   if (typeof path !== 'string' || !path.startsWith(`${folder}/`) || path.includes('..')) {
     throw videoErr(400, 'Bad video path');
@@ -454,27 +504,70 @@ async function videoCommit(req, res, user, brandId) {
   const name = path.slice(folder.length + 1);
   if (!(objs || []).some((o) => o.name === name)) throw videoErr(409, 'The video didn\'t finish uploading — try again');
 
-  const videoUrl = supabase.storage.from(VIDEO_BUCKET).getPublicUrl(path).data.publicUrl;
-  const { error } = await supabase.from('inventory_items')
-    .update({ videoUrl, modifiedAt: new Date().toISOString(), modifiedBy: user.displayName })
-    .eq('id', itemId).eq('brandId', brandId);
-  if (error) throw videoErr(500, error.message);
-  // One video per plant: the previous one and any abandoned uploads go.
-  const stale = (objs || []).filter((o) => o.name !== name).map((o) => `${folder}/${o.name}`);
+  const url = supabase.storage.from(VIDEO_BUCKET).getPublicUrl(path).data.publicUrl;
+  let videos;
+  if (multi) {
+    try {
+      videos = await changeVideos(itemId, brandId, user, (cur) => {
+        if (cur.includes(url)) return null;   // a retried commit
+        if (cur.length >= MAX_VIDEOS) throw videoErr(409, fullMessage(cur.length));
+        return [...cur, url];
+      });
+    } catch (e) {
+      // Filled up from another phone meanwhile: this upload has no home.
+      if (e.status === 409) await supabase.storage.from(VIDEO_BUCKET).remove([path]).catch(() => {});
+      throw e;
+    }
+  } else {
+    const { error } = await supabase.from('inventory_items')
+      .update({ videoUrl: url, modifiedAt: new Date().toISOString(), modifiedBy: user.displayName })
+      .eq('id', itemId).eq('brandId', brandId);
+    if (error) throw videoErr(500, error.message);
+    videos = [url];
+  }
+  // Files in the folder no video of the plant points at: the one replaced
+  // (before 0055) and uploads never committed. Young strays are left — they
+  // may be another phone's upload about to commit.
+  const prefix = supabase.storage.from(VIDEO_BUCKET).getPublicUrl(`${folder}/`).data.publicUrl;
+  const keep = new Set(videos.filter((u) => u.startsWith(prefix)).map((u) => u.slice(prefix.length).split('?')[0]));
+  const now = Date.now();
+  const stale = (objs || []).filter((o) => {
+    if (keep.has(o.name)) return false;
+    if (!multi) return true;
+    const t = Date.parse(o.created_at || o.updated_at || '');
+    return !Number.isFinite(t) || now - t > ABANDONED_MS;
+  }).map((o) => `${folder}/${o.name}`);
   if (stale.length) await supabase.storage.from(VIDEO_BUCKET).remove(stale).catch(() => {});
-  return res.status(200).json({ videoUrl, previous: item.videoUrl || null });
+  return res.status(200).json({ videoUrl: videos[0] || null, ...(multi ? { videoUrls: videos } : {}) });
 }
 
+// { itemId, url } deletes that one video; without `url` (or before 0055)
+// every video of the plant goes.
 async function videoDelete(req, res, user, brandId) {
-  const { itemId } = req.body || {};
-  await itemForVideo(itemId, brandId);
+  const { itemId, url } = req.body || {};
+  const { multi, videos: had } = await itemForVideo(itemId, brandId);
   const folder = `items/${itemId}`;
+  const prefix = supabase.storage.from(VIDEO_BUCKET).getPublicUrl(`${folder}/`).data.publicUrl;
+  if (url && !had.includes(url)) {
+    // Already gone (another phone, or a double tap).
+    return res.status(200).json({ ok: true, videoUrl: had[0] || null, ...(multi ? { videoUrls: had } : {}) });
+  }
+  if (url && multi) {
+    const videos = await changeVideos(itemId, brandId, user, (cur) => (cur.includes(url) ? cur.filter((u) => u !== url) : null));
+    if (url.startsWith(prefix) && !videos.includes(url)) {
+      const name = url.slice(prefix.length).split('?')[0];
+      if (name && !name.includes('/') && !name.includes('..')) {
+        await supabase.storage.from(VIDEO_BUCKET).remove([`${folder}/${name}`]).catch(() => {});
+      }
+    }
+    return res.status(200).json({ ok: true, videoUrl: videos[0] || null, videoUrls: videos });
+  }
   const { data: objs } = await supabase.storage.from(VIDEO_BUCKET).list(folder, { limit: 100 });
   const paths = (objs || []).map((o) => `${folder}/${o.name}`);
-  if (paths.length) await supabase.storage.from(VIDEO_BUCKET).remove(paths).catch(() => {});
   const { error } = await supabase.from('inventory_items')
-    .update({ videoUrl: null, modifiedAt: new Date().toISOString(), modifiedBy: user.displayName })
+    .update({ videoUrl: null, ...(multi ? { videoUrls: null } : {}), modifiedAt: new Date().toISOString(), modifiedBy: user.displayName })
     .eq('id', itemId).eq('brandId', brandId);
   if (error) throw videoErr(500, error.message);
-  return res.status(200).json({ ok: true });
+  if (paths.length) await supabase.storage.from(VIDEO_BUCKET).remove(paths).catch(() => {});
+  return res.status(200).json({ ok: true, videoUrl: null, ...(multi ? { videoUrls: [] } : {}) });
 }

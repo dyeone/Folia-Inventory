@@ -10,7 +10,7 @@
 // (api/_lib/saleCode.js). Sale events on the tab's calendar are ordinary
 // `sales` rows; putting plants into one is the same staging write the Pre
 // Sale tab makes (saleId, un-numbered).
-import { supabase, seesCosts, runsForSale } from './supabase.js';
+import { supabase, seesCosts, runsForSale, hasRole } from './supabase.js';
 import { fetchAllById } from './fetchAll.js';
 import { pickSaleCodes } from './saleCode.js';
 import { shopifyConfig, shopifyPublicState, reconcileShopify, pullShopifyOrders, dismissShopifyProblems, eventHolds } from './shopify.js';
@@ -46,8 +46,13 @@ function requireForSaleUser(user) {
 }
 
 function requireAdminUser(user) {
-  if (user.role !== 'admin') throw fail(403, 'Only admins can do that');
+  if (!hasRole(user, 'admin')) throw fail(403, 'Only admins can do that');
 }
+
+// What's on the website is an admin's call: the CEO runs For Sale but
+// can't push plants to the website or take them off it (2026-11-20,
+// operator: "for ceo role, disable the push to website function").
+const runsWebsite = (user) => hasRole(user, 'admin');
 
 function idList(raw) {
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_IDS) {
@@ -76,12 +81,18 @@ async function ensureMigrated(brandId) {
 
 // GET ?action=pool-status — are the migrations in, and how is Shopify doing.
 // photosMigrated: 0053 (photoUrls) — without it a plant's extra photos are
-// kept but the CSV and Shopify only get the cover.
+// kept but the CSV and Shopify only get the cover. notesMigrated: 0055
+// (videoUrls + staffNote) — without it a plant keeps one video and has no
+// note.
 export async function poolStatus(req, res, user, brandId) {
   const { error } = await supabase.from('inventory_items').select('id, "saleCode"').eq('brandId', brandId).limit(1);
   if (error && !isUnmigrated(error)) throw fail(500, error.message);
   const { error: pErr } = await supabase.from('inventory_items').select('id, "photoUrls"').eq('brandId', brandId).limit(1);
-  return res.status(200).json({ migrated: !error, photosMigrated: !pErr, shopify: await shopifyPublicState(brandId) });
+  const { error: nErr } = await supabase.from('inventory_items').select('id, "videoUrls", "staffNote"').eq('brandId', brandId).limit(1);
+  return res.status(200).json({
+    migrated: !error, photosMigrated: !pErr, notesMigrated: !nErr,
+    shopify: await shopifyPublicState(brandId),
+  });
 }
 
 // Give every plant in `rows` without a code a fresh one. The write is
@@ -125,12 +136,22 @@ export async function poolSet(req, res, user, brandId) {
   const ids = idList(req.body?.itemIds);
   const pool = req.body?.pool ?? null;
   if (pool !== null && !POOLS.includes(pool)) throw fail(400, 'pool must be palmstreet, shopify or null');
+  const webOk = runsWebsite(user);
+  if (pool === 'shopify' && !webOk) throw fail(403, 'Only an admin can push plants to the website');
   await ensureMigrated(brandId);
 
-  const rows = await rowsById(brandId, ids);
-  const byId = new Map(rows.map((r) => [r.id, r]));
+  const all = await rowsById(brandId, ids);
+  const byId = new Map(all.map((r) => [r.id, r]));
   const skipped = [];
   for (const id of ids) if (!byId.has(id)) skipped.push({ id, reason: 'not found' });
+  // Without the website say, a plant on the website stays as it is (taking
+  // it off — or out of For Sale — would take it off the website).
+  const rows = webOk ? all : all.filter((r) => {
+    if (r.salePool !== 'shopify') return true;
+    skipped.push({ id: r.id, sku: r.sku, reason: 'is on the website — only an admin can take it off' });
+    return false;
+  });
+  const mine = new Set(rows.map((r) => r.id));
   const now = new Date().toISOString();
   let changed = [];
 
@@ -160,6 +181,7 @@ export async function poolSet(req, res, user, brandId) {
             .eq('brandId', brandId).in('id', list.slice(k, k + 200))
             .is('deletedAt', null).is('shipmentBoxId', null).in('status', FOR_SALE_STATUSES);
           q = inPool ? q.not('salePool', 'is', null) : q.is('salePool', null);
+          if (inPool && !webOk) q = q.neq('salePool', 'shopify');
           const { data, error } = await q.select('id');
           if (error) throw dbFail(error);
           changed.push(...(data || []).map((d) => d.id));
@@ -171,14 +193,18 @@ export async function poolSet(req, res, user, brandId) {
       await refreshPhotoUrls(brandId, changed);
     }
   } else {
-    for (let k = 0; k < ids.length; k += 200) {
-      const { data, error } = await supabase.from('inventory_items')
+    const out = ids.filter((id) => mine.has(id));
+    for (let k = 0; k < out.length; k += 200) {
+      let q = supabase.from('inventory_items')
         .update({ salePool: null, poolAddedAt: null, modifiedAt: now, modifiedBy: user.displayName })
-        .eq('brandId', brandId).in('id', ids.slice(k, k + 200)).not('salePool', 'is', null)
-        .select('id');
+        .eq('brandId', brandId).in('id', out.slice(k, k + 200)).not('salePool', 'is', null);
+      if (!webOk) q = q.neq('salePool', 'shopify');
+      const { data, error } = await q.select('id');
       if (error) throw dbFail(error);
       changed.push(...(data || []).map((d) => d.id));
     }
+    const got = new Set(changed);
+    if (!webOk) for (const id of out) if (!got.has(id) && byId.get(id)?.salePool) skipped.push({ id, sku: byId.get(id).sku, reason: 'changed under you — reload' });
   }
 
   // Shopify follows: anything that entered or left the Shopify pool.
@@ -396,7 +422,8 @@ export async function mediaCleanup(req, res, user, brandId) {
       const { error } = await supabase.storage.from(VIDEO_BUCKET).remove(paths);
       if (error) throw fail(500, error.message);
     }
-    await supabase.from('inventory_items').update({ videoUrl: null }).eq('id', v.id).eq('brandId', brandId);
+    const { error: vErr } = await supabase.from('inventory_items').update({ videoUrl: null, videoUrls: null }).eq('id', v.id).eq('brandId', brandId);
+    if (vErr) await supabase.from('inventory_items').update({ videoUrl: null }).eq('id', v.id).eq('brandId', brandId);   // before 0055
     videosDeleted += 1;
   }
   return res.status(200).json({ dryRun: false, days, photos: photosDeleted, videos: videosDeleted });

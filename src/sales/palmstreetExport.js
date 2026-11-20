@@ -1,5 +1,5 @@
 import { lotTag } from './lotBlock.js';
-import { photosOf } from '../forsale/pools.js';
+import { photosOf, videosOf } from '../forsale/pools.js';
 // Build a Palmstreet CSV — for a single sale event, or for the entire
 // "available" inventory ready to be listed. Both modes share the same
 // header set so Palmstreet ingests them identically.
@@ -95,7 +95,7 @@ const DEFAULT_IMAGE_BY_BRAND = {
 };
 
 // The Image URL cell: every photo of the plant, cover first (For Sale tab,
-// migration 0053), then its video when it has one (0052), joined by the
+// migration 0053), then its videos (0052; several since 0055), joined by the
 // operator's chosen separator — Palmstreet's template doesn't document how
 // several media share the cell, so the separator is a setting
 // (src/forsale/ForSaleView.jsx, per device).
@@ -109,7 +109,7 @@ export function mediaCell(item, separator = 'comma') {
   const photos = photosOf(item);
   if (!photos.length && DEFAULT_IMAGE_BY_BRAND[item.brandId]) photos.push(DEFAULT_IMAGE_BY_BRAND[item.brandId]);
   const sep = (MEDIA_SEPARATORS[separator] || MEDIA_SEPARATORS.comma).sep;
-  return [...photos, item.videoUrl || ''].filter(Boolean).join(sep);
+  return [...photos, ...videosOf(item)].filter(Boolean).join(sep);
 }
 
 // One 14-column row in the template's exact order. `title` overrides the
@@ -244,5 +244,5 @@ export function exportPoolToPalmstreet(items, { separator = 'comma' } = {}) {
     .map(item => baseRow(item, parseFloat(item.listingPrice), { separator, title: buildPoolTitle(item) }));
   const stamp = new Date().toISOString().slice(0, 10);
   download(toCsv(rows), `palmstreet-pool-${stamp}.csv`);
-  return { ok: true, count: rows.length, unpriced, withVideo: priced.filter(i => i.videoUrl).length };
+  return { ok: true, count: rows.length, unpriced, withVideo: priced.filter(i => videosOf(i).length).length };
 }

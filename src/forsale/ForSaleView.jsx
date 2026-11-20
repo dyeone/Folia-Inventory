@@ -12,7 +12,7 @@ import { AddPlantsSheet } from './AddPlantsSheet.jsx';
 import { SaleCalendar } from './SaleCalendar.jsx';
 import { MediaWalkthrough } from './MediaWalkthrough.jsx';
 import { useMediaUploads } from './useMediaUploads.js';
-import { IN_POOL, ON_WEBSITE, poolItems, onWebsite, openSaleIdSet, pauseSaleIdSet, openEvents, readiness, photosOf } from './pools.js';
+import { IN_POOL, ON_WEBSITE, poolItems, onWebsite, openSaleIdSet, pauseSaleIdSet, openEvents, readiness, photosOf, videosOf } from './pools.js';
 import { exportPoolToPalmstreet, exportPalmstreetCsv, MEDIA_SEPARATORS } from '../sales/palmstreetExport.js';
 
 const SYNC_EVERY_MS = 2 * 60 * 1000;
@@ -37,11 +37,13 @@ const FILTERS = [
 // The For Sale tab: plants ready to sell, in ONE pool (2026-11-19, operator:
 // "only have one pool… select some and click push to website, then sync the
 // selected ones to Shopify, others keep in the pool"), each with its short
-// code, several photos and one video. Select plants → Push to website lists
-// them on the Shopify store; the rest stay in the pool (the Palmstreet CSV,
-// sale events). Plus a calendar of sale events to put plants into. Phone
-// first. Adding plants goes straight on to their photos (MediaWalkthrough);
-// every upload runs in the tab's background uploader (useMediaUploads).
+// code, several photos and videos, and a note for the team. Select plants →
+// Push to website lists them on the Shopify store (admins only — the CEO
+// runs the rest of the tab but not the website, 2026-11-20); the rest stay
+// in the pool (the Palmstreet CSV, sale events). Plus a calendar of sale
+// events to put plants into. Phone first. Adding plants goes straight on to
+// their photos (MediaWalkthrough); every upload runs in the tab's
+// background uploader (useMediaUploads).
 export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMerged, onPrintLabels, onSaveSale }) {
   const [view, setView] = useStored('forsale.view', 'pools', ['pools', 'calendar']);
   const [selecting, setSelecting] = useState(false);
@@ -63,6 +65,10 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   const pendingRef = useRef(new Set());   // plants to sync once the running sync ends
 
   const shopifyOn = !!status?.shopify?.configured;
+  const canWebsite = !!isAdmin;   // the server checks too (api/_lib/pool.js)
+  // Migration 0055: several videos per plant + the team note (assumed in
+  // until the status read says otherwise — the server copes either way).
+  const notesOn = status?.notesMigrated !== false;
   const openSaleIds = useMemo(() => openSaleIdSet(sales), [sales]);
   const pausedSaleIds = useMemo(() => pauseSaleIdSet(sales), [sales]);
   const events = useMemo(() => openEvents(sales), [sales]);
@@ -139,7 +145,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   useEffect(() => { photosMigratedRef.current = status?.photosMigrated !== false; });
   const mergeMedia = useCallback((rows) => onItemsMerged(photosMigratedRef.current
     ? rows : rows.map(({ photoUrls: _drop, ...r }) => r)), [onItemsMerged]);
-  const uploads = useMediaUploads({ onMerged: mergeMedia, onSettled: followShopify, showToast });
+  const uploads = useMediaUploads({ onMerged: mergeMedia, onSettled: followShopify, showToast, multiVideo: notesOn });
   const uploadingIds = useMemo(() => new Set(uploads.jobs.map((j) => j.itemId)), [uploads.jobs]);
 
   useEffect(() => {
@@ -228,13 +234,13 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
     return inPool
       .filter((i) => !eventFilter || evOf(i) === eventFilter)
       .filter((i) => filter === 'all' || (filter === 'web' ? onWebsite(i) : filter === 'notweb' ? !onWebsite(i) : readiness(i).includes(filter)))
-      .filter((i) => !s || [i.saleCode, i.sku, i.name, i.variety, i.listingDetails?.title].some((f) => String(f || '').toLowerCase().includes(s)));
+      .filter((i) => !s || [i.saleCode, i.sku, i.name, i.variety, i.listingDetails?.title, i.staffNote].some((f) => String(f || '').toLowerCase().includes(s)));
   }, [inPool, q, filter, eventFilter, openSaleIds]);
   const needs = useMemo(() => ({
     web: inPool.filter(onWebsite).length,
     notweb: inPool.filter((i) => !onWebsite(i)).length,
     photo: inPool.filter((i) => !photosOf(i).length).length,
-    video: inPool.filter((i) => !i.videoUrl).length,
+    video: inPool.filter((i) => !videosOf(i).length).length,
     price: inPool.filter((i) => !(Number(i.listingPrice) > 0)).length,
   }), [inPool]);
 
@@ -318,6 +324,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   const openItem = openId ? byId.get(openId) : null;
   const unmigrated = status && status.migrated === false;
   const photosUnmigrated = status && status.migrated !== false && status.photosMigrated === false;
+  const notesUnmigrated = status && status.migrated !== false && status.notesMigrated === false;
   // Shown plants still missing a photo or the video — "Photos & video" walks them.
   const needMedia = useMemo(() => shown.filter((i) => readiness(i).some((m) => m === 'photo' || m === 'video')), [shown]);
 
@@ -326,7 +333,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">For Sale</h2>
-          <p className="text-xs text-gray-500 hidden sm:block">Plants ready to sell — select some and push them to the website.</p>
+          <p className="text-xs text-gray-500 hidden sm:block">Plants ready to sell{canWebsite ? ' — select some and push them to the website' : ''}.</p>
         </div>
         <div className="inline-flex rounded-xl bg-gray-100 p-1">
           {[{ id: 'pools', label: 'Pool', icon: LayoutGrid }, { id: 'calendar', label: 'Calendar', icon: CalendarDays }].map((t) => {
@@ -353,6 +360,12 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
         <div className="flex gap-2 items-start bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-3 py-2.5 text-sm">
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
           <span>Run migration <b>0053_plant_photo_urls</b> in the Supabase SQL editor — until then extra photos are saved, but the CSV and Shopify only get each plant's cover photo.</span>
+        </div>
+      )}
+      {notesUnmigrated && (
+        <div className="flex gap-2 items-start bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-3 py-2.5 text-sm">
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>Run migration <b>0055_plant_videos_notes</b> in the Supabase SQL editor — until then each plant keeps one video and notes can't be saved.</span>
         </div>
       )}
       {uploads.jobs.length > 0 && (
@@ -485,14 +498,16 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
               </div>
               {picked.length > 0 && (
                 <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button" onClick={() => moveWebsite('push')} disabled={!toPush.length || !!moving}
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500 active:bg-emerald-600 text-white text-sm font-semibold disabled:opacity-40"
-                  >
-                    {moving === 'push' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
-                    Push to website{toPush.length ? ` (${toPush.length})` : ''}
-                  </button>
-                  {toPull.length > 0 && (
+                  {canWebsite && (
+                    <button
+                      type="button" onClick={() => moveWebsite('push')} disabled={!toPush.length || !!moving}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-500 active:bg-emerald-600 text-white text-sm font-semibold disabled:opacity-40"
+                    >
+                      {moving === 'push' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Globe className="w-4 h-4" />}
+                      Push to website{toPush.length ? ` (${toPush.length})` : ''}
+                    </button>
+                  )}
+                  {canWebsite && toPull.length > 0 && (
                     <button
                       type="button" onClick={() => moveWebsite('pull')} disabled={!!moving}
                       className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 active:bg-white/25 text-sm font-semibold disabled:opacity-40"
@@ -515,7 +530,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                   </button>
                 </div>
               )}
-              {picked.length > 0 && !toPush.length && (
+              {canWebsite && picked.length > 0 && !toPush.length && (
                 <div className="text-[11px] text-gray-300">All selected plants are already on the website.</div>
               )}
             </div>
@@ -575,6 +590,8 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
           openSaleIds={openSaleIds}
           pausedSaleIds={pausedSaleIds}
           shopifyConnected={shopifyOn}
+          canWebsite={canWebsite}
+          notesOn={notesOn}
           showToast={showToast}
           uploads={uploads}
           onClose={() => setOpenId(null)}

@@ -47,8 +47,10 @@ export function openEvents(sales) {
 
 const priced = (i) => Number(i.listingPrice) > 0;
 
-// Photos per plant in the For Sale tab (the server refuses past it too).
+// Photos and videos per plant in the For Sale tab (the server refuses past
+// them too — MAX_VIDEOS mirrors api/species-photos.js).
 export const MAX_PHOTOS = 10;
+export const MAX_VIDEOS = 5;
 
 // The plant's photos, cover first: its photo list (0053). A cover that isn't
 // one of them (a pasted URL, a copied row's photo — or any cover before
@@ -72,6 +74,18 @@ function listedPhotos(sh) {
   return sh?.imageUrl ? [sh.imageUrl] : [];
 }
 
+// The plant's videos in the order added (0055: several, videoUrl is the
+// first). Mirrors videosOf in api/_lib/shopify.js.
+export function videosOf(item) {
+  const list = Array.isArray(item?.videoUrls) ? item.videoUrls.filter((u) => typeof u === 'string' && u) : [];
+  const first = typeof item?.videoUrl === 'string' && item.videoUrl ? item.videoUrl : null;
+  return first && !list.includes(first) ? [first, ...list] : list;
+}
+function listedVideos(sh) {
+  if (Array.isArray(sh?.videoUrls)) return sh.videoUrls;
+  return sh?.videoUrl ? [sh.videoUrl] : [];
+}
+
 // What a website plant's listing is doing, for its card. Mirrors
 // desiredListing() in api/_lib/shopify.js plus the stored sync state.
 // pausedSaleIds: pauseSaleIdSet(sales). tone: 'ok' | 'wait' | 'warn' | 'error'
@@ -83,7 +97,7 @@ export function shopifyBadge(item, pausedSaleIds, connected) {
   if (!priced(item)) return { tone: 'warn', label: 'Needs price', detail: 'Set a price to list it' };
   if (!photosOf(item).length) return { tone: 'warn', label: 'Needs photo', detail: 'Add a photo to list it' };
   if (sh.productId && sh.status === 'ACTIVE' && sh.qty === 1 && sh.published) {
-    const behind = photosOf(item).join('\n') !== listedPhotos(sh).join('\n') || (item.videoUrl || null) !== (sh.videoUrl || null)
+    const behind = photosOf(item).join('\n') !== listedPhotos(sh).join('\n') || videosOf(item).join('\n') !== listedVideos(sh).join('\n')
       || sh.price !== Number(item.listingPrice).toFixed(2);
     return behind ? { tone: 'wait', label: 'Updating…', detail: 'Changes go to the website on the next sync' } : { tone: 'ok', label: 'Live', detail: 'Listed on the website' };
   }
@@ -94,7 +108,7 @@ export function shopifyBadge(item, pausedSaleIds, connected) {
 export function readiness(item) {
   const missing = [];
   if (!photosOf(item).length) missing.push('photo');
-  if (!item.videoUrl) missing.push('video');
+  if (!videosOf(item).length) missing.push('video');
   if (!priced(item)) missing.push('price');
   return missing;
 }

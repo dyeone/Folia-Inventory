@@ -1,5 +1,5 @@
-import { Camera, Video, CalendarDays, Images, Loader2, Globe, Check } from 'lucide-react';
-import { money, readiness, shopifyBadge, photosOf, onWebsite, eventStyle } from './pools.js';
+import { Camera, Video, CalendarDays, Images, Loader2, Globe, Check, StickyNote } from 'lucide-react';
+import { money, readiness, shopifyBadge, photosOf, videosOf, onWebsite, eventStyle } from './pools.js';
 
 const TONE = {
   ok: 'bg-green-600 text-white',
@@ -13,11 +13,12 @@ const TONE = {
 // and — once pushed to the website — what its listing is doing. Tap →
 // PlantSheet, or (selecting) ticks it.
 // event: the upcoming sale event it's in (or null), shown as a chip in that
-// event kind's colour.
+// event kind's colour. Its team note (staffNote) shows as one line.
 export function PlantCard({ item, event, pausedSaleIds, shopifyConnected, selecting, selected, uploading, onClick }) {
   const missing = readiness(item);
   const shots = photosOf(item);
   const photoCount = shots.length;
+  const videoCount = videosOf(item).length;
   const badge = onWebsite(item) ? shopifyBadge(item, pausedSaleIds, shopifyConnected) : null;
   const evSt = event ? eventStyle(event) : null;
   return (
@@ -49,9 +50,9 @@ export function PlantCard({ item, event, pausedSaleIds, shopifyConnected, select
           <span className={`absolute top-1.5 right-1.5 w-6 h-6 rounded-full border-2 flex items-center justify-center ${selected ? 'bg-emerald-500 border-emerald-500 text-white' : 'bg-white/80 border-white'}`}>
             {selected && <Check className="w-4 h-4" strokeWidth={3} />}
           </span>
-        ) : item.videoUrl && (
-          <span className="absolute top-1.5 right-1.5 p-1 rounded-md bg-black/70 text-white" title="Has a video">
-            <Video className="w-3.5 h-3.5" />
+        ) : videoCount > 0 && (
+          <span className="absolute top-1.5 right-1.5 inline-flex items-center gap-0.5 p-1 rounded-md bg-black/70 text-white text-[10px] font-semibold leading-none" title={videoCount === 1 ? 'Has a video' : `${videoCount} videos`}>
+            <Video className="w-3.5 h-3.5" />{videoCount > 1 ? videoCount : ''}
           </span>
         )}
         {badge && (
@@ -75,6 +76,11 @@ export function PlantCard({ item, event, pausedSaleIds, shopifyConnected, select
         {event && (
           <div className={`self-start max-w-full inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium ${evSt.chip}`} title={evSt.label}>
             <CalendarDays className="w-3 h-3 shrink-0" /> <span className="truncate">{event.name}</span>
+          </div>
+        )}
+        {item.staffNote && (
+          <div className="flex items-start gap-1 text-[11px] text-gray-600 min-w-0" title={item.staffNote}>
+            <StickyNote className="w-3 h-3 mt-px shrink-0 text-gray-400" /> <span className="line-clamp-2 break-words">{item.staffNote}</span>
           </div>
         )}
         {missing.length > 0 && (

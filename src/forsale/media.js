@@ -2,7 +2,7 @@ import { api } from '../api.js';
 import { MAX_PHOTOS } from './pools.js';
 
 // Photo + video handling for the For Sale tab. Each plant keeps up to
-// MAX_PHOTOS photos (the first is its cover) and ONE video.
+// MAX_PHOTOS photos (the first is its cover) and MAX_VIDEOS videos.
 //
 // Photos are shrunk on the phone before upload (long side 1600 px, JPEG):
 // a phone photo is 3–5 MB, over the API's request limit once base64'd and
@@ -86,7 +86,16 @@ export function videoProblem(file) {
   return '';
 }
 
-// Upload the plant's one video; `onProgress(0..1)`. Returns the new videoUrl.
+// The changes a video call made to the plant, ready to merge into the list
+// (videoUrls only once migration 0055 is in — the server says).
+const videoPatch = (itemId, r) => ({
+  id: itemId,
+  videoUrl: r?.videoUrl ?? null,
+  ...(Array.isArray(r?.videoUrls) ? { videoUrls: r.videoUrls } : {}),
+});
+
+// Upload a video — it joins the plant's videos (before 0055 it replaces the
+// one); `onProgress(0..1)`. → patch for the plant.
 export async function savePlantVideo(itemId, file, onProgress) {
   const problem = videoProblem(file);
   if (problem) throw new Error(problem);
@@ -104,6 +113,9 @@ export async function savePlantVideo(itemId, file, onProgress) {
     xhr.onerror = () => reject(new Error('Video upload failed — check the connection and try again'));
     xhr.send(file);
   });
-  const r = await api.videoCommit({ itemId, path });
-  return r.videoUrl;
+  return videoPatch(itemId, await api.videoCommit({ itemId, path }));
+}
+
+export async function deletePlantVideo(itemId, url) {
+  return videoPatch(itemId, await api.videoDelete(itemId, url));
 }
