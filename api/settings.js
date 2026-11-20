@@ -262,7 +262,8 @@ async function resolveSaleForShow(show, brandId, user) {
     .order('createdAt', { ascending: false })
     .limit(20);
   if (error) { const e = new Error(error.message); e.status = 500; throw e; }
-  const palm = (ongoing || []).filter(sl => !sl.platform || /palmstreet/i.test(sl.platform));
+  // A purge (platform "Palmstreet purge") is never the live being recorded.
+  const palm = (ongoing || []).filter(sl => !sl.platform || (/palmstreet/i.test(sl.platform) && !/purge/i.test(sl.platform)));
   const now = Date.now();
   const pick = palm.find(sl => sl.date && String(sl.date).slice(0, 10) === showDate)
     || palm.find(sl => sl.createdAt && now - new Date(sl.createdAt).getTime() < LIVE_SALE_LINK_WINDOW_MS);

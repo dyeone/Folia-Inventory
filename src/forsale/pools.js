@@ -33,6 +33,18 @@ export function eventHolds(sale, now = new Date()) {
 
 export const openSaleIdSet = (sales) => new Set((sales || []).filter((s) => eventHolds(s)).map((s) => s.id));
 
+// A website sale sells ON the website: its plants stay listed there. Every
+// other open event hides them on the website until it's over. Mirrors
+// isWebsiteSale / holdingSaleIds in api/_lib/shopify.js.
+export const isWebsiteSale = (sale) => /^website/i.test(String(sale?.platform || '').trim());
+export const pauseSaleIdSet = (sales) => new Set((sales || []).filter((s) => eventHolds(s) && !isWebsiteSale(s)).map((s) => s.id));
+
+// Upcoming events a plant can be put in, soonest first.
+export function openEvents(sales) {
+  return (sales || []).filter((s) => eventHolds(s))
+    .sort((a, b) => (saleDay(a) || '9999').localeCompare(saleDay(b) || '9999') || String(a.name).localeCompare(String(b.name)));
+}
+
 const priced = (i) => Number(i.listingPrice) > 0;
 
 // Photos per plant in the For Sale tab (the server refuses past it too).
@@ -62,12 +74,12 @@ function listedPhotos(sh) {
 
 // What a website plant's listing is doing, for its card. Mirrors
 // desiredListing() in api/_lib/shopify.js plus the stored sync state.
-// tone: 'ok' | 'wait' | 'warn' | 'error'
-export function shopifyBadge(item, openSaleIds, connected) {
+// pausedSaleIds: pauseSaleIdSet(sales). tone: 'ok' | 'wait' | 'warn' | 'error'
+export function shopifyBadge(item, pausedSaleIds, connected) {
   const sh = item.shopify || {};
   if (!connected) return { tone: 'wait', label: 'Waiting', detail: 'Shopify isn\'t connected for this brand yet — it goes up once it is' };
   if (sh.error) return { tone: 'error', label: 'Sync failed', detail: sh.error };
-  if (item.saleId && openSaleIds.has(item.saleId)) return { tone: 'warn', label: 'Paused', detail: 'In an upcoming sale event — hidden on the website until it\'s back' };
+  if (item.saleId && pausedSaleIds.has(item.saleId)) return { tone: 'warn', label: 'Paused', detail: 'In an upcoming sale event — hidden on the website until it\'s over' };
   if (!priced(item)) return { tone: 'warn', label: 'Needs price', detail: 'Set a price to list it' };
   if (!photosOf(item).length) return { tone: 'warn', label: 'Needs photo', detail: 'Add a photo to list it' };
   if (sh.productId && sh.status === 'ACTIVE' && sh.qty === 1 && sh.published) {
@@ -92,11 +104,16 @@ export const money = (n) => {
   return Number.isFinite(v) && v > 0 ? `$${v % 1 ? v.toFixed(2) : v.toFixed(0)}` : '—';
 };
 
-// Sale event platforms on the calendar. `platform` is the sales row's free
+// Sale event kinds on the calendar. `platform` is the sales row's free
 // text; these are the quick picks (Pre Sale + Validate Sales key off
-// "Palmstreet" / "TikTok", so those keep their exact spelling).
+// "Palmstreet" / "TikTok", so those keep their exact spelling). 2026-11-19:
+// the operator sorts plants into Palmstreet purge / Palmstreet live /
+// Website sale events. A purge gets the Palmstreet CSV like a live; a
+// website sale keeps its plants listed on the website (isWebsiteSale).
 export const EVENT_PLATFORMS = [
   { id: 'Palmstreet', label: 'Palmstreet live', dot: 'bg-green-500', chip: 'bg-green-50 text-green-800 border-green-200' },
+  { id: 'Palmstreet purge', label: 'Palmstreet purge', dot: 'bg-amber-500', chip: 'bg-amber-50 text-amber-800 border-amber-200' },
+  { id: 'Website', label: 'Website sale', dot: 'bg-indigo-500', chip: 'bg-indigo-50 text-indigo-800 border-indigo-200' },
   { id: 'Facebook', label: 'Facebook sale', dot: 'bg-blue-500', chip: 'bg-blue-50 text-blue-800 border-blue-200' },
   { id: 'TikTok', label: 'TikTok live', dot: 'bg-gray-900', chip: 'bg-gray-100 text-gray-800 border-gray-300' },
 ];
@@ -104,6 +121,13 @@ export function platformStyle(platform) {
   const p = String(platform || '').toLowerCase();
   return EVENT_PLATFORMS.find((x) => x.id.toLowerCase() === p)
     || { id: platform, label: platform || 'Sale', dot: 'bg-purple-500', chip: 'bg-purple-50 text-purple-800 border-purple-200' };
+}
+// An event's kind for display: its platform — and a Palmstreet event named
+// "purge" (how purges were made before the kind existed) reads as a purge.
+export function eventStyle(sale) {
+  const p = String(sale?.platform || '').trim().toLowerCase();
+  if ((p === 'palmstreet' || !p) && /purge/i.test(sale?.name || '')) return platformStyle('Palmstreet purge');
+  return platformStyle(sale?.platform || 'Palmstreet');
 }
 
 // "YYYY-MM-DD" of a sale (its date, else its start time), local.

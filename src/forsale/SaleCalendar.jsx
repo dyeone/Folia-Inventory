@@ -1,7 +1,7 @@
 import { useMemo, useState, lazy, Suspense } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Download, Copy, X, Loader2, Search, Video } from 'lucide-react';
 import { Modal } from '../ui/Modal.jsx';
-import { platformStyle, saleDay, ymd, money, isForSale, facebookPost, eventHolds, isUnsoldInEvent, photosOf } from './pools.js';
+import { eventStyle, saleDay, ymd, money, isForSale, facebookPost, eventHolds, isUnsoldInEvent, photosOf } from './pools.js';
 
 const SaleFormModal = lazy(() => import('../sales/SaleFormModal.jsx').then((m) => ({ default: m.SaleFormModal })));
 
@@ -65,7 +65,7 @@ export function SaleCalendar({ items, sales, isBae, showToast, onSaveSale, onEve
   const openSale = openId ? (sales || []).find((s) => s.id === openId) : null;
 
   const eventRow = (s) => {
-    const st = platformStyle(s.platform);
+    const st = eventStyle(s);
     const c = counts.get(s.id) || { staged: 0, sold: 0 };
     return (
       <button key={s.id} type="button" onClick={() => setOpenId(s.id)} className="w-full text-left flex items-center gap-3 px-3 py-2.5 bg-white border border-gray-200 rounded-xl active:bg-gray-50">
@@ -111,11 +111,11 @@ export function SaleCalendar({ items, sales, isBae, showToast, onSaveSale, onEve
                 <span className={`text-xs sm:text-sm sm:px-1 ${key === today && !isSel ? 'font-bold text-emerald-700' : 'font-medium'}`}>{d.getDate()}</span>
                 {/* Phone: dots. Wider screens: event names. */}
                 <span className="flex gap-0.5 mt-1 sm:hidden">
-                  {evs.slice(0, 3).map((s) => <span key={s.id} className={`w-1.5 h-1.5 rounded-full ${isSel ? 'bg-white' : platformStyle(s.platform).dot}`} />)}
+                  {evs.slice(0, 3).map((s) => <span key={s.id} className={`w-1.5 h-1.5 rounded-full ${isSel ? 'bg-white' : eventStyle(s).dot}`} />)}
                 </span>
                 <span className="hidden sm:flex flex-col gap-0.5 mt-0.5 overflow-hidden">
                   {evs.slice(0, 2).map((s) => (
-                    <span key={s.id} className={`truncate text-[10px] leading-tight px-1 py-0.5 rounded border text-left ${isSel ? 'bg-white/20 border-white/30 text-white' : platformStyle(s.platform).chip}`}>{s.name}</span>
+                    <span key={s.id} className={`truncate text-[10px] leading-tight px-1 py-0.5 rounded border text-left ${isSel ? 'bg-white/20 border-white/30 text-white' : eventStyle(s).chip}`}>{s.name}</span>
                   ))}
                   {evs.length > 2 && <span className={`text-[10px] ${isSel ? 'text-white/80' : 'text-gray-400'}`}>+{evs.length - 2}</span>}
                 </span>
@@ -184,8 +184,9 @@ export function SaleCalendar({ items, sales, isBae, showToast, onSaveSale, onEve
 function EventSheet({ sale, items, sales, showToast, onClose, onEventAssign, onEventUnassign, onExportEvent, onOpenPlant }) {
   const [picking, setPicking] = useState(false);
   const [busyId, setBusyId] = useState(null);
-  const st = platformStyle(sale.platform);
-  const isPalmstreet = String(sale.platform || '').toLowerCase() === 'palmstreet';
+  const st = eventStyle(sale);
+  // Lives and purges both hand off as the Palmstreet CSV.
+  const isPalmstreet = /^palmstreet/i.test(String(sale.platform || '').trim());
   const isFacebook = String(sale.platform || '').toLowerCase() === 'facebook';
   const closed = sale.status === 'closed';
 

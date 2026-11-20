@@ -3,6 +3,8 @@ import {
   Plus, Search, Download, RefreshCw, Printer, Store, CalendarDays, LayoutGrid, AlertTriangle, Loader2, X, HardDrive, Camera,
   CheckSquare, Globe, Undo2,
 } from 'lucide-react';
+import { Modal } from '../ui/Modal.jsx';
+import { EventChoices } from './EventChoices.jsx';
 import { api } from '../api.js';
 import { PlantCard } from './PlantCard.jsx';
 import { PlantSheet } from './PlantSheet.jsx';
@@ -10,7 +12,7 @@ import { AddPlantsSheet } from './AddPlantsSheet.jsx';
 import { SaleCalendar } from './SaleCalendar.jsx';
 import { MediaWalkthrough } from './MediaWalkthrough.jsx';
 import { useMediaUploads } from './useMediaUploads.js';
-import { IN_POOL, ON_WEBSITE, poolItems, onWebsite, openSaleIdSet, readiness, photosOf } from './pools.js';
+import { IN_POOL, ON_WEBSITE, poolItems, onWebsite, openSaleIdSet, pauseSaleIdSet, openEvents, readiness, photosOf } from './pools.js';
 import { exportPoolToPalmstreet, exportPalmstreetCsv, MEDIA_SEPARATORS } from '../sales/palmstreetExport.js';
 
 const SYNC_EVERY_MS = 2 * 60 * 1000;
@@ -44,7 +46,10 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
   const [view, setView] = useStored('forsale.view', 'pools', ['pools', 'calendar']);
   const [selecting, setSelecting] = useState(false);
   const [sel, setSel] = useState(() => new Set());
-  const [moving, setMoving] = useState(null);   // 'push' | 'pull' while a website change runs
+  const [moving, setMoving] = useState(null);   // 'push' | 'pull' | 'event' while a bulk change runs
+  const [eventFor, setEventFor] = useState(false);   // bulk "Sale event" picker open
+  const [bulkKey, setBulkKey] = useState(null);       // the event being saved there ('none' = No event)
+  const [eventFilter, setEventFilter] = useState('');  // '' any · 'none' · a sale id
   const [separator, setSeparator] = useStored('forsale.mediaSep', 'comma', Object.keys(MEDIA_SEPARATORS));
   const [status, setStatus] = useState(null);
   const [q, setQ] = useState('');
@@ -59,7 +64,9 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
 
   const shopifyOn = !!status?.shopify?.configured;
   const openSaleIds = useMemo(() => openSaleIdSet(sales), [sales]);
-  const saleName = useMemo(() => new Map((sales || []).map((s) => [s.id, s.name])), [sales]);
+  const pausedSaleIds = useMemo(() => pauseSaleIdSet(sales), [sales]);
+  const events = useMemo(() => openEvents(sales), [sales]);
+  const saleById = useMemo(() => new Map((sales || []).map((s) => [s.id, s])), [sales]);
   const byId = useMemo(() => new Map((items || []).map((i) => [i.id, i])), [items]);
   const byIdRef = useRef(byId);
   useEffect(() => { byIdRef.current = byId; });
@@ -180,13 +187,16 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
     return true;
   };
 
-  const onEventAssign = async (saleId, ids) => {
+  // move: the person picked this event for these plants, so ones in another
+  // upcoming event move here (the calendar's Add plants leaves them be).
+  const onEventAssign = async (saleId, ids, { move = false } = {}) => {
     try {
-      const r = await api.eventAssign({ saleId, itemIds: ids });
+      const r = await api.eventAssign({ saleId, itemIds: ids, move });
       if (r.items?.length) onItemsMerged(r.items);
       const n = r.assignedIds?.length || 0;
-      if (r.skipped?.length) showToast(`${n} added · ${r.skipped.length} skipped (${r.skipped[0].sku} ${r.skipped[0].reason})`, n ? 'success' : 'error');
-      else showToast(`${n} plant${n === 1 ? '' : 's'} added`);
+      const name = saleById.get(saleId)?.name || 'the event';
+      if (r.skipped?.length) showToast(`${n} added to ${name} · ${r.skipped.length} skipped (${r.skipped[0].sku} ${r.skipped[0].reason})`, n ? 'success' : 'error');
+      else showToast(`${n} plant${n === 1 ? '' : 's'} added to ${name}`);
       return n > 0;
     } catch (e) {
       showToast(e.message || 'Could not add to the event', 'error');
@@ -214,10 +224,12 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
     .sort((a, b) => String(b.poolAddedAt || '').localeCompare(String(a.poolAddedAt || ''))), [items]);
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
+    const evOf = (i) => (i.saleId && openSaleIds.has(i.saleId) ? i.saleId : 'none');
     return inPool
+      .filter((i) => !eventFilter || evOf(i) === eventFilter)
       .filter((i) => filter === 'all' || (filter === 'web' ? onWebsite(i) : filter === 'notweb' ? !onWebsite(i) : readiness(i).includes(filter)))
       .filter((i) => !s || [i.saleCode, i.sku, i.name, i.variety, i.listingDetails?.title].some((f) => String(f || '').toLowerCase().includes(s)));
-  }, [inPool, q, filter]);
+  }, [inPool, q, filter, eventFilter, openSaleIds]);
   const needs = useMemo(() => ({
     web: inPool.filter(onWebsite).length,
     notweb: inPool.filter((i) => !onWebsite(i)).length,
@@ -243,6 +255,33 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
       if (r) stopSelecting();
     } finally {
       setMoving(null);
+    }
+  };
+
+  // Bulk: put the selected plants in one event (moving them out of any
+  // other upcoming one), or take them out of their events.
+  const bulkEvent = async (saleId) => {
+    if (moving) return;
+    const inOther = picked.filter((i) => i.saleId && openSaleIds.has(i.saleId) && i.saleId !== saleId);
+    const numbered = inOther.filter((i) => i.lotNumber).length;
+    if (numbered && !window.confirm(`${numbered} of them ${numbered === 1 ? 'has' : 'have'} a number in another event's lineup. ${saleId ? 'Move' : 'Take out'} anyway?`)) return;
+    setMoving('event');
+    setBulkKey(saleId ?? 'none');
+    try {
+      if (saleId) {
+        const ok = await onEventAssign(saleId, picked.map((i) => i.id), { move: true });
+        if (!ok) return;
+      } else {
+        const groups = new Map();
+        for (const i of inOther) { if (!groups.has(i.saleId)) groups.set(i.saleId, []); groups.get(i.saleId).push(i.id); }
+        if (!groups.size) { showToast('None of them are in an event'); return; }
+        for (const [sid, ids] of groups) await onEventUnassign(sid, ids);
+      }
+      setEventFor(false);
+      stopSelecting();
+    } finally {
+      setMoving(null);
+      setBulkKey(null);
     }
   };
 
@@ -401,9 +440,21 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
           )}
 
           <div className="space-y-2">
-            <div className="relative">
-              <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code, SKU or name" className="input pl-9 text-base" />
+            <div className="flex gap-2">
+              <div className="relative flex-1 min-w-0">
+                <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search code, SKU or name" className="input pl-9 text-base" />
+              </div>
+              {events.length > 0 && (
+                <select
+                  value={eventFilter} onChange={(e) => setEventFilter(e.target.value)} aria-label="Sale event"
+                  className={`input w-auto max-w-[45%] text-sm ${eventFilter ? 'border-emerald-500 bg-emerald-50' : ''}`}
+                >
+                  <option value="">Any event</option>
+                  {events.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  <option value="none">No event</option>
+                </select>
+              )}
             </div>
             <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-0.5">
               {FILTERS.map((f) => (
@@ -451,6 +502,12 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                     </button>
                   )}
                   <button
+                    type="button" onClick={() => setEventFor(true)} disabled={!!moving}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 active:bg-white/25 text-sm font-semibold disabled:opacity-40"
+                  >
+                    <CalendarDays className="w-4 h-4" /> Sale event ({picked.length})
+                  </button>
+                  <button
                     type="button" onClick={() => onPrintLabels(picked)}
                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-white/15 active:bg-white/25 text-sm font-semibold"
                   >
@@ -474,8 +531,8 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
                 <PlantCard
                   key={i.id}
                   item={i}
-                  eventName={i.saleId && openSaleIds.has(i.saleId) ? saleName.get(i.saleId) : null}
-                  openSaleIds={openSaleIds}
+                  event={i.saleId && openSaleIds.has(i.saleId) ? saleById.get(i.saleId) || null : null}
+                  pausedSaleIds={pausedSaleIds}
                   shopifyConnected={shopifyOn}
                   uploading={uploadingIds.has(i.id)}
                   selecting={selecting}
@@ -516,6 +573,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
           item={openItem}
           sales={sales}
           openSaleIds={openSaleIds}
+          pausedSaleIds={pausedSaleIds}
           shopifyConnected={shopifyOn}
           showToast={showToast}
           uploads={uploads}
@@ -524,7 +582,14 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
           onSyncShopify={(ids) => runSync({ itemIds: ids })}
           onPrintLabel={(i) => onPrintLabels([i])}
           onSetPool={setPoolFor}
+          onEventAssign={onEventAssign}
+          onEventUnassign={onEventUnassign}
         />
+      )}
+      {eventFor && (
+        <Modal title={`Sale event for ${picked.length} plant${picked.length === 1 ? '' : 's'}`} onClose={() => setEventFor(false)}>
+          <EventChoices events={events} value={undefined} busy={bulkKey} onPick={bulkEvent} />
+        </Modal>
       )}
     </div>
   );

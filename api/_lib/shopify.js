@@ -189,9 +189,15 @@ export function eventHolds(sale, now = new Date()) {
   return d >= cutoff;
 }
 
+// A website sale (platform "Website…", 2026-11-19) sells ON the website, so
+// its plants stay listed; every other holding event hides them there.
+// Mirrored by isWebsiteSale in src/forsale/pools.js.
+export const isWebsiteSale = (sale) => /^website/i.test(String(sale?.platform || '').trim());
+
+// Events that take their plants off the website right now.
 export async function holdingSaleIds(brandId) {
-  const { data } = await supabase.from('sales').select('id, status, date').eq('brandId', brandId).eq('status', 'ongoing');
-  return new Set((data || []).filter((s) => eventHolds(s)).map((s) => s.id));
+  const { data } = await supabase.from('sales').select('id, status, date, platform').eq('brandId', brandId).eq('status', 'ongoing');
+  return new Set((data || []).filter((s) => eventHolds(s) && !isWebsiteSale(s)).map((s) => s.id));
 }
 
 // What the For Sale tab shows about the connection. Never secrets.

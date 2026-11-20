@@ -136,8 +136,8 @@ export const api = {
   // = just these plants' listings; omitted = every listing that's behind.
   poolSync: ({ itemIds, force = false, dismissProblems } = {}) =>
     request('/items', { method: 'POST', body: { action: 'pool-sync', itemIds, force, dismissProblems } }),
-  eventAssign: ({ saleId, itemIds }) =>
-    request('/items', { method: 'POST', body: { action: 'event-assign', saleId, itemIds } }),
+  eventAssign: ({ saleId, itemIds, move = false }) =>
+    request('/items', { method: 'POST', body: { action: 'event-assign', saleId, itemIds, move } }),
   eventUnassign: ({ saleId, itemIds }) =>
     request('/items', { method: 'POST', body: { action: 'event-unassign', saleId, itemIds } }),
   mediaCleanup: ({ dryRun = true, days = 14 } = {}) =>

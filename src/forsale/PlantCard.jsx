@@ -1,5 +1,5 @@
 import { Camera, Video, CalendarDays, Images, Loader2, Globe, Check } from 'lucide-react';
-import { money, readiness, shopifyBadge, photosOf, onWebsite } from './pools.js';
+import { money, readiness, shopifyBadge, photosOf, onWebsite, eventStyle } from './pools.js';
 
 const TONE = {
   ok: 'bg-green-600 text-white',
@@ -12,11 +12,14 @@ const TONE = {
 // (big — it's how the packer finds the pot), name, price, what's missing,
 // and — once pushed to the website — what its listing is doing. Tap →
 // PlantSheet, or (selecting) ticks it.
-export function PlantCard({ item, eventName, openSaleIds, shopifyConnected, selecting, selected, uploading, onClick }) {
+// event: the upcoming sale event it's in (or null), shown as a chip in that
+// event kind's colour.
+export function PlantCard({ item, event, pausedSaleIds, shopifyConnected, selecting, selected, uploading, onClick }) {
   const missing = readiness(item);
   const shots = photosOf(item);
   const photoCount = shots.length;
-  const badge = onWebsite(item) ? shopifyBadge(item, openSaleIds, shopifyConnected) : null;
+  const badge = onWebsite(item) ? shopifyBadge(item, pausedSaleIds, shopifyConnected) : null;
+  const evSt = event ? eventStyle(event) : null;
   return (
     <button
       type="button"
@@ -69,9 +72,9 @@ export function PlantCard({ item, eventName, openSaleIds, shopifyConnected, sele
           <span className="text-sm font-semibold text-gray-900">{money(item.listingPrice)}</span>
           <span className="text-[10px] font-mono text-gray-400 truncate">{item.sku}</span>
         </div>
-        {eventName && (
-          <div className="flex items-center gap-1 text-[11px] text-blue-700 truncate">
-            <CalendarDays className="w-3 h-3 shrink-0" /> <span className="truncate">{eventName}</span>
+        {event && (
+          <div className={`self-start max-w-full inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium ${evSt.chip}`} title={evSt.label}>
+            <CalendarDays className="w-3 h-3 shrink-0" /> <span className="truncate">{event.name}</span>
           </div>
         )}
         {missing.length > 0 && (
