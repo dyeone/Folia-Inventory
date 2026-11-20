@@ -132,6 +132,8 @@ export const api = {
   poolStatus: () => request('/items?action=pool-status'),
   poolSet: ({ itemIds, pool }) =>
     request('/items', { method: 'POST', body: { action: 'pool-set', itemIds, pool } }),
+  // Pool plants still on the old random codes ("KM42") get A1-style ones.
+  poolRenumber: () => request('/items', { method: 'POST', body: { action: 'pool-renumber' } }),
   // Shopify both ways (orders in, listings out); server-throttled. itemIds
   // = just these plants' listings; omitted = every listing that's behind.
   poolSync: ({ itemIds, force = false, dismissProblems } = {}) =>

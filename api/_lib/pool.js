@@ -6,13 +6,13 @@
 //   'shopify'     pushed to the website — synced to the brand's Shopify
 //                 store by api/_lib/shopify.js
 // (the values predate the single pool; the 0052 check constraint keeps
-// them). Joining the pool gives the plant its short code
-// (api/_lib/saleCode.js). Sale events on the tab's calendar are ordinary
+// them). Joining the pool gives the plant its short code — A1, A2 …, a new
+// letter once the pool has been emptied (api/_lib/saleCode.js, below). Sale events on the tab's calendar are ordinary
 // `sales` rows; putting plants into one is the same staging write the Pre
 // Sale tab makes (saleId, un-numbered).
 import { supabase, seesCosts, runsForSale, hasRole } from './supabase.js';
 import { fetchAllById } from './fetchAll.js';
-import { pickSaleCodes } from './saleCode.js';
+import { CODE_LETTERS, SERIES_MAX, parseSeriesCode, seriesCode, nextSeries, seriesMax } from './saleCode.js';
 import { shopifyConfig, shopifyPublicState, reconcileShopify, pullShopifyOrders, dismissShopifyProblems, eventHolds } from './shopify.js';
 import { refreshPhotoUrls } from './itemPhotos.js';
 
@@ -91,38 +91,140 @@ export async function poolStatus(req, res, user, brandId) {
   const { error: nErr } = await supabase.from('inventory_items').select('id, "videoUrls", "staffNote"').eq('brandId', brandId).limit(1);
   return res.status(200).json({
     migrated: !error, photosMigrated: !pErr, notesMigrated: !nErr,
+    codes: await codeState(brandId).catch(() => null),
     shopify: await shopifyPublicState(brandId),
   });
 }
 
-// Give every plant in `rows` without a code a fresh one. The write is
-// guarded (saleCode still null), and a unique-index clash with a code
-// another device just took is retried with a new pick.
-async function assignCodes(brandId, rows, user) {
-  const need = rows.filter((r) => !r.saleCode);
+// ─── plant codes ────────────────────────────────────────────────────────────
+// A1, A2 … A999, then B1 … (api/_lib/saleCode.js). The brand's current
+// letter lives in app_settings `salecodes:<brand>` ({ series, startedAt });
+// the next number is one past the highest the letter has used.
+
+const CODES_NS = 'salecodes:';
+// A series that just started isn't moved on again for a minute, so two
+// phones filling an empty pool at the same moment don't skip a letter.
+const FRESH_SERIES_MS = 60 * 1000;
+
+async function codeState(brandId) {
+  const { data, error } = await supabase.from('app_settings').select('data').eq('id', CODES_NS + brandId).maybeSingle();
+  if (error) throw fail(500, error.message);
+  const d = data?.data;
+  return d && typeof d === 'object' && typeof d.series === 'string' && d.series.length === 1 && CODE_LETTERS.includes(d.series) ? d : null;
+}
+
+// A plant keeps its code while it's in the pool, or sold and waiting to
+// ship (the code is on its tag and in the order).
+const keepsCode = (r) => !r.deletedAt && (
+  (r.salePool && !r.shipmentBoxId && FOR_SALE_STATUSES.includes(r.status)) || r.status === 'sold');
+
+// Start `series` at 1. A letter comes round again after Z: its codes from
+// that earlier round are released from plants done with them (shipped,
+// trashed, out of the pool) — new numbers skip any still kept.
+async function startSeries(brandId, series, user) {
+  const rows = await fetchAllById(() => supabase.from('inventory_items')
+    .select('id, "saleCode", status, "salePool", "deletedAt", "shipmentBoxId"')
+    .eq('brandId', brandId).like('saleCode', `${series}%`));
+  const free = rows.filter((r) => parseSeriesCode(r.saleCode)?.series === series && !keepsCode(r)).map((r) => r.id);
+  for (let k = 0; k < free.length; k += 200) {
+    const { error } = await supabase.from('inventory_items').update({ saleCode: null })
+      .eq('brandId', brandId).in('id', free.slice(k, k + 200)).like('saleCode', `${series}%`);
+    if (error) throw dbFail(error);
+  }
+  const now = new Date().toISOString();
+  const { error } = await supabase.from('app_settings').upsert({
+    id: CODES_NS + brandId, data: { series, startedAt: now }, updatedAt: now, updatedBy: user.displayName,
+  });
+  if (error) throw fail(500, error.message);
+  return series;
+}
+
+// The letter codes come from now (the first ever is A).
+async function currentSeries(brandId, user) {
+  return (await codeState(brandId))?.series || startSeries(brandId, 'A', user);
+}
+
+// The plants the tab lists (in the pool, still for sale).
+const poolQuery = (brandId, cols) => supabase.from('inventory_items').select(cols)
+  .eq('brandId', brandId).not('salePool', 'is', null).is('deletedAt', null).is('shipmentBoxId', null)
+  .in('status', FOR_SALE_STATUSES);
+
+// The letter for plants joining now. The pool empty means it was cleared
+// ("after clear this pool, then start from B1"): the next letter starts.
+async function seriesForJoin(brandId, user) {
+  const st = await codeState(brandId);
+  if (!st) return startSeries(brandId, 'A', user);
+  const fresh = Date.now() - Date.parse(st.startedAt || 0) < FRESH_SERIES_MS;
+  if (fresh) return st.series;
+  const { data, error } = await poolQuery(brandId, 'id').limit(1);
+  if (error) throw dbFail(error);
+  return (data || []).length ? st.series : startSeries(brandId, nextSeries(st.series), user);
+}
+
+// Code the plants in `need` (in that order) from `series`: one past its
+// highest number, skipping any taken; past 999 the next letter starts. Each
+// write is guarded on the plant's code as read, and a clash on the unique
+// index (another phone took that code a moment ago) moves on to the next
+// number. Sets r.saleCode on each row.
+async function assignCodes(brandId, need, user, series) {
   if (!need.length) return;
-  const existing = await fetchAllById(() => supabase.from('inventory_items')
-    .select('id, "saleCode"').eq('brandId', brandId).not('saleCode', 'is', null));
-  const taken = new Set(existing.map((r) => r.saleCode));
+  const loadTaken = async () => new Set((await fetchAllById(() => supabase.from('inventory_items')
+    .select('id, "saleCode"').eq('brandId', brandId).not('saleCode', 'is', null))).map((r) => r.saleCode));
+  let taken = await loadTaken();
+  let n = seriesMax(taken, series);
+  const nextFree = async () => {
+    for (;;) {
+      n += 1;
+      if (n > SERIES_MAX) {
+        series = await startSeries(brandId, nextSeries(series), user);
+        taken = await loadTaken();
+        n = seriesMax(taken, series);
+        continue;
+      }
+      const code = seriesCode(series, n);
+      if (!taken.has(code)) return code;
+    }
+  };
   const now = new Date().toISOString();
   for (const r of need) {
     for (let attempt = 0; ; attempt++) {
-      const [code] = pickSaleCodes(taken, 1);
-      const { data, error } = await supabase.from('inventory_items')
+      const code = await nextFree();
+      let q = supabase.from('inventory_items')
         .update({ saleCode: code, modifiedAt: now, modifiedBy: user.displayName })
-        .eq('id', r.id).eq('brandId', brandId).is('saleCode', null)
-        .select('id, "saleCode"');
-      if (error && error.code === '23505' && attempt < 5) continue;
+        .eq('id', r.id).eq('brandId', brandId);
+      q = r.saleCode ? q.eq('saleCode', r.saleCode) : q.is('saleCode', null);
+      const { data, error } = await q.select('id, "saleCode"');
+      if (error && error.code === '23505' && attempt < 25) { taken.add(code); continue; }
       if (error) throw dbFail(error);
+      taken.add(code);
       if (data && data[0]) r.saleCode = data[0].saleCode;
       else {
-        // Someone else coded it first — use theirs.
+        // Someone else re-coded it first — use theirs.
         const { data: cur } = await supabase.from('inventory_items').select('"saleCode"').eq('id', r.id).maybeSingle();
         if (cur?.saleCode) r.saleCode = cur.saleCode;
       }
       break;
     }
   }
+}
+
+// POST { action: 'pool-renumber' } — plants in the pool still carrying the
+// old random codes ("KM42") get codes in the current letter, the longest in
+// the pool first. Their tags need printing again.
+export async function poolRenumber(req, res, user, brandId) {
+  requireForSaleUser(user);
+  await ensureMigrated(brandId);
+  const rows = await fetchAllById(() => poolQuery(brandId, '*'));
+  const old = rows.filter((r) => !parseSeriesCode(r.saleCode))
+    .sort((a, b) => String(a.poolAddedAt || '').localeCompare(String(b.poolAddedAt || ''))
+      || String(a.sku).localeCompare(String(b.sku), undefined, { numeric: true }));
+  if (!old.length) return res.status(200).json({ items: [] });
+  await assignCodes(brandId, old, user, await currentSeries(brandId, user));
+  const items = await rowsById(brandId, old.map((r) => r.id));
+  // Listings carry the code in their titles: website plants follow now.
+  const web = items.filter((r) => r.salePool === 'shopify').map((r) => r.id);
+  if (web.length) await followShopify(brandId, web, user);
+  return res.status(200).json({ items: items.map(stripCosts(user)) });
 }
 
 // POST { action: 'pool-set', itemIds, pool: 'palmstreet' | 'shopify' | null }
@@ -164,7 +266,20 @@ export async function poolSet(req, res, user, brandId) {
       else ok.push(r);
     }
     if (ok.length) {
-      await assignCodes(brandId, ok, user);
+      // Codes: a plant joining takes the next code of the current letter (a
+      // new letter if the pool was empty), unless it already holds one of
+      // that letter (out and back in again); one already in the pool keeps
+      // its code.
+      const joiningRows = ok.filter((r) => !r.salePool);
+      const series = joiningRows.length ? await seriesForJoin(brandId, user)
+        : ok.some((r) => !r.saleCode) ? await currentSeries(brandId, user) : null;
+      if (series) {
+        // Numbered in the order sent (the tab sends them in scan order).
+        const at = new Map(ids.map((id, i) => [id, i]));
+        const need = ok.filter((r) => !r.saleCode || (!r.salePool && parseSeriesCode(r.saleCode)?.series !== series))
+          .sort((a, b) => at.get(a.id) - at.get(b.id));
+        await assignCodes(brandId, need, user, series);
+      }
       // A plant already in the pool keeps its poolAddedAt (the tab lists
       // newest first — pushing one to the website mustn't reorder it); one
       // joining now is stamped. Each write is guarded on the plant still

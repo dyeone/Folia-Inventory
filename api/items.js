@@ -4,7 +4,7 @@ import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, SKU_SUFFIX_END_RE } fro
 import { fetchWideById } from './_lib/fetchAll.js';
 import { settleSyntheticSkus } from './_lib/syntheticSkus.js';
 import { isOpenLine, isLinkablePlant, linkPatches } from './_lib/linkLine.js';
-import { poolStatus, poolSet, poolSync, eventAssign, eventUnassign, mediaCleanup, followShopify } from './_lib/pool.js';
+import { poolStatus, poolSet, poolRenumber, poolSync, eventAssign, eventUnassign, mediaCleanup, followShopify } from './_lib/pool.js';
 import { retireShopifyListing } from './_lib/shopify.js';
 
 // Fields the client must never be able to set directly. The server owns these.
@@ -681,6 +681,7 @@ export default wrap(async (req, res) => {
   // staging from the calendar, Shopify sync, storage cleanup.
   if (action === 'pool-status' && req.method === 'GET') return poolStatus(req, res, user, brandId);
   if (action === 'pool-set' && req.method === 'POST') return poolSet(req, res, user, brandId);
+  if (action === 'pool-renumber' && req.method === 'POST') return poolRenumber(req, res, user, brandId);
   if (action === 'pool-sync' && req.method === 'POST') return poolSync(req, res, user, brandId);
   if (action === 'event-assign' && req.method === 'POST') return eventAssign(req, res, user, brandId);
   if (action === 'event-unassign' && req.method === 'POST') return eventUnassign(req, res, user, brandId);

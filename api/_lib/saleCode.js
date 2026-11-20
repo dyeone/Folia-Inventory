@@ -1,46 +1,56 @@
-// A plant's short For Sale code — "KM42": two letters then two digits. It's
-// printed big on the plant's tag and put in every listing title, so whoever
-// packs an order can find the pot on the bench at a glance. The letters skip
-// I, O and Q (read as 1, 0 and 0/O); the shape can't be mistaken for a SKU
-// (B-ANT-9759), a box tag (B-7KQ2MX) or a lineup number (042). Unique per
-// brand and never reused (unique index, migration 0052). Mirrors
-// src/forsale/saleCode.js — keep the two identical.
+// A plant's short For Sale code — "A12": a series letter, then a number
+// counting up from 1 (2026-11-20, operator: "use simpler way to mark them
+// like from A1-A999, after clear this pool, then start from B1 - B999").
+// A series runs A1, A2 … A999. Once the pool has been emptied, the next
+// plant to join starts the next letter at 1 (B1, B2 …); a series that
+// reaches 999 rolls on to the next letter too. Letters skip I, O and Q
+// (read as 1, 0 and 0) and wrap Z → A, when that letter's codes from its
+// earlier round are released first (api/_lib/pool.js startSeries).
+//
+// Printed big on the plant's tag and put in every listing title, so whoever
+// packs an order can find the pot on the bench at a glance. The shape can't
+// be mistaken for a SKU (B-ANT-9759), a box tag (B-7KQ2MX) or a lineup
+// number (042). Unique per brand (unique index, migration 0052). Plants
+// coded before 2026-11-20 carry the old random shape ("KM42"), which still
+// reads everywhere.
+//
+// Mirrors src/forsale/saleCode.js — keep the shared part identical.
 
 export const CODE_LETTERS = 'ABCDEFGHJKLMNPRSTUVWXYZ';
-export const SALE_CODE_RE = /^[A-HJ-NPR-Z]{2}\d{2,3}$/;
+export const SERIES_MAX = 999;
+const SERIES_RE = /^([A-HJ-NPR-Z])([1-9]\d{0,2})$/;
+const OLD_CODE_RE = /^[A-HJ-NPR-Z]{2}\d{2,3}$/;
 
-// "km-42", " KM 42 " → "KM42"; anything that isn't a code → ''.
+export const isSaleCode = (s) => SERIES_RE.test(s) || OLD_CODE_RE.test(s);
+
+// "a-12", " A 012 " → "A12"; "km-42" → "KM42"; anything else → ''.
 export function normalizeSaleCode(raw) {
-  const s = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-  return SALE_CODE_RE.test(s) ? s : '';
+  let s = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const m = /^([A-Z])0*(\d{1,3})$/.exec(s);
+  if (m) s = `${m[1]}${Number(m[2])}`;
+  return isSaleCode(s) ? s : '';
 }
 
-function randomCode(rand, digits) {
-  const L = CODE_LETTERS;
-  const a = L[Math.floor(rand() * L.length)];
-  const b = L[Math.floor(rand() * L.length)];
-  const n = String(Math.floor(rand() * 10 ** digits)).padStart(digits, '0');
-  return `${a}${b}${n}`;
+// "A12" → { series: 'A', n: 12 }; an old-shape code (or none) → null.
+export function parseSeriesCode(code) {
+  const m = SERIES_RE.exec(String(code || ''));
+  return m ? { series: m[1], n: Number(m[2]) } : null;
 }
 
-// `count` fresh codes, none in `taken` (a Set, updated in place). Random, not
-// sequential, so plants sitting side by side on the bench don't carry
-// near-identical codes (KM42 / KM43). Two digits until that space is 90%
-// used (~47,600 codes), then three.
-export function pickSaleCodes(taken, count, rand = Math.random) {
-  const out = [];
-  const twoDigitSpace = CODE_LETTERS.length ** 2 * 100;
-  for (let k = 0; k < count; k++) {
-    const twoUsed = [...taken].filter((c) => c.length === 4).length;
-    const digits = twoUsed < twoDigitSpace * 0.9 ? 2 : 3;
-    let code = '';
-    for (let tries = 0; tries < 500; tries++) {
-      const c = randomCode(rand, digits);
-      if (!taken.has(c)) { code = c; break; }
-    }
-    if (!code) throw new Error('Ran out of plant codes — tell the developer');
-    taken.add(code);
-    out.push(code);
+export const seriesCode = (series, n) => `${series}${n}`;
+
+// The letter after `series` (Z → A; anything unknown → A).
+export function nextSeries(series) {
+  const i = CODE_LETTERS.indexOf(String(series || ''));
+  return CODE_LETTERS[(i + 1) % CODE_LETTERS.length];
+}
+
+// The highest number used in `series` among `codes` (any iterable), 0 if none.
+export function seriesMax(codes, series) {
+  let max = 0;
+  for (const c of codes) {
+    const p = parseSeriesCode(c);
+    if (p && p.series === series && p.n > max) max = p.n;
   }
-  return out;
+  return max;
 }

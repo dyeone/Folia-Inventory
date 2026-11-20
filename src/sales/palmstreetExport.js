@@ -240,7 +240,7 @@ export function exportPoolToPalmstreet(items, { separator = 'comma' } = {}) {
   if (items.length === 0) return { ok: false, reason: 'The Palmstreet pool is empty.' };
   if (priced.length === 0) return { ok: false, reason: `None of the ${items.length} plants has a price yet.` };
   const rows = [...priced]
-    .sort((a, b) => String(a.saleCode || '').localeCompare(String(b.saleCode || '')))
+    .sort((a, b) => String(a.saleCode || '').localeCompare(String(b.saleCode || ''), undefined, { numeric: true }))
     .map(item => baseRow(item, parseFloat(item.listingPrice), { separator, title: buildPoolTitle(item) }));
   const stamp = new Date().toISOString().slice(0, 10);
   download(toCsv(rows), `palmstreet-pool-${stamp}.csv`);
