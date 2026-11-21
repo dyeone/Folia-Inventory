@@ -22,8 +22,9 @@ export function AuthScreen({ onLogin }) {
         setHasAnyUsers(hasUsers);
         if (!hasUsers) setMode('register');
       } catch (_e) {
-        setHasAnyUsers(false);
-        setMode('register');
+        // Couldn't ask (server trouble): stay on Sign in. Showing "Create
+        // the first admin account" here stranded everyone in an outage.
+        setHasAnyUsers(null);
       }
     })();
   }, []);
@@ -63,7 +64,9 @@ export function AuthScreen({ onLogin }) {
         onLogin(user);
       }
     } catch (e) {
-      setErr(e.message || 'Sign-in failed. Please try again.');
+      setErr(e.status === 0 || e.status >= 500
+        ? 'The server isn\'t responding right now — this isn\'t your password. Wait a minute and try again.'
+        : e.message || 'Sign-in failed. Please try again.');
     }
     setLoading(false);
   };

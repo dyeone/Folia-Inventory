@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useContext, useCallback, useDeferredValue, lazy, Suspense } from 'react';
+import { useState, useEffect, useMemo, useRef, useContext, useCallback, useDeferredValue, lazy, Suspense } from 'react';
 import {
   Plus, Upload, Trash2, TrendingUp, Archive, Calendar, CalendarDays, Leaf,
   Layers, Users, LogOut, Shield, User, Key, Check, Printer, Package, PackageOpen, LineChart, Truck, ShoppingCart,
@@ -136,21 +136,51 @@ export default function InventoryApp() {
     setCurrentUser(user);
   };
 
+  // Restoring the saved sign-in on open. Only a real "not signed in" answer
+  // (401 expired / 403 account off or mismatched) sends the person to the
+  // login screen. Server or connection trouble keeps the sign-in and retries
+  // (2026-11-21: a database outage logged every packer out on reload, and
+  // logging back in failed until it ended).
+  const [restoreTrouble, setRestoreTrouble] = useState('');
+  const retryRestore = useRef(null);
   useEffect(() => {
-    (async () => {
+    let stopped = false;
+    let timer = null;
+    const restore = async (tries) => {
+      clearTimeout(timer);
+      let id = null;
+      try { id = JSON.parse(localStorage.getItem('session-current-user') || 'null')?.id || null; } catch { /* unreadable → sign in */ }
+      if (!id) { setRestoreTrouble(''); setLoadingSession(false); return; }
       try {
-        const stored = localStorage.getItem('session-current-user');
-        if (stored) {
-          const { id } = JSON.parse(stored);
-          const user = await api.session(id);
-          if (user) activate(user);
+        const user = await api.session(id);
+        if (stopped) return;
+        if (user) activate(user);
+        setRestoreTrouble('');
+        setLoadingSession(false);
+      } catch (e) {
+        if (stopped) return;
+        if (e.status === 401 || e.status === 403) {
+          localStorage.removeItem('session-current-user');
+          setRestoreTrouble('');
+          setLoadingSession(false);
+          return;
         }
-      } catch (_e) {
-        localStorage.removeItem('session-current-user');
+        setRestoreTrouble(e.message || 'The server isn\'t responding');
+        timer = setTimeout(() => restore(tries + 1), Math.min(30000, 5000 * (tries + 1)));
       }
-      setLoadingSession(false);
-    })();
+    };
+    retryRestore.current = () => restore(0);
+    restore(0);
+    return () => { stopped = true; clearTimeout(timer); };
   }, []);
+
+  // Give up waiting and sign in (maybe as someone else).
+  const signInAgain = () => {
+    retryRestore.current = null;
+    localStorage.removeItem('session-current-user');
+    setRestoreTrouble('');
+    setLoadingSession(false);
+  };
 
   // Theme the whole document by the active brand. emerald-* classes resolve to
   // the brand palette via [data-brand] (see tailwind.config.js + index.css), so
@@ -189,6 +219,19 @@ export default function InventoryApp() {
   };
 
   if (loadingSession) {
+    if (restoreTrouble) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
+          <div className="max-w-sm w-full bg-white rounded-2xl shadow p-6 text-center space-y-3">
+            <div className="text-base font-semibold text-gray-900">The server isn't responding</div>
+            <p className="text-sm text-gray-600">You're still signed in — no need to log in again. This screen keeps trying and opens the app as soon as the server is back.</p>
+            <p className="text-xs text-gray-400 break-words">{restoreTrouble}</p>
+            <button type="button" onClick={() => retryRestore.current?.()} className="w-full py-2.5 rounded-xl bg-gray-900 text-white text-sm font-semibold">Try now</button>
+            <button type="button" onClick={signInAgain} className="text-xs text-gray-500 underline">Sign in as someone else</button>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-gray-500 text-sm">Loading...</div>
