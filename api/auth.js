@@ -27,12 +27,22 @@ export default wrap(async (req, res) => {
   }
 }, { sessionRequired: req => !PUBLIC_ACTIONS.has(`${req.method}:${req.method === 'GET' ? req.query?.action : req.body?.action}`) });
 
+// The database not answering is an error, never "no accounts": the sign-in
+// screen turns into "Create the first admin account" on false (2026-11-21
+// outage: packers saw a registration form and couldn't sign in).
+function databaseDown() {
+  const e = new Error('The server can\'t reach the database right now — this isn\'t your password. Try again in a minute.');
+  e.status = 503;
+  return e;
+}
+
 async function hasUsers(req, res) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);
-  const { count } = await supabase
+  const { count, error } = await supabase
     .from('users')
     .select('*', { count: 'exact', head: true });
-  res.status(200).json({ hasAnyUsers: (count ?? 0) > 0 });
+  if (error || count == null) throw databaseDown();
+  res.status(200).json({ hasAnyUsers: count > 0 });
 }
 
 async function register(req, res) {
@@ -133,11 +143,13 @@ async function login(req, res) {
     e.status = 429; throw e;
   }
 
-  const { data: user } = await supabase
+  const { data: user, error: userError } = await supabase
     .from('users')
     .select('*')
     .eq('username', normalized)
     .maybeSingle();
+  // A failed lookup isn't a wrong password (and isn't counted as one).
+  if (userError) throw databaseDown();
 
   if (!user) {
     await recordAttempt(normalized, false, ip);

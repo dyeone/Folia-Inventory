@@ -51,18 +51,26 @@ async function request(path, { method = 'GET', body, brandId: brandOverride } = 
   // polls and (more weirdly) enqueue POSTs, which res.ok flags as a
   // failure — surfacing as a red "Failed" pill on scans the bridge
   // actually completed.
-  const res = await fetch(url, {
-    method,
-    headers: finalBody ? { 'Content-Type': 'application/json' } : undefined,
-    body: finalBody ? JSON.stringify(finalBody) : undefined,
-    cache: 'no-store',
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: finalBody ? { 'Content-Type': 'application/json' } : undefined,
+      body: finalBody ? JSON.stringify(finalBody) : undefined,
+      cache: 'no-store',
+    });
+  } catch {
+    // No answer at all (offline, DNS, the request was cut off): status 0.
+    throw Object.assign(new Error('Can\'t reach the server — check the internet connection and try again'), { status: 0 });
+  }
 
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('application/json') ? await res.json().catch(() => null) : null;
 
+  // Errors carry the HTTP status, so a caller can tell "you're not signed
+  // in" (401) from "the server is having trouble" (5xx / 0).
   if (!res.ok) {
-    throw new Error(data?.error || `Request failed (${res.status})`);
+    throw Object.assign(new Error(data?.error || `Request failed (${res.status})`), { status: res.status });
   }
   return data;
 }
