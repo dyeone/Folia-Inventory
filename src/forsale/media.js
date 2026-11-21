@@ -70,6 +70,11 @@ export async function makeCoverPhoto(itemId, photoId) {
   return photoPatch(itemId, await api.reorderItemPhotos(itemId, [photoId], { forSale: true }));
 }
 
+// What kind of file a pick or a drop is: photos and videos go to their own
+// boxes (a video in the photo picker, or a mixed drop, still lands right).
+export const isImageFile = (f) => /^image\//i.test(f?.type || '') || /\.(jpe?g|png|webp|heic|heif|gif)$/i.test(f?.name || '');
+export const isVideoFile = (f) => /^video\//i.test(f?.type || '') || /\.(mp4|mov|m4v|webm|avi|3gp|mkv)$/i.test(f?.name || '');
+
 function videoType(file) {
   const t = String(file.type || '').toLowerCase();
   if (VIDEO_TYPES.includes(t)) return t;
