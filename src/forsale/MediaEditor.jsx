@@ -1,7 +1,10 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Camera, ImagePlus, Video, Loader2, Star, Trash2 } from 'lucide-react';
-import { deletePlantPhoto, makeCoverPhoto, deletePlantVideo } from './media.js';
+import { deletePlantPhoto, makeCoverPhoto, deletePlantVideo, isImageFile, isVideoFile } from './media.js';
 import { MAX_PHOTOS, MAX_VIDEOS, photosOf, photoIdOf, videosOf } from './pools.js';
+
+// Editors on screen, newest last: a file drop goes to the newest one only.
+const onScreen = [];
 
 // One plant's listing media: its photos (up to MAX_PHOTOS, the first is the
 // cover) and its videos (up to MAX_VIDEOS — one before migration 0055).
@@ -10,12 +13,17 @@ import { MAX_PHOTOS, MAX_VIDEOS, photosOf, photoIdOf, videosOf } from './pools.j
 // their turn behind photos still uploading (one photo write at a time per
 // tab), and the uploader merges the result. `onChanged` is for a video
 // delete (uploads follow Shopify via the uploader).
+//
+// Files can also be dragged in from the computer (2026-11-20, operator: "the
+// user can drag in the files"): dropped anywhere on the window while this
+// plant is open, photos go to its photos and videos to its videos.
 export function MediaEditor({ item, uploads, showToast, onMerged, onChanged }) {
   const photoRef = useRef(null);
   const videoRef = useRef(null);
   const [selected, setSelected] = useState(null);   // photo id showing its actions
   const [busyId, setBusyId] = useState(null);
   const [videoBusy, setVideoBusy] = useState(null);   // the video being deleted
+  const [dragging, setDragging] = useState(false);    // files are being dragged over the window
 
   const label = item.saleCode || item.sku;
   const photos = photosOf(item).map((url) => ({ url, id: photoIdOf(url, item.id) }));
@@ -29,17 +37,65 @@ export function MediaEditor({ item, uploads, showToast, onMerged, onChanged }) {
   const videoCount = videos.length + (multi ? videoJobs.length : 0);
   const videosFull = multi && videoCount >= MAX_VIDEOS;
 
-  const pickPhotos = (e) => {
+  // Picked or dropped files: photos to the photos, videos to the videos.
+  const addFiles = (files) => {
+    const images = files.filter(isImageFile);
+    const clips = files.filter((f) => !isImageFile(f) && isVideoFile(f));
+    const other = files.length - images.length - clips.length;
+    if (images.length) uploads.addPhotos(item, images, label);
+    if (clips.length) uploads.addVideos(item, clips, label);
+    if (other) {
+      showToast(other === 1
+        ? `${files.length === 1 ? 'That file' : 'One file'} isn't a photo or video — skipped`
+        : `${other} files aren't photos or videos — skipped`, 'error');
+    }
+  };
+  const addFilesRef = useRef(addFiles);
+  useEffect(() => { addFilesRef.current = addFiles; });
+
+  const pick = (e) => {
     const files = [...(e.target.files || [])];
     e.target.value = '';
-    if (files.length) uploads.addPhotos(item, files, label);
+    if (files.length) addFiles(files);
   };
 
-  const pickVideos = (e) => {
-    const files = [...(e.target.files || [])];
-    e.target.value = '';
-    if (files.length) uploads.addVideos(item, files, label);
-  };
+  // Drag and drop, on the whole window — so a drop that misses the tiles
+  // still lands on this plant instead of opening the file in the tab.
+  useEffect(() => {
+    const me = {};
+    onScreen.push(me);
+    let timer = null;
+    const mine = (e) => !e.defaultPrevented && onScreen[onScreen.length - 1] === me
+      && Array.from(e.dataTransfer?.types || []).includes('Files');
+    const over = (e) => {
+      if (!mine(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      setDragging(true);
+      // dragover repeats while files hover over the page; once it stops
+      // (dragged away, or cancelled) the highlight goes.
+      clearTimeout(timer);
+      timer = setTimeout(() => setDragging(false), 300);
+    };
+    const drop = (e) => {
+      if (!mine(e)) return;
+      e.preventDefault();
+      clearTimeout(timer);
+      setDragging(false);
+      const files = Array.from(e.dataTransfer.files || []);
+      if (files.length) addFilesRef.current(files);
+    };
+    window.addEventListener('dragenter', over);
+    window.addEventListener('dragover', over);
+    window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragenter', over);
+      window.removeEventListener('dragover', over);
+      window.removeEventListener('drop', drop);
+      clearTimeout(timer);
+      onScreen.splice(onScreen.indexOf(me), 1);
+    };
+  }, []);
 
   const act = async (photoId, fn, done) => {
     setBusyId(photoId);
@@ -128,14 +184,17 @@ export function MediaEditor({ item, uploads, showToast, onMerged, onChanged }) {
           {!full && (
             <button
               type="button" onClick={() => photoRef.current?.click()}
-              className="aspect-square rounded-xl border-2 border-dashed border-emerald-300 bg-emerald-50/50 text-emerald-700 flex flex-col items-center justify-center gap-1 active:bg-emerald-100"
+              className={`aspect-square rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 text-emerald-700 active:bg-emerald-100 ${
+                dragging ? 'border-emerald-500 bg-emerald-100 ring-4 ring-emerald-200' : 'border-emerald-300 bg-emerald-50/50'
+              }`}
             >
               {count ? <ImagePlus className="w-6 h-6" /> : <Camera className="w-6 h-6" />}
-              <span className="text-xs font-semibold">{count ? 'Add more' : 'Add photos'}</span>
+              <span className="text-xs font-semibold">{dragging ? 'Drop photos' : count ? 'Add more' : 'Add photos'}</span>
+              {!dragging && <span className="hidden [@media(pointer:fine)]:block text-[10px] opacity-70">or drag them here</span>}
             </button>
           )}
         </div>
-        <input ref={photoRef} type="file" accept="image/*" multiple className="hidden" onChange={pickPhotos} />
+        <input ref={photoRef} type="file" accept="image/*" multiple className="hidden" onChange={pick} />
       </div>
 
       {/* Videos */}
@@ -173,14 +232,19 @@ export function MediaEditor({ item, uploads, showToast, onMerged, onChanged }) {
           {!videosFull && (
             <button
               type="button" onClick={() => videoRef.current?.click()}
-              className="aspect-[3/4] rounded-xl border-2 border-dashed border-gray-300 bg-gray-50 text-gray-700 flex flex-col items-center justify-center gap-1 active:bg-gray-100"
+              className={`aspect-[3/4] rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 text-gray-700 active:bg-gray-100 ${
+                dragging ? 'border-gray-500 bg-gray-100 ring-4 ring-gray-200' : 'border-gray-300 bg-gray-50'
+              }`}
             >
               <Video className="w-6 h-6" />
-              <span className="text-xs font-semibold">{!videos.length && !videoJobs.length ? 'Add video' : multi ? 'Add another' : 'Replace video'}</span>
+              <span className="text-xs font-semibold">
+                {dragging ? 'Drop videos' : !videos.length && !videoJobs.length ? 'Add video' : multi ? 'Add another' : 'Replace video'}
+              </span>
+              {!dragging && <span className="hidden [@media(pointer:fine)]:block text-[10px] opacity-70">or drag them here</span>}
             </button>
           )}
         </div>
-        <input ref={videoRef} type="file" accept="video/*" multiple={multi} className="hidden" onChange={pickVideos} />
+        <input ref={videoRef} type="file" accept="video/*" multiple={multi} className="hidden" onChange={pick} />
       </div>
     </div>
   );

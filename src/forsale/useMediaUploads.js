@@ -1,8 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react';
-import { addPlantPhoto, savePlantVideo, videoProblem } from './media.js';
+import { addPlantPhoto, isImageFile, savePlantVideo, videoProblem } from './media.js';
 import { MAX_PHOTOS, MAX_VIDEOS, photosOf, videosOf } from './pools.js';
-
-const isImage = (f) => /^image\//i.test(f?.type || '') || /\.(jpe?g|png|webp|heic|heif|gif)$/i.test(f?.name || '');
 
 // Background uploads for the For Sale tab. The queue lives at module level,
 // not in the tab, so a plant's photos and video keep going up — and stay on
@@ -76,7 +74,7 @@ async function pump(lane) {
 // Queue photos for a plant (its gallery holds MAX_PHOTOS). → how many queued.
 function addPhotos(item, files, label) {
   const picked = [...(files || [])];
-  const images = picked.filter(isImage);
+  const images = picked.filter(isImageFile);
   if (images.length < picked.length) store.cbs.showToast('Only photos can go here — videos go in the video box', 'error');
   if (!images.length) return 0;
   const waiting = store.jobs.filter((j) => j.itemId === item.id && j.kind === 'photo').length;
