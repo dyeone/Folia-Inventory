@@ -319,7 +319,7 @@ export function ForSaleView({ items, sales, isBae, isAdmin, showToast, onItemsMe
         : r.reason, 'error');
       return;
     }
-    showToast(`Exported ${r.count} plants${r.unpriced ? ` · ${r.unpriced} left out (no price)` : ''}${held ? ` · ${held} in an upcoming event` : ''}${web ? ` · ${web} on the website left out` : ''}`);
+    showToast(`Exported ${r.count} plants${r.unpriced ? ` · ${r.unpriced} at $0 (no price)` : ''}${held ? ` · ${held} in an upcoming event` : ''}${web ? ` · ${web} on the website left out` : ''}`);
   };
 
   // Codes: A1, A2 … — the brand's current letter comes from the server

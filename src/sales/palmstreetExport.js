@@ -231,18 +231,21 @@ export function buildPoolTitle(item) {
   return t.length > 80 ? t.slice(0, 80) : t;
 }
 
-// The Palmstreet pool (For Sale tab): every priced plant in it as one CSV,
-// its photos + video in the Image URL cell. A plant without a price is left out
-// (a $0 row would list it at $0) and counted in `unpriced`.
+// The Palmstreet pool (For Sale tab): every plant in it as one CSV, its
+// photos + video in the Image URL cell. A plant without a price goes out at
+// $0 (2026-11-21, operator: "if no price, then export with $0") — counted in
+// `unpriced` so the toast says how many.
+const poolPrice = (item) => {
+  const v = parseFloat(item.listingPrice);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+};
 export function exportPoolToPalmstreet(items, { separator = 'comma' } = {}) {
-  const priced = items.filter(i => parseFloat(i.listingPrice) > 0);
-  const unpriced = items.length - priced.length;
   if (items.length === 0) return { ok: false, reason: 'The Palmstreet pool is empty.' };
-  if (priced.length === 0) return { ok: false, reason: `None of the ${items.length} plants has a price yet.` };
-  const rows = [...priced]
+  const unpriced = items.filter(i => !poolPrice(i)).length;
+  const rows = [...items]
     .sort((a, b) => String(a.saleCode || '').localeCompare(String(b.saleCode || ''), undefined, { numeric: true }))
-    .map(item => baseRow(item, parseFloat(item.listingPrice), { separator, title: buildPoolTitle(item) }));
+    .map(item => baseRow(item, poolPrice(item), { separator, title: buildPoolTitle(item) }));
   const stamp = new Date().toISOString().slice(0, 10);
   download(toCsv(rows), `palmstreet-pool-${stamp}.csv`);
-  return { ok: true, count: rows.length, unpriced, withVideo: priced.filter(i => videosOf(i).length).length };
+  return { ok: true, count: rows.length, unpriced, withVideo: items.filter(i => videosOf(i).length).length };
 }
