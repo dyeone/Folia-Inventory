@@ -150,11 +150,21 @@ async function combineBoxes(req, res, user, brandId) {
   }
 
   const allIds = [targetBoxId, ...sourceBoxIds];
-  // A Shopify order's box ships as that order (its tracking fulfils it in
-  // Shopify); folding it into another platform's box mixes two orders.
-  const shopifyBoxes = allIds.filter(id => id.startsWith('shopify-'));
-  if (shopifyBoxes.length && shopifyBoxes.length !== allIds.length) {
-    const e = new Error('Shopify boxes can only be combined with other Shopify boxes'); e.status = 409; throw e;
+  // A Shopify order can share a Palmstreet buyer's box (operator,
+  // 2026-11-22): its plants keep their Shopify order (item.shopify), so the
+  // box's tracking still fulfils it in Shopify (api/_lib/shopify.js
+  // pushFulfillments finds them by order, not by box). The Palmstreet box is
+  // the one kept: Validate Sales knows its Palmstreet lines only in boxes
+  // that read as Palmstreet (src/packing/platform.js), and a re-upload must
+  // still find them. TikTok and Nigel boxes never take a Shopify order.
+  const isShopifyBox = (id) => id.startsWith('shopify-');
+  if (allIds.some(isShopifyBox) && !allIds.every(isShopifyBox)) {
+    if (allIds.some(id => id.startsWith('tt') || id.startsWith('ng'))) {
+      const e = new Error('Shopify boxes combine only with Shopify or Palmstreet boxes'); e.status = 409; throw e;
+    }
+    if (isShopifyBox(targetBoxId)) {
+      const e = new Error('Keep the Palmstreet box — the Shopify order moves into it'); e.status = 409; throw e;
+    }
   }
   const { data: ships, error: shipErr } = await supabase
     .from('shipments')

@@ -445,3 +445,15 @@ test('Sync now (and the first pull with title matching) reads the last week agai
   assert.deepEqual(problems(state).map((problem) => problem.order), ['#1009']);
   assert.ok(state.tables.app_settings.find((row) => row.id === 'shopify:bae').data.lineMatchAt);
 });
+
+test('a Shopify plant combined into a Palmstreet box is fulfilled with that box\'s label, UPS when the number says so', async () => {
+  // Combine orders moved it into the buyer's Palmstreet box; the Palmstreet
+  // label's row is always stored as 'usps' (record-tracking).
+  const state = scenario({ items: [soldPlant({ shipmentBoxId: 'up777|andie.shell' })] });
+  state.tables.shipments = [{ id: 'up777|andie.shell', brandId: 'bae', trackingNumber: '1Z999AA10123456784', carrier: 'usps', carrierCode: 'palmstreet', voidedAt: null, isTestLabel: false }];
+  await pull(state);
+  const ful = requests(state, 'Ful');
+  assert.equal(ful.length, 1);
+  assert.deepEqual(ful[0].variables.fulfillment.trackingInfo, { company: 'UPS', number: '1Z999AA10123456784' });
+  assert.ok(state.tables.inventory_items[0].shopify.fulfilledAt);
+});

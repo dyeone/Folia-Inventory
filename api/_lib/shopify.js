@@ -938,6 +938,11 @@ async function ingestOrder(brandId, order, openBoxes, problems, out, user, ctx) 
 }
 
 const carrierName = (c) => (String(c || 'usps').toLowerCase() === 'ups' ? 'UPS' : 'USPS');
+// The carrier Shopify links the tracking to. A Palmstreet label's row is
+// always stored as 'usps' (api/shipments.js record-tracking), and a Shopify
+// order combined into a Palmstreet box ships under that label — so a UPS
+// number ("1Z…") says UPS whatever the row says.
+const trackingCarrier = (t) => (/^1Z[0-9A-Z]{16}$/i.test(String(t?.trackingNumber || '').trim()) ? 'UPS' : carrierName(t?.carrier));
 
 // Shopify-order plants whose box now has a tracking number: fulfil just
 // those lines in Shopify (the buyer gets the shipping email). Found by the
@@ -1025,7 +1030,7 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
       }
       const f = await gql(cfg, `mutation Ful($fulfillment: FulfillmentInput!) {
         fulfillmentCreate(fulfillment: $fulfillment) { fulfillment { id } userErrors { field message } }
-      }`, { fulfillment: { lineItemsByFulfillmentOrder: input, trackingInfo: { company: carrierName(t.carrier), number: t.trackingNumber }, notifyCustomer: true } });
+      }`, { fulfillment: { lineItemsByFulfillmentOrder: input, trackingInfo: { company: trackingCarrier(t), number: t.trackingNumber }, notifyCustomer: true } });
       const ue = userErrorText(f?.fulfillmentCreate?.userErrors);
       if (ue) throw fail(502, ue);
       const fulfillmentId = f?.fulfillmentCreate?.fulfillment?.id;
@@ -1054,7 +1059,7 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
       requirePaidForShipping(d?.order);
       const u = await gql(cfg, `mutation Trk($id: ID!, $info: FulfillmentTrackingInput!) {
         fulfillmentTrackingInfoUpdate(fulfillmentId: $id, trackingInfoInput: $info, notifyCustomer: true) { fulfillment { id } userErrors { field message } }
-      }`, { id: fulfillmentId, info: { company: carrierName(t.carrier), number: t.trackingNumber } });
+      }`, { id: fulfillmentId, info: { company: trackingCarrier(t), number: t.trackingNumber } });
       const ue = userErrorText(u?.fulfillmentTrackingInfoUpdate?.userErrors);
       if (ue) throw fail(502, ue);
       if (u?.fulfillmentTrackingInfoUpdate?.fulfillment?.id !== fulfillmentId) {

@@ -12,6 +12,7 @@ import { BoxContentBadges } from './BoxContentBadges.jsx';
 import { BuyLabelModal } from './BuyLabelModal.jsx';
 import { BulkBuyLabelsModal } from './BulkBuyLabelsModal.jsx';
 import { CombineBoxesModal } from './CombineBoxesModal.jsx';
+import { combineGroups } from './combineGroups.js';
 import { HeatCheckPanel } from './HeatCheckPanel.jsx';
 import { ShipBoxCard } from './ShipBoxCard.jsx';
 import { PrintListButton } from './PrintListButton.jsx';
@@ -1407,12 +1408,9 @@ export function PackingView({
                     const s = shipmentsByBox[b.id];
                     return !(s && !s.voidedAt);
                   });
-                  const byBuyer = new Map();
-                  for (const b of combinable) {
-                    const k = (b.buyerUsername || b.buyer || 'unknown').toLowerCase();
-                    byBuyer.set(k, (byBuyer.get(k) || 0) + 1);
-                  }
-                  const candidates = [...byBuyer.values()].filter(n => n > 1).length;
+                  // Same grouping as the modal (a Shopify box counts with its
+                  // buyer's Palmstreet box at the same address).
+                  const candidates = combineGroups(combinable).filter(g => g.boxes.length > 1).length;
                   return (
                     <button
                       type="button"
