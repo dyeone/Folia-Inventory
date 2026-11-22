@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { X, Combine, AlertCircle, Check, Loader2, ScanLine } from 'lucide-react';
 import { shortBoxCode } from '../labels/boxCode.js';
 import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
+import { combineGroups, combineRules, pickTarget, sameRecipient } from './combineGroups.js';
+import { boxPlatform } from './platform.js';
 
 // Combine several open boxes into one: every item from the other boxes moves
 // into the kept box (shipmentBoxId + denormalized recipient re-stamped, same
@@ -10,9 +12,8 @@ import { boxHoldState, boxIsLocalPickup } from './holdInfo.js';
 // combined (the label's postage is tied to that box's contents/weight — void
 // it first). The kept box keeps its own notes / hold / packaging; the merged
 // boxes' box-level metadata is left behind, so the modal warns when a merged
-// box carries any.
-
-const buyerKey = (b) => (b.buyerUsername || b.buyer || 'unknown').toLowerCase();
+// box carries any. A Shopify order's box can go into its buyer's Palmstreet
+// box (the Palmstreet box is kept — combineGroups.js).
 
 function addressOneLine(a = {}) {
   return [
@@ -35,29 +36,15 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
     return !!(s && !s.voidedAt);
   };
 
-  // Group by buyer (username-first key, same rule as the tab's grouping).
+  // Group by buyer (username-first key, same rule as the tab's grouping; a
+  // Shopify box joins its buyer's Palmstreet box at the same address).
   // Multi-box buyers sort first — those are the combine candidates.
-  const buyerGroups = useMemo(() => {
-    const map = new Map();
-    for (const b of boxes) {
-      const key = buyerKey(b);
-      if (!map.has(key)) {
-        map.set(key, {
-          key,
-          name: b.buyer || b.buyerUsername || 'Unknown buyer',
-          username: b.buyerUsername || '',
-          boxes: [],
-        });
-      }
-      map.get(key).boxes.push(b);
-    }
-    return [...map.values()].sort(
-      (a, b) => (b.boxes.length - a.boxes.length) || a.name.localeCompare(b.name),
-    );
-  }, [boxes]);
+  const buyerGroups = useMemo(() => combineGroups(boxes), [boxes]);
 
   const selectedBoxes = boxes.filter(b => selected.has(b.id));
-  const target = selectedBoxes.find(b => b.id === keepId) || selectedBoxes[0] || null;
+  // Shopify + Palmstreet: the Palmstreet box is kept, whatever was picked.
+  const rules = combineRules(selectedBoxes);
+  const target = pickTarget(selectedBoxes, keepId);
   const sources = target ? selectedBoxes.filter(b => b.id !== target.id) : [];
   // Only still-sold items move (the server enforces the same rule) —
   // already-shipped items in a partially-shipped box stay behind as history.
@@ -72,11 +59,11 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
     && sources.some(s => s.buyerAddress?.street1);
 
   const canCombine = !busy && selectedBoxes.length >= 2 && !!target
-    && moveCount > 0 && !targetAddressMissing;
+    && moveCount > 0 && !targetAddressMissing && !rules.blocked;
 
   // Cross-buyer combine is allowed (the operator may know it's the same
   // person) but loudly flagged — everything ships to the KEPT recipient.
-  const mixedRecipients = target && sources.some(s => buyerKey(s) !== buyerKey(target));
+  const mixedRecipients = target && sources.some(s => !sameRecipient(s, target));
   // Box-level metadata + item-driven flags on merged-away boxes don't carry
   // over: notes, holds (button OR hold-item), local pickup, size/weight.
   const sourcesWithMeta = sources.filter(s => {
@@ -160,6 +147,7 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
                     const labeled = hasLabel(box.id);
                     const isSelected = selected.has(box.id);
                     const isKeep = isSelected && target?.id === box.id;
+                    const keepable = rules.canKeep(box);
                     const sale = salesById?.get?.(box.saleId);
                     return (
                       <label
@@ -181,6 +169,9 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
                             <span className="font-mono text-xs text-gray-500">{shortBoxCode(box.id)}</span>
                             <span className="font-medium truncate">{box.buyer || (box.buyerUsername ? `@${box.buyerUsername}` : '(no name)')}</span>
                             <span className={`text-[10px] font-bold uppercase ${box.carrier === 'ups' ? 'text-amber-700' : 'text-blue-700'}`}>{box.carrier}</span>
+                            {boxPlatform(box.id) === 'shopify' && (
+                              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-lime-600 text-white">Shopify</span>
+                            )}
                             {labeled && (
                               <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
                                 <ScanLine className="w-3 h-3" /> has label
@@ -197,13 +188,13 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
                           <button
                             type="button"
                             onClick={(e) => { e.preventDefault(); setKeepId(box.id); setConfirming(''); }}
-                            disabled={busy}
+                            disabled={busy || !keepable}
                             className={`flex-shrink-0 text-[11px] font-semibold px-2 py-1 rounded-md border ${
                               isKeep
                                 ? 'bg-emerald-600 border-emerald-600 text-white'
-                                : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
+                                : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40'
                             }`}
-                            title="Keep this box — items from the others move into it"
+                            title={keepable ? 'Keep this box — items from the others move into it' : 'The Palmstreet box is kept — the Shopify order moves into it'}
                           >
                             {isKeep ? 'Keeping' : 'Keep'}
                           </button>
@@ -218,6 +209,21 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
         </div>
 
         <div className="border-t border-gray-200 px-4 sm:px-5 py-3 flex-shrink-0 bg-white space-y-2">
+          {rules.blocked && (
+            <div className="flex items-start gap-2 text-xs text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-600" />
+              <span>{rules.blocked}.</span>
+            </div>
+          )}
+          {rules.mixed && !rules.blocked && target && (
+            <div className="flex items-start gap-2 text-xs text-lime-900 bg-lime-50 border border-lime-200 rounded-lg px-3 py-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-lime-700" />
+              <span>
+                Shopify order{rules.orders.length === 1 ? '' : 's'} {rules.orders.join(', ') || ''} {rules.orders.length === 1 ? 'goes' : 'go'} into
+                the Palmstreet box <strong>{shortBoxCode(target.id)}</strong>. When it ships, its tracking is still sent to Shopify.
+              </span>
+            </div>
+          )}
           {mixedRecipients && (
             <div className="flex items-start gap-2 text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-600" />

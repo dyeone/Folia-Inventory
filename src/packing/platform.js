@@ -5,8 +5,11 @@
 // parseNigelSlips with an `ng…` nonce; every other box id (Palmstreet's
 // `up…` nonce, legacy formats, BAE sync, manual boxes) reads as Palmstreet.
 // The prefix is the ONLY marker — there's no column for it — so every
-// open-box merge is scoped by it: an order never folds into a box from a
-// different platform even when the same client is behind both.
+// automatic open-box merge is scoped by it: an order never folds into a box
+// from a different platform even when the same client is behind both. Only
+// a person combines across platforms: a Shopify order into its buyer's
+// Palmstreet box (combineGroups.js; the Palmstreet box is kept, so the box
+// still reads as Palmstreet).
 export const NIGEL_PREFIX = 'ng';
 // Shopify boxes are opened by the For Sale tab's Shopify sync (api/_lib/
 // shopify.js) when a paid order comes in: `shopify-<order #>|<buyer key>`.

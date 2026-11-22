@@ -16,7 +16,9 @@ import { listingTag } from './listingNumber.js';
 // platform.js) get the black TikTok mark, Nigel's BoyGardening boxes
 // (ng…) the hot-pink store mark, everything else the green Palmstreet
 // palm — the operator's rule is that platforms never share a box, so the
-// chip is the box's identity at a glance. Fixed palettes on purpose:
+// chip is the box's identity at a glance. The one exception: a Shopify
+// order combined into its buyer's Palmstreet box (CombineBoxesModal) — that
+// box shows both chips. Fixed palettes on purpose:
 // emerald-* re-themes per brand, and this mark must look the same under
 // every brand. Hot pink is a literal (#ff69b4) rather than pink-*: the
 // Anthurium chip already owns the light pink-100 palette and the packer
@@ -26,6 +28,8 @@ export function BoxContentBadges({ box, size = 'sm' }) {
   // chip says how many and
   // names them on hover, so the packer sees it before the box is sealed.
   const tags = tagItemsOf(box);
+  const platform = boxPlatform(box?.id);
+  const shopifyInside = platform !== 'shopify' && (box?.items || []).some((it) => it.shopify?.orderGid);
   let hasTc = false;
   let hasAnthurium = false;
   for (const it of (box?.items || [])) {
@@ -35,7 +39,8 @@ export function BoxContentBadges({ box, size = 'sm' }) {
   }
   return (
     <>
-      <ContentChip kind={boxPlatform(box?.id)} size={size} />
+      <ContentChip kind={platform} size={size} />
+      {shopifyInside && <ContentChip kind="shopify" size={size} title="Has a Shopify order in it — its tracking goes to Shopify when the box ships" />}
       {tags.length > 0 && (
         <ContentChip
           kind="tags"
@@ -56,7 +61,7 @@ const CHIP_PALETTES = {
   tiktok:     { bg: 'bg-black',      text: 'text-white',      ring: 'ring-gray-700',   Icon: Music2,   label: 'TikTok', iconClass: 'text-cyan-300' },
   nigel:      { bg: 'bg-[#ff69b4]',  text: 'text-white',      ring: 'ring-[#ff1493]',  Icon: Store,    label: 'Nigel', title: "Nigel's order (BoyGardening) — never combined with other boxes" },
   palmstreet: { bg: 'bg-green-100',  text: 'text-green-800',  ring: 'ring-green-300',  Icon: Palmtree, label: 'PS', title: 'Palmstreet order' },
-  shopify:    { bg: 'bg-lime-600',   text: 'text-white',      ring: 'ring-lime-700',   Icon: ShoppingBag, label: 'Shopify', title: 'Shopify order — never combined with Palmstreet boxes' },
+  shopify:    { bg: 'bg-lime-600',   text: 'text-white',      ring: 'ring-lime-700',   Icon: ShoppingBag, label: 'Shopify', title: 'Shopify order' },
   tags:       { bg: 'bg-amber-400',  text: 'text-amber-950',  ring: 'ring-amber-500',  Icon: Tag,      label: 'Tags' },
 };
 

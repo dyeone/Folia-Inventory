@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test:packing": "node --test src/packing/listingNumber.test.js",
+    "test:packing": "node --test src/packing/listingNumber.test.js src/packing/combineGroups.test.js",
     "test:shopify": "node --experimental-test-module-mocks --test api/_lib/shopify.test.js api/_lib/shopifyMatch.test.js",
     "preview": "vite preview"
   },
