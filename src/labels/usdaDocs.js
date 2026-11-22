@@ -19,6 +19,7 @@
 
 import { shortBoxCode } from './boxCode.js';
 import { printGeneratedPdf } from '../packing/labelPdf.js';
+import { listingText } from '../packing/listingNumber.js';
 
 // Pure black / pure white only — both documents may land on a 1-bit
 // thermal printer, where any grey or colour dithers into mud.
@@ -355,7 +356,8 @@ export async function buildUsdaSlipPdf(box, shipment) {
     }
     const price = parseFloat(it.salePrice) || 0;
     subtotal += price;
-    const name = [it.lotNumber, it.name, it.variety && it.variety !== it.name ? `– ${it.variety}` : '']
+    // The number the buyer's order showed: lineup # or For Sale code.
+    const name = [listingText(it), it.name, it.variety && it.variety !== it.name ? `– ${it.variety}` : '']
       .filter(Boolean).join(' ');
     pdf.setFont('helvetica', 'bold'); pdf.setFontSize(7.5);
     const nameFit = (pdf.splitTextToSize(name, cols.sku - cols.item - 0.08)[0] || '').replace(/\s[–-]$/, '');

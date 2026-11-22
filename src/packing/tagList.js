@@ -1,4 +1,5 @@
 import { shortBoxCode } from '../labels/boxCode.js';
+import { listingText, compareListing } from './listingNumber.js';
 
 // Plants that ship with a tag: OUR OWN plants the buyer paid $100 or more
 // for. Consignment plants (sold for a seller — sellerId set, SKU carries the
@@ -38,7 +39,10 @@ export function buildTagRows(boxes) {
     const buyer = box.recipientName || box.buyer || box.items?.[0]?.buyer || '';
     for (const item of tagItemsOf(box)) {
       rows.push({
-        lot: item.lotNumber ? String(item.lotNumber) : '',
+        // The number on the plant's tag: lineup # or For Sale code,
+        // whichever it was listed under last (listingNumber.js).
+        lot: listingText(item),
+        item,
         sku: isPlaceholder(item.sku) ? '' : (item.sku || ''),
         species: item.variety || '',
         name: item.name || '',
@@ -49,13 +53,9 @@ export function buildTagRows(boxes) {
       });
     }
   }
-  rows.sort((a, b) => {
-    const la = parseInt(a.lot, 10), lb = parseInt(b.lot, 10);
-    if (Number.isFinite(la) && Number.isFinite(lb) && la !== lb) return la - lb;
-    if (Number.isFinite(la) !== Number.isFinite(lb)) return Number.isFinite(la) ? -1 : 1;
-    return a.box.localeCompare(b.box) || a.sku.localeCompare(b.sku);
-  });
-  return rows;
+  rows.sort((a, b) => compareListing(a.item, b.item)
+    || a.box.localeCompare(b.box) || a.sku.localeCompare(b.sku));
+  return rows.map(({ item, ...row }) => row);
 }
 
 export const TAG_COLUMNS = [

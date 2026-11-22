@@ -36,6 +36,7 @@ import { findBySaleCode } from '../forsale/saleCode.js';
 import { tracksMatch, looksLikeTracking } from '../labels/tracking.js';
 import { boxHoldState, boxHasHoldItem, boxIsLocalPickup, isLocalPickupText, weekHoldUntil } from './holdInfo.js';
 import { findDupeLots } from './dupeLots.js';
+import { listingNumber, listingTitle, shownLot } from './listingNumber.js';
 import { resolveBoxCarrier, derivedBoxCarrier, isAnthuriumItem, hasPaidNextDay, boxUpsServiceKey, isNextDayService } from './carrier.js';
 import { compareBoxesBySize, boxValue } from './boxSort.js';
 import { useIsMobile } from '../ui/useIsMobile.js';
@@ -545,7 +546,7 @@ export function PackingView({
     for (const g of groups) {
       for (const b of g.boxes) {
         if (b.id === excludeBoxId) continue;
-        if (b.items.some(i => i.status === 'sold' && !i.packedAt && parseInt(i.lotNumber, 10) === lot)) return b;
+        if (b.items.some(i => i.status === 'sold' && !i.packedAt && shownLot(i) === lot)) return b;
       }
     }
     return null;
@@ -813,6 +814,8 @@ export function PackingView({
       // Lowercased to match the query normalization (manual lots can carry
       // letters).
       if (i.lotNumber && String(i.lotNumber).trim().toLowerCase() === searchLower) return true;
+      // For Sale code ("A27") — exact too.
+      if (i.saleCode && String(i.saleCode).trim().toLowerCase() === searchLower) return true;
     }
     return false;
   };
@@ -2251,8 +2254,8 @@ function BoxItemsList({ box, salesById, onTogglePacked, dupeLots, findDupeLotBox
                   onClick={() => {
                     // Collided lineup number — confirm with the # and the
                     // other open box carrying it before packing on a bare #.
-                    const lot = parseInt(item.lotNumber, 10);
-                    if (dupeLots?.has(lot)) {
+                    const lot = shownLot(item);
+                    if (lot != null && dupeLots?.has(lot)) {
                       const other = findDupeLotBox?.(lot, box.id);
                       const where = other
                         ? `box ${shortBoxCode(other.id)}${other.buyer ? ` (${other.buyer})` : ''}`
@@ -2270,14 +2273,14 @@ function BoxItemsList({ box, salesById, onTogglePacked, dupeLots, findDupeLotBox
                 </button>
               )
             )}
-            {item.lotNumber && (
+            {listingNumber(item) && (
               <span
                 className={`shrink-0 self-center min-w-[1.9rem] px-1.5 py-0.5 rounded-md text-sm font-extrabold text-center tabular-nums ${
                   isPacked ? 'bg-gray-100 text-gray-400' : 'bg-blue-600 text-white'
                 }`}
-                title="Lineup number — find the plant labelled with this #"
+                title={listingTitle(item)}
               >
-                {item.lotNumber}
+                {listingNumber(item).text}
               </span>
             )}
             <div className="min-w-0 flex-1">
@@ -2572,7 +2575,7 @@ function BoxRow({
     // ONE confirm for the whole batch when any target's lineup number is
     // also open elsewhere — those #s need a wk-tag check before bulk-packing.
     const collided = [...new Set(
-      targets.map(i => parseInt(i.lotNumber, 10)).filter(lot => dupeLots?.has(lot)),
+      targets.map(i => shownLot(i)).filter(lot => lot != null && dupeLots?.has(lot)),
     )];
     if (collided.length > 0 && !window.confirm(
       `#${collided.join(', #')} ${collided.length === 1 ? 'is' : 'are'} also on other unpacked plants. Check the wk tag on those labels — pack all anyway?`,
