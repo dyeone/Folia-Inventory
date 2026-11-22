@@ -144,8 +144,8 @@ export const api = {
   poolRenumber: () => request('/items', { method: 'POST', body: { action: 'pool-renumber' } }),
   // Shopify both ways (orders in, listings out); server-throttled. itemIds
   // = just these plants' listings; omitted = every listing that's behind.
-  poolSync: ({ itemIds, force = false, dismissProblems } = {}) =>
-    request('/items', { method: 'POST', body: { action: 'pool-sync', itemIds, force, dismissProblems } }),
+  poolSync: ({ itemIds, force = false, dismissProblems, ordersOnly = false } = {}) =>
+    request('/items', { method: 'POST', body: { action: 'pool-sync', itemIds, force, dismissProblems, ordersOnly } }),
   eventAssign: ({ saleId, itemIds, move = false }) =>
     request('/items', { method: 'POST', body: { action: 'event-assign', saleId, itemIds, move } }),
   eventUnassign: ({ saleId, itemIds }) =>

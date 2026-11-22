@@ -3,7 +3,7 @@ import {
   Package, AlertCircle, ArrowLeft, PackageOpen, ChevronRight, Upload,
   Truck, Pencil, Check, X, Loader2, Trash2, Printer, ScanLine, Plus,
   Receipt, Search, Copy, RotateCcw, CheckCircle2, Tag, MapPin, Clock,
-  ShoppingCart, Combine, Leaf, FileText, Store, Download,
+  ShoppingCart, Combine, Leaf, FileText, Store, Download, ShoppingBag, RefreshCw,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { printUsdaSticker, printUsdaSlip } from '../labels/usdaDocs.js';
@@ -82,7 +82,7 @@ export function PackingView({
   inventoryItems, sales,
   onShipBox, onUnshipBox, onDeleteAllOpenBoxes, onDeleteBox, onDeleteBoxes, onPrintBoxLabels, onPrintItemLabels, onTogglePacked,
   setConfirmDialog,
-  isAdmin, onRefreshItems, settingsVersion = 0,
+  isAdmin, onRefreshItems, settingsVersion = 0, onSyncShopify = null,
 }) {
   // Admin-only modal for creating a box by hand (no Palmstreet upload
   // involved). Sits next to the existing Print box labels button. The
@@ -101,6 +101,11 @@ export function PackingView({
   // then becomes an open (hot-pink, ng…) box of placeholder items with the
   // slip page stored on the box for the packer to print.
   const [nigelImportOpen, setNigelImportOpen] = useState(false);
+
+  // Shopify orders now (they also come in on their own every minute or two
+  // while this tab is open): paid orders become boxes below; a line no plant
+  // could be found for comes in as a purple placeholder to scan a plant onto.
+  const [shopifySyncing, setShopifySyncing] = useState(false);
 
   // Admin-only modal for editing items in an existing open box: scan
   // to add, trash icon per row to remove. State holds the box being
@@ -244,9 +249,36 @@ export function PackingView({
   const [combineOpen, setCombineOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
-  const showToast = (msg) => {
+  const showToast = (msg, ms) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 2500);
+    setTimeout(() => setToast(null), typeof ms === 'number' ? ms : 2500);
+  };
+
+  const syncShopify = async () => {
+    if (!onSyncShopify || shopifySyncing) return;
+    setShopifySyncing(true);
+    try {
+      const r = await onSyncShopify();
+      const o = r?.orders || {};
+      const n = (k, word) => `${k} ${word}${k === 1 ? '' : 's'}`;
+      if (r?.configured === false) showToast('Shopify isn\'t connected for this brand');
+      else if (o.error) showToast(`Shopify orders: ${o.error}`, 6000);
+      else if (o.busy) showToast('Shopify is already syncing — try again in a minute', 4000);
+      else if (o.skipped) showToast('Shopify orders were just checked — try again in a minute', 4000);
+      else {
+        const sold = o.soldIds?.length || 0;
+        const lines = o.placeholders || 0;
+        if (!sold && !lines) showToast(`Shopify: no new orders (${n(o.ingested || 0, 'order')} checked)`, 4000);
+        else showToast(`Shopify: ${[
+          sold && `${n(sold, 'plant')} sold`,
+          lines && `${n(lines, 'line')} without a plant (purple — scan the pot onto it when packing)`,
+        ].filter(Boolean).join(' · ')} — boxes are below`, 7000);
+      }
+    } catch (e) {
+      showToast(e.message || 'Shopify sync failed', 5000);
+    } finally {
+      setShopifySyncing(false);
+    }
   };
 
   // Keep the always-on scan strip focused whenever it's actually on screen:
@@ -938,7 +970,20 @@ export function PackingView({
         <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
           <Package className="w-5 h-5 text-emerald-600" /> Shipping
         </h2>
-        <div className="shrink-0 flex items-center gap-2">
+        <div className="min-w-0 flex items-center gap-2 flex-wrap">
+          {onSyncShopify && (
+            <button
+              type="button"
+              onClick={syncShopify}
+              disabled={shopifySyncing}
+              title="Bring in Shopify orders now — each paid order becomes a box here (they also come in on their own every minute or two)"
+              className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-2 rounded-lg border border-lime-600 text-lime-800 bg-white hover:bg-lime-50 active:bg-lime-100 disabled:opacity-60"
+            >
+              {shopifySyncing ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShoppingBag className="w-4 h-4 text-lime-700" />}
+              {shopifySyncing ? 'Checking Shopify…' : 'Shopify orders'}
+              {!shopifySyncing && <RefreshCw className="w-3.5 h-3.5 text-lime-700" />}
+            </button>
+          )}
           {/* Upload Palmstreet/Shippo label PDFs → auto-match to boxes and
               store each tracking number. */}
           <button

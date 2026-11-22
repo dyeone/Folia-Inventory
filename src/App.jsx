@@ -1585,6 +1585,11 @@ function StaffOrAdminInventory() {
               const fresh = await api.getItems();
               applyItemsFresh(fresh);
             }}
+            onSyncShopify={shopifyOn ? async () => {
+              const r = await api.poolSync({ force: true, ordersOnly: true });
+              if (r?.orders?.changedIds?.length) applyItemsFresh(await api.getItems());
+              return r;
+            } : null}
             setConfirmDialog={setConfirmDialog}
             onPrintBoxLabels={(boxes) => setBoxLabelBoxes(boxes)}
             onPrintItemLabels={(items) => setLabelItems(items)}
