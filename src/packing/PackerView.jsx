@@ -12,6 +12,7 @@ import { boxHoldState, boxIsLocalPickup, isHoldItem } from './holdInfo.js';
 import { loadSweepMarks, saveSweepMarks, SWEEP_KEY } from './holdSweep.js';
 import { heatFlagsFresh, scanRecipientHeat } from './heatCheck.js';
 import { findDupeLots } from './dupeLots.js';
+import { listingNumber, listingText, listingTag, listingTitle, shownLot, compareListing } from './listingNumber.js';
 import { resolveBoxCarrier } from './carrier.js';
 import { CameraScanner } from './CameraScanner.jsx';
 import { PrinterSettingsSheet } from './PrinterSettingsSheet.jsx';
@@ -629,7 +630,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     // The wrap station's locate list: every unwrapped plant of the week in
     // lot-number order (benches are walked by lineup number); un-numbered
     // rows sink to the bottom.
-    rows.sort((a, b) => (parseInt(a.item.lotNumber, 10) || 999999) - (parseInt(b.item.lotNumber, 10) || 999999));
+    rows.sort((a, b) => compareListing(a.item, b.item));
     return { total, packed, boxesLeft, nextId, rows, boxIds };
   }, [openBoxes, holdByBox, noteByBox]);
 
@@ -1055,9 +1056,9 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
       );
       if (other) {
         const scanned = other.items.find(i => normalizeSku(i.sku) === sku);
-        const lot = parseInt(scanned?.lotNumber, 10);
-        const needed = Number.isFinite(lot)
-          ? activeBox.items.find(i => i.status === 'sold' && !i.packedAt && parseInt(i.lotNumber, 10) === lot)
+        const lot = shownLot(scanned);
+        const needed = lot != null
+          ? activeBox.items.find(i => i.status === 'sold' && !i.packedAt && shownLot(i) === lot)
           : null;
         if (needed) {
           if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
@@ -1085,8 +1086,8 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
   // be acknowledged before packing on the bare #.
   const handleMarkPacked = async (item) => {
     if (item.packedAt || item.status !== 'sold') return;
-    const lot = parseInt(item.lotNumber, 10);
-    if (dupeLots.has(lot) && !window.confirm(
+    const lot = shownLot(item);
+    if (lot != null && dupeLots.has(lot) && !window.confirm(
       `#${lot} is also on another unpacked plant. Check the wk tag on the label — pack this one anyway?`,
     )) return;
     const label = item.name?.trim() || item.sku || 'item';
@@ -1105,7 +1106,8 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     if (plantPrintBusyRef.current.has(item.id)) { showToast('Already printing that label…', 2000); return; }
     const needMutex = printDests.itemlabel === 'ipad';
     if (needMutex && printing) { showToast('Printer is busy — try again in a moment', 2500); return; }
-    showToast(`Printing label${item.lotNumber ? ` #${item.lotNumber}` : ''}…`, 1800);
+    const num = listingTag(item, '');
+    showToast(`Printing label${num ? ` ${num}` : ''}…`, 1800);
     plantPrintBusyRef.current.add(item.id);
     if (needMutex) setPrinting('itemlabel');
     try {
@@ -1137,7 +1139,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
         return;
       }
       if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
-      const lot = wrapRow?.item.lotNumber ? `#${wrapRow.item.lotNumber} · ` : '';
+      const lot = listingTag(wrapRow?.item);
       showToast(`⚠ Wrong label — you're wrapping ${lot}${activeWrap.sku}, but this scan reads ${raw.slice(0, 24)}. Fix the label, or Cancel on the wrap card.`, 6000);
       return;
     }
@@ -1230,7 +1232,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
       } else {
         if (navigator.vibrate) navigator.vibrate(30);
         const take = hit.quantity > 1 ? ` — take all ${hit.quantity}` : '';
-        showToast(`Found ${hit.lotNumber ? `#${hit.lotNumber} · ` : ''}${sku}${take} → ${pickup ? 'pickup' : 'hold'} shelf (box ${box.code})`, 2600);
+        showToast(`Found ${listingTag(hit)}${sku}${take} → ${pickup ? 'pickup' : 'hold'} shelf (box ${box.code})`, 2600);
       }
       return;
     }
@@ -1355,7 +1357,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
       carrier: box.carrier,
       items: box.items.map(i => ({
         id: i.id, sku: i.sku, name: i.name, variety: i.variety,
-        quantity: i.quantity, lotNumber: i.lotNumber, notes: i.notes,
+        quantity: i.quantity, lotNumber: i.lotNumber, listing: listingText(i), notes: i.notes,
         packedAt: i.packedAt, status: i.status,
       })),
     };
@@ -1733,7 +1735,7 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
 // packer is holding a pot and a scanner.
 function LinkPlantSheet({ offer, busy, onPick, onCancel }) {
   const { plant, candidates, inBox, more, note } = offer;
-  const lot = plant.lotNumber ? `#${plant.lotNumber} · ` : '';
+  const lot = listingTag(plant);
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center" onClick={onCancel}>
       <div className="bg-white w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
@@ -1940,9 +1942,9 @@ function WrapCard({ wrap, wrapItem, printing, onReprint, onCancel }) {
     <div className="flex-shrink-0 px-3 sm:px-5 pt-3">
       <div className="max-w-5xl mx-auto rounded-xl border-2 border-amber-400 bg-amber-50 px-3.5 py-3 flex items-center gap-3">
         <span className="text-2xl shrink-0" aria-hidden>🌯</span>
-        {wrapItem?.lotNumber && (
+        {listingNumber(wrapItem) && (
           <span className="shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-xl font-extrabold text-center tabular-nums bg-amber-500 text-white">
-            {wrapItem.lotNumber}
+            {listingNumber(wrapItem).text}
           </span>
         )}
         <div className="flex-1 min-w-0">
@@ -2034,7 +2036,7 @@ function WrapStationPane({ rows, heatByBox, packed, total, wrap, wrapItem, dupeL
             {rows.map(({ item, box }) => {
               const wrapping = wrap?.itemId === item.id;
               const noBarcode = !item.sku || /^(UNMATCHED|DBL)-/i.test(item.sku);
-              const isDupe = !!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10));
+              const isDupe = !!dupeLots && dupeLots.has(shownLot(item));
               return (
                 <div
                   key={item.id}
@@ -2043,14 +2045,14 @@ function WrapStationPane({ rows, heatByBox, packed, total, wrap, wrapItem, dupeL
                     wrapping ? 'border-amber-400 ring-2 ring-amber-300' : 'border-blue-200'
                   }`}
                 >
-                  {item.lotNumber && (
+                  {listingNumber(item) && (
                     <span
                       className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums bg-blue-600 text-white ${
                         isDupe ? 'ring-2 ring-red-500' : ''
                       }`}
-                      title="Lineup number — find the plant labelled with this #"
+                      title={listingTitle(item)}
                     >
-                      {item.lotNumber}
+                      {listingNumber(item).text}
                     </span>
                   )}
                   <div className="flex-1 min-w-0">
@@ -2138,14 +2140,14 @@ function SweepPlantRow({ item, pickup, boxCode, isFound, isDupe, onToggleFound }
       {isFound
         ? <Check className="w-5 h-5 text-emerald-600 shrink-0" />
         : <div className={`w-5 h-5 rounded-full border-2 shrink-0 ${pickup ? 'border-violet-300' : 'border-amber-300'}`} />}
-      {item.lotNumber && (
+      {listingNumber(item) && (
         <span
           className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums ${
             isFound ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 text-white'
           } ${isDupe && !isFound ? 'ring-2 ring-red-500' : ''}`}
-          title="Lineup number — find the plant labelled with this #"
+          title={listingTitle(item)}
         >
-          {item.lotNumber}
+          {listingNumber(item).text}
         </span>
       )}
       <div className="flex-1 min-w-0">
@@ -2209,7 +2211,7 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
   // rows sink to the bottom.
   const flatPlants = sweepBoxes
     .flatMap(({ box, plants, pickup }) => plants.map(item => ({ item, box, pickup })))
-    .sort((a, b) => (parseInt(a.item.lotNumber, 10) || 999999) - (parseInt(b.item.lotNumber, 10) || 999999));
+    .sort((a, b) => compareListing(a.item, b.item));
   // Pickup boxes never ship — their date line must not say so. A pickup box
   // that's ALSO on hold shows when the buyer can collect.
   const holdLabel = (hold, pickup) => {
@@ -2289,7 +2291,7 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
                   pickup={pickup}
                   boxCode={box.code}
                   isFound={!!marks[item.id]}
-                  isDupe={!!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10))}
+                  isDupe={!!dupeLots && dupeLots.has(shownLot(item))}
                   onToggleFound={onToggleFound}
                 />
               ))}
@@ -2323,7 +2325,7 @@ function SweepPane({ sweepBoxes, marks, found, total, dupeLots, onToggleFound, o
                       item={item}
                       pickup={pickup}
                       isFound={!!marks[item.id]}
-                      isDupe={!!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10))}
+                      isDupe={!!dupeLots && dupeLots.has(shownLot(item))}
                       onToggleFound={onToggleFound}
                     />
                   ))}
@@ -2598,7 +2600,7 @@ function BoxPane({ box, assignedTracking, note, insulate, dupeLots, onMarkPacked
                 {tagPlants.length === 1 ? '1 PLANT NEEDS A TAG' : `${tagPlants.length} PLANTS NEED TAGS`} — our own plants sold for ${TAG_PRICE_MIN}+
               </span>
               <div className="text-sm font-semibold break-words">
-                {tagPlants.map((t) => `${t.lotNumber ? `#${t.lotNumber} ` : ''}${[(t.name || '').trim(), (t.variety || '').trim()].filter(Boolean).join(' ') || t.sku || 'plant'} ($${parseFloat(t.salePrice).toFixed(0)})`).join(' · ')}
+                {tagPlants.map((t) => `${listingTag(t, ' ')}${[(t.name || '').trim(), (t.variety || '').trim()].filter(Boolean).join(' ') || t.sku || 'plant'} ($${parseFloat(t.salePrice).toFixed(0)})`).join(' · ')}
               </div>
             </div>
           </div>
@@ -2911,7 +2913,7 @@ function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots, nigel = fal
   const showManualPack = isUnmatched && !isPacked && !!onMarkPacked;
   // Same lineup number open on another unpacked item — the bare # can't be
   // trusted, only the label's wk tag can.
-  const isDupe = !isPacked && !!dupeLots && dupeLots.has(parseInt(item.lotNumber, 10));
+  const isDupe = !isPacked && !!dupeLots && dupeLots.has(shownLot(item));
 
   // Nigel's order lines are placeholders by design (his products aren't in
   // our inventory): hot pink, not the purple "unmatched" flag.
@@ -2927,14 +2929,14 @@ function ItemCard({ item, onMarkPacked, onPrintPlantLabel, dupeLots, nigel = fal
         {isPacked
           ? <Check className={`w-6 h-6 ${family.icon} shrink-0`} />
           : <div className={`w-6 h-6 rounded-full border-2 ${family.ring} shrink-0`} />}
-        {item.lotNumber && (
+        {listingNumber(item) && (
           <span
             className={`shrink-0 min-w-[2.5rem] px-1.5 py-0.5 rounded-lg text-xl font-extrabold text-center tabular-nums ${
               isPacked ? 'bg-gray-200 text-gray-400' : 'bg-blue-600 text-white'
             } ${isDupe ? 'ring-2 ring-red-500' : ''}`}
-            title="Lineup number — find the plant labelled with this #"
+            title={listingTitle(item)}
           >
-            {item.lotNumber}
+            {listingNumber(item).text}
           </span>
         )}
         <div className="flex-1 min-w-0">
@@ -2998,7 +3000,7 @@ function PhoneHandoffOverlay({ box, onClose }) {
   const ql = q.trim().toLowerCase();
   const filtered = ql
     ? items.filter(i =>
-        [i.sku, i.name, i.variety, i.lotNumber].filter(Boolean).join(' ').toLowerCase().includes(ql))
+        [i.sku, i.name, i.variety, i.lotNumber, i.listing].filter(Boolean).join(' ').toLowerCase().includes(ql))
     : items;
   const total = items.length;
 
@@ -3056,14 +3058,14 @@ function PhoneHandoffOverlay({ box, onClose }) {
                   {packed
                     ? <Check className="w-6 h-6 text-emerald-600 shrink-0" />
                     : <div className="w-6 h-6 rounded-full border-2 border-blue-300 shrink-0" />}
-                  {it.lotNumber && (
+                  {(it.listing ?? it.lotNumber) && (
                     <span
                       className={`shrink-0 min-w-[2.25rem] px-1.5 py-0.5 rounded-lg text-lg font-extrabold text-center tabular-nums ${
                         packed ? 'bg-gray-100 text-gray-400' : 'bg-blue-600 text-white'
                       }`}
-                      title="Lineup number — find the plant labelled with this #"
+                      title="The number on the plant's tag"
                     >
-                      {it.lotNumber}
+                      {it.listing ?? it.lotNumber}
                     </span>
                   )}
                   <div className="flex-1 min-w-0">

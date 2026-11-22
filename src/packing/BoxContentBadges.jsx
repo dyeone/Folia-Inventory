@@ -1,6 +1,7 @@
 import { Sprout, Flower2, Music2, Palmtree, Store, Tag, ShoppingBag } from 'lucide-react';
 import { boxPlatform } from './platform.js';
 import { tagItemsOf, TAG_PRICE_MIN } from './tagList.js';
+import { listingTag } from './listingNumber.js';
 
 // Small inline chips marking the contents of a box. Used in the
 // Shipping tab (admin Ready/Shipped cards) and on the packer's mobile
@@ -40,7 +41,7 @@ export function BoxContentBadges({ box, size = 'sm' }) {
           kind="tags"
           size={size}
           label={`${tags.length} tag${tags.length === 1 ? '' : 's'}`}
-          title={`Our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't): ${tags.map((t) => `${t.lotNumber ? `#${t.lotNumber} ` : ''}${t.name || t.sku || 'plant'} ($${parseFloat(t.salePrice).toFixed(0)})`).join(', ')}`}
+          title={`Our own plants sold for $${TAG_PRICE_MIN}+ ship with a tag (consignment plants don't): ${tags.map((t) => `${listingTag(t, ' ')}${t.name || t.sku || 'plant'} ($${parseFloat(t.salePrice).toFixed(0)})`).join(', ')}`}
         />
       )}
       {hasTc && <ContentChip kind="tc" size={size} />}

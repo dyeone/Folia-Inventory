@@ -8,8 +8,9 @@
 // verdict below is about the freshest data.
 import { normalizeSku, shortBoxCode } from '../labels/boxCode.js';
 import { skuPrefixForBrand } from '../constants.js';
+import { listingTag } from './listingNumber.js';
 
-const lotTag = (i) => (i?.lotNumber ? `#${i.lotNumber} · ` : '');
+const lotTag = (i) => listingTag(i);
 
 // sku: the normalized scanned SKU. items: the active brand's live rows.
 // activeBrand / brands: AuthContext's ids and [{ id, name }].

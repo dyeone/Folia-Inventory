@@ -1,6 +1,7 @@
 import QRCode from 'qrcode';
 import { jsPDF } from 'jspdf';
 import { isSaleCode } from '../forsale/saleCode.js';
+import { codeIsNewer } from '../packing/listingNumber.js';
 
 // The 2"×1" plant-label PDF builder plus its display helpers, in their own
 // module (like boxLabelPdf.js) so non-component code — LabelSheet's preview,
@@ -40,10 +41,13 @@ export function codeStr(item) {
 //           Sale tab);
 //   'lot'   the lineup number fills the left column (lives; Pre Sale);
 //   'plain' name, big SKU, QR across the label.
+// prefer 'latest' (the packer's bench prints): whichever of the two the
+// plant was listed under last — the number its Shipping line shows
+// (src/packing/listingNumber.js).
 export function labelLayout(item, prefer = 'lot') {
   const code = codeStr(item);
   const lot = lotStr(item);
-  if (code && (!lot || prefer === 'code')) return 'code';
+  if (code && (!lot || prefer === 'code' || (prefer === 'latest' && codeIsNewer(item)))) return 'code';
   return lot ? 'lot' : 'plain';
 }
 
@@ -335,7 +339,8 @@ export function qrDataUrl(canvas, value) {
 // default empty, so the consignment seller line is omitted and the WK chip
 // falls back to soldAt — same week as the sale for anything sold in a live.
 // prefer: 'code' prints every coded plant with the code layout (the For
-// Sale tab's tags), else a lineup number wins (labelLayout).
+// Sale tab's tags); 'latest' the number the plant was listed under last
+// (the packer's bench); else a lineup number wins (labelLayout).
 export function buildItemLabelPdf(items, sellerNameById = new Map(), saleById = new Map(), { prefer = 'lot' } = {}) {
   const pdf = new jsPDF({
     unit: 'in',

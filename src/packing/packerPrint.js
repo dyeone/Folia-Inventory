@@ -386,7 +386,7 @@ export async function printItemLabels(items, dest, showToast) {
         return false;
       }
       for (let i = 0; i < items.length; i += LABELS_PER_JOB) {
-        const pdf = buildItemLabelPdf(items.slice(i, i + LABELS_PER_JOB));
+        const pdf = buildItemLabelPdf(items.slice(i, i + LABELS_PER_JOB), undefined, undefined, { prefer: 'latest' });
         await printPdfViaBridge({
           pdfBase64: pdfToBase64(pdf), role: 'label', media: 'Custom.2x1in',
         });
@@ -394,7 +394,7 @@ export async function printItemLabels(items, dest, showToast) {
       return true;
     }
     for (let i = 0; i < items.length; i += MAX_PRINT_PAGES) {
-      const pdf = buildItemLabelPdf(items.slice(i, i + MAX_PRINT_PAGES));
+      const pdf = buildItemLabelPdf(items.slice(i, i + MAX_PRINT_PAGES), undefined, undefined, { prefer: 'latest' });
       await printImagesViaOsSheet(
         await pdfToPageImages(new Uint8Array(pdf.output('arraybuffer'))),
         { pageSize: '2in 1in' },
@@ -407,7 +407,9 @@ export async function printItemLabels(items, dest, showToast) {
   }
 }
 
-// The burrito-wrap flow's single-label print — same pipeline, one item.
+// The burrito-wrap flow's single-label print — same pipeline, one item. The
+// bench prints the number the box shows (prefer 'latest': the lineup # or the
+// For Sale code, whichever the plant was listed under last).
 export async function printItemLabel(item, dest, showToast) {
   return printItemLabels([item], dest, showToast);
 }
