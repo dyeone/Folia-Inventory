@@ -47,7 +47,7 @@ class Query {
 }
 
 const supabaseMock = mock.module(new URL('./supabase.js', import.meta.url), {
-  namedExports: { supabase: { from: (table) => new Query(table) } },
+  namedExports: { supabase: { from: (table) => new Query(table) }, newId: () => `row-${++current.seq}` },
 });
 const fetchAllMock = mock.module(new URL('./fetchAll.js', import.meta.url), {
   namedExports: { fetchAllById: async (build) => {
@@ -117,7 +117,7 @@ function fulfillmentOrder(overrides = {}) {
 function scenario({ items = [plant()], orders = [], fo = fulfillmentOrder(), payment = order(), fulfillmentResult, trackingResult } = {}) {
   current = {
     tables: { inventory_items: copy(items), app_settings: [], shipments: [{ id: 'box-1', brandId: 'bae', trackingNumber: 'TEST-TRACKING', carrier: 'usps', voidedAt: null, isTestLabel: false }] },
-    inventoryWrites: [], requests: [], orders: copy(orders), fo: copy(fo), payment: copy(payment), fulfillmentResult, trackingResult,
+    inventoryWrites: [], requests: [], orders: copy(orders), fo: copy(fo), payment: copy(payment), fulfillmentResult, trackingResult, seq: 0,
   };
   return current;
 }
@@ -306,4 +306,142 @@ test('voided and test labels never trigger fulfillment', async () => {
     assert.equal(requests(state, 'FO').length, 0);
     assertNotFulfilled(state);
   }
+});
+
+// ─── lines without a SKU (products made by hand in Shopify) ─────────────────
+
+const noSkuLine = (id, name, overrides = {}) => ({
+  id: `gid://shopify/LineItem/${id}`, sku: null, name, quantity: 1, currentQuantity: 1,
+  discountedTotalSet: { shopMoney: { amount: '300' } }, ...overrides,
+});
+const purgePlant = (overrides = {}) => plant({
+  id: 'p154', sku: 'B-ANT-A919', lotNumber: 154, name: 'Dark handsome x dream weaver', saleId: 'fb', ...overrides,
+});
+const byId = (state, id) => state.tables.inventory_items.find((row) => row.id === id);
+const placeholders = (state) => state.tables.inventory_items.filter((row) => row.lotKind === 'unmatched');
+
+test('a line with no SKU finds its plant by lot number + name and is boxed like any sale', async () => {
+  const state = scenario({
+    items: [purgePlant(), plant({ id: 'old154', sku: 'B-ANT-9825', lotNumber: 154, name: 'Red tiger x Pink lemonade' })],
+    orders: [order({ lineItems: { nodes: [noSkuLine(1, '154 Dark handsome x dream weaver')] } })],
+  });
+  state.tables.sales = [{ id: 'fb', brandId: 'bae', status: 'ongoing' }];
+  const result = await pull(state);
+  const sold = byId(state, 'p154');
+  assert.deepEqual(result.soldIds, ['p154']);
+  assert.equal(result.matched, 1);
+  assert.equal(sold.status, 'sold');
+  assert.equal(sold.orderId, '#1001');
+  assert.equal(sold.salePrice, 300);
+  assert.equal(sold.shopify.lineItemGid, 'gid://shopify/LineItem/1');
+  assert.match(sold.notes, /lot 154/);
+  assert.equal(byId(state, 'old154').status, 'available');
+  assert.equal(placeholders(state).length, 0);
+  // Read again: nothing changes.
+  assert.deepEqual((await pull(state)).soldIds, []);
+  assert.equal(state.inventoryWrites.filter((patch) => patch.status === 'sold').length, 1);
+});
+
+test('a line no plant can be found for still ships: a placeholder in the buyer\'s box, once', async () => {
+  const state = scenario({
+    items: [purgePlant()],
+    orders: [order({ lineItems: { nodes: [
+      noSkuLine(1, '154 Dark handsome x dream weaver'),
+      noSkuLine(2, '166 Red velvet cake x Michelle'),
+    ] } })],
+  });
+  const result = await pull(state);
+  assert.equal(result.placeholders, 1);
+  const [ph] = placeholders(state);
+  assert.equal(ph.sku, 'UNMATCHED-SHOP-bae-1001-2');
+  assert.equal(ph.name, '166 Red velvet cake x Michelle');
+  assert.equal(ph.status, 'sold');
+  assert.equal(ph.lotNumber, null);
+  assert.equal(ph.shipmentBoxId, byId(state, 'p154').shipmentBoxId);
+  assert.equal(ph.shopify.lineItemGid, 'gid://shopify/LineItem/2');
+  // The order's shipping fee is counted once across the box.
+  assert.equal([byId(state, 'p154'), ph].reduce((sum, row) => sum + (row.orderShippingFee || 0), 0), 10);
+  assert.ok(problems(state).some((problem) => problem.kind === 'unmatched' && /placeholder/.test(problem.message)));
+  // Read again → no second placeholder; the packer linked a plant to it (placeholder trashed) → still none.
+  await pull(state);
+  assert.equal(placeholders(state).length, 1);
+  ph.deletedAt = '2026-11-21T23:00:00Z';
+  await pull(state);
+  assert.equal(placeholders(state).length, 1);
+});
+
+test('two plants that fit equally well are not guessed between', async () => {
+  const state = scenario({
+    items: [purgePlant({ saleId: null }), purgePlant({ id: 'twin', sku: 'B-ANT-A777', saleId: null })],
+    orders: [order({ lineItems: { nodes: [noSkuLine(1, '154 Dark handsome x dream weaver')] } })],
+  });
+  await pull(state);
+  assert.ok(['p154', 'twin'].every((id) => byId(state, id).status === 'available'));
+  assert.equal(placeholders(state).length, 1);
+  assert.ok(problems(state).some((problem) => /could be B-ANT-A919, B-ANT-A777/.test(problem.message)));
+});
+
+test('an order fulfilled in Shopify before the app saw it opens no box', async () => {
+  const state = scenario({
+    items: [purgePlant()],
+    orders: [order({ displayFulfillmentStatus: 'FULFILLED', lineItems: { nodes: [noSkuLine(1, '154 Dark handsome x dream weaver')] } })],
+  });
+  await pull(state);
+  assert.equal(byId(state, 'p154').status, 'available');
+  assert.equal(placeholders(state).length, 0);
+  assert.ok(problems(state).some((problem) => problem.kind === 'fulfilled'));
+});
+
+test('a cancelled order flags plants found by title and placeholders still in a box', async () => {
+  const state = scenario({
+    items: [purgePlant()],
+    orders: [order({ lineItems: { nodes: [noSkuLine(1, '154 Dark handsome x dream weaver'), noSkuLine(2, '999 Nothing like it')] } })],
+  });
+  await pull(state);
+  state.orders[0].cancelledAt = '2026-11-21T12:00:00Z';
+  await pull(state);
+  const flagged = problems(state).filter((problem) => problem.kind === 'cancelled').map((problem) => problem.message);
+  assert.equal(flagged.length, 2);
+  assert.ok(flagged.some((message) => /B-ANT-A919/.test(message)));
+  assert.ok(flagged.some((message) => /"999 Nothing like it"/.test(message)));
+});
+
+test('the box\'s tracking fulfils lines found by title and placeholder lines by their line id', async () => {
+  const state = scenario({
+    items: [purgePlant()],
+    orders: [order({ lineItems: { nodes: [noSkuLine(1, '154 Dark handsome x dream weaver'), noSkuLine(2, '999 Nothing like it')] } })],
+    fo: fulfillmentOrder({ fulfillmentOrders: { pageInfo: { hasNextPage: false }, nodes: [{ id: 'gid://shopify/FulfillmentOrder/1', status: 'OPEN', lineItems: {
+      pageInfo: { hasNextPage: false },
+      nodes: [
+        { id: 'gid://shopify/FulfillmentOrderLineItem/1', remainingQuantity: 1, lineItem: { id: 'gid://shopify/LineItem/1', sku: null } },
+        { id: 'gid://shopify/FulfillmentOrderLineItem/2', remainingQuantity: 1, lineItem: { id: 'gid://shopify/LineItem/2', sku: null } },
+      ],
+    } }] } }),
+  });
+  await pull(state);
+  state.tables.shipments[0].id = byId(state, 'p154').shipmentBoxId;
+  await pull(state);
+  const ful = requests(state, 'Ful');
+  assert.equal(ful.length, 1);
+  assert.deepEqual(ful[0].variables.fulfillment.lineItemsByFulfillmentOrder[0].fulfillmentOrderLineItems.map((li) => li.id),
+    ['gid://shopify/FulfillmentOrderLineItem/1', 'gid://shopify/FulfillmentOrderLineItem/2']);
+  assert.ok([byId(state, 'p154'), ...placeholders(state)].every((row) => row.shopify.fulfilledAt));
+});
+
+test('Sync now (and the first pull with title matching) reads the last week again and clears old "no SKU" notes', async () => {
+  const state = scenario({
+    items: [purgePlant()],
+    orders: [order({ lineItems: { nodes: [noSkuLine(1, '154 Dark handsome x dream weaver')] } })],
+  });
+  const cursor = new Date(Date.now() - 60 * 1000).toISOString();
+  state.tables.app_settings.push({ id: 'shopify:bae', data: {
+    connectedAt: '2020-01-01T00:00:00Z', orderCursor: cursor,
+    problems: [{ key: 'gid://shopify/Order/1|no-sku|', kind: 'no-sku', order: '#1001', message: 'has no SKU' },
+      { key: 'gid://shopify/Order/9|no-sku|', kind: 'no-sku', order: '#1009', message: 'has no SKU' }],
+  } });
+  await pull(state);
+  const since = Date.parse(/updated_at:>'([^']+)'/.exec(requests(state, 'Orders')[0].variables.q)[1]);
+  assert.ok(Date.now() - since > 6 * 86400000, 'looked back a week');
+  assert.deepEqual(problems(state).map((problem) => problem.order), ['#1009']);
+  assert.ok(state.tables.app_settings.find((row) => row.id === 'shopify:bae').data.lineMatchAt);
 });

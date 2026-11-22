@@ -332,10 +332,11 @@ export async function poolSet(req, res, user, brandId) {
   return res.status(200).json({ items: items.map(stripCosts(user)), skipped, shopify });
 }
 
-// POST { action: 'pool-sync', itemIds?, force? } — Shopify both ways: new
-// paid orders mark their plants sold and open a box to ship; listings are
-// brought in line with the plants (price, photo, video, sold, paused).
-// Any brand member (the packer screen calls it too); throttled server-side.
+// POST { action: 'pool-sync', itemIds?, force?, ordersOnly? } — Shopify both
+// ways: new paid orders mark their plants sold and open a box to ship;
+// listings are brought in line with the plants (price, photo, video, sold,
+// paused). Any brand member (the packer screen calls it too); throttled
+// server-side. ordersOnly: just the orders (the Shipping tab's button).
 export async function poolSync(req, res, user, brandId) {
   if (!shopifyConfig(brandId)) return res.status(200).json({ configured: false });
   const force = !!req.body?.force && runsForSale(user);
@@ -351,9 +352,12 @@ export async function poolSync(req, res, user, brandId) {
   let orders;
   try { orders = await pullShopifyOrders(brandId, { user, force }); } catch (e) { orders = { error: e.message, changedIds: [] }; }
   let listing;
-  try {
-    listing = await reconcileShopify(brandId, { itemIds: ids && ids.length ? ids : null, user, budgetMs: 35000 });
-  } catch (e) { listing = { error: e.message, changedIds: [] }; }
+  if (req.body?.ordersOnly === true) listing = { skipped: true, changedIds: [] };
+  else {
+    try {
+      listing = await reconcileShopify(brandId, { itemIds: ids && ids.length ? ids : null, user, budgetMs: 35000 });
+    } catch (e) { listing = { error: e.message, changedIds: [] }; }
+  }
   const changedIds = [...new Set([...(orders.changedIds || []), ...(listing.changedIds || [])])];
   const items = changedIds.length ? await rowsById(brandId, changedIds) : [];
   return res.status(200).json({ configured: true, orders, listing, items: items.map(stripCosts(user)) });

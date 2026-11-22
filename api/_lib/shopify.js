@@ -10,7 +10,10 @@
 //   sold anywhere / shipped / trashed / boxed   → 0 in stock, ARCHIVED
 // pullOrders() goes the other way: a paid Shopify order marks its plants sold
 // and opens a `shopify-…` box for the packer; once that box has a tracking
-// number the order is fulfilled in Shopify (the buyer gets the email).
+// number the order is fulfilled in Shopify (the buyer gets the email). A
+// line is matched by SKU; a product made by hand in Shopify has none, so its
+// title's lot number + name pick the plant (api/_lib/shopifyMatch.js), and a
+// line nothing fits comes in as a placeholder for the packer to fill.
 //
 // No webhooks (the api function cap, and a missed webhook needs a poll
 // anyway): the For Sale tab, the Shipping tab and the packer screen call
@@ -33,8 +36,9 @@
 // app_settings `shopify:<brand>` — readable by any signed-in user, so it
 // holds nothing secret.
 import crypto from 'crypto';
-import { supabase } from './supabase.js';
+import { supabase, newId } from './supabase.js';
 import { fetchAllById } from './fetchAll.js';
+import { parseLineTitle, pickPlant } from './shopifyMatch.js';
 
 const API_VERSION = process.env.SHOPIFY_API_VERSION || '2026-10';
 const FOR_SALE = ['available', 'listed', 'acclimated'];
@@ -43,6 +47,11 @@ const STATE_NS = 'shopify:';
 const LOCK_NS = 'shopify-lock:';
 const ORDER_PULL_EVERY_MS = 60 * 1000;
 const MAX_PROBLEMS = 60;
+// "Sync now" (and the first pull after title matching shipped) reads the
+// last week of orders again, so an order that came in before its plant
+// could be matched gets another go. Re-reading is harmless — every line
+// that's already in a box is skipped.
+const LOOKBACK_MS = 7 * 86400000;
 
 const fail = (status, message) => { const e = new Error(message); e.status = status; return e; };
 // An error about the whole connection (login, access, rate limit) rather
@@ -692,12 +701,12 @@ const ORDERS_QUERY = `query Orders($q: String!, $after: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       id name number createdAt processedAt updatedAt cancelledAt test
-      displayFinancialStatus email
+      displayFinancialStatus displayFulfillmentStatus email
       customer { displayName }
       shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 }
       totalShippingPriceSet { shopMoney { amount } }
       shippingLines(first: 1) { nodes { title } }
-      lineItems(first: 50) { nodes { sku name quantity currentQuantity discountedTotalSet { shopMoney { amount } } } }
+      lineItems(first: 50) { nodes { id sku name quantity currentQuantity discountedTotalSet { shopMoney { amount } } } }
     }
   }
 }`;
@@ -728,10 +737,44 @@ async function openShopifyBoxes(brandId) {
   return byGroup;
 }
 
-async function ingestOrder(brandId, order, openBoxes, problems, out, user) {
+// A placeholder's SKU names its Shopify order line, so reading the order
+// again finds it — in the trash too: a placeholder the packer put a plant
+// on is trashed, and must not come back.
+const placeholderSku = (brandId, order, n) => `UNMATCHED-SHOP-${brandId}-${order.number}-${n}`;
+
+// How a row reads in a problem: a plant by its code / SKU, a placeholder by its title.
+const rowLabel = (r) => (r.lotKind === 'unmatched' ? `"${r.name}"` : (r.saleCode || r.sku));
+
+// The brand's live plants a line title could mean: its code, or its lot number.
+async function titleCandidates(brandId, title) {
+  const t = parseLineTitle(title);
+  if (!t.code && t.lot == null) return [];
+  let q = supabase.from('inventory_items').select('*').eq('brandId', brandId).is('deletedAt', null);
+  q = t.code ? q.eq('saleCode', t.code) : q.eq('lotNumber', t.lot);
+  const { data, error } = await q;
+  if (error) throw fail(500, error.message);
+  return data || [];
+}
+
+// Why a line came in as a placeholder, for the Shopify problems list.
+function unmatchedMessage(order, line, sku, m) {
+  const where = 'it\'s in the box as a placeholder — scan the plant onto it when packing';
+  const names = (m?.near || []).slice(0, 3).map((p) => p.saleCode || p.sku).join(', ');
+  if (sku && !m?.near?.length) return `${order.name}: no plant has SKU ${sku} ("${line.name}") — ${where}`;
+  if (m?.reason === 'ambiguous') return `${order.name}: "${line.name}" could be ${names} — ${where}`;
+  if (m?.reason === 'changed') return `${order.name}: "${line.name}" looks like ${names}, but it changed while syncing — ${where}`;
+  if (m?.reason === 'taken') {
+    const st = m.near[0]?.status || 'sold';
+    return `${order.name}: "${line.name}" looks like ${names}, but ${m.near.length === 1 ? 'it\'s' : 'they\'re'} already ${st} — ${where}. If that plant is gone, refund the line in Shopify.`;
+  }
+  if (m?.reason === 'no-number') return `${order.name}: "${line.name}" has no SKU and no lot number in its title — ${where}`;
+  return `${order.name}: no plant for sale matches "${line.name}" — ${where}`;
+}
+
+async function ingestOrder(brandId, order, openBoxes, problems, out, user, ctx) {
   const all = order.lineItems?.nodes || [];
-  const lines = all.filter((l) => (l.currentQuantity ?? l.quantity) > 0);
-  const p = (kind, sku, message) => problems.push({ key: `${order.id}|${kind}|${sku || ''}`, at: new Date().toISOString(), kind, order: order.name, sku: sku || null, message });
+  const live = (l) => (l.currentQuantity ?? l.quantity) > 0;
+  const p = (kind, sku, message, lineKey) => problems.push({ key: `${order.id}|${kind}|${lineKey ?? sku ?? ''}`, at: new Date().toISOString(), kind, order: order.name, sku: sku || null, message });
   if (order.test) { p('test', null, `Test order ${order.name} ignored — no plant was marked sold`); return; }
 
   const skus = [...new Set(all.filter((l) => l.sku).map((l) => l.sku.trim()))];
@@ -745,20 +788,33 @@ async function ingestOrder(brandId, order, openBoxes, problems, out, user) {
     const pl = plants.get(sku);
     return pl && pl.orderId === order.name && pl.status === 'sold' ? pl : null;
   };
+  // What an earlier read of this order put in boxes: plants and
+  // placeholders, trashed ones too (the order # alone isn't enough — a
+  // Nigel slip can carry the same "#1001").
+  const { data: earlier, error: eErr } = await supabase.from('inventory_items')
+    .select('id, sku, name, "saleCode", status, "lotKind", "deletedAt", shopify')
+    .eq('brandId', brandId).eq('orderId', order.name);
+  if (eErr) throw fail(500, eErr.message);
+  const phPrefix = placeholderSku(brandId, order, '');
+  const ours = (earlier || []).filter((r) => r.shopify?.orderGid === order.id || String(r.sku || '').startsWith(phPrefix));
+  const lineRows = (l, n) => ours.filter((r) => (l.id && r.shopify?.lineItemGid === l.id) || r.sku === placeholderSku(brandId, order, n));
+  const soldNow = (r) => !r.deletedAt && r.status === 'sold';
 
   if (order.cancelledAt || order.displayFinancialStatus !== 'PAID') {
-    for (const sku of skus) {
-      const pl = stillSoldHere(sku);
-      if (pl) p('cancelled', sku, `${order.name} was ${order.cancelledAt ? 'cancelled' : String(order.displayFinancialStatus || '').toLowerCase()} — ${pl.saleCode || pl.sku} is still marked sold. Take it out of its box if it shouldn't ship.`);
+    const left = new Map();
+    for (const sku of skus) { const pl = stillSoldHere(sku); if (pl) left.set(pl.id, pl); }
+    for (const r of ours) if (soldNow(r)) left.set(r.id, r);
+    for (const r of left.values()) {
+      p('cancelled', r.sku, `${order.name} was ${order.cancelledAt ? 'cancelled' : String(order.displayFinancialStatus || '').toLowerCase()} — ${rowLabel(r)} is still marked sold. Take it out of its box if it shouldn't ship.`);
     }
     return;
   }
   // A line refunded / removed from a still-paid order.
-  for (const l of all) {
-    if (!l.sku || (l.currentQuantity ?? l.quantity) > 0) continue;
-    const pl = stillSoldHere(l.sku.trim());
-    if (pl) p('refunded', l.sku.trim(), `${order.name}: ${pl.saleCode || pl.sku} was refunded or removed from the order — take it out of its box.`);
-  }
+  all.forEach((l, i) => {
+    if (live(l)) return;
+    const r = (l.sku && stillSoldHere(l.sku.trim())) || lineRows(l, i + 1).find(soldNow);
+    if (r) p('refunded', r.sku, `${order.name}: ${rowLabel(r)} was refunded or removed from the order — take it out of its box.`);
+  });
 
   const a = order.shippingAddress || {};
   const buyer = a.name || order.customer?.displayName || '';
@@ -771,32 +827,33 @@ async function ingestOrder(brandId, order, openBoxes, problems, out, user) {
   };
   let feeLeft = Number(order.totalShippingPriceSet?.shopMoney?.amount) || 0;
   const now = new Date().toISOString();
+  const soldAt = order.processedAt || order.createdAt || now;
+  const qtyOf = (l) => Math.max(1, l.currentQuantity ?? l.quantity ?? 1);
+  const unitPrice = (l) => Math.round(((Number(l.discountedTotalSet?.shopMoney?.amount) || 0) / qtyOf(l)) * 100) / 100;
+  const orderRef = (l) => ({ orderGid: order.id, orderName: order.name, ...(l.id ? { lineItemGid: l.id } : {}) });
+  const landed = (id) => {
+    feeLeft = 0;                                           // the order's shipping fee counts once
+    openBoxes.set(groupKey, boxId);
+    out.changedIds.push(id);
+  };
 
-  for (const l of lines) {
-    if (!l.sku) { p('no-sku', null, `${order.name}: "${l.name}" has no SKU — find that plant by hand`); continue; }
-    const sku = l.sku.trim();
-    const pl = plants.get(sku);
-    if (!pl) { p('unknown-sku', sku, `${order.name}: no plant with SKU ${sku}`); continue; }
-    if (pl.orderId === order.name) continue;              // already in
-    if (!FOR_SALE.includes(pl.status) || pl.shipmentBoxId) {
-      p('double', sku, `${order.name} bought ${pl.saleCode || sku}, but it's already ${pl.status}${pl.orderId ? ` (order ${pl.orderId})` : ''} — refund it in Shopify`);
-      continue;
-    }
-    const qty = Math.max(1, l.currentQuantity ?? l.quantity ?? 1);
+  // Mark the plant sold into this order's box — only while it's still for
+  // sale and in no box (two syncs, or a sale elsewhere, can't both have it).
+  const claim = async (pl, l, how) => {
     const patch = {
       status: 'sold',
-      soldAt: order.processedAt || order.createdAt || now,
-      salePrice: Math.round(((Number(l.discountedTotalSet?.shopMoney?.amount) || 0) / qty) * 100) / 100,
+      soldAt,
+      salePrice: unitPrice(l),
       buyer,
       buyerUsername: order.email || '',
       buyerAddress,
       shipmentBoxId: boxId,
       shipmentCarrier: 'usps',
       orderId: order.name,
-      orderDate: order.processedAt || order.createdAt || now,
+      orderDate: soldAt,
       orderShippingFee: feeLeft,
-      notes: [pl.notes, `Shopify ${order.name}`].filter(Boolean).join(' · ').slice(0, 1000),
-      shopify: { ...(pl.shopify || {}), orderGid: order.id, orderName: order.name },
+      notes: [pl.notes, `Shopify ${order.name}${how ? ` (found by ${how}: "${l.name}")` : ''}`].filter(Boolean).join(' · ').slice(0, 1000),
+      shopify: { ...(pl.shopify || {}), ...orderRef(l) },
       modifiedAt: now,
       modifiedBy: user?.displayName || 'shopify-sync',
     };
@@ -804,14 +861,79 @@ async function ingestOrder(brandId, order, openBoxes, problems, out, user) {
       .eq('id', pl.id).eq('brandId', brandId).is('deletedAt', null).is('shipmentBoxId', null).in('status', FOR_SALE)
       .select('id');
     if (error) throw fail(500, error.message);
-    if (data && data.length) {
-      feeLeft = 0;                                         // the order's shipping fee counts once
-      openBoxes.set(groupKey, boxId);
-      out.changedIds.push(pl.id);
-      out.soldIds.push(pl.id);
-    } else {
-      p('double', sku, `${order.name} bought ${pl.saleCode || sku}, but it changed while syncing — check it`);
+    if (!data || !data.length) return false;
+    landed(pl.id);
+    out.soldIds.push(pl.id);
+    if (how) out.matched.push(pl.id);
+    return true;
+  };
+
+  // A line no plant could be found for still ships: a placeholder in the
+  // buyer's box (purple on the packer's screen), which the packer fills by
+  // scanning the plant in hand (api/_lib/linkLine.js).
+  const placeholder = async (l, n, sku, m) => {
+    const row = {
+      id: newId(),
+      brandId,
+      sku: placeholderSku(brandId, order, n),
+      type: 'plant',
+      name: String(l.name || 'Shopify order line').slice(0, 200),
+      quantity: qtyOf(l),
+      status: 'sold',
+      lotKind: 'unmatched',
+      // No lot number: the title carries it, and a number here would trip
+      // the bench's duplicate-lot warning against the real pot.
+      lotNumber: null,
+      saleId: null,
+      salePrice: unitPrice(l),
+      soldAt,
+      buyer,
+      buyerUsername: order.email || '',
+      buyerAddress,
+      shipmentBoxId: boxId,
+      shipmentCarrier: 'usps',
+      orderId: order.name,
+      orderDate: soldAt,
+      orderShippingFee: feeLeft,
+      notes: `Shopify ${order.name}`,
+      shopify: orderRef(l),
+      createdAt: now,
+      createdBy: user?.displayName || 'shopify-sync',
+    };
+    const { error } = await supabase.from('inventory_items').insert(row);
+    if (error) {
+      if (error.code === '23505') return;                  // made by a sync running alongside
+      throw fail(500, error.message);
     }
+    landed(row.id);
+    out.placeholderIds.push(row.id);
+    p('unmatched', sku || null, unmatchedMessage(order, l, sku, m), l.id || n);
+  };
+
+  for (const [i, l] of all.entries()) {
+    if (!live(l)) continue;
+    const n = i + 1;
+    const sku = String(l.sku || '').trim();
+    const pl = sku ? plants.get(sku) : null;
+    if (pl && pl.orderId === order.name) continue;         // already in
+    if (lineRows(l, n).length) continue;                   // already in (a plant or its placeholder)
+    if (order.displayFulfillmentStatus === 'FULFILLED') {
+      p('fulfilled', sku || null, `${order.name} was fulfilled in Shopify before the app saw it, so "${l.name}" wasn't added to Shipping — if that plant is gone, mark it sold by hand.`, l.id || n);
+      continue;
+    }
+    if (pl) {
+      if (!FOR_SALE.includes(pl.status) || pl.shipmentBoxId) {
+        p('double', sku, `${order.name} bought ${pl.saleCode || sku}, but it's already ${pl.status}${pl.orderId ? ` (order ${pl.orderId})` : ''} — refund it in Shopify`);
+      } else if (!(await claim(pl, l, ''))) {
+        p('double', sku, `${order.name} bought ${pl.saleCode || sku}, but it changed while syncing — check it`);
+      }
+      continue;
+    }
+    // No SKU (a product made by hand in Shopify), or a SKU no plant has:
+    // the title's code or lot number + name.
+    const m = pickPlant(l.name, await titleCandidates(brandId, l.name), { ongoingSaleIds: await ctx.ongoingSaleIds() });
+    if (m.plant && (await claim(m.plant, l, m.how))) continue;
+    await placeholder(l, n, sku, m.plant ? { reason: 'changed', near: [m.plant] } : m);
   }
 }
 
@@ -823,7 +945,7 @@ const carrierName = (c) => (String(c || 'usps').toLowerCase() === 'ups' ? 'UPS' 
 // re-bought label updates the tracking on the fulfilment already made.
 async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
   const rows = (await fetchAllById(() => supabase.from('inventory_items')
-    .select('id, sku, "shipmentBoxId", status, shopify').eq('brandId', brandId).is('deletedAt', null)
+    .select('id, sku, name, "lotKind", "shipmentBoxId", status, shopify').eq('brandId', brandId).is('deletedAt', null)
     .not('shipmentBoxId', 'is', null).not('shopify->>orderGid', 'is', null)))
     .filter((r) => ['sold', 'shipped', 'delivered'].includes(r.status));
   if (!rows.length) return;
@@ -862,7 +984,7 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
             pageInfo { hasNextPage }
             nodes { id status lineItems(first: 20) {
               pageInfo { hasNextPage }
-              nodes { id remainingQuantity lineItem { sku } }
+              nodes { id remainingQuantity lineItem { id sku } }
             } }
           }
         }
@@ -873,9 +995,18 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
       if (connection?.pageInfo?.hasNextPage !== false || fos.some((fo) => fo.lineItems?.pageInfo?.hasNextPage !== false)) {
         throw fail(409, 'Fulfillment data is incomplete or exceeds the sync limit — review and fulfill the order in Shopify before retrying');
       }
-      const skus = new Set(its.map((r) => String(r.sku || '').trim()).filter(Boolean));
-      if (skus.size !== its.length) throw fail(409, 'Plants have missing or duplicate SKUs — correct them before fulfilling this order');
-      const mine = (fo) => (fo.lineItems?.nodes || []).filter((li) => skus.has(String(li.lineItem?.sku || '').trim()) && li.remainingQuantity > 0);
+      // Each row names its Shopify line: by the line's id when the order
+      // was read with ids (plants found by title, placeholders — their own
+      // SKU isn't on the line), else by SKU. Two rows on one line id are a
+      // Quantity 2+ placeholder the packer split; two on one SKU are an error.
+      const keyOf = (r) => (r.shopify?.lineItemGid ? `id:${r.shopify.lineItemGid}` : (String(r.sku || '').trim() ? `sku:${String(r.sku).trim()}` : null));
+      const keys = new Set(its.map(keyOf).filter(Boolean));
+      const skuKeys = its.map(keyOf).filter((k) => k && k.startsWith('sku:'));
+      if (its.some((r) => !keyOf(r)) || new Set(skuKeys).size !== skuKeys.length) {
+        throw fail(409, 'Plants have missing or duplicate SKUs — correct them before fulfilling this order');
+      }
+      const liKeys = (li) => [`id:${li.lineItem?.id}`, `sku:${String(li.lineItem?.sku || '').trim()}`];
+      const mine = (fo) => (fo.lineItems?.nodes || []).filter((li) => liKeys(li).some((k) => keys.has(k)) && li.remainingQuantity > 0);
       if (fos.some((fo) => ['ON_HOLD', 'SCHEDULED'].includes(fo.status) && mine(fo).length)) {
         problem(orderGid, name, 'fulfil', `${name || 'An order'} is on hold in Shopify — release it there and it'll be marked shipped on the next sync`);
         continue;
@@ -883,11 +1014,14 @@ async function pushFulfillments(cfg, brandId, problems, changedIds, deadline) {
       const input = fos.filter((fo) => ['OPEN', 'IN_PROGRESS'].includes(fo.status))
         .map((fo) => ({ fulfillmentOrderId: fo.id, fulfillmentOrderLineItems: mine(fo).map((li) => ({ id: li.id, quantity: li.remainingQuantity })) }))
         .filter((x) => x.fulfillmentOrderLineItems.length);
-      const readySkus = new Set(fos.filter((fo) => ['OPEN', 'IN_PROGRESS'].includes(fo.status))
-        .flatMap(mine).map((li) => String(li.lineItem.sku).trim()));
-      const missing = [...skus].filter((sku) => !readySkus.has(sku));
+      const readyKeys = new Set(fos.filter((fo) => ['OPEN', 'IN_PROGRESS'].includes(fo.status)).flatMap(mine).flatMap(liKeys));
+      const missing = [...keys].filter((k) => !readyKeys.has(k));
+      const shown = (list) => list.map((k) => {
+        const r = its.find((x) => keyOf(x) === k);
+        return r?.lotKind === 'unmatched' ? `"${r.name}"` : (r?.sku || k.slice(k.indexOf(':') + 1));
+      }).join(', ');
       if (!input.length || missing.length) {
-        throw fail(409, `No open fulfillment lines for ${missing.join(', ') || [...skus].join(', ')} — verify the order's fulfillment and app access in Shopify before retrying`);
+        throw fail(409, `No open fulfillment lines for ${shown(missing.length ? missing : [...keys])} — verify the order's fulfillment and app access in Shopify before retrying`);
       }
       const f = await gql(cfg, `mutation Ful($fulfillment: FulfillmentInput!) {
         fulfillmentCreate(fulfillment: $fulfillment) { fulfillment { id } userErrors { field message } }
@@ -943,15 +1077,30 @@ export async function pullShopifyOrders(brandId, { user = null, force = false } 
   const owner = await acquireLock(brandId, PULL_BUDGET_MS + 60000);
   if (!owner) return { busy: true, changedIds: [], soldIds: [] };
   const started = Date.now();
-  const out = { changedIds: [], soldIds: [] };
+  const out = { changedIds: [], soldIds: [], matched: [], placeholderIds: [] };
   const problems = [];
+  const seenOrders = new Set();
   let ingested = 0;
+  let ongoing = null;
+  const ctx = {
+    // Events still running — a plant in one is the likelier match for a title.
+    ongoingSaleIds: async () => {
+      if (!ongoing) {
+        const { data, error } = await supabase.from('sales').select('id').eq('brandId', brandId).eq('status', 'ongoing');
+        if (error) throw fail(500, error.message);
+        ongoing = new Set((data || []).map((r) => r.id));
+      }
+      return ongoing;
+    },
+  };
   try {
     const connectedAt = state.connectedAt || new Date(Date.now() - 86400000).toISOString();
     const since = state.orderCursor || connectedAt;
     // Ten minutes of overlap: an order can turn up in search a little after
     // its updated_at. Re-reading one is harmless (orderId guard, keyed problems).
-    const from = new Date(Date.parse(since) - 10 * 60 * 1000).toISOString();
+    let fromMs = Date.parse(since) - 10 * 60 * 1000;
+    if (force || !state.lineMatchAt) fromMs = Math.min(fromMs, Math.max(Date.parse(connectedAt), Date.now() - LOOKBACK_MS));
+    const from = new Date(fromMs).toISOString();
     let cursor = since;
     const openBoxes = await openShopifyBoxes(brandId);
     let after = null;
@@ -959,8 +1108,9 @@ export async function pullShopifyOrders(brandId, { user = null, force = false } 
       const d = await gql(cfg, ORDERS_QUERY, { q: `updated_at:>'${from}'`, after });
       const conn = d?.orders;
       for (const order of conn?.nodes || []) {
-        await ingestOrder(brandId, order, openBoxes, problems, out, user);
+        await ingestOrder(brandId, order, openBoxes, problems, out, user, ctx);
         ingested += 1;
+        seenOrders.add(order.id);
         if (order.updatedAt && order.updatedAt > cursor) cursor = order.updatedAt;
       }
       if (!conn?.pageInfo?.hasNextPage) break;
@@ -968,11 +1118,15 @@ export async function pullShopifyOrders(brandId, { user = null, force = false } 
     }
     await pushFulfillments(cfg, brandId, problems, out.changedIds, started + PULL_BUDGET_MS);
     const fresh = await loadState(brandId);
+    // "No SKU" notes from before title matching: the order was just read
+    // again, and its lines are now in a box (a plant or a placeholder).
+    const stale = (pr) => ['no-sku', 'unknown-sku'].includes(pr.kind) && seenOrders.has(String(pr.key).split('|')[0]);
     await saveState(brandId, {
       connectedAt,
       orderCursor: cursor,
       lastOrderPullAt: new Date().toISOString(),
-      problems: addProblems(fresh, problems),
+      lineMatchAt: state.lineMatchAt || new Date().toISOString(),
+      problems: addProblems({ problems: (fresh.problems || []).filter((pr) => !stale(pr)) }, problems),
       lastError: null,
     }, user);
   } catch (e) {
@@ -981,5 +1135,8 @@ export async function pullShopifyOrders(brandId, { user = null, force = false } 
   } finally {
     await releaseLock(brandId, owner);
   }
-  return { configured: true, ingested, changedIds: out.changedIds, soldIds: out.soldIds, problems: problems.length };
+  return {
+    configured: true, ingested, changedIds: out.changedIds, soldIds: out.soldIds,
+    matched: out.matched.length, placeholders: out.placeholderIds.length, problems: problems.length,
+  };
 }

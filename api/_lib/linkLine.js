@@ -48,6 +48,14 @@ export function linkPatches(plant, line, now) {
     shippedAt: null,
     ...(plant.saleId || !line.saleId ? {} : { saleId: line.saleId }),
     ...(Number(line.refundedAmount) > 0 ? { refundedAmount: line.refundedAmount, refundedAt: line.refundedAt ?? null } : {}),
+    // A Shopify order line (api/_lib/shopify.js): the plant takes it over,
+    // so the box's tracking still reaches the buyer when it ships.
+    ...(line.shopify?.orderGid ? { shopify: {
+      ...(plant.shopify || {}),
+      orderGid: line.shopify.orderGid,
+      orderName: line.shopify.orderName ?? null,
+      ...(line.shopify.lineItemGid ? { lineItemGid: line.shopify.lineItemGid } : {}),
+    } } : {}),
   };
   const units = Math.max(1, parseInt(line.quantity, 10) || 1);
   const linePatch = units > 1
