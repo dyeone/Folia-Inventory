@@ -8,9 +8,11 @@ import { boxPlatform } from './platform.js';
 // Combine several open boxes into one: every item from the other boxes moves
 // into the kept box (shipmentBoxId + denormalized recipient re-stamped, same
 // write as the address editor). Meant for one buyer with multiple orders, so
-// buyers with 2+ boxes list first. Boxes with an active label can't be
-// combined (the label's postage is tied to that box's contents/weight — void
-// it first). The kept box keeps its own notes / hold / packaging; the merged
+// buyers with 2+ boxes list first. A box with an active label is the one
+// kept — its label ships the combined box, so the modal reminds the operator
+// that the label was bought for that box's size and weight; only one
+// selected box may have a label (combineGroups.js). The kept box keeps its
+// own notes / hold / packaging; the merged
 // boxes' box-level metadata is left behind, so the modal warns when a merged
 // box carries any. A Shopify order's box can go into its buyer's Palmstreet
 // box (the Palmstreet box is kept — combineGroups.js).
@@ -21,6 +23,12 @@ function addressOneLine(a = {}) {
     [a.city, a.state].filter(Boolean).join(', '),
     a.zip,
   ].filter(Boolean).join(' · ');
+}
+
+// "UPS label" / "USPS label" / "Palmstreet label".
+function labelName(s) {
+  if (s?.carrierCode === 'palmstreet') return 'Palmstreet label';
+  return `${String(s?.carrier || '').toLowerCase() === 'ups' ? 'UPS' : 'USPS'} label`;
 }
 
 export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesById, onClose, onCombine, showToast }) {
@@ -43,8 +51,9 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
 
   const selectedBoxes = boxes.filter(b => selected.has(b.id));
   // Shopify + Palmstreet: the Palmstreet box is kept, whatever was picked.
-  const rules = combineRules(selectedBoxes);
-  const target = pickTarget(selectedBoxes, keepId);
+  // A box with a label: it's kept, whatever was picked.
+  const rules = combineRules(selectedBoxes, hasLabel);
+  const target = pickTarget(selectedBoxes, keepId, hasLabel);
   const sources = target ? selectedBoxes.filter(b => b.id !== target.id) : [];
   // Only still-sold items move (the server enforces the same rule) —
   // already-shipped items in a partially-shipped box stay behind as history.
@@ -82,9 +91,7 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
   const confirmArmed = confirming === armedKey;
 
   const toggle = (box) => {
-    // A selected box can ALWAYS be unchecked — even if a label appeared on
-    // it since selection (otherwise it's stuck checked and disabled).
-    if (busy || (hasLabel(box.id) && !selected.has(box.id))) return;
+    if (busy) return;
     setConfirming('');
     const next = new Set(selected);
     if (next.has(box.id)) {
@@ -152,16 +159,15 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
                     return (
                       <label
                         key={box.id}
-                        className={`flex items-center gap-2.5 px-3 py-2 border-b border-gray-100 last:border-b-0 ${
-                          labeled ? 'opacity-50' : 'cursor-pointer hover:bg-gray-50'
-                        } ${isSelected ? 'bg-emerald-50/60' : ''}`}
-                        title={labeled ? 'This box has an active label — void it first to combine' : undefined}
+                        className={`flex items-center gap-2.5 px-3 py-2 border-b border-gray-100 last:border-b-0 cursor-pointer hover:bg-gray-50 ${
+                          isSelected ? 'bg-emerald-50/60' : ''}`}
+                        title={labeled ? 'Has a label — combined, this box is kept and its label ships everything' : undefined}
                       >
                         <input
                           type="checkbox"
                           checked={isSelected}
                           onChange={() => toggle(box)}
-                          disabled={busy || labeled}
+                          disabled={busy}
                           className="rounded border-gray-300"
                         />
                         <div className="flex-1 min-w-0">
@@ -194,7 +200,11 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
                                 ? 'bg-emerald-600 border-emerald-600 text-white'
                                 : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40'
                             }`}
-                            title={keepable ? 'Keep this box — items from the others move into it' : 'The Palmstreet box is kept — the Shopify order moves into it'}
+                            title={keepable
+                              ? 'Keep this box — items from the others move into it'
+                              : rules.labeled
+                                ? 'The box with the label is kept — the plants move into it'
+                                : 'The Palmstreet box is kept — the Shopify order moves into it'}
                           >
                             {isKeep ? 'Keeping' : 'Keep'}
                           </button>
@@ -220,7 +230,19 @@ export function CombineBoxesModal({ boxes, shipmentsByBox, boxNotesByBox, salesB
               <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-lime-700" />
               <span>
                 Shopify order{rules.orders.length === 1 ? '' : 's'} {rules.orders.join(', ') || ''} {rules.orders.length === 1 ? 'goes' : 'go'} into
-                the Palmstreet box <strong>{shortBoxCode(target.id)}</strong>. When it ships, its tracking is still sent to Shopify.
+                the Palmstreet box <strong>{shortBoxCode(target.id)}</strong>.{' '}
+                {hasLabel(target.id)
+                  ? 'That box already has a label, so its tracking goes to Shopify at the next order sync.'
+                  : 'When it ships, its tracking is still sent to Shopify.'}
+              </span>
+            </div>
+          )}
+          {target && sources.length > 0 && hasLabel(target.id) && !rules.blocked && (
+            <div className="flex items-start gap-2 text-xs text-blue-900 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+              <ScanLine className="w-4 h-4 flex-shrink-0 mt-0.5 text-blue-600" />
+              <span>
+                <strong>{shortBoxCode(target.id)}</strong> keeps its {labelName(shipmentsByBox?.[target.id])} — it ships everything.
+                The label was bought for that box&apos;s size and weight: if the added plants don&apos;t fit, void it after combining and buy a new one.
               </span>
             </div>
           )}

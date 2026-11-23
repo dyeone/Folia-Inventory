@@ -137,9 +137,11 @@ async function nextSkuForVariety(variety, brandId) {
 // stamped carrier, derived server-side from the target's own items — never
 // client-supplied). ONE set-based UPDATE, so the merge is atomic: it can
 // never leave an order half-combined the way a per-item loop could.
-// Guards: none of the involved boxes may have an active (non-voided) label —
-// postage is priced for a box's contents, and the client's shipments cache
-// can be stale, so the check must live here.
+// Guards: only the KEPT box may have an active (non-voided) label — then its
+// label ships the combined box (operator, 2026-11-22). A merged-away box's
+// label would be left on an empty box, so that one must be voided first. The
+// client's shipments cache can be stale, so the check must live here
+// (src/packing/combineGroups.js shows the same rules).
 async function combineBoxes(req, res, user, brandId) {
   const targetBoxId = typeof req.body?.targetBoxId === 'string' ? req.body.targetBoxId : '';
   const sourceBoxIds = Array.isArray(req.body?.sourceBoxIds)
@@ -173,8 +175,10 @@ async function combineBoxes(req, res, user, brandId) {
     .in('id', allIds);
   if (shipErr) { const e = new Error(shipErr.message); e.status = 500; throw e; }
   const labeled = (ships || []).filter(s => !s.voidedAt).map(s => s.id);
-  if (labeled.length > 0) {
-    const e = new Error(`Box${labeled.length === 1 ? ' has' : 'es have'} an active label — void it first to combine`);
+  if (labeled.some(id => id !== targetBoxId)) {
+    const e = new Error(labeled.length > 1
+      ? 'Only one of these boxes can keep its label — void the label on the box that goes away first'
+      : 'Keep the box that has the label — the other plants move into it (or void its label first)');
     e.status = 409; throw e;
   }
 

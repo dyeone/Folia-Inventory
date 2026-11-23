@@ -43,3 +43,29 @@ test('a Shopify order never goes into a TikTok or Nigel box', () => {
   assert.match(combineRules([shop, ps, { ...tt, id: 'ng5|x' }]).blocked, /Shopify or Palmstreet/);
   assert.equal(combineRules([ps, tt]).blocked, '');
 });
+
+test('a box with a label is the one kept — the other plants move into it', () => {
+  const labeled = new Set([ps.id]);
+  const hasLabel = (id) => labeled.has(id);
+  const r = combineRules([ps2, ps], hasLabel);
+  assert.equal(r.blocked, '');
+  assert.equal(r.labeled.id, ps.id);
+  assert.equal(r.canKeep(ps2), false);
+  assert.equal(pickTarget([ps2, ps], ps2.id, hasLabel).id, ps.id);
+  // The production case: the buyer's labeled Palmstreet box takes their Shopify order.
+  assert.equal(combineRules([shop, ps], hasLabel).blocked, '');
+  assert.equal(pickTarget([shop, ps], shop.id, hasLabel).id, ps.id);
+  // No labels → any box may be kept, as before.
+  assert.equal(pickTarget([ps, ps2], ps2.id, () => false).id, ps2.id);
+});
+
+test('two labeled boxes, or a labeled Shopify box with a Palmstreet box, are refused', () => {
+  const both = (id) => id === ps.id || id === ps2.id;
+  assert.match(combineRules([ps, ps2], both).blocked, /only one box can keep its label/);
+  const shopLabeled = (id) => id === shop.id;
+  assert.match(combineRules([shop, ps], shopLabeled).blocked, /Palmstreet box is the one kept/);
+  assert.equal(pickTarget([shop, ps], ps.id, shopLabeled), null);
+  // Two Shopify boxes, one labeled: that one is kept.
+  const shop2 = { ...shop, id: 'shopify-bae-1002|g' };
+  assert.equal(pickTarget([shop, shop2], shop.id, (id) => id === shop2.id).id, shop2.id);
+});
