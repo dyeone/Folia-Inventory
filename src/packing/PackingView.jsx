@@ -1401,22 +1401,24 @@ export function PackingView({
                 {/* Combine orders — one buyer's multiple boxes into a single
                     shipment. Admin-only, like Edit items / Delete box: it
                     bulk-rewrites item box pointers + buyer identity. The
-                    badge counts buyers with 2+ open unlabeled boxes. */}
+                    badge counts buyers with 2+ open boxes, at most one of
+                    them labeled (a labeled box is the one kept). */}
                 {isAdmin && totalBoxes > 1 && (() => {
                   const allBoxes = groups.flatMap(g => g.boxes);
-                  const combinable = allBoxes.filter(b => {
+                  const labeled = (b) => {
                     const s = shipmentsByBox[b.id];
-                    return !(s && !s.voidedAt);
-                  });
+                    return !!(s && !s.voidedAt);
+                  };
                   // Same grouping as the modal (a Shopify box counts with its
                   // buyer's Palmstreet box at the same address).
-                  const candidates = combineGroups(combinable).filter(g => g.boxes.length > 1).length;
+                  const candidates = combineGroups(allBoxes)
+                    .filter(g => g.boxes.length > 1 && g.boxes.filter(labeled).length <= 1).length;
                   return (
                     <button
                       type="button"
-                      disabled={combinable.length < 2}
-                      title={combinable.length < 2
-                        ? 'Need at least two open boxes without a label'
+                      disabled={allBoxes.length < 2}
+                      title={allBoxes.length < 2
+                        ? 'Need at least two open boxes'
                         : `${candidates} buyer${candidates === 1 ? '' : 's'} with multiple open boxes`}
                       onClick={() => { refreshShipments(); setCombineOpen(true); }}
                       className="inline-flex items-center gap-1.5 text-sm font-medium px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 active:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
