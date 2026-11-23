@@ -63,7 +63,7 @@ process.env.SHOPIFY_ADMIN_TOKEN_BAE = 'unit-test-token';
 process.env.SHOPIFY_API_VERSION = '2026-10';
 delete process.env.SHOPIFY_CLIENT_ID_BAE;
 delete process.env.SHOPIFY_CLIENT_SECRET_BAE;
-const { pullShopifyOrders } = await import('./shopify.js');
+const { pullShopifyOrders, reconcileShopify, channelsOf, missingChannels } = await import('./shopify.js');
 after(() => {
   for (const [key, value] of Object.entries(oldEnv)) {
     if (value === undefined) delete process.env[key];
@@ -457,3 +457,90 @@ test('a Shopify plant combined into a Palmstreet box is fulfilled with that box\
   assert.deepEqual(ful[0].variables.fulfillment.trackingInfo, { company: 'UPS', number: '1Z999AA10123456784' });
   assert.ok(state.tables.inventory_items[0].shopify.fulfilledAt);
 });
+
+// ─── Sales channels: every listing goes on all of them ───────────────────────
+const PUB = (n) => `gid://shopify/Publication/${n}`;
+const PUBLICATIONS = [
+  { id: PUB(1), catalog: { __typename: 'AppCatalog', title: 'Online Store' } },
+  { id: PUB(2), catalog: { __typename: 'AppCatalog', title: 'Shop' } },
+  { id: PUB(3), catalog: { __typename: 'AppCatalog', title: 'Point of Sale' } },
+  { id: PUB(4), catalog: { __typename: 'AppCatalog', title: 'theBAE' } },
+  { id: PUB(9), catalog: { __typename: 'MarketCatalog', title: 'United States' } },
+];
+
+function listedPlant(shopify) {
+  return plant({
+    salePool: 'shopify', listingPrice: 120, photoUrls: ['https://example.test/p.jpg'],
+    shopify: {
+      productId: 'gid://shopify/Product/1', variantId: 'gid://shopify/ProductVariant/1', inventoryItemId: 'gid://shopify/InventoryItem/1',
+      status: 'ACTIVE', qty: 1, price: '120.00', sku: 'B-PLANT-1', photoUrls: ['https://example.test/p.jpg'], ...shopify,
+    },
+  });
+}
+
+async function reconcile(state, refuse = []) {
+  current = state;
+  const fetchMock = mock.method(globalThis, 'fetch', async (url, options) => {
+    const { query, variables } = JSON.parse(options.body);
+    const operation = query.match(/(?:query|mutation)\s+(\w+)/)?.[1];
+    state.requests.push({ operation, variables });
+    let data;
+    if (operation === 'Pubs') data = { publications: { nodes: copy(PUBLICATIONS) } };
+    else if (operation === 'Pub') {
+      const bad = variables.input.filter((i) => refuse.includes(i.publicationId));
+      data = { publishablePublish: { userErrors: bad.map(() => ({ field: ['input'], message: 'Channel not available' })) } };
+    } else assert.fail(`Unexpected GraphQL operation: ${operation}`);
+    return new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+  try { return await reconcileShopify('bae', { itemIds: ['plant-1'], user: { displayName: 'Test user' } }); }
+  finally { fetchMock.mock.restore(); }
+}
+
+function channelScenario(shopify) {
+  const state = scenario({ items: [listedPlant(shopify)] });
+  state.tables.app_settings.push({ id: 'shopify:bae', data: { publicationId: PUB(1), locationId: 'gid://shopify/Location/1' } });
+  state.tables.sales = [];
+  return state;
+}
+
+test('sales channels are the app channels, never market or B2B catalogs', () => {
+  assert.deepEqual(channelsOf(PUBLICATIONS).map((c) => c.title), ['Online Store', 'Shop', 'Point of Sale', 'theBAE']);
+  const channels = channelsOf(PUBLICATIONS);
+  // A listing from before: on the Online Store only.
+  assert.deepEqual(missingChannels({ published: true }, channels, { publicationId: PUB(1) }).map((c) => c.title), ['Shop', 'Point of Sale', 'theBAE']);
+  assert.equal(missingChannels({ publishedTo: [PUB(1), PUB(2), PUB(3), PUB(4)] }, channels, {}).length, 0);
+});
+
+test('a listing on the Online Store only is put on every other sales channel', async () => {
+  const state = channelScenario({ published: true });
+  const result = await reconcile(state);
+  assert.deepEqual(result.errors, []);
+  const pubs = requests(state, 'Pub');
+  assert.equal(pubs.length, 1);
+  assert.deepEqual(pubs[0].variables.input.map((i) => i.publicationId), [PUB(2), PUB(3), PUB(4)]);
+  const sh = state.tables.inventory_items[0].shopify;
+  assert.deepEqual([...sh.publishedTo].sort(), [PUB(1), PUB(2), PUB(3), PUB(4)]);
+  assert.equal(sh.published, undefined);
+  // The channel list is kept for the next hour: a second sync asks nothing.
+  const saved = state.tables.app_settings.find((r) => r.id === 'shopify:bae').data;
+  assert.deepEqual(saved.channels.map((c) => c.title), ['Online Store', 'Shop', 'Point of Sale', 'theBAE']);
+  state.requests = [];
+  await reconcile(state);
+  assert.equal(requests(state, 'Pubs').length, 0);
+  assert.equal(requests(state, 'Pub').length, 0);
+});
+
+test('a channel that refuses is named, the others are kept, and only it is tried again', async () => {
+  const state = channelScenario({ published: true });
+  const result = await reconcile(state, [PUB(4)]);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0].error, /theBAE \(Channel not available\)/);
+  const sh = state.tables.inventory_items[0].shopify;
+  assert.deepEqual([...sh.publishedTo].sort(), [PUB(1), PUB(2), PUB(3)]);
+  state.requests = [];
+  const again = await reconcile(state);
+  assert.deepEqual(again.errors, []);
+  assert.deepEqual(requests(state, 'Pub').map((r) => r.variables.input.map((i) => i.publicationId)), [[PUB(4)]]);
+  assert.equal(state.tables.inventory_items[0].shopify.error, null);
+});
+
