@@ -16,6 +16,7 @@ class Query {
   select(_columns, options = {}) { this.head = options.head; return this; }
   eq(key, value) { this.filters.push(row => row[key] === value); return this; }
   gte() { return this; }
+  lt() { return this; }
   is(key, value) { return this.eq(key, value); }
   not(key, _operator, value) { this.filters.push(row => row[key] !== value); return this; }
   like(key, value) { this.filters.push(row => String(row[key] || '').startsWith(value.replace(/%$/, ''))); return this; }
@@ -278,4 +279,30 @@ test('extension sends its token only to the configured API origin and subject', 
     assert.throws(() => apiBase('https://inventory.example/#fragment'), /HTTPS/);
     assert.equal(apiBase('http://localhost:5173/'), 'http://localhost:5173');
   } finally { globalThis.chrome = previous; }
+});
+
+test('plant list: a whole read returns syncAt, a read since it returns the changes, costs hidden from the bench', async () => {
+  tables.inventory_items.push(
+    { id: 'p1', brandId: 'bae', sku: 'B-ANT-1', grossCost: 12, netCost: 10, deletedAt: null, changedAt: '2026-11-23T12:00:00.000Z' },
+    { id: 'p2', brandId: 'other', sku: 'G-ANT-1', grossCost: 5, deletedAt: null },
+  );
+  tables.inventory_item_tombstones = [];
+  const whole = await call(items, { method: 'GET', cookie: cookieFor('staff-id'), query: { brandId: 'bae' } });
+  assert.equal(whole.statusCode, 200);
+  assert.equal(whole.body.full, true);
+  assert.ok(Date.parse(whole.body.syncAt));
+  assert.deepEqual(whole.body.items.map(i => i.id), ['p1']);
+  assert.equal(whole.body.items[0].grossCost, undefined);
+
+  const feed = await call(items, { method: 'GET', cookie: cookieFor('staff-id'), query: { brandId: 'bae', since: whole.body.syncAt } });
+  assert.equal(feed.statusCode, 200);
+  assert.equal(feed.body.full, false);
+  assert.deepEqual(feed.body.removedIds, []);
+  assert.equal(feed.body.items[0].grossCost, undefined);
+
+  const admin = await call(items, { method: 'GET', cookie: cookieFor(), query: { brandId: 'bae', since: whole.body.syncAt } });
+  assert.equal(admin.body.items[0].grossCost, 12);
+  // A since too old to trust reads everything again.
+  const stale = await call(items, { method: 'GET', cookie: cookieFor(), query: { brandId: 'bae', since: '2026-01-01T00:00:00.000Z' } });
+  assert.equal(stale.body.full, true);
 });

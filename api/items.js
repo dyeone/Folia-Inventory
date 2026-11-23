@@ -2,6 +2,7 @@ import { supabase, requireBrand, brandIdFromReq, newId, seesCosts } from './_lib
 import { wrap, methodNotAllowed } from './_lib/respond.js';
 import { brandSkuPrefix, nextSkuSerial, formatSkuSerial, SKU_SUFFIX_END_RE } from './_lib/sku.js';
 import { fetchWideById } from './_lib/fetchAll.js';
+import { feedSince, readItemFeed, itemHousekeeping } from './_lib/itemFeed.js';
 import { settleSyntheticSkus } from './_lib/syntheticSkus.js';
 import { isOpenLine, isLinkablePlant, linkPatches } from './_lib/linkLine.js';
 import { poolStatus, poolSet, poolRenumber, poolSync, eventAssign, eventUnassign, mediaCleanup, followShopify } from './_lib/pool.js';
@@ -11,7 +12,8 @@ import { retireShopifyListing } from './_lib/shopify.js';
 // brandId is server-owned too: the active brand is forced from the request, so
 // a client can neither create rows in another brand nor move a row between
 // brands via the item payload.
-const SERVER_OWNED = ['createdAt', 'createdBy', 'modifiedAt', 'modifiedBy', 'brandId'];
+// changedAt: the database stamps it (migration 0056 trigger).
+const SERVER_OWNED = ['createdAt', 'createdBy', 'modifiedAt', 'modifiedBy', 'brandId', 'changedAt'];
 
 // Supabase caps un-ranged selects at 1000 rows by default. Paginate so we
 // actually return everything for tables that can grow past that. Pass a
@@ -715,34 +717,34 @@ export default wrap(async (req, res) => {
 
   switch (req.method) {
     case 'GET': {
-      // Lazy purge: hard-delete anything in the trash longer than 30 days.
-      // The not-null guard is defense in depth — `lt` already excludes NULL
-      // by SQL semantics, but one ORM quirk would silently nuke production
-      // data, so we make the intent explicit.
-      // Best-effort — we don't fail the read if this errors.
-      const cutoff = new Date(Date.now() - 30 * 86400 * 1000).toISOString();
-      await supabase
-        .from('inventory_items')
-        .delete()
-        .eq('brandId', brandId)
-        .not('deletedAt', 'is', null)
-        .lt('deletedAt', cutoff);
-
-      // Keyed on id, not offsets: this list is re-read every 8s while packers,
-      // the live show and Validate Sales write to it, and offset pages over
-      // rows that move mid-read drop some of them — a plant missing from one
-      // poll can be matched as "no such SKU" by a Validate Sales run then.
-      const data = await fetchWideById((columns) =>
-        supabase.from('inventory_items').select(columns).eq('brandId', brandId));
+      // ?since=<syncAt of the last read> → only what changed since (the
+      // 8 s polls); without it, or when the feed can't answer, every row.
+      // syncAt is taken BEFORE reading, so the next window covers anything
+      // written while this read ran (api/_lib/itemFeed.js).
+      const startedAt = Date.now();
+      const syncAt = new Date(startedAt).toISOString();
       // The packing bench never needs what plants COST — strip bought-price
       // fields for every login but admin and CEO so the data doesn't reach
       // that client at all (mirrors the purchase-orders API).
-      if (!seesCosts(user)) {
-        return res.status(200).json({
-          items: (data || []).map(({ grossCost, netCost, cost, ...rest }) => rest),
-        });
+      const forRole = (rows) => (seesCosts(user)
+        ? (rows || [])
+        : (rows || []).map(({ grossCost, netCost, cost, ...rest }) => rest));
+      const sinceMs = feedSince(req.query?.since, startedAt);
+      if (sinceMs !== null) {
+        const feed = await readItemFeed(brandId, sinceMs);
+        if (feed) {
+          return res.status(200).json({ items: forRole(feed.items), removedIds: feed.removedIds, syncAt, full: false });
+        }
       }
-      return res.status(200).json({ items: data });
+
+      await itemHousekeeping(brandId, startedAt);
+      // Keyed on id, not offsets: this list is read while packers, the live
+      // show and Validate Sales write to it, and offset pages over rows that
+      // move mid-read drop some of them — a plant missing from one read can
+      // be matched as "no such SKU" by a Validate Sales run then.
+      const data = await fetchWideById((columns) =>
+        supabase.from('inventory_items').select(columns).eq('brandId', brandId));
+      return res.status(200).json({ items: forRole(data), syncAt, full: true });
     }
 
     case 'POST': {

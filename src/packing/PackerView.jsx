@@ -455,12 +455,15 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
     // overwrite fresher state (e.g. tracking/label flags flickering off, which
     // now unmounts the Print button mid-tap).
     let inFlight = false;
+    // The plant list's version when this poll last merged it: unchanged →
+    // skip the merge and the re-render (api.syncItems reads only changes).
+    let appliedVersion = null;
     const sync = async () => {
       if (cancelled || inFlight || document.visibilityState === 'hidden') return;
       inFlight = true;
       try {
-        const [fresh, shipments, notesMeta] = await Promise.all([
-          api.getItems(),
+        const [{ items: fresh, version }, shipments, notesMeta] = await Promise.all([
+          api.syncItems(),
           api.getShipments().catch(() => []),
           api.getBoxNotesWithMeta().catch(() => ({ boxNotes: {}, sweepResetAt: null })),
         ]);
@@ -470,7 +473,10 @@ export function PackerView({ onLogout, onSwitchToStreamer }) {
         setHeatFlags(notesMeta.heat ?? null);
         announceHeatFlags(notesMeta.heat, fresh);
         maybeLocalHeatScan(fresh, notesMeta.boxNotes);
-        setItems(prev => mergeItems(prev, (fresh || []).filter(i => !i.deletedAt)));
+        if (version !== appliedVersion) {
+          appliedVersion = version;
+          setItems(prev => mergeItems(prev, (fresh || []).filter(i => !i.deletedAt)));
+        }
         lastFreshRef.current = Date.now();
         setTrackingByBox(
           Object.fromEntries(

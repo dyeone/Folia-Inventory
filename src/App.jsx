@@ -634,7 +634,8 @@ function StaffOrAdminInventory() {
 
   // Background refresh while the Shipping tab is open. The packer is
   // marking items packed on a separate device; the admin should see
-  // those changes without a manual page reload. Polls every 8s,
+  // those changes without a manual page reload. Polls every 8s (only the
+  // rows changed since the last read travel — src/itemCache.js),
   // pauses when the tab isn't visible or when the admin has switched
   // sections. Triggers an immediate fetch whenever the tab returns
   // to visible so coming back from a phone glance is instant.
@@ -650,6 +651,9 @@ function StaffOrAdminInventory() {
     if (activeTab !== 'packing') return;
     let cancelled = false;
     let lastShopifyPull = 0;
+    // The list's version when this poll last applied it: unchanged → no
+    // re-render of thousands of rows (api.syncItems reads only changes).
+    let appliedVersion = null;
     const refetch = async () => {
       if (cancelled || document.visibilityState === 'hidden') return;
       if (shopifyOn && Date.now() - lastShopifyPull > 90_000) {
@@ -657,8 +661,9 @@ function StaffOrAdminInventory() {
         api.poolSync().catch(() => { /* next round retries */ });
       }
       try {
-        const fresh = await api.getItems();
-        if (cancelled) return;
+        const { items: fresh, version } = await api.syncItems();
+        if (cancelled || version === appliedVersion) return;
+        appliedVersion = version;
         const sorted = [...fresh].sort(
           (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
         );
