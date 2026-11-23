@@ -1344,3 +1344,42 @@ alter table users add column if not exists roles text[];
 -- Suffixes run 1 … 9999, then A001 … Z999 (A001 = 10000, Z999 = 35973). The
 -- max-suffix functions above are REPLACED by 0051 to count both spellings;
 -- api/_lib/sku.js holds the same encoding.
+
+-- ─── Plant change feed (migration 0056) ───────────────────────────────────────
+-- Polls read only what changed (GET /api/items?since=…). changedAt is stamped
+-- by the database on every insert/update; a plant that leaves a brand's list
+-- (deleted for good, or moved to the other brand) leaves a tombstone.
+alter table inventory_items add column if not exists "changedAt" timestamptz not null default now();
+create index if not exists inventory_items_brand_changed
+  on inventory_items ("brandId", "changedAt");
+create table if not exists inventory_item_tombstones (
+  "itemId"   text        not null,
+  "brandId"  text        not null,
+  "goneAt"   timestamptz not null default clock_timestamp()
+);
+create index if not exists inventory_item_tombstones_brand_gone
+  on inventory_item_tombstones ("brandId", "goneAt");
+alter table inventory_item_tombstones enable row level security;
+create or replace function inventory_items_touch_changed() returns trigger
+language plpgsql as $$
+begin
+  new."changedAt" := clock_timestamp();
+  if tg_op = 'UPDATE' and old."brandId" is distinct from new."brandId" then
+    insert into inventory_item_tombstones ("itemId", "brandId") values (old.id, old."brandId");
+  end if;
+  return new;
+end $$;
+create or replace function inventory_items_tombstone() returns trigger
+language plpgsql as $$
+begin
+  insert into inventory_item_tombstones ("itemId", "brandId") values (old.id, old."brandId");
+  return old;
+end $$;
+drop trigger if exists inventory_items_touch_changed on inventory_items;
+create trigger inventory_items_touch_changed
+  before insert or update on inventory_items
+  for each row execute function inventory_items_touch_changed();
+drop trigger if exists inventory_items_tombstone on inventory_items;
+create trigger inventory_items_tombstone
+  after delete on inventory_items
+  for each row execute function inventory_items_tombstone();

@@ -1,4 +1,5 @@
 import { setSkuBrand } from './constants.js';
+import { createItemCache } from './itemCache.js';
 
 // Thin fetch wrapper around the /api/* routes.
 // Each call returns parsed JSON on success and throws Error(message) on failure.
@@ -6,7 +7,10 @@ import { setSkuBrand } from './constants.js';
 // Compatibility actor field. The server authenticates a signed HttpOnly cookie
 // and rejects any ID that disagrees with it. Set on login/session restore.
 let authUserId = null;
-export function setAuthUserId(id) { authUserId = id; }
+export function setAuthUserId(id) {
+  if (id !== authUserId) itemCache.reset();   // nothing of one login's list outlives it
+  authUserId = id;
+}
 
 // The active brand (3babes multi-brand). Sent with every authed call so the
 // server scopes reads/writes to it. When unset, the server defaults to the
@@ -75,6 +79,13 @@ async function request(path, { method = 'GET', body, brandId: brandOverride } = 
   return data;
 }
 
+// The plant list, read whole once and then by its change feed (see
+// itemCache.js). Keyed by user + brand: costs are stripped per role, and
+// each brand has its own list.
+const itemCache = createItemCache((since) =>
+  request(since ? `/items?since=${encodeURIComponent(since)}` : '/items'));
+const itemCacheKey = () => `${authUserId ?? ''}|${authBrandId ?? ''}`;
+
 export const api = {
   // Auth — single dispatcher under /auth, action passed via query (GET) or body (POST).
   hasAnyUsers: () => request('/auth?action=has-users').then(r => r.hasAnyUsers),
@@ -89,7 +100,10 @@ export const api = {
     request('/auth', { method: 'POST', body: { action: 'change-password', userId, currentPassword, newPassword } }),
 
   // Items
-  getItems: () => request('/items').then(r => r.items),
+  getItems: () => itemCache.sync(itemCacheKey()).then(r => r.items),
+  // The same list + a version that changes only when the list does — the 8 s
+  // polls skip re-rendering when it hasn't moved.
+  syncItems: () => itemCache.sync(itemCacheKey()),
   getSharedSkus: () => request('/items?action=shared-skus').then(r => r.skus || {}),
   renumberDuplicateSkus: () => request('/items', { method: 'POST', body: { action: 'renumber-duplicates' } }).then(r => r.renumbered || []),
   // Cross-brand stock (the other brands on the user's access list). Reads
