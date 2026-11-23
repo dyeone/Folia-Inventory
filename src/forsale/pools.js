@@ -96,7 +96,9 @@ export function shopifyBadge(item, pausedSaleIds, connected) {
   if (item.saleId && pausedSaleIds.has(item.saleId)) return { tone: 'warn', label: 'Paused', detail: 'In an upcoming sale event — hidden on the website until it\'s over' };
   if (!priced(item)) return { tone: 'warn', label: 'Needs price', detail: 'Set a price to list it' };
   if (!photosOf(item).length) return { tone: 'warn', label: 'Needs photo', detail: 'Add a photo to list it' };
-  if (sh.productId && sh.status === 'ACTIVE' && sh.qty === 1 && sh.published) {
+  // On the store once on any sales channel (publishedTo; `published` = the
+  // Online Store only, before every channel counted — api/_lib/shopify.js).
+  if (sh.productId && sh.status === 'ACTIVE' && sh.qty === 1 && (sh.published || sh.publishedTo?.length)) {
     const behind = photosOf(item).join('\n') !== listedPhotos(sh).join('\n') || videosOf(item).join('\n') !== listedVideos(sh).join('\n')
       || sh.price !== Number(item.listingPrice).toFixed(2);
     return behind ? { tone: 'wait', label: 'Updating…', detail: 'Changes go to the website on the next sync' } : { tone: 'ok', label: 'Live', detail: 'Listed on the website' };

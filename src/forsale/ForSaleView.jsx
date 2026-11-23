@@ -717,6 +717,11 @@ function ShopifyPanel({ status, syncing, isAdmin, onSync, onDismiss }) {
         <div className="flex-1 min-w-0">
           <div className="font-semibold text-gray-900 truncate">{status.shop}</div>
           <div className="text-[11px] text-gray-500">Orders checked {ago(status.lastOrderPullAt)} · listings synced {ago(status.lastListingSyncAt)}</div>
+          {status.channels?.length > 0 && (
+            <div className="text-[11px] text-gray-500 truncate" title="Every listing goes on all of these sales channels">
+              On: {status.channels.join(', ')}
+            </div>
+          )}
         </div>
         <button type="button" onClick={onSync} disabled={syncing} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 text-xs font-semibold text-gray-800 disabled:opacity-50">
           {syncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />} Sync now

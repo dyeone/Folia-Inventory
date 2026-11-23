@@ -228,6 +228,8 @@ export async function shopifyPublicState(brandId) {
     apiVersion: API_VERSION,
     lastOrderPullAt: s.lastOrderPullAt || null,
     lastListingSyncAt: s.lastListingSyncAt || null,
+    // The sales channels listings go on (names only).
+    channels: (s.channels || []).map((c) => c.title),
     lastError: s.lastError || null,
     problems: (s.problems || []).slice(0, 30),
   };
@@ -327,13 +329,36 @@ async function ensureLocation(cfg, state) {
   return state.locationId;
 }
 
-async function ensurePublication(cfg, state) {
-  if (state.publicationId) return state.publicationId;
-  // Looked up again until found (the channel may be added later).
-  const d = await gql(cfg, 'query { publications(first: 50) { nodes { id catalog { title } } } }');
-  const hit = (d?.publications?.nodes || []).find((p) => /online store/i.test(p?.catalog?.title || ''));
-  if (hit) state.publicationId = hit.id;
-  return hit ? hit.id : null;
+// Every sales channel of the store — Online Store, Shop, Point of Sale, a
+// custom app's channel (BAE: "theBAE") — and every listing goes on all of
+// them (operator, 2026-11-23: listings had been put on the Online Store
+// only). Market and B2B catalogs are publications too and are left alone:
+// only app channels count. Looked up again every hour, so a channel added
+// in Shopify gets every listed plant at the next sync.
+const CHANNELS_EVERY_MS = 60 * 60 * 1000;
+export function channelsOf(nodes) {
+  return (nodes || [])
+    .filter((p) => p?.id && (p.catalog?.__typename === 'AppCatalog' || /online store/i.test(p.catalog?.title || '')))
+    .map((p) => ({ id: p.id, title: p.catalog?.title || 'Sales channel' }));
+}
+async function salesChannels(cfg, state) {
+  if (state.channels?.length && Date.now() - Date.parse(state.channelsAt || 0) < CHANNELS_EVERY_MS) return state.channels;
+  const d = await gql(cfg, 'query Pubs { publications(first: 50) { nodes { id catalog { __typename title } } } }');
+  const list = channelsOf(d?.publications?.nodes);
+  if (!list.length) throw failAll(502, 'Shopify lists no sales channels — the listings can\'t be put on the store');
+  state.channels = list;
+  state.channelsAt = new Date().toISOString();
+  return list;
+}
+// The channels a listing is on. Listings made before every channel counted
+// were put on the Online Store only (`published`, its id in publicationId).
+function publishedTo(sh, state) {
+  if (Array.isArray(sh.publishedTo)) return sh.publishedTo;
+  return sh.published && state.publicationId ? [state.publicationId] : [];
+}
+export function missingChannels(sh, channels, state) {
+  const on = new Set(publishedTo(sh, state));
+  return (channels || []).filter((c) => !on.has(c.id));
 }
 
 // Up to 10 photos + 5 videos per plant; room to spare for strays.
@@ -443,7 +468,7 @@ async function createListing(cfg, state, item) {
 
 // Make the product match the plant. Every step is checked against the
 // stored state, so a run that died half way just carries on next time.
-async function applyActive(cfg, state, item, sh) {
+async function applyActive(cfg, state, item, sh, channels) {
   if (sh.price !== priceOf(item) || sh.sku !== item.sku) {
     const d = await gql(cfg, `mutation Var($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
       productVariantsBulkUpdate(productId: $productId, variants: $variants) { productVariants { id } userErrors { field message } }
@@ -517,15 +542,26 @@ async function applyActive(cfg, state, item, sh) {
     await setStatus(cfg, sh.productId, 'ACTIVE');
     sh.status = 'ACTIVE';
   }
-  if (!sh.published) {
-    const pubId = await ensurePublication(cfg, state);
-    if (!pubId) throw fail(502, 'No "Online Store" sales channel found — the product is active but not on the storefront');
-    const d = await gql(cfg, `mutation Pub($id: ID!, $pid: ID!) {
-      publishablePublish(id: $id, input: { publicationId: $pid }) { userErrors { field message } }
-    }`, { id: sh.productId, pid: pubId });
-    const ue = userErrorText(d?.publishablePublish?.userErrors);
-    if (ue) throw fail(502, `Shopify publish: ${ue}`);
-    sh.published = true;
+  const missing = missingChannels(sh, channels || await salesChannels(cfg, state), state);
+  if (missing.length) {
+    // All at once; if Shopify refuses any, one by one, so the channels that
+    // take are kept and only the refused ones are tried again next sync.
+    const publish = (list) => gql(cfg, `mutation Pub($id: ID!, $input: [PublicationInput!]!) {
+      publishablePublish(id: $id, input: $input) { userErrors { field message } }
+    }`, { id: sh.productId, input: list.map((c) => ({ publicationId: c.id })) })
+      .then((d) => userErrorText(d?.publishablePublish?.userErrors));
+    const on = new Set(publishedTo(sh, state));
+    const refused = [];
+    if (!(await publish(missing))) missing.forEach((c) => on.add(c.id));
+    else {
+      for (const c of missing) {
+        const ue = await publish([c]);
+        if (ue) refused.push(`${c.title} (${ue})`); else on.add(c.id);
+      }
+    }
+    sh.publishedTo = [...on];
+    delete sh.published;
+    if (refused.length) throw fail(502, `Shopify didn't put it on ${refused.join('; ')}`);
   }
   sh.fp = fingerprint(item);
 }
@@ -598,6 +634,9 @@ export async function reconcileShopify(brandId, { itemIds = null, user = null, b
         .eq('brandId', brandId).or('salePool.eq.shopify,shopify.not.is.null'));
     }
     const holding = await holdingSaleIds(brandId);
+    // Unknown when Shopify can't be asked: listings then fall back to "on
+    // some channel", and applyActive asks again (failing per plant).
+    const channels = await salesChannels(cfg, state).catch(() => null);
 
     const RANK = { gone: 0, paused: 1, active: 2 };
     const recentFail = (sh) => !!sh.errorAt && Date.now() - Date.parse(sh.errorAt) < 10 * 60 * 1000;
@@ -608,7 +647,8 @@ export async function reconcileShopify(brandId, { itemIds = null, user = null, b
       const listed = !!sh.productId;
       let needs;
       if (want === 'active') needs = !listed || sh.status !== 'ACTIVE' || sh.fp !== fingerprint(item) || sh.qty !== 1
-        || !sh.published || mediaBehind(item, sh)
+        || (channels ? missingChannels(sh, channels, state).length > 0 : !publishedTo(sh, state).length)
+        || mediaBehind(item, sh)
         || sh.price !== priceOf(item) || sh.sku !== item.sku;
       else if (want === 'paused') needs = listed && sh.status !== 'DRAFT' && sh.status !== 'ARCHIVED';
       else needs = listed && sh.status !== 'ARCHIVED';
@@ -635,7 +675,7 @@ export async function reconcileShopify(brandId, { itemIds = null, user = null, b
               continue;
             }
           }
-          await applyActive(cfg, state, item, sh);
+          await applyActive(cfg, state, item, sh, channels);
         } else if (want === 'paused') {
           await setStatus(cfg, sh.productId, 'DRAFT');
           sh.status = 'DRAFT';
@@ -667,6 +707,8 @@ export async function reconcileShopify(brandId, { itemIds = null, user = null, b
       ...(retired.size ? { retire: (fresh.retire || []).filter((r) => !retired.has(r.productId)) } : {}),
       locationId: state.locationId || null,
       publicationId: state.publicationId || null,
+      channels: state.channels || null,
+      channelsAt: state.channelsAt || null,
       lastListingSyncAt: new Date().toISOString(),
       lastError: errors.length ? `${errors.length} listing${errors.length === 1 ? '' : 's'} failed — see the plants marked in red` : null,
     }, user);
